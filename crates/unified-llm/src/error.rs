@@ -85,15 +85,23 @@ pub enum SdkError {
 impl SdkError {
     #[must_use]
     pub const fn retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::Provider {
-                kind: ProviderErrorKind::RateLimit | ProviderErrorKind::Server,
-                ..
-            } | Self::RequestTimeout { .. }
-                | Self::Network { .. }
-                | Self::Stream { .. }
-        )
+        match self {
+            Self::Provider { kind, .. } => match kind {
+                ProviderErrorKind::Authentication
+                | ProviderErrorKind::AccessDenied
+                | ProviderErrorKind::NotFound
+                | ProviderErrorKind::InvalidRequest
+                | ProviderErrorKind::ContextLength
+                | ProviderErrorKind::QuotaExceeded
+                | ProviderErrorKind::ContentFilter => false,
+                _ => true,
+            },
+            Self::InvalidToolCall { .. }
+            | Self::NoObjectGenerated { .. }
+            | Self::Abort { .. }
+            | Self::Configuration { .. } => false,
+            _ => true,
+        }
     }
 
     #[must_use]
@@ -279,22 +287,38 @@ mod tests {
     }
 
     #[test]
-    fn non_retryable_errors() {
-        let kinds = [
-            ProviderErrorKind::AccessDenied,
-            ProviderErrorKind::NotFound,
-            ProviderErrorKind::InvalidRequest,
-            ProviderErrorKind::ContextLength,
-            ProviderErrorKind::QuotaExceeded,
-            ProviderErrorKind::ContentFilter,
-        ];
-        for kind in &kinds {
-            let err = SdkError::Provider {
-                kind: *kind,
-                detail: Box::new(ProviderErrorDetail::new("error", "openai")),
-            };
-            assert!(!err.retryable(), "Expected non-retryable: {err}");
-        }
+    fn non_retryable_provider_errors() {
+        let detail = || Box::new(ProviderErrorDetail::new("error", "openai"));
+
+        let access_denied = SdkError::Provider { kind: ProviderErrorKind::AccessDenied, detail: detail() };
+        assert!(!access_denied.retryable());
+
+        let not_found = SdkError::Provider { kind: ProviderErrorKind::NotFound, detail: detail() };
+        assert!(!not_found.retryable());
+
+        let invalid_req = SdkError::Provider { kind: ProviderErrorKind::InvalidRequest, detail: detail() };
+        assert!(!invalid_req.retryable());
+
+        let ctx_length = SdkError::Provider { kind: ProviderErrorKind::ContextLength, detail: detail() };
+        assert!(!ctx_length.retryable());
+
+        let quota = SdkError::Provider { kind: ProviderErrorKind::QuotaExceeded, detail: detail() };
+        assert!(!quota.retryable());
+
+        let content_filter = SdkError::Provider { kind: ProviderErrorKind::ContentFilter, detail: detail() };
+        assert!(!content_filter.retryable());
+    }
+
+    #[test]
+    fn non_retryable_sdk_errors() {
+        let invalid_tool = SdkError::InvalidToolCall { message: "bad tool".into() };
+        assert!(!invalid_tool.retryable());
+
+        let no_object = SdkError::NoObjectGenerated { message: "no output".into() };
+        assert!(!no_object.retryable());
+
+        let abort = SdkError::Abort { message: "aborted".into() };
+        assert!(!abort.retryable());
     }
 
     #[test]

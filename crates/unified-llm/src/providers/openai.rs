@@ -253,11 +253,15 @@ fn translate_input(messages: &[Message]) -> (Option<String>, Vec<serde_json::Val
                             .content
                             .as_str()
                             .map_or_else(|| tr.content.to_string(), str::to_string);
-                        input.push(serde_json::json!({
+                        let mut item = serde_json::json!({
                             "type": "function_call_output",
                             "call_id": tr.tool_call_id,
                             "output": output,
-                        }));
+                        });
+                        if tr.is_error {
+                            item["is_error"] = serde_json::json!(true);
+                        }
+                        input.push(item);
                     }
                 }
             }

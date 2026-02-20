@@ -1141,7 +1141,7 @@ mod tests {
 
     #[test]
     fn translate_tool_message_has_tool_call_id() {
-        let msg = Message::tool_result("call_1", "72F and sunny", false);
+        let msg = Message::tool_result("call_1", serde_json::Value::String("72F and sunny".into()), false);
         let translated = translate_messages(&[msg]);
         assert_eq!(translated[0].role, "tool");
         assert_eq!(translated[0].tool_call_id.as_deref(), Some("call_1"));

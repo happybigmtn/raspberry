@@ -3,7 +3,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use crate::error::SdkError;
 use crate::provider::{ProviderAdapter, StreamEventStream};
 use crate::providers::common::{
-    extract_system_prompt, parse_error_body, parse_rate_limit_headers, send_and_read_response,
+    extract_system_prompt, parse_error_body, parse_rate_limit_headers, parse_retry_after,
+    send_and_read_response,
 };
 use crate::types::{
     ContentPart, FinishReason, Message, Request, Response, ResponseFormatType, Role, StreamEvent,
@@ -1148,6 +1149,7 @@ impl ProviderAdapter for Adapter {
 
         let status = http_resp.status();
         if !status.is_success() {
+            let retry_after = parse_retry_after(http_resp.headers());
             let body = http_resp.text().await.map_err(|e| SdkError::Network {
                 message: e.to_string(),
             })?;
@@ -1158,7 +1160,7 @@ impl ProviderAdapter for Adapter {
                 "anthropic".to_string(),
                 code,
                 raw,
-                None,
+                retry_after,
             ));
         }
 

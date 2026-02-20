@@ -2,7 +2,7 @@ use crate::client::Client;
 use crate::error::SdkError;
 use crate::provider::StreamEventStream;
 use crate::retry::retry;
-use crate::tools::{execute_all_tools, Tool};
+use crate::tools::{execute_all_tools_with_repair, RepairToolCallFn, Tool};
 use crate::types::{
     FinishReason, GenerateResult, Message, ObjectStreamEvent, Request, Response, ResponseFormat,
     ResponseFormatType, RetryPolicy, StepResult, StreamEvent, TimeoutConfig, ToolCall, ToolChoice,
@@ -172,7 +172,7 @@ pub async fn generate(params: GenerateParams) -> Result<GenerateResult, SdkError
                 if tools.iter().any(|t| t.is_active()) {
                     let tool_refs: Vec<&Tool> =
                         tools.iter().map(std::convert::AsRef::as_ref).collect();
-                    tool_results = execute_all_tools(&tool_refs, &tool_calls, &messages, abort_signal.as_ref()).await;
+                    tool_results = execute_all_tools_with_repair(&tool_refs, &tool_calls, &messages, abort_signal.as_ref(), params.repair_tool_call.as_ref()).await;
                 }
             }
 
@@ -207,7 +207,7 @@ pub async fn generate(params: GenerateParams) -> Result<GenerateResult, SdkError
             for result in &last.tool_results {
                 messages.push(Message::tool_result(
                     &result.tool_call_id,
-                    result.content.to_string(),
+                    result.content.clone(),
                     result.is_error,
                 ));
             }
@@ -259,6 +259,8 @@ pub struct GenerateParams {
     pub abort_signal: Option<CancellationToken>,
     /// Custom stop condition checked after each tool round (Section 4.3).
     pub stop_when: Option<StopCondition>,
+    /// Callback to repair invalid tool call arguments (Section 5.8).
+    pub repair_tool_call: Option<RepairToolCallFn>,
 }
 
 impl GenerateParams {
@@ -285,6 +287,7 @@ impl GenerateParams {
             client: None,
             abort_signal: None,
             stop_when: None,
+            repair_tool_call: None,
         }
     }
 
@@ -412,6 +415,12 @@ impl GenerateParams {
         f: impl Fn(&[StepResult]) -> bool + Send + Sync + 'static,
     ) -> Self {
         self.stop_when = Some(Arc::new(f));
+        self
+    }
+
+    #[must_use]
+    pub fn repair_tool_call(mut self, repair: RepairToolCallFn) -> Self {
+        self.repair_tool_call = Some(repair);
         self
     }
 }
@@ -586,6 +595,7 @@ async fn stream_with_tool_loop(params: GenerateParams) -> Result<StreamEventStre
         .map(|tools| tools.iter().map(|t| t.definition.clone()).collect());
     let abort_signal = params.abort_signal.clone();
     let max_tool_rounds = params.max_tool_rounds;
+    let repair_tool_call = params.repair_tool_call.clone();
 
     let has_active_tools = max_tool_rounds > 0
         && params
@@ -703,7 +713,7 @@ async fn stream_with_tool_loop(params: GenerateParams) -> Result<StreamEventStre
 
                 let tool_refs: Vec<&Tool> =
                     tool_list.iter().map(std::convert::AsRef::as_ref).collect();
-                let tool_results = execute_all_tools(&tool_refs, &tool_calls, &messages, abort_signal.as_ref()).await;
+                let tool_results = execute_all_tools_with_repair(&tool_refs, &tool_calls, &messages, abort_signal.as_ref(), repair_tool_call.as_ref()).await;
 
                 if tool_results.is_empty() {
                     return;
@@ -746,7 +756,7 @@ async fn stream_with_tool_loop(params: GenerateParams) -> Result<StreamEventStre
                 for result in &tool_results {
                     messages.push(Message::tool_result(
                         &result.tool_call_id,
-                        result.content.to_string(),
+                        result.content.clone(),
                         result.is_error,
                     ));
                 }
@@ -862,6 +872,48 @@ pub async fn generate_object(
 pub type ObjectStream =
     Pin<Box<dyn futures::Stream<Item = Result<ObjectStreamEvent, SdkError>> + Send>>;
 
+/// Wraps an `ObjectStream` with an `object()` accessor for the final parsed value.
+///
+/// Implements `Stream<Item = Result<ObjectStreamEvent, SdkError>>` so it can be used
+/// as a drop-in replacement for `ObjectStream`. Tracks the last `Complete` event's
+/// object internally so callers can retrieve it after the stream ends.
+pub struct ObjectStreamResult {
+    inner: ObjectStream,
+    object: Option<serde_json::Value>,
+}
+
+impl ObjectStreamResult {
+    fn new(inner: ObjectStream) -> Self {
+        Self {
+            inner,
+            object: None,
+        }
+    }
+
+    /// Returns the final parsed object after the stream has yielded a `Complete` event.
+    #[must_use]
+    pub fn object(&self) -> Option<&serde_json::Value> {
+        self.object.as_ref()
+    }
+}
+
+impl Stream for ObjectStreamResult {
+    type Item = Result<ObjectStreamEvent, SdkError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let inner = self.inner.as_mut();
+        match inner.poll_next(cx) {
+            Poll::Ready(Some(Ok(event))) => {
+                if let ObjectStreamEvent::Complete { ref object, .. } = event {
+                    self.object = Some(object.clone());
+                }
+                Poll::Ready(Some(Ok(event)))
+            }
+            other => other,
+        }
+    }
+}
+
 /// Streaming structured output with incremental JSON parsing (Section 4.6).
 ///
 /// Combines streaming with structured output: sets `response_format` to `json_schema`,
@@ -878,7 +930,7 @@ pub type ObjectStream =
 pub async fn stream_object(
     params: GenerateParams,
     schema: serde_json::Value,
-) -> Result<ObjectStream, SdkError> {
+) -> Result<ObjectStreamResult, SdkError> {
     let params = GenerateParams {
         response_format: Some(ResponseFormat {
             kind: ResponseFormatType::JsonSchema,
@@ -943,7 +995,7 @@ pub async fn stream_object(
         },
     );
 
-    Ok(Box::pin(mapped.flatten()))
+    Ok(ObjectStreamResult::new(Box::pin(mapped.flatten())))
 }
 
 #[cfg(test)]

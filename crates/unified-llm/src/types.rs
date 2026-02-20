@@ -235,7 +235,7 @@ impl Message {
 
     pub fn tool_result(
         tool_call_id: impl Into<String>,
-        content: impl Into<String>,
+        content: serde_json::Value,
         is_error: bool,
     ) -> Self {
         let id = tool_call_id.into();
@@ -243,7 +243,7 @@ impl Message {
             role: Role::Tool,
             content: vec![ContentPart::ToolResult(ToolResult {
                 tool_call_id: id.clone(),
-                content: serde_json::Value::String(content.into()),
+                content,
                 is_error,
                 image_data: None,
                 image_media_type: None,
@@ -603,6 +603,15 @@ pub struct TimeoutConfig {
     pub per_step: Option<f64>,
 }
 
+impl From<f64> for TimeoutConfig {
+    fn from(total: f64) -> Self {
+        Self {
+            total: Some(total),
+            per_step: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdapterTimeout {
     pub connect: f64,
@@ -797,7 +806,7 @@ mod tests {
 
     #[test]
     fn message_tool_result_constructor() {
-        let msg = Message::tool_result("call_123", "72F and sunny", false);
+        let msg = Message::tool_result("call_123", serde_json::Value::String("72F and sunny".into()), false);
         assert_eq!(msg.role, Role::Tool);
         assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
         match &msg.content[0] {
