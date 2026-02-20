@@ -200,9 +200,8 @@ pub fn make_spawn_agent_tool(
 
                 // Note: working_dir and model require session factory changes to wire through
                 let mut session = session_factory();
-                if let Some(turns) = max_turns {
-                    session.set_max_turns(turns);
-                }
+                // Default subagent max_turns is 50 per spec (overridable via parameter)
+                session.set_max_turns(max_turns.unwrap_or(50));
                 let mut mgr = manager.lock().await;
                 mgr.spawn(session, task.to_string(), current_depth)
             })
@@ -495,6 +494,9 @@ mod tests {
         }
         fn context_window_size(&self) -> usize {
             200_000
+        }
+        fn knowledge_cutoff(&self) -> &str {
+            "May 2025"
         }
     }
 

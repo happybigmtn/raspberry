@@ -211,6 +211,10 @@ in the project.\
     fn context_window_size(&self) -> usize {
         128_000
     }
+
+    fn knowledge_cutoff(&self) -> &str {
+        "April 2025"
+    }
 }
 
 // -- apply_patch v4a format --

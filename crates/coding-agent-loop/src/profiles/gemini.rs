@@ -246,6 +246,10 @@ in the project.\
     fn context_window_size(&self) -> usize {
         1_000_000
     }
+
+    fn knowledge_cutoff(&self) -> &str {
+        "January 2025"
+    }
 }
 
 #[cfg(test)]

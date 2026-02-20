@@ -196,6 +196,10 @@ in the project. Keep changes minimal and focused on the task.\
     fn context_window_size(&self) -> usize {
         200_000
     }
+
+    fn knowledge_cutoff(&self) -> &str {
+        "May 2025"
+    }
 }
 
 #[cfg(test)]

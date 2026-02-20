@@ -123,7 +123,7 @@ impl Session {
             is_git_repo,
             date: today,
             model_name,
-            knowledge_cutoff: String::new(),
+            knowledge_cutoff: self.provider_profile.knowledge_cutoff().to_string(),
             git_status_short,
             git_recent_commits,
         }
@@ -1001,6 +1001,9 @@ mod tests {
         fn context_window_size(&self) -> usize {
             200_000
         }
+        fn knowledge_cutoff(&self) -> &str {
+            "May 2025"
+        }
     }
 
     // --- Helper functions ---
@@ -1642,6 +1645,9 @@ mod tests {
 
         fn context_window_size(&self) -> usize {
             self.context_window
+        }
+        fn knowledge_cutoff(&self) -> &str {
+            "May 2025"
         }
     }
 
