@@ -11,6 +11,8 @@ pub mod interviewer;
 pub mod outcome;
 pub mod parser;
 pub mod pipeline;
+#[cfg(any(feature = "server", test))]
+pub mod server;
 pub mod stylesheet;
 pub mod transform;
 pub mod validation;

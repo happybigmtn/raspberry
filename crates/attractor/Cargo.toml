@@ -9,6 +9,10 @@ keywords = ["llm", "ai", "pipeline", "workflow", "dot"]
 categories = ["development-tools"]
 readme = "README.md"
 
+[features]
+default = []
+server = ["axum", "tower", "tokio-stream"]
+
 [dependencies]
 coding-agent-loop = { path = "../coding-agent-loop" }
 unified-llm = { path = "../unified-llm" }
@@ -22,10 +26,16 @@ async-trait.workspace = true
 futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 nom = "7"
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tokio-stream = { workspace = true, optional = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
+axum = "0.8"
+tower = "0.5"
+tokio-stream = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

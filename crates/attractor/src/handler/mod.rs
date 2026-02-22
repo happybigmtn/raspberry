@@ -5,6 +5,7 @@ pub mod fan_in;
 pub mod manager_loop;
 pub mod parallel;
 pub mod start;
+pub mod sub_pipeline;
 pub mod tool;
 pub mod wait_human;
 

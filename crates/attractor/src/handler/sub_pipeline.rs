@@ -1,0 +1,371 @@
+use std::path::Path;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::context::Context;
+use crate::engine::select_edge;
+use crate::error::AttractorError;
+use crate::event::EventEmitter;
+use crate::graph::{Graph, Node};
+use crate::outcome::Outcome;
+use crate::pipeline::prepare_pipeline;
+
+use super::{Handler, HandlerRegistry};
+
+/// Executes a sub-pipeline defined by inline DOT source in a node attribute.
+/// The sub-pipeline runs with a cloned context; context updates propagate back.
+pub struct SubPipelineHandler {
+    registry: Arc<HandlerRegistry>,
+    _emitter: Arc<EventEmitter>,
+}
+
+impl SubPipelineHandler {
+    #[must_use]
+    pub fn new(registry: Arc<HandlerRegistry>, emitter: Arc<EventEmitter>) -> Self {
+        Self {
+            registry,
+            _emitter: emitter,
+        }
+    }
+}
+
+/// Check whether a node is a terminal (exit) node.
+fn is_terminal(node: &Node) -> bool {
+    node.shape() == "Msquare" || node.handler_type() == Some("exit")
+}
+
+#[async_trait]
+impl Handler for SubPipelineHandler {
+    async fn execute(
+        &self,
+        node: &Node,
+        context: &Context,
+        _graph: &Graph,
+        logs_root: &Path,
+    ) -> Result<Outcome, AttractorError> {
+        // 1. Get DOT source from node attribute
+        let dot_source = match node.attrs.get("sub_pipeline.dot_source").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s,
+            _ => return Ok(Outcome::fail("No sub_pipeline.dot_source attribute specified")),
+        };
+
+        // 2. Parse the sub-pipeline DOT
+        let sub_graph = match prepare_pipeline(dot_source) {
+            Ok(g) => g,
+            Err(e) => return Ok(Outcome::fail(format!("Failed to parse sub-pipeline: {e}"))),
+        };
+
+        // 3. Find start node
+        let start_node = match sub_graph.find_start_node() {
+            Some(n) => n.id.clone(),
+            None => return Ok(Outcome::fail("Sub-pipeline has no start node")),
+        };
+
+        // 4. Clone parent context for isolation
+        let sub_context = context.clone_context();
+        let before_snapshot = context.snapshot();
+
+        // 5. Walk the sub-graph
+        let sub_logs_root = logs_root.join(&node.id);
+        let mut current_node_id = start_node;
+        let mut last_outcome = Outcome::success();
+
+        let max_steps: usize = 1000;
+        let mut steps: usize = 0;
+
+        while steps < max_steps {
+            steps += 1;
+
+            let sub_node = match sub_graph.nodes.get(&current_node_id) {
+                Some(n) => n,
+                None => {
+                    return Ok(Outcome::fail(format!(
+                        "Sub-pipeline node not found: {current_node_id}"
+                    )));
+                }
+            };
+
+            // Check for terminal node
+            if is_terminal(sub_node) {
+                break;
+            }
+
+            // Execute the node handler
+            let handler = self.registry.resolve(sub_node);
+            last_outcome = handler
+                .execute(sub_node, &sub_context, &sub_graph, &sub_logs_root)
+                .await?;
+
+            // Apply context updates from the outcome
+            sub_context.apply_updates(&last_outcome.context_updates);
+            sub_context.set("outcome", serde_json::json!(last_outcome.status.to_string()));
+
+            // Select next edge
+            match select_edge(&current_node_id, &last_outcome, &sub_context, &sub_graph) {
+                Some(edge) => {
+                    current_node_id.clone_from(&edge.to);
+                }
+                None => break,
+            }
+        }
+
+        // 6. Compute context diff (sub_context changes vs parent's original snapshot)
+        let after_snapshot = sub_context.snapshot();
+        let mut context_updates = std::collections::HashMap::new();
+        for (key, value) in &after_snapshot {
+            match before_snapshot.get(key) {
+                Some(old_value) if old_value == value => {}
+                _ => {
+                    context_updates.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        // 7. Return the last outcome with context updates propagated
+        let mut result = last_outcome;
+        result.context_updates.extend(context_updates);
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::AttrValue;
+    use crate::handler::exit::ExitHandler;
+    use crate::handler::start::StartHandler;
+    use crate::outcome::StageStatus;
+
+    fn make_registry() -> Arc<HandlerRegistry> {
+        let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+        registry.register("start", Box::new(StartHandler));
+        registry.register("exit", Box::new(ExitHandler));
+        Arc::new(registry)
+    }
+
+    fn make_emitter() -> Arc<EventEmitter> {
+        Arc::new(EventEmitter::new())
+    }
+
+    #[tokio::test]
+    async fn executes_simple_sub_pipeline() {
+        let registry = make_registry();
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let mut node = Node::new("sub");
+        node.attrs.insert(
+            "sub_pipeline.dot_source".to_string(),
+            AttrValue::String(
+                r#"digraph Sub {
+                    start [shape=Mdiamond]
+                    exit [shape=Msquare]
+                    start -> exit
+                }"#
+                .to_string(),
+            ),
+        );
+
+        let context = Context::new();
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Success);
+    }
+
+    #[tokio::test]
+    async fn parent_context_available_in_sub_pipeline() {
+        let registry = make_registry();
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let mut node = Node::new("sub");
+        node.attrs.insert(
+            "sub_pipeline.dot_source".to_string(),
+            AttrValue::String(
+                r#"digraph Sub {
+                    start [shape=Mdiamond]
+                    exit [shape=Msquare]
+                    start -> exit
+                }"#
+                .to_string(),
+            ),
+        );
+
+        let context = Context::new();
+        context.set("parent.value", serde_json::json!("hello"));
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Success);
+        // The sub-pipeline clones the context, so the parent value should be
+        // available during sub-execution. After execution, any sub-pipeline
+        // context updates should be in the outcome's context_updates.
+    }
+
+    #[tokio::test]
+    async fn context_updates_propagate_back() {
+        // Use a handler that sets a context value, register it in the sub-pipeline registry
+        struct ContextSettingHandler;
+
+        #[async_trait]
+        impl Handler for ContextSettingHandler {
+            async fn execute(
+                &self,
+                _node: &Node,
+                context: &Context,
+                _graph: &Graph,
+                _logs_root: &Path,
+            ) -> Result<Outcome, AttractorError> {
+                context.set("sub.result", serde_json::json!("from_sub"));
+                Ok(Outcome::success())
+            }
+        }
+
+        let mut registry = HandlerRegistry::new(Box::new(ContextSettingHandler));
+        registry.register("start", Box::new(StartHandler));
+        registry.register("exit", Box::new(ExitHandler));
+        let registry = Arc::new(registry);
+
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let mut node = Node::new("sub");
+        node.attrs.insert(
+            "sub_pipeline.dot_source".to_string(),
+            AttrValue::String(
+                r#"digraph Sub {
+                    start [shape=Mdiamond]
+                    work [shape=box]
+                    exit [shape=Msquare]
+                    start -> work -> exit
+                }"#
+                .to_string(),
+            ),
+        );
+
+        let context = Context::new();
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Success);
+
+        // Context updates from the sub-pipeline should be in the outcome
+        assert!(
+            outcome.context_updates.contains_key("sub.result"),
+            "sub-pipeline context updates should propagate back"
+        );
+        assert_eq!(
+            outcome.context_updates.get("sub.result"),
+            Some(&serde_json::json!("from_sub"))
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_sub_pipeline_returns_fail() {
+        struct AlwaysFailHandler;
+
+        #[async_trait]
+        impl Handler for AlwaysFailHandler {
+            async fn execute(
+                &self,
+                _node: &Node,
+                _context: &Context,
+                _graph: &Graph,
+                _logs_root: &Path,
+            ) -> Result<Outcome, AttractorError> {
+                Ok(Outcome::fail("sub-pipeline failure"))
+            }
+        }
+
+        let mut registry = HandlerRegistry::new(Box::new(AlwaysFailHandler));
+        registry.register("start", Box::new(StartHandler));
+        registry.register("exit", Box::new(ExitHandler));
+        let registry = Arc::new(registry);
+
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let mut node = Node::new("sub");
+        // Sub-pipeline where the work node fails and there's a fail edge to exit
+        node.attrs.insert(
+            "sub_pipeline.dot_source".to_string(),
+            AttrValue::String(
+                r#"digraph Sub {
+                    start [shape=Mdiamond]
+                    work [shape=box, max_retries="0"]
+                    exit [shape=Msquare]
+                    start -> work
+                    work -> exit [condition="outcome=fail"]
+                }"#
+                .to_string(),
+            ),
+        );
+
+        let context = Context::new();
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn missing_dot_source_returns_fail() {
+        let registry = make_registry();
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let node = Node::new("sub");
+        let context = Context::new();
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Fail);
+        assert!(
+            outcome
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("sub_pipeline.dot_source"),
+            "should mention the missing attribute"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_dot_source_returns_fail() {
+        let registry = make_registry();
+        let handler = SubPipelineHandler::new(registry, make_emitter());
+
+        let mut node = Node::new("sub");
+        node.attrs.insert(
+            "sub_pipeline.dot_source".to_string(),
+            AttrValue::String("not valid dot".to_string()),
+        );
+
+        let context = Context::new();
+        let graph = Graph::new("parent");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Fail);
+    }
+}

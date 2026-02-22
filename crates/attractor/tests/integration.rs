@@ -6,21 +6,25 @@ use attractor::checkpoint::Checkpoint;
 use attractor::context::Context;
 use attractor::engine::{PipelineEngine, RunConfig};
 use attractor::error::AttractorError;
-use attractor::event::EventEmitter;
+use attractor::event::{EventEmitter, PipelineEvent};
 use attractor::graph::{AttrValue, Edge, Graph, Node};
 use attractor::handler::codergen::{CodergenBackend, CodergenHandler, CodergenResult};
 use attractor::handler::conditional::ConditionalHandler;
 use attractor::handler::exit::ExitHandler;
+use attractor::handler::manager_loop::ManagerLoopHandler;
 use attractor::handler::start::StartHandler;
+use attractor::handler::tool::ToolHandler;
 use attractor::handler::wait_human::WaitHumanHandler;
 use attractor::handler::{Handler, HandlerRegistry};
+use attractor::interviewer::auto_approve::AutoApproveInterviewer;
 use attractor::interviewer::queue::QueueInterviewer;
-use attractor::interviewer::{Answer, AnswerValue};
+use attractor::interviewer::recording::RecordingInterviewer;
+use attractor::interviewer::{Answer, AnswerValue, Interviewer};
 use attractor::outcome::{Outcome, StageStatus};
 use attractor::parser::parse;
 use attractor::stylesheet::{apply_stylesheet, parse_stylesheet};
 use attractor::transform::{StylesheetApplicationTransform, Transform, VariableExpansionTransform};
-use attractor::validation::validate_or_raise;
+use attractor::validation::{validate, validate_or_raise, Severity};
 
 // ---------------------------------------------------------------------------
 // 1. Parse and validate all 3 spec examples (Section 2.13)
@@ -1041,6 +1045,97 @@ impl CodergenBackend for MockCodergenBackend {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers for parity tests
+// ---------------------------------------------------------------------------
+
+/// A handler backed by a shared AtomicU32 counter.
+/// Returns Fail on call 0, Success on call >= 1.
+struct CounterHandler {
+    call_count: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl Handler for CounterHandler {
+    async fn execute(
+        &self,
+        _node: &Node,
+        _context: &Context,
+        _graph: &Graph,
+        _logs_root: &Path,
+    ) -> Result<Outcome, AttractorError> {
+        let count = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if count == 0 {
+            Ok(Outcome::fail("first call fails"))
+        } else {
+            Ok(Outcome::success())
+        }
+    }
+}
+
+/// A handler that sets context_updates = {"my_flag": "set"}.
+struct ContextSetterHandler;
+
+#[async_trait::async_trait]
+impl Handler for ContextSetterHandler {
+    async fn execute(
+        &self,
+        _node: &Node,
+        _context: &Context,
+        _graph: &Graph,
+        _logs_root: &Path,
+    ) -> Result<Outcome, AttractorError> {
+        let mut outcome = Outcome::success();
+        outcome
+            .context_updates
+            .insert("my_flag".to_string(), serde_json::json!("set"));
+        Ok(outcome)
+    }
+}
+
+fn collect_events(emitter: &mut EventEmitter) -> Arc<std::sync::Mutex<Vec<PipelineEvent>>> {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    emitter.on_event(move |event| {
+        events_clone.lock().unwrap().push(event.clone());
+    });
+    events
+}
+
+fn make_full_registry(interviewer: Arc<dyn Interviewer>) -> HandlerRegistry {
+    let mut registry = HandlerRegistry::new(Box::new(CodergenHandler::new(None)));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("codergen", Box::new(CodergenHandler::new(None)));
+    registry.register("conditional", Box::new(ConditionalHandler));
+    registry.register("tool", Box::new(ToolHandler));
+    registry.register(
+        "wait.human",
+        Box::new(WaitHumanHandler::new(interviewer)),
+    );
+    registry.register(
+        "stack.manager_loop",
+        Box::new(ManagerLoopHandler::new(None)),
+    );
+    registry
+}
+
+fn make_graph_with_start_exit(name: &str) -> Graph {
+    let mut graph = Graph::new(name);
+    let mut start = Node::new("start");
+    start
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+    let mut exit = Node::new("exit");
+    exit.attrs
+        .insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+    graph
+}
+
 #[tokio::test]
 async fn smoke_test_with_mock_codergen_backend() {
     // Pipeline:
@@ -1444,4 +1539,1316 @@ async fn resume_from_checkpoint_preserves_goal_gate_outcomes() {
         .await
         .expect("resume with goal gate should succeed");
     assert_eq!(outcome.status, StageStatus::Success);
+}
+
+// ===========================================================================
+// Parity tests — P1: Core pipeline behaviors
+// ===========================================================================
+
+#[tokio::test]
+async fn graph_goal_in_context() {
+    let input = r#"digraph GoalTest {
+        graph [goal="Ship the widget"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        work  [shape=box, prompt="Build it"]
+        start -> work -> exit
+    }"#;
+    let graph = parse(input).expect("parse");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = PipelineEngine::new(make_linear_registry(), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert_eq!(
+        cp.context_values.get("graph.goal"),
+        Some(&serde_json::json!("Ship the widget"))
+    );
+}
+
+#[tokio::test]
+async fn event_streaming_lifecycle() {
+    let input = r#"digraph EventTest {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        task  [shape=box, prompt="Do something"]
+        start -> task -> exit
+    }"#;
+    let graph = parse(input).expect("parse");
+    let dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = collect_events(&mut emitter);
+    let engine = PipelineEngine::new(make_linear_registry(), emitter);
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let collected = events.lock().unwrap();
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineStarted { .. })));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::StageStarted { name, .. } if name == "start")));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::StageCompleted { name, .. } if name == "start")));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::StageStarted { name, .. } if name == "task")));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::StageCompleted { name, .. } if name == "task")));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::CheckpointSaved { .. })));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineCompleted { .. })));
+    // PipelineStarted first, PipelineCompleted last
+    assert!(matches!(
+        collected.first().unwrap(),
+        PipelineEvent::PipelineStarted { .. }
+    ));
+    assert!(matches!(
+        collected.last().unwrap(),
+        PipelineEvent::PipelineCompleted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn context_flow_between_stages() {
+    let mut graph = make_graph_with_start_exit("ContextFlowTest");
+    let mut step_a = Node::new("step_a");
+    step_a
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("box".to_string()));
+    step_a.attrs.insert(
+        "prompt".to_string(),
+        AttrValue::String("Step A work".to_string()),
+    );
+    graph.nodes.insert("step_a".to_string(), step_a);
+    let mut step_b = Node::new("step_b");
+    step_b
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("box".to_string()));
+    step_b.attrs.insert(
+        "prompt".to_string(),
+        AttrValue::String("Step B work".to_string()),
+    );
+    graph.nodes.insert("step_b".to_string(), step_b);
+    graph.edges.push(Edge::new("start", "step_a"));
+    graph.edges.push(Edge::new("step_a", "step_b"));
+    graph.edges.push(Edge::new("step_b", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = PipelineEngine::new(make_linear_registry(), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert_eq!(
+        cp.context_values.get("last_stage"),
+        Some(&serde_json::json!("step_b"))
+    );
+    let last_response = cp
+        .context_values
+        .get("last_response")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(last_response.contains("[Simulated]"));
+}
+
+#[tokio::test]
+async fn tool_handler_e2e() {
+    let mut graph = make_graph_with_start_exit("ToolTest");
+    let mut echo_task = Node::new("echo_task");
+    echo_task.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("parallelogram".to_string()),
+    );
+    echo_task.attrs.insert(
+        "tool_command".to_string(),
+        AttrValue::String("echo hello-from-tool".to_string()),
+    );
+    graph.nodes.insert("echo_task".to_string(), echo_task);
+    graph.edges.push(Edge::new("start", "echo_task"));
+    graph.edges.push(Edge::new("echo_task", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let interviewer = Arc::new(AutoApproveInterviewer);
+    let engine = PipelineEngine::new(make_full_registry(interviewer), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let tool_output = cp
+        .context_values
+        .get("tool.output")
+        .expect("tool.output should exist");
+    assert!(tool_output.as_str().unwrap().contains("hello-from-tool"));
+}
+
+#[tokio::test]
+async fn auto_approve_interviewer_e2e() {
+    let mut graph = make_graph_with_start_exit("AutoApproveTest");
+    let mut gate = Node::new("gate");
+    gate.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("hexagon".to_string()),
+    );
+    gate.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("wait.human".to_string()),
+    );
+    gate.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("Review".to_string()),
+    );
+    graph.nodes.insert("gate".to_string(), gate);
+    graph
+        .nodes
+        .insert("approve".to_string(), Node::new("approve"));
+    graph
+        .nodes
+        .insert("reject".to_string(), Node::new("reject"));
+    graph.edges.push(Edge::new("start", "gate"));
+    let mut e_approve = Edge::new("gate", "approve");
+    e_approve.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[A] Approve".to_string()),
+    );
+    graph.edges.push(e_approve);
+    let mut e_reject = Edge::new("gate", "reject");
+    e_reject.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[R] Reject".to_string()),
+    );
+    graph.edges.push(e_reject);
+    graph.edges.push(Edge::new("approve", "exit"));
+    graph.edges.push(Edge::new("reject", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let interviewer = Arc::new(AutoApproveInterviewer);
+    let engine = PipelineEngine::new(make_full_registry(interviewer), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"approve".to_string()));
+    assert!(!cp.completed_nodes.contains(&"reject".to_string()));
+}
+
+#[tokio::test]
+async fn codergen_without_backend_simulated() {
+    let input = r#"digraph SimTest {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        code  [shape=box, prompt="Write the code"]
+        start -> code -> exit
+    }"#;
+    let graph = parse(input).expect("parse");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = PipelineEngine::new(make_linear_registry(), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let response =
+        std::fs::read_to_string(dir.path().join("code").join("response.md")).unwrap();
+    assert!(response.contains("[Simulated]"));
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let last_response = cp
+        .context_values
+        .get("last_response")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(last_response.contains("[Simulated]"));
+}
+
+// ===========================================================================
+// Parity tests — P2: Complex scenarios
+// ===========================================================================
+
+#[tokio::test]
+async fn branching_loop_back_on_failure() {
+    struct FailThenSucceedHandler {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for FailThenSucceedHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+        ) -> Result<Outcome, AttractorError> {
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                Ok(Outcome::fail("first attempt fails"))
+            } else {
+                Ok(Outcome::success())
+            }
+        }
+    }
+
+    let mut graph = make_graph_with_start_exit("LoopTest");
+    let mut implement = Node::new("implement");
+    implement
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("box".to_string()));
+    implement.attrs.insert(
+        "prompt".to_string(),
+        AttrValue::String("Implement".to_string()),
+    );
+    graph.nodes.insert("implement".to_string(), implement);
+    let mut validate_node = Node::new("validate");
+    validate_node.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("fail_then_succeed".to_string()),
+    );
+    graph
+        .nodes
+        .insert("validate".to_string(), validate_node);
+
+    graph.edges.push(Edge::new("start", "implement"));
+    graph.edges.push(Edge::new("implement", "validate"));
+    let mut e_success = Edge::new("validate", "exit");
+    e_success.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    graph.edges.push(e_success);
+    let mut e_fail = Edge::new("validate", "implement");
+    e_fail.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=fail".to_string()),
+    );
+    graph.edges.push(e_fail);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(CodergenHandler::new(None)));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("codergen", Box::new(CodergenHandler::new(None)));
+    registry.register(
+        "fail_then_succeed",
+        Box::new(FailThenSucceedHandler {
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        }),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let implement_count = cp
+        .completed_nodes
+        .iter()
+        .filter(|n| *n == "implement")
+        .count();
+    assert!(
+        implement_count >= 2,
+        "implement should appear at least 2x, got {implement_count}"
+    );
+}
+
+#[tokio::test]
+async fn human_gate_loops_back() {
+    let mut graph = make_graph_with_start_exit("HumanLoopTest");
+    let mut gate = Node::new("gate");
+    gate.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("hexagon".to_string()),
+    );
+    gate.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("wait.human".to_string()),
+    );
+    gate.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("Review".to_string()),
+    );
+    graph.nodes.insert("gate".to_string(), gate);
+    graph
+        .nodes
+        .insert("approve".to_string(), Node::new("approve"));
+    graph.nodes.insert("fix".to_string(), Node::new("fix"));
+
+    graph.edges.push(Edge::new("start", "gate"));
+    let mut e_approve = Edge::new("gate", "approve");
+    e_approve.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[A] Approve".to_string()),
+    );
+    graph.edges.push(e_approve);
+    let mut e_fix = Edge::new("gate", "fix");
+    e_fix.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[F] Fix".to_string()),
+    );
+    graph.edges.push(e_fix);
+    graph.edges.push(Edge::new("fix", "gate"));
+    graph.edges.push(Edge::new("approve", "exit"));
+
+    let answers = VecDeque::from([
+        Answer {
+            value: AnswerValue::Selected("F".to_string()),
+            selected_option: None,
+            text: None,
+        },
+        Answer {
+            value: AnswerValue::Selected("A".to_string()),
+            selected_option: None,
+            text: None,
+        },
+    ]);
+    let interviewer = Arc::new(QueueInterviewer::new(answers));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register(
+        "wait.human",
+        Box::new(WaitHumanHandler::new(interviewer)),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let gate_count = cp
+        .completed_nodes
+        .iter()
+        .filter(|n| *n == "gate")
+        .count();
+    assert!(
+        gate_count >= 2,
+        "gate should appear at least 2x, got {gate_count}"
+    );
+    assert!(cp.completed_nodes.contains(&"approve".to_string()));
+}
+
+#[tokio::test]
+async fn scenario_ship_a_feature() {
+    let dot = r#"digraph ShipFeature {
+        graph [goal="Ship the widget"]
+        rankdir=LR
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        plan  [shape=box, prompt="Plan to achieve: $goal"]
+        implement [shape=box, prompt="Implement the plan"]
+        test  [shape=parallelogram, tool_command="echo PASS"]
+        review [shape=hexagon, label="Review Changes"]
+        start -> plan -> implement -> test -> review
+        review -> exit [label="[A] Approve"]
+        review -> implement [label="[F] Fix"]
+    }"#;
+    let mut graph = parse(dot).expect("parse");
+    validate_or_raise(&graph, &[]).expect("validate");
+    VariableExpansionTransform.apply(&mut graph);
+    assert_eq!(
+        graph.nodes["plan"].prompt().unwrap(),
+        "Plan to achieve: Ship the widget"
+    );
+
+    let interviewer = Arc::new(AutoApproveInterviewer);
+    let dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = collect_events(&mut emitter);
+    let engine = PipelineEngine::new(make_full_registry(interviewer), emitter);
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let tool_output = cp.context_values.get("tool.output").expect("tool.output");
+    assert!(tool_output.as_str().unwrap().contains("PASS"));
+    assert!(cp.completed_nodes.contains(&"plan".to_string()));
+    assert!(cp.completed_nodes.contains(&"implement".to_string()));
+    assert!(cp.completed_nodes.contains(&"test".to_string()));
+    assert!(cp.completed_nodes.contains(&"review".to_string()));
+
+    let collected = events.lock().unwrap();
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineStarted { .. })));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineCompleted { .. })));
+}
+
+#[tokio::test]
+async fn scenario_parallel_expert_review() {
+    use attractor::handler::fan_in::FanInHandler;
+    use attractor::handler::parallel::ParallelHandler;
+
+    let input = r#"digraph ParallelReview {
+        start [shape=Mdiamond]
+        fan_out [shape=component]
+        expert_a [shape=box, prompt="Expert A review"]
+        expert_b [shape=box, prompt="Expert B review"]
+        expert_c [shape=box, prompt="Expert C review"]
+        fan_in_node [shape=tripleoctagon]
+        review [shape=hexagon, label="Final Review"]
+        exit [shape=Msquare]
+        start -> fan_out
+        fan_out -> expert_a
+        fan_out -> expert_b
+        fan_out -> expert_c
+        expert_a -> fan_in_node
+        expert_b -> fan_in_node
+        expert_c -> fan_in_node
+        fan_in_node -> review
+        review -> exit [label="[A] Approve"]
+        review -> fan_out [label="[F] Redo"]
+    }"#;
+    let graph = parse(input).expect("parse");
+    validate_or_raise(&graph, &[]).expect("validate");
+
+    let recorder = Arc::new(RecordingInterviewer::new(Box::new(AutoApproveInterviewer)));
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut base_registry = HandlerRegistry::new(Box::new(CodergenHandler::new(Some(
+        Box::new(MockCodergenBackend),
+    ))));
+    base_registry.register("start", Box::new(StartHandler));
+    base_registry.register("exit", Box::new(ExitHandler));
+    base_registry.register(
+        "codergen",
+        Box::new(CodergenHandler::new(Some(Box::new(MockCodergenBackend)))),
+    );
+    let base_registry = Arc::new(base_registry);
+    let emitter = Arc::new(EventEmitter::new());
+    let parallel_handler =
+        ParallelHandler::new(Arc::clone(&base_registry), Arc::clone(&emitter));
+    let fan_in_handler = FanInHandler::new(Some(Box::new(MockCodergenBackend)));
+
+    let interviewer: Arc<dyn Interviewer> = recorder.clone();
+    let mut full_registry = HandlerRegistry::new(Box::new(CodergenHandler::new(Some(
+        Box::new(MockCodergenBackend),
+    ))));
+    full_registry.register("start", Box::new(StartHandler));
+    full_registry.register("exit", Box::new(ExitHandler));
+    full_registry.register(
+        "codergen",
+        Box::new(CodergenHandler::new(Some(Box::new(MockCodergenBackend)))),
+    );
+    full_registry.register("parallel", Box::new(parallel_handler));
+    full_registry.register("parallel.fan_in", Box::new(fan_in_handler));
+    full_registry.register(
+        "wait.human",
+        Box::new(WaitHumanHandler::new(interviewer)),
+    );
+
+    let engine = PipelineEngine::new(full_registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let results = cp
+        .context_values
+        .get("parallel.results")
+        .expect("parallel.results");
+    assert_eq!(results.as_array().unwrap().len(), 3);
+
+    let recordings = recorder.recordings();
+    assert_eq!(recordings.len(), 1, "should have 1 interview recording");
+    assert!(cp.completed_nodes.contains(&"review".to_string()));
+}
+
+#[tokio::test]
+async fn scenario_node_retries_on_retry_status() {
+    struct RetryHandler {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for RetryHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+        ) -> Result<Outcome, AttractorError> {
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                Ok(Outcome::retry("transient failure"))
+            } else {
+                Ok(Outcome::success())
+            }
+        }
+    }
+
+    let mut graph = make_graph_with_start_exit("RetryScenarioTest");
+    let mut flaky = Node::new("flaky");
+    flaky.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("retry_handler".to_string()),
+    );
+    flaky
+        .attrs
+        .insert("max_retries".to_string(), AttrValue::Integer(2));
+    graph.nodes.insert("flaky".to_string(), flaky);
+    graph.edges.push(Edge::new("start", "flaky"));
+    graph.edges.push(Edge::new("flaky", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register(
+        "retry_handler",
+        Box::new(RetryHandler {
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        }),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let retry_count = cp
+        .node_retries
+        .get("flaky")
+        .expect("flaky should have retries");
+    assert_eq!(*retry_count, 2, "should have been called 2x");
+}
+
+#[tokio::test]
+async fn scenario_loop_restart_resets_context() {
+    let mut graph = make_graph_with_start_exit("LoopRestartTest");
+    let mut work = Node::new("work");
+    work.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("counter".to_string()),
+    );
+    graph.nodes.insert("work".to_string(), work);
+
+    graph.edges.push(Edge::new("start", "work"));
+    let mut success_edge = Edge::new("work", "exit");
+    success_edge.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    graph.edges.push(success_edge);
+    let mut fail_edge = Edge::new("work", "start");
+    fail_edge.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=fail".to_string()),
+    );
+    fail_edge
+        .attrs
+        .insert("loop_restart".to_string(), AttrValue::Boolean(true));
+    graph.edges.push(fail_edge);
+
+    let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register(
+        "counter",
+        Box::new(CounterHandler {
+            call_count: Arc::clone(&call_count),
+        }),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+    assert!(call_count.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn scenario_bug_triage_router() {
+    let mut graph = make_graph_with_start_exit("TriageTest");
+    let mut triage = Node::new("triage");
+    triage.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("diamond".to_string()),
+    );
+    graph.nodes.insert("triage".to_string(), triage);
+    graph
+        .nodes
+        .insert("critical".to_string(), Node::new("critical"));
+    graph
+        .nodes
+        .insert("normal".to_string(), Node::new("normal"));
+    graph
+        .nodes
+        .insert("wontfix".to_string(), Node::new("wontfix"));
+
+    graph.edges.push(Edge::new("start", "triage"));
+    let mut e_critical = Edge::new("triage", "critical");
+    e_critical.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    e_critical
+        .attrs
+        .insert("weight".to_string(), AttrValue::Integer(10));
+    graph.edges.push(e_critical);
+    let mut e_normal = Edge::new("triage", "normal");
+    e_normal.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    e_normal
+        .attrs
+        .insert("weight".to_string(), AttrValue::Integer(5));
+    graph.edges.push(e_normal);
+    graph.edges.push(Edge::new("triage", "wontfix"));
+    graph.edges.push(Edge::new("critical", "exit"));
+    graph.edges.push(Edge::new("normal", "exit"));
+    graph.edges.push(Edge::new("wontfix", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("conditional", Box::new(ConditionalHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(
+        cp.completed_nodes.contains(&"critical".to_string()),
+        "critical should be selected (highest weight)"
+    );
+    assert!(!cp.completed_nodes.contains(&"normal".to_string()));
+    assert!(!cp.completed_nodes.contains(&"wontfix".to_string()));
+}
+
+#[tokio::test]
+async fn scenario_crash_recovery() {
+    let mut graph = make_graph_with_start_exit("CrashRecoveryTest");
+    graph.nodes.insert("a".to_string(), Node::new("a"));
+    graph.nodes.insert("b".to_string(), Node::new("b"));
+    graph.nodes.insert("c".to_string(), Node::new("c"));
+    graph.edges.push(Edge::new("start", "a"));
+    graph.edges.push(Edge::new("a", "b"));
+    graph.edges.push(Edge::new("b", "c"));
+    graph.edges.push(Edge::new("c", "exit"));
+
+    let ctx = Context::new();
+    ctx.set("outcome", serde_json::json!("success"));
+    let mut outcomes = std::collections::HashMap::new();
+    outcomes.insert("start".to_string(), Outcome::success());
+    outcomes.insert("a".to_string(), Outcome::success());
+    let checkpoint = Checkpoint::from_context(
+        &ctx,
+        "a",
+        vec!["start".to_string(), "a".to_string()],
+        std::collections::HashMap::new(),
+        outcomes,
+        Some("b".to_string()),
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine
+        .run_from_checkpoint(&graph, &config, &checkpoint)
+        .await
+        .expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"b".to_string()));
+    assert!(cp.completed_nodes.contains(&"c".to_string()));
+    assert!(cp.completed_nodes.contains(&"a".to_string()));
+    let a_count = cp.completed_nodes.iter().filter(|n| *n == "a").count();
+    assert_eq!(a_count, 1, "a should not be re-executed");
+}
+
+#[tokio::test]
+async fn manager_loop_stop_condition_satisfied_e2e() {
+    struct DoneSetterHandler;
+
+    #[async_trait::async_trait]
+    impl Handler for DoneSetterHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+        ) -> Result<Outcome, AttractorError> {
+            let mut outcome = Outcome::success();
+            outcome
+                .context_updates
+                .insert("done".to_string(), serde_json::json!("true"));
+            Ok(outcome)
+        }
+    }
+
+    let mut graph = make_graph_with_start_exit("ManagerStopTest");
+    let mut setter = Node::new("setter");
+    setter.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("done_setter".to_string()),
+    );
+    graph.nodes.insert("setter".to_string(), setter);
+    let mut manager = Node::new("manager");
+    manager.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("stack.manager_loop".to_string()),
+    );
+    manager.attrs.insert(
+        "manager.stop_condition".to_string(),
+        AttrValue::String("context.done=true".to_string()),
+    );
+    manager
+        .attrs
+        .insert("manager.max_cycles".to_string(), AttrValue::Integer(10));
+    manager.attrs.insert(
+        "manager.poll_interval".to_string(),
+        AttrValue::Duration(std::time::Duration::from_millis(1)),
+    );
+    graph.nodes.insert("manager".to_string(), manager);
+    graph.edges.push(Edge::new("start", "setter"));
+    graph.edges.push(Edge::new("setter", "manager"));
+    graph.edges.push(Edge::new("manager", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("done_setter", Box::new(DoneSetterHandler));
+    registry.register(
+        "stack.manager_loop",
+        Box::new(ManagerLoopHandler::new(None)),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let manager_outcome = cp.node_outcomes.get("manager").expect("manager outcome");
+    assert_eq!(manager_outcome.status, StageStatus::Success);
+    assert!(manager_outcome
+        .notes
+        .as_deref()
+        .unwrap()
+        .contains("Stop condition satisfied"));
+    // Overall pipeline succeeds because manager succeeded
+    assert_eq!(outcome.status, StageStatus::Success);
+}
+
+#[tokio::test]
+async fn manager_loop_max_cycles_exceeded_e2e() {
+    let mut graph = make_graph_with_start_exit("ManagerMaxCyclesTest");
+    let mut manager = Node::new("manager");
+    manager.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("stack.manager_loop".to_string()),
+    );
+    manager
+        .attrs
+        .insert("manager.max_cycles".to_string(), AttrValue::Integer(2));
+    manager.attrs.insert(
+        "manager.poll_interval".to_string(),
+        AttrValue::Duration(std::time::Duration::from_millis(1)),
+    );
+    graph.nodes.insert("manager".to_string(), manager);
+    graph.edges.push(Edge::new("start", "manager"));
+    graph.edges.push(Edge::new("manager", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register(
+        "stack.manager_loop",
+        Box::new(ManagerLoopHandler::new(None)),
+    );
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    let manager_outcome = cp.node_outcomes.get("manager").expect("manager outcome");
+    assert_eq!(manager_outcome.status, StageStatus::Fail);
+    assert!(manager_outcome
+        .failure_reason
+        .as_deref()
+        .unwrap()
+        .contains("Max cycles"));
+    // Overall pipeline outcome is from last completed node (manager) = Fail
+    assert_eq!(outcome.status, StageStatus::Fail);
+}
+
+// ===========================================================================
+// Parity tests — P3: Validation
+// ===========================================================================
+
+#[test]
+fn validation_missing_start_node() {
+    let mut graph = Graph::new("NoStartTest");
+    let mut exit = Node::new("exit");
+    exit.attrs
+        .insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+
+    let diagnostics = validate(&graph, &[]);
+    let start_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.rule == "start_node")
+        .collect();
+    assert!(
+        !start_errors.is_empty(),
+        "should have start_node error diagnostic"
+    );
+}
+
+#[test]
+fn validation_missing_exit_node() {
+    let mut graph = Graph::new("NoExitTest");
+    let mut start = Node::new("start");
+    start
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+    graph
+        .nodes
+        .insert("work".to_string(), Node::new("work"));
+    graph.edges.push(Edge::new("start", "work"));
+
+    let diagnostics = validate(&graph, &[]);
+    let exit_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.rule == "terminal_node")
+        .collect();
+    assert!(
+        !exit_errors.is_empty(),
+        "should have terminal_node error diagnostic"
+    );
+}
+
+#[test]
+fn validation_orphan_unreachable_node() {
+    let mut graph = make_graph_with_start_exit("OrphanTest");
+    graph
+        .nodes
+        .insert("orphan".to_string(), Node::new("orphan"));
+    graph.edges.push(Edge::new("start", "exit"));
+
+    let diagnostics = validate(&graph, &[]);
+    let reachability_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.rule == "reachability")
+        .collect();
+    assert!(
+        !reachability_errors.is_empty(),
+        "should have reachability diagnostic for orphan node"
+    );
+}
+
+// ===========================================================================
+// Parity tests — P4: Edge selection and cross-feature
+// ===========================================================================
+
+#[tokio::test]
+async fn conditional_branching_success_fail_paths() {
+    let mut graph = make_graph_with_start_exit("CondBranchTest");
+    let mut work = Node::new("work");
+    work.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("always_fail".to_string()),
+    );
+    graph.nodes.insert("work".to_string(), work);
+    graph
+        .nodes
+        .insert("success_path".to_string(), Node::new("success_path"));
+    graph
+        .nodes
+        .insert("fail_path".to_string(), Node::new("fail_path"));
+
+    graph.edges.push(Edge::new("start", "work"));
+    let mut e_success = Edge::new("work", "success_path");
+    e_success.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    graph.edges.push(e_success);
+    let mut e_fail = Edge::new("work", "fail_path");
+    e_fail.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=fail".to_string()),
+    );
+    graph.edges.push(e_fail);
+    graph.edges.push(Edge::new("success_path", "exit"));
+    graph.edges.push(Edge::new("fail_path", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("always_fail", Box::new(AlwaysFailHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"fail_path".to_string()));
+    assert!(!cp.completed_nodes.contains(&"success_path".to_string()));
+}
+
+#[tokio::test]
+async fn edge_selection_condition_match_wins_over_weight() {
+    let mut graph = make_graph_with_start_exit("CondVsWeightTest");
+    graph.nodes.insert("a".to_string(), Node::new("a"));
+    graph
+        .nodes
+        .insert("cond_target".to_string(), Node::new("cond_target"));
+    graph.nodes.insert(
+        "weighted_target".to_string(),
+        Node::new("weighted_target"),
+    );
+
+    graph.edges.push(Edge::new("start", "a"));
+    let mut e_cond = Edge::new("a", "cond_target");
+    e_cond.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=success".to_string()),
+    );
+    graph.edges.push(e_cond);
+    let mut e_weight = Edge::new("a", "weighted_target");
+    e_weight
+        .attrs
+        .insert("weight".to_string(), AttrValue::Integer(100));
+    graph.edges.push(e_weight);
+    graph.edges.push(Edge::new("cond_target", "exit"));
+    graph.edges.push(Edge::new("weighted_target", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"cond_target".to_string()));
+    assert!(!cp
+        .completed_nodes
+        .contains(&"weighted_target".to_string()));
+}
+
+#[tokio::test]
+async fn edge_selection_weight_breaks_ties() {
+    let mut graph = make_graph_with_start_exit("WeightTiesTest");
+    graph.nodes.insert("a".to_string(), Node::new("a"));
+    graph.nodes.insert("low".to_string(), Node::new("low"));
+    graph.nodes.insert("high".to_string(), Node::new("high"));
+
+    graph.edges.push(Edge::new("start", "a"));
+    let mut e_low = Edge::new("a", "low");
+    e_low
+        .attrs
+        .insert("weight".to_string(), AttrValue::Integer(1));
+    graph.edges.push(e_low);
+    let mut e_high = Edge::new("a", "high");
+    e_high
+        .attrs
+        .insert("weight".to_string(), AttrValue::Integer(10));
+    graph.edges.push(e_high);
+    graph.edges.push(Edge::new("low", "exit"));
+    graph.edges.push(Edge::new("high", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"high".to_string()));
+    assert!(!cp.completed_nodes.contains(&"low".to_string()));
+}
+
+#[tokio::test]
+async fn edge_selection_lexical_tiebreak() {
+    let mut graph = make_graph_with_start_exit("LexicalTieTest");
+    graph.nodes.insert("a".to_string(), Node::new("a"));
+    graph.nodes.insert("beta".to_string(), Node::new("beta"));
+    graph
+        .nodes
+        .insert("alpha".to_string(), Node::new("alpha"));
+
+    graph.edges.push(Edge::new("start", "a"));
+    graph.edges.push(Edge::new("a", "beta"));
+    graph.edges.push(Edge::new("a", "alpha"));
+    graph.edges.push(Edge::new("beta", "exit"));
+    graph.edges.push(Edge::new("alpha", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"alpha".to_string()));
+    assert!(!cp.completed_nodes.contains(&"beta".to_string()));
+}
+
+#[tokio::test]
+async fn context_updates_visible_across_nodes() {
+    let mut graph = make_graph_with_start_exit("ContextVisibilityTest");
+    let mut setter = Node::new("setter");
+    setter.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("context_setter".to_string()),
+    );
+    graph.nodes.insert("setter".to_string(), setter);
+    let mut gate = Node::new("gate");
+    gate.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("diamond".to_string()),
+    );
+    graph.nodes.insert("gate".to_string(), gate);
+    graph.nodes.insert("yes".to_string(), Node::new("yes"));
+    graph.nodes.insert("no".to_string(), Node::new("no"));
+
+    graph.edges.push(Edge::new("start", "setter"));
+    graph.edges.push(Edge::new("setter", "gate"));
+    let mut e_yes = Edge::new("gate", "yes");
+    e_yes.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("context.my_flag=set".to_string()),
+    );
+    graph.edges.push(e_yes);
+    graph.edges.push(Edge::new("gate", "no"));
+    graph.edges.push(Edge::new("yes", "exit"));
+    graph.edges.push(Edge::new("no", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("conditional", Box::new(ConditionalHandler));
+    registry.register("context_setter", Box::new(ContextSetterHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"yes".to_string()));
+    assert!(!cp.completed_nodes.contains(&"no".to_string()));
+}
+
+#[tokio::test]
+async fn stylesheet_applies_model_override() {
+    let input = r#"digraph StylesheetTest {
+        graph [
+            goal="Test stylesheet",
+            model_stylesheet="* { llm_model: custom-model; }"
+        ]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        work  [shape=box, prompt="Do work"]
+        start -> work -> exit
+    }"#;
+    let mut graph = parse(input).expect("parse");
+    validate_or_raise(&graph, &[]).expect("validate");
+    StylesheetApplicationTransform.apply(&mut graph);
+    assert_eq!(graph.nodes["work"].llm_model(), Some("custom-model"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = PipelineEngine::new(make_linear_registry(), EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+}
+
+#[tokio::test]
+async fn custom_handler_registration_and_execution() {
+    struct CustomHandler;
+
+    #[async_trait::async_trait]
+    impl Handler for CustomHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+        ) -> Result<Outcome, AttractorError> {
+            let mut outcome = Outcome::success();
+            outcome
+                .context_updates
+                .insert("custom.ran".to_string(), serde_json::json!("true"));
+            Ok(outcome)
+        }
+    }
+
+    let mut graph = make_graph_with_start_exit("CustomHandlerTest");
+    let mut custom = Node::new("custom");
+    custom.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("my_custom".to_string()),
+    );
+    graph.nodes.insert("custom".to_string(), custom);
+    graph.edges.push(Edge::new("start", "custom"));
+    graph.edges.push(Edge::new("custom", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("my_custom", Box::new(CustomHandler));
+    let engine = PipelineEngine::new(registry, EventEmitter::new());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    engine.run(&graph, &config).await.expect("run");
+
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert_eq!(
+        cp.context_values.get("custom.ran"),
+        Some(&serde_json::json!("true"))
+    );
+}
+
+#[tokio::test]
+async fn integration_smoke_plan_implement_review_done() {
+    let dot = r#"digraph SmokeIntegration {
+        graph [
+            goal="Build the feature",
+            model_stylesheet="* { llm_model: test-model; }"
+        ]
+        rankdir=LR
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        plan  [shape=box, prompt="Plan: $goal"]
+        implement [shape=box, prompt="Implement"]
+        review [shape=hexagon, label="Review"]
+        start -> plan -> implement -> review
+        review -> exit [label="[A] Approve"]
+        review -> implement [label="[F] Fix"]
+    }"#;
+
+    // Parse and validate
+    let mut graph = parse(dot).expect("parse");
+    let diagnostics = validate_or_raise(&graph, &[]).expect("validate");
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty());
+
+    // Apply transforms
+    VariableExpansionTransform.apply(&mut graph);
+    StylesheetApplicationTransform.apply(&mut graph);
+
+    // Verify transforms applied
+    assert_eq!(
+        graph.nodes["plan"].prompt().unwrap(),
+        "Plan: Build the feature"
+    );
+    assert_eq!(graph.nodes["plan"].llm_model(), Some("test-model"));
+
+    // Run pipeline
+    let interviewer = Arc::new(AutoApproveInterviewer);
+    let dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = collect_events(&mut emitter);
+    let engine = PipelineEngine::new(make_full_registry(interviewer), emitter);
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+    };
+    let outcome = engine.run(&graph, &config).await.expect("run");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    // Verify all nodes completed
+    let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(cp.completed_nodes.contains(&"plan".to_string()));
+    assert!(cp.completed_nodes.contains(&"implement".to_string()));
+    assert!(cp.completed_nodes.contains(&"review".to_string()));
+
+    // Verify prompt.md and response.md exist
+    assert!(dir.path().join("plan").join("prompt.md").exists());
+    assert!(dir.path().join("plan").join("response.md").exists());
+
+    // Verify events
+    let collected = events.lock().unwrap();
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineStarted { .. })));
+    assert!(collected
+        .iter()
+        .any(|e| matches!(e, PipelineEvent::PipelineCompleted { .. })));
 }
