@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod checkpoint;
+pub mod cli;
 pub mod condition;
 pub mod context;
 pub mod engine;

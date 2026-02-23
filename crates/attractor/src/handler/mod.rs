@@ -11,12 +11,14 @@ pub mod wait_human;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use crate::context::Context;
 use crate::error::AttractorError;
 use crate::graph::{shape_to_handler_type, Graph, Node};
+use crate::interviewer::Interviewer;
 use crate::outcome::Outcome;
 
 /// The handler interface for node execution.
@@ -29,6 +31,12 @@ pub trait Handler: Send + Sync {
         graph: &Graph,
         logs_root: &Path,
     ) -> Result<Outcome, AttractorError>;
+
+    /// Determines whether an error should be retried.
+    /// Default implementation retries transient errors only.
+    fn should_retry(&self, err: &AttractorError) -> bool {
+        err.is_retryable()
+    }
 }
 
 /// Maps handler type strings to handler implementations.
@@ -72,6 +80,40 @@ impl HandlerRegistry {
         // 3. Default
         self.default_handler.as_ref()
     }
+}
+
+/// Build a [`HandlerRegistry`] with all built-in handler types registered.
+///
+/// The `make_backend` closure is called once per handler that needs a backend
+/// (`CodergenHandler` default, explicit `"codergen"`, and `"parallel.fan_in"`).
+#[must_use]
+pub fn default_registry(
+    interviewer: Arc<dyn Interviewer>,
+    make_backend: impl Fn() -> Option<Box<dyn codergen::CodergenBackend>>,
+) -> HandlerRegistry {
+    let mut registry =
+        HandlerRegistry::new(Box::new(codergen::CodergenHandler::new(make_backend())));
+    registry.register("start", Box::new(start::StartHandler));
+    registry.register("exit", Box::new(exit::ExitHandler));
+    registry.register(
+        "codergen",
+        Box::new(codergen::CodergenHandler::new(make_backend())),
+    );
+    registry.register("conditional", Box::new(conditional::ConditionalHandler));
+    registry.register(
+        "wait.human",
+        Box::new(wait_human::WaitHumanHandler::new(interviewer)),
+    );
+    registry.register("tool", Box::new(tool::ToolHandler));
+    registry.register(
+        "parallel.fan_in",
+        Box::new(fan_in::FanInHandler::new(make_backend())),
+    );
+    registry.register(
+        "stack.manager_loop",
+        Box::new(manager_loop::ManagerLoopHandler::new(None)),
+    );
+    registry
 }
 
 #[cfg(test)]
@@ -148,6 +190,41 @@ mod tests {
         let node = Node::new("work");
         let handler = registry.resolve(&node);
         let _ = handler;
+    }
+
+    #[test]
+    fn default_should_retry_uses_is_retryable() {
+        let handler = TestHandler {
+            _name: "test".to_string(),
+        };
+        assert!(handler.should_retry(&AttractorError::Handler("timeout".to_string())));
+        assert!(!handler.should_retry(&AttractorError::Parse("bad".to_string())));
+    }
+
+    struct NeverRetryHandler;
+
+    #[async_trait]
+    impl Handler for NeverRetryHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+        ) -> Result<Outcome, AttractorError> {
+            Ok(Outcome::success())
+        }
+
+        fn should_retry(&self, _err: &AttractorError) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn custom_should_retry_override() {
+        let handler = NeverRetryHandler;
+        assert!(!handler.should_retry(&AttractorError::Handler("timeout".to_string())));
+        assert!(!handler.should_retry(&AttractorError::Io("connection reset".to_string())));
     }
 
     #[test]
