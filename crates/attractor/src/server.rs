@@ -19,7 +19,7 @@ use crate::engine::{PipelineEngine, RunConfig};
 use crate::event::{EventEmitter, PipelineEvent};
 use crate::handler::HandlerRegistry;
 use crate::interviewer::web::WebInterviewer;
-use crate::interviewer::{Answer, AnswerValue, Interviewer};
+use crate::interviewer::{Answer, Interviewer, QuestionOption};
 
 /// Status of a managed pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,12 +31,21 @@ pub enum PipelineStatus {
     Cancelled,
 }
 
+/// An option for a multiple-choice question exposed via the API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiQuestionOption {
+    pub key: String,
+    pub label: String,
+}
+
 /// A pending question exposed via the API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiQuestion {
     pub id: String,
     pub text: String,
     pub question_type: String,
+    pub options: Vec<ApiQuestionOption>,
+    pub allow_freeform: bool,
 }
 
 /// Snapshot of a managed pipeline.
@@ -83,6 +92,7 @@ pub struct PipelineStatusResponse {
 #[derive(Debug, Deserialize)]
 pub struct SubmitAnswerRequest {
     pub value: String,
+    pub selected_option_key: Option<String>,
 }
 
 /// Response for answer submission.
@@ -253,8 +263,18 @@ async fn get_questions(
                 .into_iter()
                 .map(|pq| ApiQuestion {
                     id: pq.id,
-                    text: pq.question.text,
+                    text: pq.question.text.clone(),
                     question_type: format!("{:?}", pq.question.question_type),
+                    options: pq
+                        .question
+                        .options
+                        .iter()
+                        .map(|o| ApiQuestionOption {
+                            key: o.key.clone(),
+                            label: o.label.clone(),
+                        })
+                        .collect(),
+                    allow_freeform: pq.question.allow_freeform,
                 })
                 .collect();
             (StatusCode::OK, Json(questions)).into_response()
@@ -271,10 +291,33 @@ async fn submit_answer(
     let pipelines = state.pipelines.lock().expect("pipelines lock poisoned");
     match pipelines.get(&id) {
         Some(pipeline) => {
-            let answer = Answer {
-                value: AnswerValue::Text(req.value.clone()),
-                selected_option: None,
-                text: Some(req.value),
+            let answer = match &req.selected_option_key {
+                Some(key) => {
+                    let option = pipeline
+                        .interviewer
+                        .pending_questions()
+                        .iter()
+                        .find(|pq| pq.id == qid)
+                        .and_then(|pq| pq.question.options.iter().find(|o| o.key == *key))
+                        .cloned();
+                    match option {
+                        Some(opt) => Answer::selected(
+                            key.clone(),
+                            QuestionOption {
+                                key: opt.key,
+                                label: opt.label,
+                            },
+                        ),
+                        None => {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error": "invalid option key"})),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                None => Answer::text(req.value),
             };
             let accepted = pipeline.interviewer.submit_answer(&qid, answer);
             (StatusCode::OK, Json(SubmitAnswerResponse { accepted })).into_response()
