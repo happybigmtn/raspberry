@@ -44,6 +44,95 @@ fn expand_variables(text: &str, graph: &Graph) -> String {
     text.replace("$goal", graph.goal())
 }
 
+/// Status fields that indicate a JSON object contains routing directives.
+const STATUS_FIELDS: &[&str] = &[
+    "preferred_next_label",
+    "outcome",
+    "suggested_next_ids",
+    "context_updates",
+];
+
+/// Find all balanced `{...}` JSON object substrings in the text.
+fn find_json_objects(text: &str) -> Vec<&str> {
+    let mut results = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let start = i;
+            let mut depth = 0;
+            let mut in_string = false;
+            let mut escape = false;
+            let mut j = i;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if escape {
+                    escape = false;
+                } else if c == b'\\' && in_string {
+                    escape = true;
+                } else if c == b'"' {
+                    in_string = !in_string;
+                } else if !in_string {
+                    if c == b'{' {
+                        depth += 1;
+                    } else if c == b'}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            results.push(&text[start..=j]);
+                            break;
+                        }
+                    }
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    results
+}
+
+/// Extract routing directives from LLM response text.
+///
+/// Searches for the last JSON object in the response that contains at least
+/// one status field (`preferred_next_label`, `outcome`, `suggested_next_ids`,
+/// `context_updates`). Merges extracted fields into the outcome.
+fn extract_status_fields(text: &str, outcome: &mut Outcome) {
+    let candidates = find_json_objects(text);
+
+    let parsed = candidates.iter().rev().find_map(|candidate| {
+        let value: serde_json::Value = serde_json::from_str(candidate).ok()?;
+        if let Some(obj) = value.as_object() {
+            if STATUS_FIELDS.iter().any(|f| obj.contains_key(*f)) {
+                return Some(value);
+            }
+        }
+        None
+    });
+
+    let Some(value) = parsed else { return };
+    let Some(obj) = value.as_object() else { return };
+
+    if let Some(label) = obj.get("preferred_next_label").and_then(|v| v.as_str()) {
+        outcome.preferred_label = Some(label.to_string());
+    }
+
+    if let Some(ids) = obj.get("suggested_next_ids").and_then(|v| v.as_array()) {
+        let string_ids: Vec<String> = ids
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        if !string_ids.is_empty() {
+            outcome.suggested_next_ids = string_ids;
+        }
+    }
+
+    if let Some(updates) = obj.get("context_updates").and_then(|v| v.as_object()) {
+        for (key, val) in updates {
+            outcome.context_updates.insert(key.clone(), val.clone());
+        }
+    }
+}
+
 /// Truncate a string to at most `max_chars` characters.
 fn truncate(s: &str, max_chars: usize) -> &str {
     if s.len() <= max_chars {
@@ -153,6 +242,9 @@ impl Handler for CodergenHandler {
             "last_response".to_string(),
             serde_json::json!(truncate(&response_text, 200)),
         );
+
+        // 7b. Parse routing directives from response text
+        extract_status_fields(&response_text, &mut outcome);
 
         let status_json = serde_json::to_string_pretty(&outcome)
             .unwrap_or_else(|_| "{}".to_string());
@@ -506,6 +598,88 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.is_retryable());
         assert!(err.to_string().contains("Request timed out"));
+    }
+
+    #[test]
+    fn extract_status_fields_from_fenced_code_block() {
+        let text = r#"Here is my analysis of the code.
+
+```json
+{"preferred_next_label": "fix", "outcome": "success"}
+```
+
+That's it."#;
+        let mut outcome = Outcome::success();
+        extract_status_fields(text, &mut outcome);
+        assert_eq!(outcome.preferred_label.as_deref(), Some("fix"));
+    }
+
+    #[test]
+    fn extract_status_fields_from_bare_json() {
+        let text = r#"I recommend routing to fix.
+{"preferred_next_label": "fix_batch"}"#;
+        let mut outcome = Outcome::success();
+        extract_status_fields(text, &mut outcome);
+        assert_eq!(outcome.preferred_label.as_deref(), Some("fix_batch"));
+    }
+
+    #[test]
+    fn extract_status_fields_no_json() {
+        let text = "Just some plain text response with no JSON at all.";
+        let mut outcome = Outcome::success();
+        extract_status_fields(text, &mut outcome);
+        assert!(outcome.preferred_label.is_none());
+        assert!(outcome.suggested_next_ids.is_empty());
+    }
+
+    #[test]
+    fn extract_status_fields_json_without_status_fields() {
+        let text = r#"Here is some data: {"name": "test", "count": 42}"#;
+        let mut outcome = Outcome::success();
+        extract_status_fields(text, &mut outcome);
+        assert!(outcome.preferred_label.is_none());
+        assert!(outcome.suggested_next_ids.is_empty());
+    }
+
+    #[test]
+    fn extract_status_fields_context_updates_and_suggested_ids() {
+        let text = r#"```json
+{
+  "preferred_next_label": "review",
+  "suggested_next_ids": ["node_a", "node_b"],
+  "context_updates": {"fix.files_changed": 3, "fix.summary": "patched"}
+}
+```"#;
+        let mut outcome = Outcome::success();
+        outcome
+            .context_updates
+            .insert("existing_key".to_string(), serde_json::json!("keep"));
+        extract_status_fields(text, &mut outcome);
+        assert_eq!(outcome.preferred_label.as_deref(), Some("review"));
+        assert_eq!(outcome.suggested_next_ids, vec!["node_a", "node_b"]);
+        assert_eq!(
+            outcome.context_updates.get("fix.files_changed"),
+            Some(&serde_json::json!(3))
+        );
+        assert_eq!(
+            outcome.context_updates.get("fix.summary"),
+            Some(&serde_json::json!("patched"))
+        );
+        // Existing keys preserved
+        assert_eq!(
+            outcome.context_updates.get("existing_key"),
+            Some(&serde_json::json!("keep"))
+        );
+    }
+
+    #[test]
+    fn extract_status_fields_uses_last_match() {
+        let text = r#"{"preferred_next_label": "first"}
+Some text in between.
+{"preferred_next_label": "second"}"#;
+        let mut outcome = Outcome::success();
+        extract_status_fields(text, &mut outcome);
+        assert_eq!(outcome.preferred_label.as_deref(), Some("second"));
     }
 
     #[tokio::test]
