@@ -231,6 +231,7 @@ impl Handler for WaitHumanHandler {
 
 fn make_choice_outcome(key: &str, label: &str, to: &str) -> Outcome {
     let mut outcome = Outcome::success();
+    outcome.preferred_label = Some(label.to_string());
     outcome.suggested_next_ids = vec![to.to_string()];
     outcome.context_updates.insert(
         "human.gate.selected".to_string(),

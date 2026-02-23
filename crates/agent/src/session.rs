@@ -317,11 +317,18 @@ impl Session {
 
                 // Check abort flag between chunks
                 if self.abort_flag.load(Ordering::SeqCst) {
-                    self.state = SessionState::Closed;
-                    self.event_emitter
-                        .emit(EventKind::SessionEnd, self.id.clone(), EventData::Empty);
-                    return Err(AgentError::Aborted);
+                    break;
                 }
+            }
+
+            // If aborted during streaming, drop the stream to cancel the HTTP
+            // connection, then emit SessionEnd before returning.
+            if self.abort_flag.load(Ordering::SeqCst) {
+                drop(event_stream);
+                self.state = SessionState::Closed;
+                self.event_emitter
+                    .emit(EventKind::SessionEnd, self.id.clone(), EventData::Empty);
+                return Err(AgentError::Aborted);
             }
 
             let response = accumulator.response().cloned().ok_or_else(|| {
@@ -495,6 +502,14 @@ impl Session {
             .await;
 
             self.event_emitter.emit(
+                EventKind::ToolCallOutputDelta,
+                self.id.clone(),
+                EventData::TextDelta {
+                    delta: result.content.to_string(),
+                },
+            );
+
+            self.event_emitter.emit(
                 EventKind::ToolCallEnd,
                 self.id.clone(),
                 EventData::ToolCallEnd {
@@ -550,6 +565,14 @@ impl Session {
                         config.tool_approval.as_ref(),
                     )
                     .await;
+
+                    emitter.emit(
+                        EventKind::ToolCallOutputDelta,
+                        session_id.clone(),
+                        EventData::TextDelta {
+                            delta: result.content.to_string(),
+                        },
+                    );
 
                     emitter.emit(
                         EventKind::ToolCallEnd,

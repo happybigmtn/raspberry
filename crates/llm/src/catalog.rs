@@ -51,7 +51,7 @@ mod tests {
         assert!(info.supports_tools);
         assert!(info.supports_vision);
         assert!(info.supports_reasoning);
-        assert_eq!(info.context_window, 200_000);
+        assert_eq!(info.context_window, 1_000_000);
         assert_eq!(info.max_output, Some(128_000));
     }
 
