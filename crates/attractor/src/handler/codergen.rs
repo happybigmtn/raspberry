@@ -118,6 +118,9 @@ impl Handler for CodergenHandler {
                     return Ok(outcome);
                 }
                 Ok(CodergenResult::Text(text)) => text,
+                Err(e) if e.is_retryable() => {
+                    return Err(e);
+                }
                 Err(e) => {
                     return Ok(Outcome::fail(e.to_string()));
                 }
@@ -474,5 +477,65 @@ mod tests {
 
         let result = captured.lock().unwrap().clone();
         assert_eq!(result, Some(None));
+    }
+
+    #[tokio::test]
+    async fn codergen_handler_propagates_retryable_backend_error() {
+        struct FailingBackend;
+
+        #[async_trait]
+        impl CodergenBackend for FailingBackend {
+            async fn run(
+                &self,
+                _node: &Node,
+                _prompt: &str,
+                _context: &Context,
+                _thread_id: Option<&str>,
+            ) -> Result<CodergenResult, AttractorError> {
+                Err(AttractorError::Handler("Request timed out".to_string()))
+            }
+        }
+
+        let handler = CodergenHandler::new(Some(Box::new(FailingBackend)));
+        let node = Node::new("step");
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let tmp = TempDir::new().unwrap();
+
+        let result = handler.execute(&node, &context, &graph, tmp.path()).await;
+        let err = result.unwrap_err();
+        assert!(err.is_retryable());
+        assert!(err.to_string().contains("Request timed out"));
+    }
+
+    #[tokio::test]
+    async fn codergen_handler_returns_fail_outcome_for_non_retryable_backend_error() {
+        struct ValidationFailBackend;
+
+        #[async_trait]
+        impl CodergenBackend for ValidationFailBackend {
+            async fn run(
+                &self,
+                _node: &Node,
+                _prompt: &str,
+                _context: &Context,
+                _thread_id: Option<&str>,
+            ) -> Result<CodergenResult, AttractorError> {
+                Err(AttractorError::Validation("bad config".to_string()))
+            }
+        }
+
+        let handler = CodergenHandler::new(Some(Box::new(ValidationFailBackend)));
+        let node = Node::new("step");
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let tmp = TempDir::new().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, crate::outcome::StageStatus::Fail);
+        assert!(outcome.failure_reason.unwrap().contains("bad config"));
     }
 }
