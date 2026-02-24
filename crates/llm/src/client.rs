@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The core client that routes requests to provider adapters (Section 2.2, 3).
+#[derive(Clone)]
 pub struct Client {
     providers: HashMap<String, Arc<dyn ProviderAdapter>>,
     default_provider: Option<String>,

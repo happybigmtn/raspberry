@@ -151,7 +151,7 @@ async fn openai_multi_turn_cache() {
     dotenvy::dotenv().ok();
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let adapter = OpenAiAdapter::new(api_key);
-    run_multi_turn_cache_test(&adapter, "gpt-4o-mini", 0.0).await;
+    run_multi_turn_cache_test(&adapter, "gpt-4o-mini", 0.5).await;
 }
 
 #[tokio::test]
@@ -160,5 +160,5 @@ async fn gemini_multi_turn_cache() {
     dotenvy::dotenv().ok();
     let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
     let adapter = GeminiAdapter::new(api_key);
-    run_multi_turn_cache_test(&adapter, "gemini-2.5-flash", 0.0).await;
+    run_multi_turn_cache_test(&adapter, "gemini-2.5-flash", 0.5).await;
 }

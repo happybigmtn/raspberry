@@ -3,20 +3,49 @@ use std::sync::Arc;
 
 use agent::{
     AnthropicProfile, GeminiProfile, LocalExecutionEnvironment, OpenAiProfile, ProviderProfile,
-    Session, SessionConfig,
+    Session, SessionConfig, SubAgentManager,
 };
 use llm::client::Client;
 
 async fn make_session(provider: &str, model: &str, cwd: &Path) -> Session {
     dotenvy::dotenv().ok();
     let client = Client::from_env().await.expect("Client::from_env failed");
-    let profile: Arc<dyn ProviderProfile> = match provider {
-        "anthropic" => Arc::new(AnthropicProfile::new(model)),
-        "openai" => Arc::new(OpenAiProfile::new(model)),
-        "gemini" => Arc::new(GeminiProfile::new(model)),
+    let mut profile: Box<dyn ProviderProfile> = match provider {
+        "anthropic" => Box::new(AnthropicProfile::new(model)),
+        "openai" => Box::new(OpenAiProfile::new(model)),
+        "gemini" => Box::new(GeminiProfile::new(model)),
         _ => panic!("unknown provider: {provider}"),
     };
     let env = Arc::new(LocalExecutionEnvironment::new(cwd.to_path_buf()));
+
+    // Register subagent tools so spawn_agent / wait / send_input / close_agent are available
+    let manager = Arc::new(tokio::sync::Mutex::new(SubAgentManager::new(3)));
+    let factory_client = client.clone();
+    let factory_provider: &str = provider;
+    let factory_model: String = model.to_string();
+    let factory_cwd = cwd.to_path_buf();
+    let factory: agent::subagent::SessionFactory = {
+        let provider = factory_provider.to_string();
+        let model = factory_model.clone();
+        Arc::new(move || {
+            let sub_profile: Arc<dyn ProviderProfile> = match provider.as_str() {
+                "anthropic" => Arc::new(AnthropicProfile::new(&model)),
+                "openai" => Arc::new(OpenAiProfile::new(&model)),
+                "gemini" => Arc::new(GeminiProfile::new(&model)),
+                _ => panic!("unknown provider: {provider}"),
+            };
+            let sub_env = Arc::new(LocalExecutionEnvironment::new(factory_cwd.clone()));
+            Session::new(
+                factory_client.clone(),
+                sub_profile,
+                sub_env,
+                SessionConfig::default(),
+            )
+        })
+    };
+    profile.register_subagent_tools(manager, factory, 0);
+
+    let profile: Arc<dyn ProviderProfile> = Arc::from(profile);
     let config = SessionConfig {
         max_turns: 20,
         ..SessionConfig::default()
@@ -89,9 +118,10 @@ provider_tests!(subagent_spawn);
 // Scenarios below are only generated for providers where they are supported.
 // - multi_step_read_analyze_edit / provider_specific_editing: gpt-4o-mini is too
 //   weak to reliably apply precise file edits (uses apply_patch, not edit_file).
-// - error_recovery: OpenAI rejects the `is_error` field on tool results (adapter bug).
 // - reasoning_effort: gpt-4o-mini doesn't support the reasoning.effort parameter.
 // - loop_detection: needs custom config, tested separately below.
+
+provider_tests!(error_recovery);
 
 macro_rules! anthropic_gemini_tests {
     ($scenario:ident) => {
@@ -118,7 +148,6 @@ macro_rules! anthropic_gemini_tests {
 }
 
 anthropic_gemini_tests!(multi_step_read_analyze_edit);
-anthropic_gemini_tests!(error_recovery);
 anthropic_gemini_tests!(provider_specific_editing);
 
 // ---------------------------------------------------------------------------
@@ -299,10 +328,12 @@ reasoning_effort_tests!("gemini", "gemini-2.5-flash", gemini_reasoning_effort);
 // ---------------------------------------------------------------------------
 // Scenario 12: subagent_spawn
 // ---------------------------------------------------------------------------
-async fn scenario_subagent_spawn(session: &mut Session, _dir: &Path) {
+async fn scenario_subagent_spawn(session: &mut Session, dir: &Path) {
+    std::fs::write(dir.join("secret.txt"), "the_secret_value").expect("failed to write secret.txt");
     session
         .process_input(
-            "Try to spawn a subagent to read a file. If the subagent tool is not available, just say 'no subagent tool'",
+            "Spawn a subagent to read the file secret.txt and report its contents. \
+             Wait for the subagent to finish, then tell me what it found.",
         )
         .await
         .expect("process_input failed");

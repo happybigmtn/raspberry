@@ -288,7 +288,7 @@ fn translate_input(messages: &[Message]) -> (Option<String>, Vec<serde_json::Val
                             "output": output,
                         });
                         if tr.is_error {
-                            item["is_error"] = serde_json::json!(true);
+                            item["status"] = serde_json::json!("incomplete");
                         }
                         input.push(item);
                     }

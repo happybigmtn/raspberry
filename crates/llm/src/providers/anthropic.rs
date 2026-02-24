@@ -1026,6 +1026,30 @@ impl SseReaderState {
     }
 }
 
+/// Known `provider_options.anthropic` keys that are already handled by the adapter
+/// and should not be merged into the request body a second time.
+const KNOWN_ANTHROPIC_OPTION_KEYS: &[&str] = &["thinking", "auto_cache", "beta_headers"];
+
+/// Serialize the API request and merge any unknown `provider_options.anthropic` keys.
+fn merge_provider_options(
+    api_request: &ApiRequest,
+    provider_options: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut body = serde_json::to_value(api_request).unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(anthropic_opts) = provider_options.and_then(|opts| opts.get("anthropic")) {
+        if let (Some(base), Some(overrides)) = (body.as_object_mut(), anthropic_opts.as_object()) {
+            for (key, value) in overrides {
+                if !KNOWN_ANTHROPIC_OPTION_KEYS.contains(&key.as_str()) {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    body
+}
+
 /// Build an Anthropic API request and HTTP request builder for the given unified request.
 fn build_api_request(
     adapter: &Adapter,
@@ -1103,7 +1127,7 @@ fn build_api_request(
         req_builder = req_builder.header("anthropic-beta", beta_str);
     }
 
-    let req_builder = req_builder.json(&api_request);
+    let req_builder = req_builder.json(&merge_provider_options(&api_request, request.provider_options.as_ref()));
     (api_request, req_builder)
 }
 
@@ -1919,6 +1943,75 @@ mod tests {
         for dep in &deprecated {
             assert!(!header.contains(dep), "header with user values must not contain deprecated value {dep}");
         }
+    }
+
+    #[test]
+    fn merge_provider_options_passes_through_unknown_keys() {
+        let api_request = ApiRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![ApiMessage {
+                role: "user".to_string(),
+                content: vec![serde_json::json!({"type": "text", "text": "Hello"})],
+            }],
+            max_tokens: 4096,
+            system: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+            stream: false,
+        };
+
+        let opts = serde_json::json!({
+            "anthropic": {
+                "top_k": 40,
+                "custom_field": "value"
+            }
+        });
+        let body = merge_provider_options(&api_request, Some(&opts));
+        assert_eq!(body["top_k"], 40);
+        assert_eq!(body["custom_field"], "value");
+    }
+
+    #[test]
+    fn merge_provider_options_skips_known_keys() {
+        let api_request = ApiRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![ApiMessage {
+                role: "user".to_string(),
+                content: vec![serde_json::json!({"type": "text", "text": "Hello"})],
+            }],
+            max_tokens: 4096,
+            system: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            metadata: None,
+            stream: false,
+        };
+
+        let opts = serde_json::json!({
+            "anthropic": {
+                "thinking": {"type": "enabled", "budget_tokens": 10000},
+                "auto_cache": false,
+                "beta_headers": ["some-header"],
+                "top_k": 40
+            }
+        });
+        let body = merge_provider_options(&api_request, Some(&opts));
+        // Known keys should not be merged (they are handled separately)
+        assert!(body.get("auto_cache").is_none());
+        assert!(body.get("beta_headers").is_none());
+        // thinking is handled by the ApiRequest struct directly, should not be double-merged
+        assert!(body["thinking"].is_null());
+        // Unknown keys should be merged
+        assert_eq!(body["top_k"], 40);
     }
 
     #[test]
