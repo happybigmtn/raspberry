@@ -95,6 +95,13 @@ pub enum AgentEvent {
         preserved_turn_count: usize,
         summary_token_estimate: usize,
     },
+    LlmRetry {
+        provider: String,
+        model: String,
+        attempt: usize,
+        delay_secs: f64,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -305,8 +305,35 @@ impl Session {
             self.event_emitter
                 .emit(self.id.clone(), AgentEvent::AssistantTextStart);
 
-            // Call LLM (streaming)
-            let mut event_stream = match self.llm_client.stream(&request).await {
+            // Call LLM (streaming) with retry for transient errors
+            let retry_emitter = self.event_emitter.clone();
+            let retry_session_id = self.id.clone();
+            let retry_provider = self.provider_profile.id().to_string();
+            let retry_model = self.provider_profile.model().to_string();
+            let retry_policy = llm::types::RetryPolicy {
+                max_retries: 3,
+                on_retry: Some(std::sync::Arc::new(move |err, attempt, delay| {
+                    retry_emitter.emit(
+                        retry_session_id.clone(),
+                        AgentEvent::LlmRetry {
+                            provider: retry_provider.clone(),
+                            model: retry_model.clone(),
+                            attempt: attempt as usize,
+                            delay_secs: delay,
+                            error: err.to_string(),
+                        },
+                    );
+                })),
+                ..Default::default()
+            };
+            let client = self.llm_client.clone();
+            let stream_result = llm::retry::retry(&retry_policy, || {
+                let c = client.clone();
+                let r = request.clone();
+                async move { c.stream(&r).await }
+            })
+            .await;
+            let mut event_stream = match stream_result {
                 Ok(stream) => stream,
                 Err(err) => {
                     self.event_emitter.emit(

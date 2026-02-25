@@ -1,15 +1,22 @@
 use std::path::Path;
+use std::time::Instant;
 
 use async_trait::async_trait;
 
 use crate::context::Context;
 use crate::engine::select_edge;
 use crate::error::AttractorError;
+use crate::event::PipelineEvent;
 use crate::graph::{Graph, Node};
 use crate::outcome::Outcome;
 use crate::pipeline::prepare_pipeline;
 
 use super::{EngineServices, Handler};
+
+/// Convert a Duration's milliseconds to u64, saturating on overflow.
+fn millis_u64(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
 
 /// Executes a sub-pipeline defined by inline DOT source in a node attribute.
 /// The sub-pipeline runs with a cloned context; context updates propagate back.
@@ -54,8 +61,14 @@ impl Handler for SubPipelineHandler {
 
         // 5. Walk the sub-graph
         let sub_logs_root = logs_root.join(&node.id);
-        let mut current_node_id = start_node;
+        let mut current_node_id = start_node.clone();
         let mut last_outcome = Outcome::success();
+
+        services.emitter.emit(&PipelineEvent::SubgraphStarted {
+            node_id: node.id.clone(),
+            start_node,
+        });
+        let subgraph_start = Instant::now();
 
         let max_steps: usize = 1000;
         let mut steps: usize = 0;
@@ -95,6 +108,13 @@ impl Handler for SubPipelineHandler {
                 None => break,
             }
         }
+
+        services.emitter.emit(&PipelineEvent::SubgraphCompleted {
+            node_id: node.id.clone(),
+            steps_executed: steps,
+            status: last_outcome.status.to_string(),
+            duration_ms: millis_u64(subgraph_start.elapsed()),
+        });
 
         // 6. Compute context diff (sub_context changes vs parent's original snapshot)
         let after_snapshot = sub_context.snapshot();

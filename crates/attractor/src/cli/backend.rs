@@ -218,6 +218,22 @@ impl CodergenBackend for AgentBackend {
                             summary_token_estimate: *summary_token_estimate,
                         });
                     }
+                    AgentEvent::LlmRetry {
+                        provider,
+                        model,
+                        attempt,
+                        delay_secs,
+                        error,
+                    } => {
+                        pipeline_emitter.emit(&PipelineEvent::LlmRetry {
+                            stage: node_id.clone(),
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            attempt: *attempt,
+                            delay_ms: (*delay_secs * 1000.0) as u64,
+                            error: error.clone(),
+                        });
+                    }
                     // Streaming events and session lifecycle not forwarded
                     _ => {}
                 }

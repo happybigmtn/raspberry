@@ -38,6 +38,7 @@ pub enum PipelineEvent {
         files_touched: Vec<String>,
         attempt: usize,
         max_attempts: usize,
+        failure_class: Option<String>,
     },
     StageFailed {
         name: String,
@@ -45,6 +46,7 @@ pub enum PipelineEvent {
         error: String,
         will_retry: bool,
         failure_reason: Option<String>,
+        failure_class: Option<String>,
     },
     StageRetrying {
         name: String,
@@ -151,6 +153,29 @@ pub enum PipelineEvent {
         original_turn_count: usize,
         preserved_turn_count: usize,
         summary_token_estimate: usize,
+    },
+    LlmRetry {
+        stage: String,
+        provider: String,
+        model: String,
+        attempt: usize,
+        delay_ms: u64,
+        error: String,
+    },
+    ParallelEarlyTermination {
+        reason: String,
+        completed_count: usize,
+        pending_count: usize,
+    },
+    SubgraphStarted {
+        node_id: String,
+        start_node: String,
+    },
+    SubgraphCompleted {
+        node_id: String,
+        steps_executed: usize,
+        status: String,
+        duration_ms: u64,
     },
 }
 
@@ -347,6 +372,7 @@ mod tests {
             files_touched: vec!["src/main.rs".to_string()],
             attempt: 2,
             max_attempts: 3,
+            failure_class: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"failure_reason\":\"lint errors remain\""));
@@ -354,6 +380,7 @@ mod tests {
         assert!(json.contains("src/main.rs"));
         assert!(json.contains("\"attempt\":2"));
         assert!(json.contains("\"max_attempts\":3"));
+        assert!(json.contains("\"failure_class\":null"));
 
         let event_none = PipelineEvent::StageCompleted {
             name: "plan".to_string(),
@@ -368,6 +395,7 @@ mod tests {
             files_touched: vec![],
             attempt: 1,
             max_attempts: 1,
+            failure_class: None,
         };
         let json_none = serde_json::to_string(&event_none).unwrap();
         assert!(json_none.contains("\"failure_reason\":null"));
@@ -382,9 +410,14 @@ mod tests {
             error: "timeout".to_string(),
             will_retry: true,
             failure_reason: Some("LLM request timed out".to_string()),
+            failure_class: Some("transient".to_string()),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"failure_reason\":\"LLM request timed out\""));
+        assert!(json.contains("\"failure_class\":\"transient\""));
+
+        let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PipelineEvent::StageFailed { failure_class: Some(fc), .. } if fc == "transient"));
 
         let event_none = PipelineEvent::StageFailed {
             name: "plan".to_string(),
@@ -392,9 +425,11 @@ mod tests {
             error: "timeout".to_string(),
             will_retry: false,
             failure_reason: None,
+            failure_class: Some("terminal".to_string()),
         };
         let json_none = serde_json::to_string(&event_none).unwrap();
         assert!(json_none.contains("\"failure_reason\":null"));
+        assert!(json_none.contains("\"failure_class\":\"terminal\""));
     }
 
     #[test]
@@ -528,5 +563,72 @@ mod tests {
 
         let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(deserialized, PipelineEvent::StageRetrying { max_attempts: 5, .. }));
+    }
+
+    #[test]
+    fn llm_retry_event_serialization() {
+        let event = PipelineEvent::LlmRetry {
+            stage: "code".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            attempt: 2,
+            delay_ms: 1500,
+            error: "rate limited".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("LlmRetry"));
+        assert!(json.contains("\"provider\":\"anthropic\""));
+        assert!(json.contains("\"delay_ms\":1500"));
+
+        let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PipelineEvent::LlmRetry { attempt: 2, .. }));
+    }
+
+    #[test]
+    fn parallel_early_termination_event_serialization() {
+        let event = PipelineEvent::ParallelEarlyTermination {
+            reason: "fail_fast_branch_failed".to_string(),
+            completed_count: 2,
+            pending_count: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ParallelEarlyTermination"));
+        assert!(json.contains("\"completed_count\":2"));
+        assert!(json.contains("\"pending_count\":3"));
+
+        let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PipelineEvent::ParallelEarlyTermination { completed_count: 2, .. }));
+    }
+
+    #[test]
+    fn subgraph_started_event_serialization() {
+        let event = PipelineEvent::SubgraphStarted {
+            node_id: "sub_1".to_string(),
+            start_node: "start".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("SubgraphStarted"));
+        assert!(json.contains("\"node_id\":\"sub_1\""));
+        assert!(json.contains("\"start_node\":\"start\""));
+
+        let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PipelineEvent::SubgraphStarted { node_id, .. } if node_id == "sub_1"));
+    }
+
+    #[test]
+    fn subgraph_completed_event_serialization() {
+        let event = PipelineEvent::SubgraphCompleted {
+            node_id: "sub_1".to_string(),
+            steps_executed: 5,
+            status: "success".to_string(),
+            duration_ms: 3200,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("SubgraphCompleted"));
+        assert!(json.contains("\"steps_executed\":5"));
+        assert!(json.contains("\"duration_ms\":3200"));
+
+        let deserialized: PipelineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, PipelineEvent::SubgraphCompleted { steps_executed: 5, .. }));
     }
 }

@@ -567,6 +567,7 @@ impl PipelineEngine {
                             error: e.to_string(),
                             will_retry: true,
                             failure_reason: None,
+                            failure_class: Some("transient".into()),
                         });
                         self.services.emitter.emit(&PipelineEvent::StageRetrying {
                             name: node.label().to_string(),
@@ -857,6 +858,7 @@ impl PipelineEngine {
                         .to_string(),
                     will_retry: false,
                     failure_reason: outcome.failure_reason.clone(),
+                    failure_class: Some("terminal".into()),
                 });
             } else {
                 self.services.emitter.emit(&PipelineEvent::StageCompleted {
@@ -872,6 +874,7 @@ impl PipelineEngine {
                     files_touched: outcome.files_touched.clone(),
                     attempt: usize::try_from(attempts_used).unwrap_or(usize::MAX),
                     max_attempts: usize::try_from(retry_policy.max_attempts).unwrap_or(usize::MAX),
+                    failure_class: None,
                 });
                 self.inform(
                     &format!("Stage completed: {}", node.label()),

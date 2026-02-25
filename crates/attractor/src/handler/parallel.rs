@@ -194,14 +194,20 @@ impl Handler for ParallelHandler {
         }
 
         // Collect results
+        let total_branches = handles.len();
         let mut results: Vec<BranchResult> = Vec::new();
-        for handle in handles {
+        for (handle_index, handle) in handles.into_iter().enumerate() {
             match handle.await {
                 Ok(Ok(result)) => {
                     if error_policy == ErrorPolicy::FailFast
                         && result.outcome.status == StageStatus::Fail
                     {
                         results.push(result);
+                        services.emitter.emit(&PipelineEvent::ParallelEarlyTermination {
+                            reason: "fail_fast_branch_failed".to_string(),
+                            completed_count: results.len(),
+                            pending_count: total_branches - handle_index - 1,
+                        });
                         break;
                     }
                     results.push(result);
@@ -213,6 +219,11 @@ impl Handler for ParallelHandler {
                     };
                     if error_policy == ErrorPolicy::FailFast {
                         results.push(result);
+                        services.emitter.emit(&PipelineEvent::ParallelEarlyTermination {
+                            reason: "fail_fast_handler_error".to_string(),
+                            completed_count: results.len(),
+                            pending_count: total_branches - handle_index - 1,
+                        });
                         break;
                     }
                     results.push(result);
@@ -224,6 +235,11 @@ impl Handler for ParallelHandler {
                     };
                     if error_policy == ErrorPolicy::FailFast {
                         results.push(result);
+                        services.emitter.emit(&PipelineEvent::ParallelEarlyTermination {
+                            reason: "fail_fast_join_error".to_string(),
+                            completed_count: results.len(),
+                            pending_count: total_branches - handle_index - 1,
+                        });
                         break;
                     }
                     results.push(result);

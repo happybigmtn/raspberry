@@ -199,6 +199,7 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
             files_touched,
             attempt,
             max_attempts,
+            failure_class,
         } => {
             let mut s = format!("[STAGE_COMPLETED] name={name} index={index} duration={duration_ms}ms status={status}");
             if let Some(label) = preferred_label {
@@ -226,6 +227,9 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
                 s.push_str(&format!(" files_touched={}", files_touched.len()));
             }
             s.push_str(&format!(" attempt={attempt}/{max_attempts}"));
+            if let Some(fc) = failure_class {
+                s.push_str(&format!(" failure_class={fc}"));
+            }
             s
         }
         PipelineEvent::StageFailed {
@@ -234,12 +238,16 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
             error,
             will_retry,
             failure_reason,
+            failure_class,
         } => {
             let mut s = format!(
                 "[STAGE_FAILED] name={name} index={index} error=\"{error}\" will_retry={will_retry}"
             );
             if let Some(reason) = failure_reason {
                 s.push_str(&format!(" failure_reason=\"{reason}\""));
+            }
+            if let Some(fc) = failure_class {
+                s.push_str(&format!(" failure_class={fc}"));
             }
             s
         }
@@ -376,6 +384,34 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
         } => {
             format!("[COMPACTION_COMPLETED] stage={stage} original_turns={original_turn_count} preserved_turns={preserved_turn_count} summary_tokens={summary_token_estimate}")
         }
+        PipelineEvent::LlmRetry {
+            stage,
+            provider,
+            model,
+            attempt,
+            delay_ms,
+            error,
+        } => {
+            format!("[LLM_RETRY] stage={stage} provider={provider} model={model} attempt={attempt} delay={delay_ms}ms error=\"{error}\"")
+        }
+        PipelineEvent::ParallelEarlyTermination {
+            reason,
+            completed_count,
+            pending_count,
+        } => {
+            format!("[PARALLEL_EARLY_TERMINATION] reason={reason} completed={completed_count} pending={pending_count}")
+        }
+        PipelineEvent::SubgraphStarted { node_id, start_node } => {
+            format!("[SUBGRAPH_STARTED] node={node_id} start_node={start_node}")
+        }
+        PipelineEvent::SubgraphCompleted {
+            node_id,
+            steps_executed,
+            status,
+            duration_ms,
+        } => {
+            format!("[SUBGRAPH_COMPLETED] node={node_id} steps={steps_executed} status={status} duration={duration_ms}ms")
+        }
     };
     format!("{dim}{body}{reset}", dim = styles.dim, reset = styles.reset)
 }
@@ -425,6 +461,7 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
             files_touched,
             attempt,
             max_attempts,
+            failure_class,
         } => {
             let mut s = format!("{d}── STAGE_COMPLETED ──────────────────────────{r}\n  {d}name:{r}        {name}\n  {d}index:{r}       {index}\n  {d}duration_ms:{r} {duration_ms}\n  {d}status:{r}      {status}\n");
             if let Some(label) = preferred_label {
@@ -464,6 +501,9 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
                 s.push_str(&format!("  {d}notes:{r}       {n}\n"));
             }
             s.push_str(&format!("  {d}attempt:{r}     {attempt}/{max_attempts}\n"));
+            if let Some(fc) = failure_class {
+                s.push_str(&format!("  {d}failure_class:{r} {fc}\n"));
+            }
             s
         }
         PipelineEvent::StageFailed {
@@ -472,10 +512,14 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
             error,
             will_retry,
             failure_reason,
+            failure_class,
         } => {
             let mut s = format!("{d}── STAGE_FAILED ─────────────────────────────{r}\n  {d}name:{r}       {name}\n  {d}index:{r}      {index}\n  {d}error:{r}      {error}\n  {d}will_retry:{r} {will_retry}\n");
             if let Some(reason) = failure_reason {
                 s.push_str(&format!("  {d}failure_reason:{r} {reason}\n"));
+            }
+            if let Some(fc) = failure_class {
+                s.push_str(&format!("  {d}failure_class:{r}  {fc}\n"));
             }
             s
         }
@@ -625,6 +669,34 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
             summary_token_estimate,
         } => {
             format!("{d}── COMPACTION_COMPLETED ─────────────────────{r}\n  {d}stage:{r}                  {stage}\n  {d}original_turn_count:{r}    {original_turn_count}\n  {d}preserved_turn_count:{r}   {preserved_turn_count}\n  {d}summary_token_estimate:{r} {summary_token_estimate}\n")
+        }
+        PipelineEvent::LlmRetry {
+            stage,
+            provider,
+            model,
+            attempt,
+            delay_ms,
+            error,
+        } => {
+            format!("{d}── LLM_RETRY ────────────────────────────────{r}\n  {d}stage:{r}    {stage}\n  {d}provider:{r} {provider}\n  {d}model:{r}    {model}\n  {d}attempt:{r}  {attempt}\n  {d}delay_ms:{r} {delay_ms}\n  {d}error:{r}    {error}\n")
+        }
+        PipelineEvent::ParallelEarlyTermination {
+            reason,
+            completed_count,
+            pending_count,
+        } => {
+            format!("{d}── PARALLEL_EARLY_TERMINATION ───────────────{r}\n  {d}reason:{r}          {reason}\n  {d}completed_count:{r} {completed_count}\n  {d}pending_count:{r}   {pending_count}\n")
+        }
+        PipelineEvent::SubgraphStarted { node_id, start_node } => {
+            format!("{d}── SUBGRAPH_STARTED ─────────────────────────{r}\n  {d}node_id:{r}    {node_id}\n  {d}start_node:{r} {start_node}\n")
+        }
+        PipelineEvent::SubgraphCompleted {
+            node_id,
+            steps_executed,
+            status,
+            duration_ms,
+        } => {
+            format!("{d}── SUBGRAPH_COMPLETED ───────────────────────{r}\n  {d}node_id:{r}        {node_id}\n  {d}steps_executed:{r} {steps_executed}\n  {d}status:{r}         {status}\n  {d}duration_ms:{r}    {duration_ms}\n")
         }
     }
 }
