@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::character::complete::char;
 use nom::combinator::opt;
-use nom::multi::{many0, separated_list1};
+use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, tuple};
 use nom::IResult;
 
@@ -25,7 +25,7 @@ fn attr(input: &str) -> IResult<&str, (String, AstValue)> {
 fn attr_block(input: &str) -> IResult<&str, AttrBlock> {
     delimited(
         preceded(ws, char('[')),
-        separated_list1(preceded(ws, char(',')), attr),
+        separated_list0(preceded(ws, char(',')), attr),
         preceded(ws, char(']')),
     )(input)
 }
@@ -173,6 +173,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_attr_block_empty() {
+        let (rest, attrs) = attr_block("[]").unwrap();
+        assert!(attrs.is_empty());
+        assert_eq!(rest, "");
+    }
+
+    #[test]
     fn parse_attr_block_single() {
         let (rest, attrs) = attr_block("[label=\"Hello\"]").unwrap();
         assert_eq!(attrs.len(), 1);
@@ -246,6 +253,18 @@ mod tests {
             Statement::Node(n) => {
                 assert_eq!(n.id, "run_tests");
                 assert!(n.attrs.is_none());
+            }
+            _ => panic!("expected Node"),
+        }
+    }
+
+    #[test]
+    fn parse_node_stmt_empty_attrs() {
+        let (_, stmt) = node_or_edge_stmt("consolidate_dod []").unwrap();
+        match stmt {
+            Statement::Node(n) => {
+                assert_eq!(n.id, "consolidate_dod");
+                assert_eq!(n.attrs.as_ref().unwrap().len(), 0);
             }
             _ => panic!("expected Node"),
         }
