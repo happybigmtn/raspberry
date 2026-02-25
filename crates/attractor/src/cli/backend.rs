@@ -146,12 +146,10 @@ impl CodergenBackend for AgentBackend {
                     &event.event,
                     AgentEvent::SessionStarted
                         | AgentEvent::SessionEnded
-                        | AgentEvent::UserInput
                         | AgentEvent::AssistantTextStart
                         | AgentEvent::TextDelta { .. }
                         | AgentEvent::ToolCallOutputDelta { .. }
                         | AgentEvent::SkillExpanded { .. }
-                        | AgentEvent::SteeringInjected
                 ) {
                     pipeline_emitter.emit(&PipelineEvent::Agent {
                         stage: node_id.clone(),
@@ -230,14 +228,16 @@ impl CodergenBackend for AgentBackend {
             }
         }
 
-        let stage_usage = StageUsage {
+        let mut stage_usage = StageUsage {
             model: self.model.clone(),
             input_tokens: total_usage.input_tokens,
             output_tokens: total_usage.output_tokens,
             cache_read_tokens: total_usage.cache_read_tokens,
             cache_write_tokens: total_usage.cache_write_tokens,
             reasoning_tokens: total_usage.reasoning_tokens,
+            cost: None,
         };
+        stage_usage.cost = super::compute_stage_cost(&stage_usage);
 
         // Print session summary to stderr.
         if self.verbose >= 1 {

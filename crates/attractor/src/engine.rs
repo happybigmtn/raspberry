@@ -1001,9 +1001,17 @@ impl PipelineEngine {
         }
 
         let duration_ms = millis_u64(run_start.elapsed());
+        let total_cost: Option<f64> = {
+            let sum: f64 = node_outcomes
+                .values()
+                .filter_map(|o| o.usage.as_ref()?.cost)
+                .sum();
+            if sum > 0.0 { Some(sum) } else { None }
+        };
         self.services.emitter.emit(&PipelineEvent::PipelineCompleted {
             duration_ms,
             artifact_count: 0,
+            total_cost,
         });
 
         // Return last outcome, or success if no outcomes recorded

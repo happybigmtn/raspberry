@@ -13,6 +13,8 @@ pub enum PipelineEvent {
     PipelineCompleted {
         duration_ms: u64,
         artifact_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_cost: Option<f64>,
     },
     PipelineFailed {
         error: String,

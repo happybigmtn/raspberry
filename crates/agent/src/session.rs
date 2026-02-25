@@ -261,7 +261,7 @@ impl Session {
             timestamp: SystemTime::now(),
         });
         self.event_emitter
-            .emit(self.id.clone(), AgentEvent::UserInput);
+            .emit(self.id.clone(), AgentEvent::UserInput { text: expanded_input.clone() });
 
         // Drain steering queue before first LLM call
         self.drain_steering();
@@ -281,14 +281,14 @@ impl Session {
             // Check max_tool_rounds_per_input
             if round_count >= self.config.max_tool_rounds_per_input {
                 self.event_emitter
-                    .emit(self.id.clone(), AgentEvent::TurnLimitReached);
+                    .emit(self.id.clone(), AgentEvent::TurnLimitReached { max_turns: self.config.max_tool_rounds_per_input });
                 break;
             }
 
             // Check max_turns
             if self.config.max_turns > 0 && self.history.turns().len() >= self.config.max_turns {
                 self.event_emitter
-                    .emit(self.id.clone(), AgentEvent::TurnLimitReached);
+                    .emit(self.id.clone(), AgentEvent::TurnLimitReached { max_turns: self.config.max_turns });
                 break;
             }
 
@@ -575,12 +575,13 @@ and conversational filler.".to_string()),
             .drain(..)
             .collect();
         for msg in messages {
+            let text = msg.clone();
             self.history.push(Turn::Steering {
                 content: msg,
                 timestamp: SystemTime::now(),
             });
             self.event_emitter
-                .emit(self.id.clone(), AgentEvent::SteeringInjected);
+                .emit(self.id.clone(), AgentEvent::SteeringInjected { text });
         }
     }
 
@@ -1143,7 +1144,7 @@ mod tests {
         }
 
         assert!(events.iter().any(|e| matches!(e.event, AgentEvent::SessionStarted)));
-        assert!(events.iter().any(|e| matches!(e.event, AgentEvent::UserInput)));
+        assert!(events.iter().any(|e| matches!(e.event, AgentEvent::UserInput { .. })));
         assert!(events.iter().any(|e| matches!(e.event, AgentEvent::AssistantMessage { .. })));
         assert!(events.iter().any(|e| matches!(e.event, AgentEvent::SessionEnded)));
     }

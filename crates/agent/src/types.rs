@@ -48,7 +48,9 @@ pub enum SessionState {
 pub enum AgentEvent {
     SessionStarted,
     SessionEnded,
-    UserInput,
+    UserInput {
+        text: String,
+    },
     AssistantTextStart,
     AssistantMessage {
         text: String,
@@ -82,11 +84,15 @@ pub enum AgentEvent {
         usage_percent: usize,
     },
     LoopDetected,
-    TurnLimitReached,
+    TurnLimitReached {
+        max_turns: usize,
+    },
     SkillExpanded {
         skill_name: String,
     },
-    SteeringInjected,
+    SteeringInjected {
+        text: String,
+    },
     CompactionStarted {
         estimated_tokens: usize,
         context_window_size: usize,

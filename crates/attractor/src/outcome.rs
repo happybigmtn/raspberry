@@ -55,6 +55,8 @@ pub struct StageUsage {
     pub cache_write_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 /// The result of executing a node handler.
@@ -204,6 +206,7 @@ mod tests {
             cache_read_tokens: Some(800),
             cache_write_tokens: Some(50),
             reasoning_tokens: Some(100),
+            cost: None,
         };
         let json = serde_json::to_string(&usage).unwrap();
         assert!(json.contains("\"cache_read_tokens\":800"));
@@ -223,6 +226,7 @@ mod tests {
             cache_read_tokens: None,
             cache_write_tokens: None,
             reasoning_tokens: None,
+            cost: None,
         };
         let json = serde_json::to_string(&usage).unwrap();
         assert!(!json.contains("cache_read_tokens"));

@@ -1651,7 +1651,7 @@ The engine emits typed events during execution for UI, logging, and metrics inte
 
 **Pipeline lifecycle events:**
 - `PipelineStarted(name, id)` -- pipeline begins
-- `PipelineCompleted(duration, artifact_count)` -- pipeline succeeded
+- `PipelineCompleted(duration, artifact_count, total_cost?)` -- pipeline succeeded
 - `PipelineFailed(error, duration)` -- pipeline failed
 
 **Stage lifecycle events:**

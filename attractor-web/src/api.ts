@@ -47,6 +47,7 @@ export interface StageUsage {
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   reasoning_tokens?: number;
+  cost?: number;
 }
 
 export interface Usage {
@@ -71,7 +72,7 @@ export interface Outcome {
 
 export type PipelineEvent =
   | { PipelineStarted: { name: string; id: string } }
-  | { PipelineCompleted: { duration_ms: number; artifact_count: number } }
+  | { PipelineCompleted: { duration_ms: number; artifact_count: number; total_cost?: number } }
   | { PipelineFailed: { error: string; duration_ms: number } }
   | { StageStarted: { name: string; index: number; handler_type?: string } }
   | { StageCompleted: { name: string; index: number; duration_ms: number; status: string; preferred_label?: string; suggested_next_ids: string[]; usage?: StageUsage; failure_reason?: string; notes?: string; files_touched: string[] } }
@@ -92,7 +93,7 @@ export type PipelineEvent =
   | { SessionError: { stage: string; error: string } }
   | { ContextWindowWarning: { stage: string; estimated_tokens: number; context_window_size: number; usage_percent: number } }
   | { LoopDetected: { stage: string } }
-  | { TurnLimitReached: { stage: string } }
+  | { TurnLimitReached: { stage: string; max_turns: number } }
   | { CompactionStarted: { stage: string; estimated_tokens: number; context_window_size: number } }
   | { CompactionCompleted: { stage: string; original_turn_count: number; preserved_turn_count: number; summary_token_estimate: number } };
 

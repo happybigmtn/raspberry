@@ -173,8 +173,13 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
         PipelineEvent::PipelineCompleted {
             duration_ms,
             artifact_count,
+            total_cost,
         } => {
-            format!("[PIPELINE_COMPLETED] duration={duration_ms}ms artifacts={artifact_count}")
+            let mut s = format!("[PIPELINE_COMPLETED] duration={duration_ms}ms artifacts={artifact_count}");
+            if let Some(cost) = total_cost {
+                s.push_str(&format!(" total_cost={}", format_cost(*cost)));
+            }
+            s
         }
         PipelineEvent::PipelineFailed { error, duration_ms } => {
             format!("[PIPELINE_FAILED] error=\"{error}\" duration={duration_ms}ms")
@@ -347,7 +352,7 @@ pub fn format_event_summary(event: &PipelineEvent, styles: &Styles) -> String {
                 format!("[CONTEXT_WINDOW_WARNING] stage={stage} usage={usage_percent}%")
             }
             AgentEvent::LoopDetected => format!("[LOOP_DETECTED] stage={stage}"),
-            AgentEvent::TurnLimitReached => format!("[TURN_LIMIT_REACHED] stage={stage}"),
+            AgentEvent::TurnLimitReached { max_turns } => format!("[TURN_LIMIT_REACHED] stage={stage} max_turns={max_turns}"),
             AgentEvent::CompactionStarted { estimated_tokens, context_window_size } => {
                 format!("[COMPACTION_STARTED] stage={stage} estimated_tokens={estimated_tokens} context_window={context_window_size}")
             }
@@ -398,8 +403,13 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
         PipelineEvent::PipelineCompleted {
             duration_ms,
             artifact_count,
+            total_cost,
         } => {
-            format!("{d}── PIPELINE_COMPLETED ───────────────────────{r}\n  {d}duration_ms:{r}    {duration_ms}\n  {d}artifact_count:{r} {artifact_count}\n")
+            let mut s = format!("{d}── PIPELINE_COMPLETED ───────────────────────{r}\n  {d}duration_ms:{r}    {duration_ms}\n  {d}artifact_count:{r} {artifact_count}\n");
+            if let Some(cost) = total_cost {
+                s.push_str(&format!("  {d}total_cost:{r}     {}\n", format_cost(*cost)));
+            }
+            s
         }
         PipelineEvent::PipelineFailed { error, duration_ms } => {
             format!("{d}── PIPELINE_FAILED ──────────────────────────{r}\n  {d}error:{r}       {error}\n  {d}duration_ms:{r} {duration_ms}\n")
@@ -597,8 +607,8 @@ pub fn format_event_detail(event: &PipelineEvent, styles: &Styles) -> String {
             AgentEvent::LoopDetected => {
                 format!("{d}── LOOP_DETECTED ────────────────────────────{r}\n  {d}stage:{r} {stage}\n")
             }
-            AgentEvent::TurnLimitReached => {
-                format!("{d}── TURN_LIMIT_REACHED ───────────────────────{r}\n  {d}stage:{r} {stage}\n")
+            AgentEvent::TurnLimitReached { max_turns } => {
+                format!("{d}── TURN_LIMIT_REACHED ───────────────────────{r}\n  {d}stage:{r}     {stage}\n  {d}max_turns:{r} {max_turns}\n")
             }
             AgentEvent::CompactionStarted { estimated_tokens, context_window_size } => {
                 format!("{d}── COMPACTION_STARTED ───────────────────────{r}\n  {d}stage:{r}               {stage}\n  {d}estimated_tokens:{r}    {estimated_tokens}\n  {d}context_window_size:{r} {context_window_size}\n")
