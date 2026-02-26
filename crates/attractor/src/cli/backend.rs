@@ -57,6 +57,60 @@ impl AgentBackend {
 
 #[async_trait]
 impl CodergenBackend for AgentBackend {
+    async fn one_shot(
+        &self,
+        node: &Node,
+        prompt: &str,
+    ) -> Result<CodergenResult, AttractorError> {
+        let client = Client::from_env()
+            .await
+            .map_err(|e| AttractorError::Handler(format!("Failed to create LLM client: {e}")))?;
+
+        let model = node.llm_model().unwrap_or(&self.model);
+        let provider = node
+            .llm_provider()
+            .or(self.provider.as_deref())
+            .map(String::from);
+
+        let request = llm::types::Request {
+            model: model.to_string(),
+            messages: vec![llm::types::Message::user(prompt)],
+            provider,
+            reasoning_effort: Some(node.reasoning_effort().to_string()),
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: None,
+            metadata: None,
+            provider_options: None,
+        };
+
+        let response = client
+            .complete(&request)
+            .await
+            .map_err(|e| AttractorError::Handler(format!("one_shot LLM call failed: {e}")))?;
+
+        let mut stage_usage = StageUsage {
+            model: model.to_string(),
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+            cache_read_tokens: response.usage.cache_read_tokens,
+            cache_write_tokens: response.usage.cache_write_tokens,
+            reasoning_tokens: response.usage.reasoning_tokens,
+            cost: None,
+        };
+        stage_usage.cost = super::compute_stage_cost(&stage_usage);
+
+        Ok(CodergenResult::Text {
+            text: response.text(),
+            usage: Some(stage_usage),
+            files_touched: Vec::new(),
+        })
+    }
+
     async fn run(
         &self,
         node: &Node,

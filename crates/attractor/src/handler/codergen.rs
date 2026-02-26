@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use crate::context::Context;
 use crate::error::AttractorError;
 use crate::event::EventEmitter;
-use crate::graph::{Graph, Node};
+use crate::graph::{CodergenMode, Graph, Node};
 use crate::outcome::{Outcome, StageUsage};
 
 use super::{EngineServices, Handler};
@@ -24,6 +24,7 @@ pub enum CodergenResult {
 /// Backend interface for LLM execution in codergen nodes.
 #[async_trait]
 pub trait CodergenBackend: Send + Sync {
+    /// Run a multi-turn agent loop (the default codergen mode).
     async fn run(
         &self,
         node: &Node,
@@ -32,6 +33,17 @@ pub trait CodergenBackend: Send + Sync {
         thread_id: Option<&str>,
         emitter: &Arc<EventEmitter>,
     ) -> Result<CodergenResult, AttractorError>;
+
+    /// Run a single LLM call with no tools (one_shot mode).
+    async fn one_shot(
+        &self,
+        _node: &Node,
+        _prompt: &str,
+    ) -> Result<CodergenResult, AttractorError> {
+        Err(AttractorError::Validation(
+            "one_shot mode not supported by this backend".into(),
+        ))
+    }
 }
 
 /// The default handler for LLM task nodes.
@@ -203,11 +215,18 @@ impl Handler for CodergenHandler {
         }
 
         // 4. Call LLM backend
+        let mode = node.codergen_mode()?;
         let thread_id = context
             .get("internal.thread_id")
             .and_then(|v| v.as_str().map(String::from));
         let (response_text, stage_usage, backend_files_touched) = if let Some(backend) = &self.backend {
-            match backend.run(node, &prompt, context, thread_id.as_deref(), &services.emitter).await {
+            let result = match mode {
+                CodergenMode::AgentLoop => {
+                    backend.run(node, &prompt, context, thread_id.as_deref(), &services.emitter).await
+                }
+                CodergenMode::OneShot => backend.one_shot(node, &prompt).await,
+            };
+            match result {
                 Ok(CodergenResult::Full(outcome)) => {
                     let status_json = serde_json::to_string_pretty(&outcome)
                         .unwrap_or_else(|_| "{}".to_string());
@@ -711,6 +730,107 @@ Some text in between.
         let mut outcome = Outcome::success();
         extract_status_fields(text, &mut outcome);
         assert_eq!(outcome.preferred_label.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn codergen_handler_one_shot_dispatches_to_backend() {
+        struct OneShotBackend;
+
+        #[async_trait]
+        impl CodergenBackend for OneShotBackend {
+            async fn run(
+                &self,
+                _node: &Node,
+                _prompt: &str,
+                _context: &Context,
+                _thread_id: Option<&str>,
+                _emitter: &Arc<EventEmitter>,
+            ) -> Result<CodergenResult, AttractorError> {
+                panic!("run() should not be called in one_shot mode");
+            }
+
+            async fn one_shot(
+                &self,
+                _node: &Node,
+                _prompt: &str,
+            ) -> Result<CodergenResult, AttractorError> {
+                Ok(CodergenResult::Text {
+                    text: "one-shot response".to_string(),
+                    usage: None,
+                    files_touched: Vec::new(),
+                })
+            }
+        }
+
+        let handler = CodergenHandler::new(Some(Box::new(OneShotBackend)));
+        let mut node = Node::new("classify");
+        node.attrs.insert(
+            "codergen_mode".to_string(),
+            AttrValue::String("one_shot".to_string()),
+        );
+        node.attrs.insert(
+            "prompt".to_string(),
+            AttrValue::String("Classify this".to_string()),
+        );
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let tmp = TempDir::new().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path(), &make_services())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, crate::outcome::StageStatus::Success);
+
+        let prompt_content =
+            std::fs::read_to_string(tmp.path().join("classify").join("prompt.md")).unwrap();
+        assert_eq!(prompt_content, "Classify this");
+
+        let response_content =
+            std::fs::read_to_string(tmp.path().join("classify").join("response.md")).unwrap();
+        assert_eq!(response_content, "one-shot response");
+    }
+
+    #[tokio::test]
+    async fn codergen_handler_one_shot_simulation_mode() {
+        let handler = CodergenHandler::new(None);
+        let mut node = Node::new("classify");
+        node.attrs.insert(
+            "codergen_mode".to_string(),
+            AttrValue::String("one_shot".to_string()),
+        );
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let tmp = TempDir::new().unwrap();
+
+        let outcome = handler
+            .execute(&node, &context, &graph, tmp.path(), &make_services())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, crate::outcome::StageStatus::Success);
+
+        let response_content =
+            std::fs::read_to_string(tmp.path().join("classify").join("response.md")).unwrap();
+        assert!(response_content.contains("[Simulated]"));
+    }
+
+    #[tokio::test]
+    async fn codergen_handler_invalid_mode_returns_error() {
+        let handler = CodergenHandler::new(None);
+        let mut node = Node::new("step");
+        node.attrs.insert(
+            "codergen_mode".to_string(),
+            AttrValue::String("bogus".to_string()),
+        );
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let tmp = TempDir::new().unwrap();
+
+        let result = handler
+            .execute(&node, &context, &graph, tmp.path(), &make_services())
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("bogus"));
     }
 
     #[tokio::test]

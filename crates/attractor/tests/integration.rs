@@ -5480,6 +5480,92 @@ mod real_llm {
             "revise should NOT be traversed with auto-approve"
         );
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_llm_one_shot_pipeline() {
+        let client = if let Some(c) = make_llm_client().await {
+            c
+        } else {
+            eprintln!("Skipping: ANTHROPIC_API_KEY not set");
+            return;
+        };
+
+        let mut graph = Graph::new("RealLLMOneShot");
+        graph.attrs.insert(
+            "goal".to_string(),
+            AttrValue::String("Classify a fruit".to_string()),
+        );
+
+        let mut start = Node::new("start");
+        start.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("Mdiamond".to_string()),
+        );
+        graph.nodes.insert("start".to_string(), start);
+
+        let mut exit = Node::new("exit");
+        exit.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("Msquare".to_string()),
+        );
+        graph.nodes.insert("exit".to_string(), exit);
+
+        let mut classify = Node::new("classify");
+        classify.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("box".to_string()),
+        );
+        classify.attrs.insert(
+            "prompt".to_string(),
+            AttrValue::String("Reply with exactly one word: is an apple a fruit or vegetable?".to_string()),
+        );
+        classify.attrs.insert(
+            "codergen_mode".to_string(),
+            AttrValue::String("one_shot".to_string()),
+        );
+        classify.attrs.insert(
+            "llm_model".to_string(),
+            AttrValue::String("claude-haiku-4-5-20251001".to_string()),
+        );
+        graph.nodes.insert("classify".to_string(), classify);
+
+        graph.edges.push(Edge::new("start", "classify"));
+        graph.edges.push(Edge::new("classify", "exit"));
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut registry = HandlerRegistry::new(Box::new(CodergenHandler::new(Some(
+            make_llm_backend(Arc::clone(&client)),
+        ))));
+        registry.register("start", Box::new(StartHandler));
+        registry.register("exit", Box::new(ExitHandler));
+        registry.register(
+            "codergen",
+            Box::new(CodergenHandler::new(Some(make_llm_backend(client)))),
+        );
+
+        let engine = PipelineEngine::new(registry, EventEmitter::new());
+        let config = RunConfig {
+            logs_root: dir.path().to_path_buf(),
+            cancel_token: None,
+            dry_run: false,
+        };
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            engine.run(&graph, &config),
+        )
+        .await
+        .expect("should not timeout")
+        .expect("one_shot pipeline should succeed");
+
+        assert_eq!(outcome.status, StageStatus::Success);
+
+        let response_path = dir.path().join("classify").join("response.md");
+        let response = std::fs::read_to_string(&response_path).unwrap();
+        assert!(!response.is_empty(), "response.md should be non-empty");
+    }
 }
 
 // ---------------------------------------------------------------------------
