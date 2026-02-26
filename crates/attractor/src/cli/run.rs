@@ -65,6 +65,10 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
 
     // 1. Parse and validate pipeline
     let source = read_dot_file(&dot_path)?;
+    let source = match task_cfg.as_ref().and_then(|c| c.vars.as_ref()) {
+        Some(vars) => task_config::expand_vars(&source, vars)?,
+        None => source,
+    };
     let (graph, diagnostics) = PipelineBuilder::new().prepare(&source)?;
 
     eprintln!(

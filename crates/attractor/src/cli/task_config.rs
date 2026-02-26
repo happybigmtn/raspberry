@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -13,6 +14,7 @@ pub struct TaskConfig {
     pub directory: Option<String>,
     pub llm: Option<LlmConfig>,
     pub setup: Option<SetupConfig>,
+    pub vars: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +68,43 @@ fn parse_task_config(contents: &str) -> anyhow::Result<TaskConfig> {
     Ok(config)
 }
 
+/// Expand `$name` placeholders in `source` using the given variable map.
+///
+/// Identifiers match `[a-zA-Z_][a-zA-Z0-9_]*`. A `$` not followed by an
+/// identifier character is left as-is. Undefined variables produce an error.
+pub fn expand_vars(source: &str, vars: &HashMap<String, String>) -> anyhow::Result<String> {
+    let mut result = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            if start < len && (bytes[start].is_ascii_alphabetic() || bytes[start] == b'_') {
+                let mut end = start + 1;
+                while end < len && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                    end += 1;
+                }
+                let name = &source[start..end];
+                match vars.get(name) {
+                    Some(value) => result.push_str(value),
+                    None => bail!("Undefined variable: ${name}"),
+                }
+                i = end;
+            } else {
+                result.push('$');
+                i = start;
+            }
+        } else {
+            result.push(source[i..].chars().next().unwrap());
+            i += source[i..].chars().next().unwrap().len_utf8();
+        }
+    }
+
+    Ok(result)
+}
+
 /// Run setup commands sequentially in the given directory.
 ///
 /// Each command gets the full `timeout_ms` budget. Commands are executed
@@ -101,6 +140,66 @@ pub async fn run_setup(setup: &SetupConfig, directory: &Path) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_toml_with_vars() {
+        let toml = r#"
+version = 1
+task = "Run tests"
+graph = "pipeline.dot"
+
+[vars]
+repo_url = "https://github.com/org/repo"
+language = "python"
+"#;
+        let config = parse_task_config(toml).unwrap();
+        let vars = config.vars.unwrap();
+        assert_eq!(vars["repo_url"], "https://github.com/org/repo");
+        assert_eq!(vars["language"], "python");
+    }
+
+    #[test]
+    fn expand_single_var() {
+        let vars = HashMap::from([("name".to_string(), "world".to_string())]);
+        assert_eq!(expand_vars("Hello $name", &vars).unwrap(), "Hello world");
+    }
+
+    #[test]
+    fn expand_multiple_vars() {
+        let vars = HashMap::from([
+            ("greeting".to_string(), "Hello".to_string()),
+            ("name".to_string(), "world".to_string()),
+        ]);
+        assert_eq!(
+            expand_vars("$greeting $name!", &vars).unwrap(),
+            "Hello world!"
+        );
+    }
+
+    #[test]
+    fn expand_undefined_var_errors() {
+        let vars = HashMap::new();
+        let err = expand_vars("Hello $missing", &vars).unwrap_err();
+        assert!(
+            err.to_string().contains("Undefined variable: $missing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_no_vars_passthrough() {
+        let vars = HashMap::new();
+        assert_eq!(
+            expand_vars("no variables here", &vars).unwrap(),
+            "no variables here"
+        );
+    }
+
+    #[test]
+    fn expand_dollar_not_followed_by_ident() {
+        let vars = HashMap::new();
+        assert_eq!(expand_vars("costs $5", &vars).unwrap(), "costs $5");
+    }
 
     #[test]
     fn parse_minimal_toml() {
