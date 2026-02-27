@@ -273,7 +273,8 @@ impl Handler for ParallelHandler {
         context.set("parallel.results", serde_json::json!(results_json));
         context.set("parallel.branch_count", serde_json::json!(total));
 
-        let node_dir = crate::engine::node_dir(logs_root, &node.id);
+        let visit = crate::engine::visit_from_context(context);
+        let node_dir = crate::engine::node_dir(logs_root, &node.id, visit);
         let _ = tokio::fs::create_dir_all(&node_dir).await;
         if let Ok(json) = serde_json::to_string_pretty(&results_json) {
             let _ = tokio::fs::write(node_dir.join("parallel_results.json"), json).await;

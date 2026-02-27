@@ -7083,3 +7083,106 @@ async fn artifact_pointers_rewritten_for_remote_execution_env() {
         written[0].1.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Node directory visit-count naming
+// ---------------------------------------------------------------------------
+
+/// Verify that revisited nodes get distinct stage directories:
+///   visit 1 → `nodes/{id}/`
+///   visit 2 → `nodes/{id}-attempt_2/`
+#[tokio::test]
+async fn node_dir_uses_visit_count_on_revisit() {
+    // Handler that fails on first call, succeeds on second.
+    struct FailOnceHandler {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for FailOnceHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &attractor::context::Context,
+            _graph: &Graph,
+            _logs_root: &Path,
+            _services: &attractor::handler::EngineServices,
+        ) -> Result<Outcome, attractor::error::AttractorError> {
+            let n = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(Outcome::fail("first attempt fails"))
+            } else {
+                Ok(Outcome::success())
+            }
+        }
+    }
+
+    // Graph: start -> gated_work -> exit
+    //   gated_work has goal_gate=true, retry_target=start
+    //   First visit fails → goal gate unsatisfied → retries from start
+    //   Second visit succeeds → pipeline completes
+    let mut graph = Graph::new("VisitCountTest");
+
+    let mut start = Node::new("start");
+    start.attrs.insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut exit = Node::new("exit");
+    exit.attrs.insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+
+    let mut gated_work = Node::new("gated_work");
+    gated_work.attrs.insert("goal_gate".to_string(), AttrValue::Boolean(true));
+    gated_work.attrs.insert("max_retries".to_string(), AttrValue::Integer(0));
+    gated_work.attrs.insert(
+        "retry_target".to_string(),
+        AttrValue::String("start".to_string()),
+    );
+    gated_work.attrs.insert(
+        "type".to_string(),
+        AttrValue::String("fail_once".to_string()),
+    );
+    graph.nodes.insert("gated_work".to_string(), gated_work);
+
+    graph.edges.push(Edge::new("start", "gated_work"));
+    graph.edges.push(Edge::new("gated_work", "exit"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register(
+        "fail_once",
+        Box::new(FailOnceHandler {
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        }),
+    );
+
+    let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+    };
+
+    let outcome = engine.run(&graph, &config).await.expect("pipeline should succeed");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    // First visit: nodes/gated_work/status.json
+    let first = dir.path().join("nodes").join("gated_work").join("status.json");
+    assert!(first.exists(), "first visit directory should exist at {}", first.display());
+
+    // Second visit: nodes/gated_work-attempt_2/status.json
+    let second = dir.path().join("nodes").join("gated_work-attempt_2").join("status.json");
+    assert!(second.exists(), "second visit directory should exist at {}", second.display());
+
+    // Verify distinct content (first = fail, second = success)
+    let first_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&first).unwrap()
+    ).unwrap();
+    let second_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&second).unwrap()
+    ).unwrap();
+    assert_eq!(first_json["status"], "fail");
+    assert_eq!(second_json["status"], "success");
+}

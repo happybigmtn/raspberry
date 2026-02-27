@@ -259,14 +259,29 @@ fn write_manifest(logs_root: &Path, graph: &Graph) {
     }
 }
 
-/// Return the directory for a node's logs: `{logs_root}/nodes/{node_id}`.
-pub fn node_dir(logs_root: &Path, node_id: &str) -> PathBuf {
-    logs_root.join("nodes").join(node_id)
+/// Return the directory for a node's logs.
+///
+/// First visit (`visit <= 1`): `{logs_root}/nodes/{node_id}`
+/// Subsequent visits: `{logs_root}/nodes/{node_id}-attempt_{visit}`
+pub fn node_dir(logs_root: &Path, node_id: &str, visit: usize) -> PathBuf {
+    if visit <= 1 {
+        logs_root.join("nodes").join(node_id)
+    } else {
+        logs_root.join("nodes").join(format!("{node_id}-attempt_{visit}"))
+    }
+}
+
+/// Read the visit count from context, defaulting to 1 if not set.
+pub fn visit_from_context(context: &Context) -> usize {
+    context
+        .get("internal.node_visit_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as usize
 }
 
 /// Write status.json for a completed node into {`logs_root}/nodes/{node_id}/status.json`.
-fn write_node_status(logs_root: &Path, node_id: &str, outcome: &Outcome) {
-    let node_dir = node_dir(logs_root, node_id);
+fn write_node_status(logs_root: &Path, node_id: &str, visit: usize, outcome: &Outcome) {
+    let node_dir = node_dir(logs_root, node_id, visit);
     let _ = std::fs::create_dir_all(&node_dir);
     let status = serde_json::json!({
         "status": outcome.status.to_string(),
@@ -523,6 +538,7 @@ impl PipelineEngine {
 
     /// Execute a node handler with retry policy.
     /// Returns `(outcome, attempts_used)` where `attempts_used` is the 1-indexed count.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_with_retry(
         &self,
         node: &Node,
@@ -531,6 +547,7 @@ impl PipelineEngine {
         logs_root: &Path,
         policy: &RetryPolicy,
         stage_index: usize,
+        visit: usize,
     ) -> Result<(Outcome, u32)> {
         let handler = self.services.registry.resolve(node);
 
@@ -565,7 +582,7 @@ impl PipelineEngine {
                         } else {
                             "handler panicked".to_string()
                         };
-                        let panic_dir = node_dir(&logs_root, &node.id);
+                        let panic_dir = node_dir(logs_root, &node.id, visit);
                         let _ = std::fs::create_dir_all(&panic_dir);
                         let _ = std::fs::write(panic_dir.join("panic.txt"), &msg);
                         Err(AttractorError::Handler(msg))
@@ -723,6 +740,10 @@ impl PipelineEngine {
                 context.append_log(log_entry.clone());
             }
             completed_nodes = cp.completed_nodes.clone();
+            // Rebuild visit counts from completed_nodes (which records every visit)
+            for id in &completed_nodes {
+                *node_visits.entry(id.clone()).or_insert(0) += 1;
+            }
             // Gap #5: Restore retry counters from checkpoint
             node_retries = cp.node_retries.clone();
             // P1: Restore node outcomes for goal gate checks
@@ -775,16 +796,14 @@ impl PipelineEngine {
                 AttractorError::Engine(format!("node not found: {current_node_id}"))
             })?;
 
-            // Check per-node visit limit
-            if max_node_visits > 0 {
-                let count = node_visits.entry(current_node_id.clone()).or_insert(0);
-                *count += 1;
-                if *count > max_node_visits {
-                    return Err(AttractorError::Engine(format!(
-                        "node \"{}\" exceeded max visit limit of {max_node_visits}",
-                        current_node_id
-                    )));
-                }
+            // Always track visit count (used for stage directory naming)
+            let count = node_visits.entry(current_node_id.clone()).or_insert(0);
+            *count += 1;
+            if max_node_visits > 0 && *count > max_node_visits {
+                return Err(AttractorError::Engine(format!(
+                    "node \"{}\" exceeded max visit limit of {max_node_visits}",
+                    current_node_id
+                )));
             }
 
             // Step 1: Check for terminal node
@@ -852,6 +871,8 @@ impl PipelineEngine {
             }
 
             // Step 2: Execute node handler with retry policy
+            let visit = *node_visits.get(&current_node_id).unwrap_or(&1);
+            context.set("internal.node_visit_count", serde_json::json!(visit));
             context.set("current_node", serde_json::json!(&node.id));
             let retry_policy = build_retry_policy(node, graph);
 
@@ -871,7 +892,7 @@ impl PipelineEngine {
             let stage_start = Instant::now();
 
             let (mut outcome, attempts_used) = self
-                .execute_with_retry(node, &context, graph, &config.logs_root, &retry_policy, stage_index)
+                .execute_with_retry(node, &context, graph, &config.logs_root, &retry_policy, stage_index, visit)
                 .await?;
             // Gap #5: Track retry count per node
             node_retries.insert(node.id.clone(), attempts_used);
@@ -928,7 +949,7 @@ impl PipelineEngine {
             }
 
             // Write per-node status.json (spec 5.6)
-            write_node_status(&config.logs_root, &node.id, &outcome);
+            write_node_status(&config.logs_root, &node.id, visit, &outcome);
 
             // Offload large context values to artifact store before recording
             if let Err(e) = offload_large_values(&mut outcome.context_updates, &artifact_store) {
@@ -2608,6 +2629,32 @@ mod tests {
         assert!(
             err.contains("exceeded max visit limit of 2"),
             "expected limit of 2, got: {err}"
+        );
+    }
+
+    // --- node_dir visit-count tests ---
+
+    #[test]
+    fn node_dir_first_visit() {
+        let root = Path::new("/tmp/logs");
+        assert_eq!(node_dir(root, "work", 1), root.join("nodes").join("work"));
+    }
+
+    #[test]
+    fn node_dir_second_visit() {
+        let root = Path::new("/tmp/logs");
+        assert_eq!(
+            node_dir(root, "work", 2),
+            root.join("nodes").join("work-attempt_2")
+        );
+    }
+
+    #[test]
+    fn node_dir_fifth_visit() {
+        let root = Path::new("/tmp/logs");
+        assert_eq!(
+            node_dir(root, "work", 5),
+            root.join("nodes").join("work-attempt_5")
         );
     }
 

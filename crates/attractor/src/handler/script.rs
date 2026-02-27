@@ -21,7 +21,7 @@ impl Handler for ScriptHandler {
     async fn execute(
         &self,
         node: &Node,
-        _context: &Context,
+        context: &Context,
         _graph: &Graph,
         logs_root: &Path,
         _services: &EngineServices,
@@ -49,7 +49,8 @@ impl Handler for ScriptHandler {
             )));
         }
 
-        let stage_dir = crate::engine::node_dir(logs_root, &node.id);
+        let visit = crate::engine::visit_from_context(context);
+        let stage_dir = crate::engine::node_dir(logs_root, &node.id, visit);
         tokio::fs::create_dir_all(&stage_dir).await?;
 
         let invocation = serde_json::json!({

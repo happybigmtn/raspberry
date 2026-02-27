@@ -212,7 +212,8 @@ impl Handler for CodergenHandler {
         };
 
         // 2. Write prompt to logs
-        let stage_dir = crate::engine::node_dir(logs_root, &node.id);
+        let visit = crate::engine::visit_from_context(context);
+        let stage_dir = crate::engine::node_dir(logs_root, &node.id, visit);
         tokio::fs::create_dir_all(&stage_dir).await?;
         tokio::fs::write(stage_dir.join("prompt.md"), &prompt).await?;
 
