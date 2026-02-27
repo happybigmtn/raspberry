@@ -46,10 +46,6 @@ impl MockExecutionEnvironment {
 }
 
 impl MockExecutionEnvironment {
-    pub fn set_event_callback(&mut self, cb: crate::execution_env::ExecEnvEventCallback) {
-        self.event_callback = Some(cb);
-    }
-
     fn emit(&self, event: crate::execution_env::ExecutionEnvEvent) {
         if let Some(ref cb) = self.event_callback {
             cb(event);

@@ -389,7 +389,7 @@ mod tests {
         let timing_path = logs_root.path().join("script_node").join("script_timing.json");
         let content = std::fs::read_to_string(&timing_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(json["duration_ms"].as_u64().unwrap() >= 0);
+        assert!(json["duration_ms"].is_u64());
         assert_eq!(json["exit_code"], 0);
         assert_eq!(json["timed_out"], false);
     }
@@ -442,7 +442,7 @@ mod tests {
         let timing_path = logs_root.path().join("script_node").join("script_timing.json");
         let content = std::fs::read_to_string(&timing_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(json["duration_ms"].as_u64().unwrap() >= 0);
+        assert!(json["duration_ms"].is_u64());
         assert_eq!(json["exit_code"], serde_json::Value::Null);
         assert_eq!(json["timed_out"], true);
     }
