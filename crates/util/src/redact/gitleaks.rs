@@ -1,4 +1,4 @@
-use crate::Region;
+use super::Region;
 use aho_corasick::AhoCorasick;
 use regex::Regex;
 use std::sync::{LazyLock, OnceLock};

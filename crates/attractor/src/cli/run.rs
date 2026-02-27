@@ -5,7 +5,7 @@ use std::time::Instant;
 use agent::{DockerConfig, DockerExecutionEnvironment, ExecutionEnvironment, LocalExecutionEnvironment};
 use anyhow::bail;
 use chrono::{Local, Utc};
-use terminal::Styles;
+use util::terminal::Styles;
 
 use crate::checkpoint::Checkpoint;
 use crate::engine::{PipelineEngine, RunConfig};
@@ -156,7 +156,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
             });
             // Append to progress.ndjson
             if let Ok(line) = serde_json::to_string(&envelope) {
-                let line = redact::redact_jsonl_line(&line);
+                let line = util::redact::redact_jsonl_line(&line);
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
@@ -168,7 +168,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
             }
             // Overwrite live.json
             if let Ok(pretty) = serde_json::to_string_pretty(&envelope) {
-                let pretty = redact::redact_jsonl_line(&pretty);
+                let pretty = util::redact::redact_jsonl_line(&pretty);
                 let _ = std::fs::write(&live_path, pretty);
             }
         });
@@ -526,7 +526,7 @@ mod tests {
             }
         });
         let compact = serde_json::to_string(&envelope).unwrap();
-        let redacted = redact::redact_jsonl_line(&compact);
+        let redacted = util::redact::redact_jsonl_line(&compact);
 
         assert!(!redacted.contains("AKIAYRWQG5EJLPZLBYNP"));
         assert!(redacted.contains("REDACTED"));
@@ -547,7 +547,7 @@ mod tests {
             }
         });
         let pretty = serde_json::to_string_pretty(&envelope).unwrap();
-        let redacted = redact::redact_jsonl_line(&pretty);
+        let redacted = util::redact::redact_jsonl_line(&pretty);
 
         assert!(!redacted.contains("AKIAYRWQG5EJLPZLBYNP"));
         assert!(redacted.contains("REDACTED"));

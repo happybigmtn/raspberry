@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 
 use async_trait::async_trait;
 use dialoguer::console::Term;
-use terminal::Styles;
+use util::terminal::Styles;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{Answer, AnswerValue, Interviewer, Question, QuestionType};

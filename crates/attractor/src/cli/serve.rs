@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use terminal::Styles;
+use util::terminal::Styles;
 use tokio::net::TcpListener;
 
 use crate::cli::backend::AgentBackend;

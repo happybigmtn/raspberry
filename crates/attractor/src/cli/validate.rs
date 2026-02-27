@@ -1,5 +1,5 @@
 use anyhow::bail;
-use terminal::Styles;
+use util::terminal::Styles;
 
 use crate::pipeline::PipelineBuilder;
 use crate::validation::Severity;

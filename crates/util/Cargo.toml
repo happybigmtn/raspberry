@@ -1,9 +1,9 @@
 [package]
-name = "redact"
+name = "util"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Secret detection and redaction for log output"
+description = "Shared utilities: secret redaction and terminal styling"
 
 [lib]
 doctest = false

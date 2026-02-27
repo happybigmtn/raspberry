@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use terminal::Styles;
+use util::terminal::Styles;
 
 use agent::AgentEvent;
 use crate::event::PipelineEvent;

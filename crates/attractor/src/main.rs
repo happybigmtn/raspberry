@@ -1,5 +1,5 @@
 use clap::Parser;
-use terminal::Styles;
+use util::terminal::Styles;
 
 #[tokio::main]
 async fn main() {

@@ -8,7 +8,7 @@ use llm::client::Client;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use terminal::Styles;
+use util::terminal::Styles;
 
 /// Minimal CLI for the agent agentic loop.
 #[derive(Parser)]

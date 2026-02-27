@@ -27,7 +27,7 @@ use attractor::transform::{StylesheetApplicationTransform, Transform, VariableEx
 use attractor::cli::backend::AgentBackend;
 use attractor::handler::default_registry;
 use attractor::validation::{validate, validate_or_raise, Severity};
-use terminal::Styles;
+use util::terminal::Styles;
 
 fn local_env() -> Arc<dyn agent::ExecutionEnvironment> {
     Arc::new(agent::LocalExecutionEnvironment::new(

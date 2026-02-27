@@ -58,7 +58,7 @@ fn collect_replacements(v: &Value) -> Vec<(String, String)> {
                 }
             }
             Value::String(s) => {
-                let redacted = crate::redact_string(s);
+                let redacted = super::redact_string(s);
                 if redacted != *s && seen.insert(s.clone()) {
                     repls.push((s.clone(), redacted));
                 }
@@ -91,7 +91,7 @@ pub fn redact_jsonl_line(line: &str) -> String {
 
     let parsed: Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
-        Err(_) => return crate::redact_string(line),
+        Err(_) => return super::redact_string(line),
     };
 
     let repls = collect_replacements(&parsed);

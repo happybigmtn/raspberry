@@ -9,7 +9,7 @@ use agent::{
     subagent::{SessionFactory, SubAgentManager},
 };
 use llm::client::Client;
-use terminal::Styles;
+use util::terminal::Styles;
 
 use crate::context::Context;
 use crate::error::AttractorError;
