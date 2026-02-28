@@ -17,7 +17,7 @@ function GitPullRequestIcon({ className }: { className?: string }) {
 function RunRow({ run }: { run: RunWithStatus }) {
   const colors = statusColors[run.status];
   return (
-    <Link to={`/runs/${run.id}`} className="grid items-center rounded-lg border border-white/[0.06] bg-navy-800/80 px-4 py-3 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800" style={{ gridColumn: "1 / -1", gridTemplateColumns: "subgrid" }}>
+    <Link to={`/runs/${run.id}`} className="grid items-center rounded-md border border-white/[0.06] bg-navy-800/80 px-4 py-3 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800" style={{ gridColumn: "1 / -1", gridTemplateColumns: "subgrid" }}>
       <span className="flex items-center gap-2 pr-2">
         <span className={`size-2 shrink-0 rounded-full ${colors.dot}`} />
         <span className={`text-xs font-medium ${colors.text}`}>{run.statusLabel}</span>
@@ -78,14 +78,14 @@ export default function WorkflowRuns() {
             placeholder="Search runs..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
+            className="w-full rounded-md border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
           />
         </div>
         <div className="relative">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as ColumnStatus | "all")}
-            className="appearance-none rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-3 pr-8 text-sm text-ice-100 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
+            className="appearance-none rounded-md border border-white/[0.06] bg-navy-800/80 py-2 pl-3 pr-8 text-sm text-ice-100 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
           >
             <option value="all">All statuses</option>
             {columns.map((col) => (

@@ -81,7 +81,7 @@ function PrCard({
   actions?: string[];
 }) {
   return (
-    <Link to={`/runs/${pr.id}`} className="group block rounded-lg border border-white/[0.06] bg-navy-800/80 p-4 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800 hover:shadow-lg hover:shadow-black/20">
+    <Link to={`/runs/${pr.id}`} className="group block rounded-md border border-white/[0.06] bg-navy-800/80 p-4 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800 hover:shadow-lg hover:shadow-black/20">
       <div className="mb-2 flex items-center gap-1.5">
         <Icon className={`size-3.5 shrink-0 ${iconColor}`} />
         <span className="font-mono text-xs font-medium text-teal-500">

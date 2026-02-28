@@ -112,7 +112,7 @@ function ToolRow({ tool }: { tool: ToolUse }) {
 
 function ToolBlock({ tools }: { tools: ToolUse[] }) {
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-white/[0.01] overflow-hidden">
+    <div className="rounded-md border border-white/[0.06] bg-white/[0.01] overflow-hidden">
       {tools.map((tool, i) => (
         <ToolRow key={i} tool={tool} />
       ))}
@@ -122,7 +122,7 @@ function ToolBlock({ tools }: { tools: ToolUse[] }) {
 
 function SystemBlock({ content }: { content: string }) {
   return (
-    <div className="rounded-lg border border-amber/10 bg-amber/5 overflow-hidden">
+    <div className="rounded-md border border-amber/10 bg-amber/5 overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2">
         <CommandLineIcon className="size-4 shrink-0 text-amber" />
         <span className="text-xs font-medium text-ice-300">System Prompt</span>
@@ -136,7 +136,7 @@ function SystemBlock({ content }: { content: string }) {
 
 function AssistantBlock({ content }: { content: string }) {
   return (
-    <div className="rounded-lg border border-teal-500/10 bg-teal-500/5 overflow-hidden">
+    <div className="rounded-md border border-teal-500/10 bg-teal-500/5 overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2">
         <ChatBubbleLeftIcon className="size-4 shrink-0 text-teal-500" />
         <span className="text-xs font-medium text-ice-300">Assistant</span>

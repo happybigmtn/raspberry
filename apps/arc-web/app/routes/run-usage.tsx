@@ -16,7 +16,7 @@ function formatTokens(n: number) {
 
 export default function RunUsage() {
   return (
-    <div className="rounded-lg border border-white/[0.06] overflow-hidden">
+    <div className="rounded-md border border-white/[0.06] overflow-hidden">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/[0.06] bg-navy-800/60 text-left text-xs text-navy-600">

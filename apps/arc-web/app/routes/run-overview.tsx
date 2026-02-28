@@ -318,7 +318,7 @@ export default function RunOverview() {
 
       <div className="min-w-0 flex-1">
         {workflow ? (
-          <div className="rounded-lg border border-white/[0.06] bg-navy-900/40 overflow-hidden">
+          <div className="rounded-md border border-white/[0.06] bg-navy-900/40 overflow-hidden">
             <DotDiagram dot={workflow.graph} />
           </div>
         ) : (

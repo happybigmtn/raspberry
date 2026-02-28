@@ -90,7 +90,7 @@ function EllipsisIcon({ className }: { className?: string }) {
 function WorkflowCard({ workflow }: { workflow: Workflow }) {
   const Icon = workflow.icon;
   return (
-    <div className="group flex items-center gap-4 rounded-lg border border-white/[0.06] bg-navy-800/80 p-4 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800 hover:shadow-lg hover:shadow-black/20">
+    <div className="group flex items-center gap-4 rounded-md border border-white/[0.06] bg-navy-800/80 p-4 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800 hover:shadow-lg hover:shadow-black/20">
       <Link to={`/workflows/${workflow.slug}`} className="flex min-w-0 flex-1 items-center gap-4">
         <div
           className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-navy-900/60"
@@ -144,7 +144,7 @@ export default function Workflows() {
           placeholder="Search workflows..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
+          className="w-full rounded-md border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
         />
       </div>
       <div className="space-y-3">

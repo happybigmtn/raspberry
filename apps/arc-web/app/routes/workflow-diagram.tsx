@@ -148,7 +148,7 @@ export default function WorkflowDiagram() {
   }
 
   return (
-    <div className="relative rounded-lg border border-white/[0.06] bg-navy-900/40">
+    <div className="relative rounded-md border border-white/[0.06] bg-navy-900/40">
       <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
         <div className="flex items-center gap-0.5 rounded-md border border-white/[0.06] bg-navy-800/90 p-0.5">
           <button
