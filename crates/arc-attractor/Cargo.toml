@@ -12,11 +12,6 @@ readme = "README.md"
 [lib]
 doctest = false
 
-[[bin]]
-name = "arc-attractor"
-path = "src/main.rs"
-test = false
-
 [features]
 default = ["server"]
 server = ["axum", "tower", "tokio-stream"]

@@ -3,7 +3,7 @@ use crate::{
     ProviderProfile, Session, SessionConfig, ToolApprovalFn, Turn,
     subagent::{SessionFactory, SubAgentManager},
 };
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
 use arc_llm::client::Client;
 use arc_llm::provider::{ModelId, Provider};
 use std::io::{IsTerminal, Write};
@@ -11,54 +11,60 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use arc_util::terminal::Styles;
 
-/// Minimal CLI for the agent agentic loop.
-#[derive(Parser)]
-#[command(name = "arc-agent")]
-struct Cli {
+/// Public arguments for the agent command, usable from an external CLI.
+#[derive(Args)]
+pub struct AgentArgs {
     /// Task prompt
-    prompt: String,
+    pub prompt: String,
 
     /// LLM provider (anthropic, openai, gemini, kimi, zai, minimax)
     #[arg(long, default_value = "anthropic")]
-    provider: String,
+    pub provider: String,
 
     /// Model name (defaults per provider)
     #[arg(long)]
-    model: Option<String>,
+    pub model: Option<String>,
 
     /// Permission level for tool execution
     #[arg(long, default_value = "read-write", value_enum)]
-    permissions: PermissionLevel,
+    pub permissions: PermissionLevel,
 
     /// Skip interactive prompts; deny tools outside permission level
     #[arg(long)]
-    auto_approve: bool,
+    pub auto_approve: bool,
 
     /// Print LLM request/response debug info to stderr
     #[arg(long)]
-    debug: bool,
+    pub debug: bool,
 
     /// Print full LLM request/response JSON to stderr
     #[arg(long)]
-    verbose: bool,
+    pub verbose: bool,
 
     /// Directory containing skill files (overrides default discovery)
     #[arg(long)]
-    skills_dir: Option<String>,
+    pub skills_dir: Option<String>,
 
     /// Output format (text for human-readable, json for NDJSON event stream)
     #[arg(long, default_value = "text", value_enum)]
-    output_format: OutputFormat,
+    pub output_format: OutputFormat,
+}
+
+#[derive(Parser)]
+#[command(name = "arc-agent")]
+struct Cli {
+    #[command(flatten)]
+    args: AgentArgs,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum OutputFormat {
+pub enum OutputFormat {
     Text,
     Json,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum PermissionLevel {
+pub enum PermissionLevel {
     ReadOnly,
     ReadWrite,
     Full,
@@ -330,15 +336,12 @@ impl arc_llm::middleware::Middleware for VerboseMiddleware {
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let _ = dotenvy::dotenv();
-    let cli = Cli::parse();
-
+pub async fn run_with_args(args: AgentArgs) -> anyhow::Result<()> {
     // Resolve color support once, leak to get 'static lifetime for use across threads
     let styles: &'static Styles = Box::leak(Box::new(Styles::detect_stderr()));
 
     // Parse provider string to enum early for compile-time safety
-    let provider: Provider = cli.provider.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+    let provider: Provider = args.provider.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
 
     // Validate provider API key
     if !validate_api_key(provider) {
@@ -350,14 +353,14 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create LLM client: {e}"))?;
 
-    if cli.verbose {
+    if args.verbose {
         client.add_middleware(Arc::new(VerboseMiddleware { styles }));
-    } else if cli.debug {
+    } else if args.debug {
         client.add_middleware(Arc::new(DebugMiddleware { styles }));
     }
 
     // Resolve model and build profile
-    let model = cli
+    let model = args
         .model
         .as_deref()
         .unwrap_or_else(|| default_model(provider));
@@ -373,12 +376,12 @@ pub async fn run() -> anyhow::Result<()> {
     let env: Arc<dyn crate::ExecutionEnvironment> = Arc::new(LocalExecutionEnvironment::new(cwd));
 
     // Build tool approval callback
-    let is_interactive = std::io::stdin().is_terminal() && !cli.auto_approve;
-    let tool_approval = build_tool_approval(cli.permissions, is_interactive, styles);
+    let is_interactive = std::io::stdin().is_terminal() && !args.auto_approve;
+    let tool_approval = build_tool_approval(args.permissions, is_interactive, styles);
 
     let config = SessionConfig {
         tool_approval: Some(tool_approval),
-        skill_dirs: cli.skills_dir.map(|d| vec![d]),
+        skill_dirs: args.skills_dir.map(|d| vec![d]),
         ..SessionConfig::default()
     };
 
@@ -432,8 +435,8 @@ pub async fn run() -> anyhow::Result<()> {
     });
 
     // Subscribe to events
-    let verbose = cli.verbose;
-    let output_format = cli.output_format;
+    let verbose = args.verbose;
+    let output_format = args.output_format;
     let mut rx = session.subscribe();
     tokio::spawn(async move {
         match output_format {
@@ -524,7 +527,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Initialize and run
     session.initialize().await;
-    let result = session.process_input(&cli.prompt).await;
+    let result = session.process_input(&args.prompt).await;
 
     if matches!(output_format, OutputFormat::Text) {
         // Print assistant text to stdout
@@ -537,6 +540,12 @@ pub async fn run() -> anyhow::Result<()> {
     // Propagate errors for exit code
     result?;
     Ok(())
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+    let cli = Cli::parse();
+    run_with_args(cli.args).await
 }
 
 #[cfg(test)]

@@ -16,11 +16,6 @@ docker = ["bollard", "tar"]
 [lib]
 doctest = false
 
-[[bin]]
-name = "arc-agent"
-path = "src/main.rs"
-test = false
-
 [dependencies]
 clap.workspace = true
 anyhow.workspace = true

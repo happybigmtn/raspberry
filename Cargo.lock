@@ -168,6 +168,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-agent",
+ "arc-attractor",
+ "arc-llm",
+ "arc-util",
+ "assert_cmd",
+ "clap",
+ "dotenvy",
+ "httpmock",
+ "predicates",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "arc-git-storage"
 version = "0.1.0"
 dependencies = [
@@ -182,7 +201,6 @@ name = "arc-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "assert_cmd",
  "async-trait",
  "base64",
  "bytes",
@@ -190,13 +208,10 @@ dependencies = [
  "dotenvy",
  "futures",
  "http",
- "httpmock",
- "predicates",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",

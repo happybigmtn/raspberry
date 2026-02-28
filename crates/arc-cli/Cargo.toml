@@ -1,0 +1,27 @@
+[package]
+name = "arc-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Unified CLI for the Arc AI framework"
+
+[[bin]]
+name = "arc"
+path = "src/main.rs"
+
+[dependencies]
+arc-llm = { path = "../arc-llm" }
+arc-agent = { path = "../arc-agent" }
+arc-attractor = { path = "../arc-attractor", features = ["server"] }
+arc-util = { path = "../arc-util" }
+clap.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+serde_json.workspace = true
+httpmock = "0.8"

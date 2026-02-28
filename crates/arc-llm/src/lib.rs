@@ -8,6 +8,7 @@ pub mod retry;
 pub mod generate;
 pub mod catalog;
 pub mod providers;
+pub mod cli;
 
 // Re-export module-level default client helpers (Section 2.5).
 pub use generate::set_default_client;
