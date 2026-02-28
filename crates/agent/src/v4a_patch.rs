@@ -227,7 +227,7 @@ pub fn make_apply_patch_tool() -> RegisteredTool {
                 "required": ["patch"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let patch_text = args
                     .get("patch")
@@ -235,7 +235,7 @@ pub fn make_apply_patch_tool() -> RegisteredTool {
                     .ok_or_else(|| "Missing required parameter: patch".to_string())?;
 
                 let ops = parse_v4a_patch(patch_text)?;
-                apply_patch_operations(&ops, env.as_ref()).await
+                apply_patch_operations(&ops, ctx.env.as_ref()).await
             })
         }),
     }

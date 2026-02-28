@@ -9,8 +9,6 @@ use crate::profiles::EnvContext;
 use crate::project_docs::discover_project_docs;
 use crate::provider_profile::ProviderProfile;
 use crate::skills::{default_skill_dirs, discover_skills, expand_skill, make_use_skill_tool, Skill};
-use crate::tool_registry::ToolRegistry;
-use crate::truncation::truncate_tool_output;
 use crate::types::{AgentEvent, SessionState, Turn};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -19,7 +17,7 @@ use futures::StreamExt;
 use llm::client::Client;
 use llm::error::{ProviderErrorKind, SdkError};
 use llm::generate::StreamAccumulator;
-use llm::types::{Message, Request, StreamEvent, ToolChoice, ToolResult};
+use llm::types::{Message, Request, StreamEvent, ToolChoice};
 use tokio_util::sync::CancellationToken;
 
 pub struct Session {
@@ -980,7 +978,7 @@ mod tests {
                 description: "Sets abort flag".into(),
                 parameters: serde_json::json!({"type": "object"}),
             },
-            executor: Arc::new(move |_args, _env, _cancel| {
+            executor: Arc::new(move |_args, _ctx| {
                 let token = cancel_token_for_tool.clone();
                 Box::pin(async move {
                     token.cancel();
@@ -1247,7 +1245,7 @@ mod tests {
                     "required": ["text"]
                 }),
             },
-            executor: Arc::new(|_args, _env, _cancel| {
+            executor: Arc::new(|_args, _ctx| {
                 Box::pin(async move { Ok("should not reach".to_string()) })
             }),
         });
@@ -1288,7 +1286,7 @@ mod tests {
                     "required": ["text"]
                 }),
             },
-            executor: Arc::new(|_args, _env, _cancel| {
+            executor: Arc::new(|_args, _ctx| {
                 Box::pin(async move { Ok("tool executed".to_string()) })
             }),
         });
@@ -1771,7 +1769,7 @@ mod tests {
                 description: "Read a file".into(),
                 parameters: serde_json::json!({"type": "object", "properties": {"file_path": {"type": "string"}}}),
             },
-            executor: Arc::new(|_args, _env, _cancel| {
+            executor: Arc::new(|_args, _ctx| {
                 Box::pin(async move { Ok("file contents".to_string()) })
             }),
         };

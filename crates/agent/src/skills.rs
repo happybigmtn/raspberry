@@ -170,7 +170,7 @@ pub fn make_use_skill_tool(skills: Arc<Vec<Skill>>) -> RegisteredTool {
                 "required": ["skill_name"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let skills = skills.clone();
             Box::pin(async move {
                 let name = required_str(&args, "skill_name")?;
@@ -544,7 +544,8 @@ name: trimmed
         let env: Arc<dyn crate::execution_env::ExecutionEnvironment> =
             Arc::new(MockExecutionEnvironment::default());
         let args = serde_json::json!({"skill_name": "commit"});
-        let result = (tool.executor)(args, env, tokio_util::sync::CancellationToken::new()).await;
+        let ctx = crate::tool_registry::ToolContext { env, cancel: tokio_util::sync::CancellationToken::new() };
+        let result = (tool.executor)(args, ctx).await;
         assert_eq!(
             result.unwrap(),
             "Review changes and commit.\n\n{{user_input}}"
@@ -559,7 +560,8 @@ name: trimmed
         let env: Arc<dyn crate::execution_env::ExecutionEnvironment> =
             Arc::new(MockExecutionEnvironment::default());
         let args = serde_json::json!({"skill_name": "nonexistent"});
-        let result = (tool.executor)(args, env, tokio_util::sync::CancellationToken::new()).await;
+        let ctx = crate::tool_registry::ToolContext { env, cancel: tokio_util::sync::CancellationToken::new() };
+        let result = (tool.executor)(args, ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown skill"));
     }
@@ -572,7 +574,8 @@ name: trimmed
         let env: Arc<dyn crate::execution_env::ExecutionEnvironment> =
             Arc::new(MockExecutionEnvironment::default());
         let args = serde_json::json!({});
-        let result = (tool.executor)(args, env, tokio_util::sync::CancellationToken::new()).await;
+        let ctx = crate::tool_registry::ToolContext { env, cancel: tokio_util::sync::CancellationToken::new() };
+        let result = (tool.executor)(args, ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Missing required parameter"));
     }

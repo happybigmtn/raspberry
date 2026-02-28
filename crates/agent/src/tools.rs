@@ -108,12 +108,12 @@ pub fn make_write_file_tool() -> RegisteredTool {
                 "required": ["file_path", "content"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let file_path = required_str(&args, "file_path")?;
                 let content = required_str(&args, "content")?;
 
-                env.write_file(file_path, content).await?;
+                ctx.env.write_file(file_path, content).await?;
                 Ok(format!("Successfully wrote to {file_path}"))
             })
         }),
@@ -137,7 +137,7 @@ pub fn make_edit_file_tool() -> RegisteredTool {
                 "required": ["file_path", "old_string", "new_string"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let file_path = required_str(&args, "file_path")?;
                 let old_string = required_str(&args, "old_string")?;
@@ -147,7 +147,7 @@ pub fn make_edit_file_tool() -> RegisteredTool {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
-                let numbered_content = env.read_file(file_path, None, None).await?;
+                let numbered_content = ctx.env.read_file(file_path, None, None).await?;
 
                 // Strip line numbers: each line looks like "  1 | content" or " 10 | content"
                 let raw_lines: Vec<&str> = numbered_content
@@ -175,7 +175,7 @@ pub fn make_edit_file_tool() -> RegisteredTool {
                     raw_content.replacen(old_string, new_string, 1)
                 };
 
-                env.write_file(file_path, &new_content).await?;
+                ctx.env.write_file(file_path, &new_content).await?;
                 Ok(format!("Successfully edited {file_path}"))
             })
         }),
@@ -205,7 +205,7 @@ pub fn make_shell_tool_with_config(config: &SessionConfig) -> RegisteredTool {
                 "required": ["command"]
             }),
         },
-        executor: Arc::new(move |args, env, cancel| {
+        executor: Arc::new(move |args, ctx| {
             Box::pin(async move {
                 let command = required_str(&args, "command")?;
                 let timeout_ms = args
@@ -214,8 +214,8 @@ pub fn make_shell_tool_with_config(config: &SessionConfig) -> RegisteredTool {
                     .unwrap_or(default_timeout)
                     .min(max_timeout);
 
-                let result = env
-                    .exec_command(command, timeout_ms, None, None, Some(cancel))
+                let result = ctx.env
+                    .exec_command(command, timeout_ms, None, None, Some(ctx.cancel))
                     .await?;
 
                 let mut output = String::new();
@@ -251,7 +251,7 @@ pub fn make_grep_tool() -> RegisteredTool {
                 "required": ["pattern"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let pattern = required_str(&args, "pattern")?;
                 let path = args
@@ -274,7 +274,7 @@ pub fn make_grep_tool() -> RegisteredTool {
                         .map(|v| v as usize),
                 };
 
-                let results = env.grep(pattern, path, &options).await?;
+                let results = ctx.env.grep(pattern, path, &options).await?;
                 Ok(results.join("\n"))
             })
         }),
@@ -296,14 +296,14 @@ pub fn make_glob_tool() -> RegisteredTool {
                 "required": ["pattern"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let pattern = required_str(&args, "pattern")?;
                 let path = args
                     .get("path")
                     .and_then(serde_json::Value::as_str);
 
-                let results = env.glob(pattern, path).await?;
+                let results = ctx.env.glob(pattern, path).await?;
                 Ok(results.join("\n"))
             })
         }),
@@ -328,7 +328,7 @@ pub(crate) fn make_read_many_files_tool() -> RegisteredTool {
                 "required": ["paths"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let paths = args["paths"]
                     .as_array()
@@ -339,7 +339,7 @@ pub(crate) fn make_read_many_files_tool() -> RegisteredTool {
                     let path = path_val
                         .as_str()
                         .ok_or_else(|| "each path must be a string".to_string())?;
-                    match env.read_file(path, None, None).await {
+                    match ctx.env.read_file(path, None, None).await {
                         Ok(content) => {
                             let _ = write!(output, "=== {path} ===\n{content}\n\n");
                         }
@@ -369,7 +369,7 @@ pub(crate) fn make_list_dir_tool() -> RegisteredTool {
                 "required": ["path"]
             }),
         },
-        executor: Arc::new(|args, env, _cancel| {
+        executor: Arc::new(|args, ctx| {
             Box::pin(async move {
                 let path = required_str(&args, "path")?;
                 let depth = args
@@ -377,7 +377,7 @@ pub(crate) fn make_list_dir_tool() -> RegisteredTool {
                     .and_then(serde_json::Value::as_u64)
                     .map(|v| v as usize);
 
-                let entries = env.list_directory(path, depth).await?;
+                let entries = ctx.env.list_directory(path, depth).await?;
                 let lines: Vec<String> = entries
                     .iter()
                     .map(|e| {
@@ -434,7 +434,7 @@ fn make_web_search_tool_with_api_key(api_key: Option<String>) -> RegisteredTool 
                 "required": ["query"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let client = client.clone();
             let api_key = api_key.clone();
             Box::pin(async move {
@@ -488,7 +488,7 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                 "required": ["url"]
             }),
         },
-        executor: Arc::new(move |args, env, cancel| {
+        executor: Arc::new(move |args, ctx| {
             let summarizer = summarizer.clone();
             Box::pin(async move {
                 let url = required_str(&args, "url")?;
@@ -509,8 +509,8 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                     "curl -sL --max-time {timeout_secs} -H 'User-Agent: attractor-agent/0.1' {escaped_url}"
                 );
 
-                let result = env
-                    .exec_command(&command, timeout_ms, None, None, Some(cancel))
+                let result = ctx.env
+                    .exec_command(&command, timeout_ms, None, None, Some(ctx.cancel))
                     .await?;
 
                 if result.exit_code != 0 {
@@ -566,6 +566,7 @@ mod tests {
     use super::*;
     use crate::execution_env::*;
     use crate::test_support::MockExecutionEnvironment;
+    use crate::tool_registry::ToolContext;
     use std::collections::HashMap;
     use tokio_util::sync::CancellationToken;
 
@@ -579,7 +580,7 @@ mod tests {
             apply_read_offset_limit: true,
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"file_path": "/test.txt"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"file_path": "/test.txt"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         assert_eq!(result.unwrap(), "  1 | hello\n  2 | world");
     }
 
@@ -598,8 +599,7 @@ mod tests {
         });
         let result = (tool.executor)(
             serde_json::json!({"file_path": "/test.txt", "offset": 2, "limit": 2}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap(), "  2 | line2\n  3 | line3");
@@ -612,8 +612,7 @@ mod tests {
         let env_clone: Arc<dyn ExecutionEnvironment> = env.clone();
         let result = (tool.executor)(
             serde_json::json!({"file_path": "/out.txt", "content": "hello"}),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap(), "Successfully wrote to /out.txt");
@@ -639,8 +638,7 @@ mod tests {
                 "old_string": "hello",
                 "new_string": "goodbye"
             }),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap(), "Successfully edited /f.txt");
@@ -664,8 +662,7 @@ mod tests {
                 "old_string": "missing",
                 "new_string": "replacement"
             }),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap_err(), "old_string not found in file");
@@ -686,8 +683,7 @@ mod tests {
                 "old_string": "aa",
                 "new_string": "cc"
             }),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let err = result.unwrap_err();
@@ -712,8 +708,7 @@ mod tests {
                 "new_string": "cc",
                 "replace_all": true
             }),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap(), "Successfully edited /f.txt");
@@ -735,7 +730,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"command": "echo hello"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"command": "echo hello"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let output = result.unwrap();
         assert!(output.contains("Exit code: 0"));
         assert!(output.contains("hello"));
@@ -748,8 +743,7 @@ mod tests {
         let env_clone: Arc<dyn ExecutionEnvironment> = env.clone();
         let _result = (tool.executor)(
             serde_json::json!({"command": "sleep 1", "timeout_ms": 5000}),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(*env.captured_timeout.lock().unwrap(), Some(5000));
@@ -768,7 +762,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"command": "false"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"command": "false"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let output = result.unwrap();
         assert!(output.contains("Exit code: 1"));
         assert!(output.contains("error"));
@@ -787,7 +781,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"command": "sleep 100"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"command": "sleep 100"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let output = result.unwrap();
         assert!(output.starts_with("Command timed out.\n"));
     }
@@ -799,7 +793,7 @@ mod tests {
             grep_results: vec!["src/main.rs:10:fn main()".into(), "src/lib.rs:5:pub fn".into()],
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"pattern": "fn"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"pattern": "fn"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let output = result.unwrap();
         assert!(output.contains("src/main.rs:10:fn main()"));
         assert!(output.contains("src/lib.rs:5:pub fn"));
@@ -812,7 +806,7 @@ mod tests {
             glob_results: vec!["src/main.rs".into(), "src/lib.rs".into()],
             ..Default::default()
         });
-        let result = (tool.executor)(serde_json::json!({"pattern": "src/**/*.rs"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"pattern": "src/**/*.rs"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let output = result.unwrap();
         assert!(output.contains("src/main.rs"));
         assert!(output.contains("src/lib.rs"));
@@ -822,7 +816,7 @@ mod tests {
     async fn web_search_missing_api_key_returns_error() {
         let tool = make_web_search_tool_with_api_key(None);
         let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment::default());
-        let result = (tool.executor)(serde_json::json!({"query": "test"}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({"query": "test"}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let err = result.unwrap_err();
         assert!(err.contains("BRAVE_SEARCH_API_KEY"), "error should mention BRAVE_SEARCH_API_KEY, got: {err}");
     }
@@ -831,7 +825,7 @@ mod tests {
     async fn web_search_missing_query_returns_error() {
         let tool = make_web_search_tool_with_api_key(Some("fake-key".into()));
         let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment::default());
-        let result = (tool.executor)(serde_json::json!({}), env, CancellationToken::new()).await;
+        let result = (tool.executor)(serde_json::json!({}), ToolContext { env, cancel: CancellationToken::new() }).await;
         let err = result.unwrap_err();
         assert!(err.contains("query"), "error should mention missing query, got: {err}");
     }
@@ -875,8 +869,7 @@ mod tests {
         let env_clone: Arc<dyn ExecutionEnvironment> = env.clone();
         let result = (tool.executor)(
             serde_json::json!({"url": "https://example.com"}),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         let output = result.unwrap();
@@ -894,8 +887,7 @@ mod tests {
         let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment::default());
         let result = (tool.executor)(
             serde_json::json!({"url": "ftp://example.com/file"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let err = result.unwrap_err();
@@ -909,8 +901,7 @@ mod tests {
         let env_clone: Arc<dyn ExecutionEnvironment> = env.clone();
         let _result = (tool.executor)(
             serde_json::json!({"url": "https://example.com", "timeout_ms": 15000}),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(*env.captured_timeout.lock().unwrap(), Some(15000));
@@ -925,8 +916,7 @@ mod tests {
         let env_clone: Arc<dyn ExecutionEnvironment> = env.clone();
         let _result = (tool.executor)(
             serde_json::json!({"url": "https://example.com", "timeout_ms": 120000}),
-            env_clone,
-            CancellationToken::new(),
+            ToolContext { env: env_clone, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(*env.captured_timeout.lock().unwrap(), Some(60000));
@@ -950,8 +940,7 @@ mod tests {
         });
         let result = (tool.executor)(
             serde_json::json!({"url": "https://example.com"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let output = result.unwrap();
@@ -974,8 +963,7 @@ mod tests {
         });
         let result = (tool.executor)(
             serde_json::json!({"url": "https://nonexistent.example.com"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let err = result.unwrap_err();
@@ -1009,8 +997,7 @@ mod tests {
         });
         let result = (tool.executor)(
             serde_json::json!({"url": "https://example.com", "prompt": "What is Rust?"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let output = result.unwrap();
@@ -1032,8 +1019,7 @@ mod tests {
         });
         let result = (tool.executor)(
             serde_json::json!({"url": "https://example.com", "prompt": "What is Rust?"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let output = result.unwrap();
@@ -1074,8 +1060,7 @@ mod tests {
         let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment::default());
         let result = (tool.executor)(
             serde_json::json!({"query": "rust programming language"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         let output = result.expect("web search should succeed with valid API key");

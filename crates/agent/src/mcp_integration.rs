@@ -21,7 +21,7 @@ pub fn make_mcp_tools(manager: Arc<McpConnectionManager>) -> Vec<RegisteredTool>
                     description: info.description.clone(),
                     parameters: info.input_schema.clone(),
                 },
-                executor: Arc::new(move |args, _env, _cancel| {
+                executor: Arc::new(move |args, _ctx| {
                     let mgr = Arc::clone(&mgr);
                     let name = name.clone();
                     let timeout = tool_timeout;
@@ -85,13 +85,13 @@ mod tests {
 
         use crate::execution_env::ExecutionEnvironment;
         use crate::test_support::MockExecutionEnvironment;
+        use crate::tool_registry::ToolContext;
         use tokio_util::sync::CancellationToken;
 
         let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment::default());
         let result = (tool.executor)(
             serde_json::json!({"message": "test message"}),
-            env,
-            CancellationToken::new(),
+            ToolContext { env, cancel: CancellationToken::new() },
         )
         .await;
         assert_eq!(result.unwrap(), "test message");

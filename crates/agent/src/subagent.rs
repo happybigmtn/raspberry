@@ -254,7 +254,7 @@ pub fn make_spawn_agent_tool(
                 "required": ["task"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let manager = manager.clone();
             let session_factory = session_factory.clone();
             Box::pin(async move {
@@ -300,7 +300,7 @@ pub fn make_send_input_tool(
                 "required": ["agent_id", "message"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let manager = manager.clone();
             Box::pin(async move {
                 let agent_id = required_str(&args, "agent_id")?;
@@ -333,7 +333,7 @@ pub fn make_wait_tool(
                 "required": ["agent_id"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let manager = manager.clone();
             Box::pin(async move {
                 let agent_id = required_str(&args, "agent_id")?;
@@ -368,7 +368,7 @@ pub fn make_close_agent_tool(
                 "required": ["agent_id"]
             }),
         },
-        executor: Arc::new(move |args, _env, _cancel| {
+        executor: Arc::new(move |args, _ctx| {
             let manager = manager.clone();
             Box::pin(async move {
                 let agent_id = required_str(&args, "agent_id")?;

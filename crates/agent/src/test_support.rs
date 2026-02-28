@@ -574,7 +574,7 @@ pub fn make_echo_tool() -> crate::tool_registry::RegisteredTool {
             description: "Echoes the input".into(),
             parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
         },
-        executor: Arc::new(|args, _env, _cancel| {
+        executor: Arc::new(|args, _ctx| {
             Box::pin(async move {
                 let text = args
                     .get("text")
@@ -594,7 +594,7 @@ pub fn make_error_tool() -> crate::tool_registry::RegisteredTool {
             description: "Always fails".into(),
             parameters: serde_json::json!({"type": "object"}),
         },
-        executor: Arc::new(|_args, _env, _cancel| {
+        executor: Arc::new(|_args, _ctx| {
             Box::pin(async move { Err("tool execution failed".to_string()) })
         }),
     }
