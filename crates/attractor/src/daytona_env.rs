@@ -42,6 +42,7 @@ pub struct DaytonaExecutionEnvironment {
     config: DaytonaConfig,
     client: daytona_sdk::Client,
     sandbox: tokio::sync::OnceCell<daytona_sdk::Sandbox>,
+    rg_available: tokio::sync::OnceCell<bool>,
     event_callback: Option<ExecEnvEventCallback>,
 }
 
@@ -52,6 +53,7 @@ impl DaytonaExecutionEnvironment {
             config,
             client,
             sandbox: tokio::sync::OnceCell::new(),
+            rg_available: tokio::sync::OnceCell::const_new(),
             event_callback: None,
         }
     }
@@ -584,23 +586,44 @@ impl ExecutionEnvironment for DaytonaExecutionEnvironment {
     ) -> Result<Vec<String>, String> {
         let resolved = self.resolve_path(path);
 
-        // Build rg command (same approach as Docker env)
-        let mut cmd = "rg --line-number --no-heading".to_string();
-        if options.case_insensitive {
-            cmd.push_str(" -i");
-        }
-        if let Some(ref glob_filter) = options.glob_filter {
-            cmd.push_str(&format!(" --glob '{glob_filter}'"));
-        }
-        if let Some(max) = options.max_results {
-            cmd.push_str(&format!(" --max-count {max}"));
-        }
-        cmd.push_str(&format!(" -- '{}' '{}'", pattern.replace('\'', "'\\''"), resolved));
+        // Detect ripgrep availability (cached)
+        let use_rg = *self.rg_available.get_or_init(|| async {
+            let result = self.exec_command("rg --version", 10_000, None, None, None).await;
+            matches!(result, Ok(r) if r.exit_code == 0)
+        }).await;
+
+        let cmd = if use_rg {
+            let mut cmd = "rg --line-number --no-heading".to_string();
+            if options.case_insensitive {
+                cmd.push_str(" -i");
+            }
+            if let Some(ref glob_filter) = options.glob_filter {
+                cmd.push_str(&format!(" --glob '{glob_filter}'"));
+            }
+            if let Some(max) = options.max_results {
+                cmd.push_str(&format!(" --max-count {max}"));
+            }
+            cmd.push_str(&format!(" -- '{}' '{}'", pattern.replace('\'', "'\\''"), resolved));
+            cmd
+        } else {
+            let mut cmd = "grep -rn".to_string();
+            if options.case_insensitive {
+                cmd.push_str(" -i");
+            }
+            if let Some(ref glob_filter) = options.glob_filter {
+                cmd.push_str(&format!(" --include '{glob_filter}'"));
+            }
+            if let Some(max) = options.max_results {
+                cmd.push_str(&format!(" -m {max}"));
+            }
+            cmd.push_str(&format!(" -- '{}' '{}'", pattern.replace('\'', "'\\''"), resolved));
+            cmd
+        };
 
         let result = self.exec_command(&cmd, 30_000, None, None, None).await?;
 
         if result.exit_code == 1 {
-            // rg exits 1 for no matches
+            // Both rg and grep exit 1 for no matches
             return Ok(Vec::new());
         }
         if result.exit_code != 0 {

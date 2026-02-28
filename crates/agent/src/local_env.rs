@@ -9,12 +9,13 @@ use tokio_util::sync::CancellationToken;
 pub struct LocalExecutionEnvironment {
     working_directory: PathBuf,
     event_callback: Option<ExecEnvEventCallback>,
+    rg_available: std::sync::OnceLock<bool>,
 }
 
 impl LocalExecutionEnvironment {
     #[must_use]
     pub fn new(working_directory: PathBuf) -> Self {
-        Self { working_directory, event_callback: None }
+        Self { working_directory, event_callback: None, rg_available: std::sync::OnceLock::new() }
     }
 
     pub fn set_event_callback(&mut self, cb: ExecEnvEventCallback) {
@@ -230,13 +231,15 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
         let full_path = self.resolve_path(path);
 
         // Try rg (ripgrep) first, fall back to grep
-        let use_rg = std::process::Command::new("rg")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let use_rg = *self.rg_available.get_or_init(|| {
+            std::process::Command::new("rg")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        });
 
         let output = if use_rg {
             let mut args = vec!["-n".to_string()];

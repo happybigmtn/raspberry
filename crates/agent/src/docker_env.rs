@@ -60,6 +60,7 @@ pub struct DockerExecutionEnvironment {
     container_id: tokio::sync::OnceCell<String>,
     cached_platform: std::sync::OnceLock<String>,
     cached_os_version: std::sync::OnceLock<String>,
+    rg_available: tokio::sync::OnceCell<bool>,
     event_callback: Option<ExecEnvEventCallback>,
 }
 
@@ -77,6 +78,7 @@ impl DockerExecutionEnvironment {
             container_id: tokio::sync::OnceCell::new(),
             cached_platform: std::sync::OnceLock::new(),
             cached_os_version: std::sync::OnceLock::new(),
+            rg_available: tokio::sync::OnceCell::const_new(),
             event_callback: None,
         })
     }
@@ -581,16 +583,15 @@ impl ExecutionEnvironment for DockerExecutionEnvironment {
     ) -> Result<Vec<String>, String> {
         let container_path = self.resolve_container_path(path);
 
-        // Detect ripgrep availability
-        let (_, _, rg_check) = self
-            .docker_exec(
+        // Detect ripgrep availability (cached)
+        let use_rg = *self.rg_available.get_or_init(|| async {
+            let result = self.docker_exec(
                 vec!["which".to_string(), "rg".to_string()],
                 None,
                 None,
-            )
-            .await?;
-
-        let use_rg = rg_check == 0;
+            ).await;
+            matches!(result, Ok((_, _, 0)))
+        }).await;
 
         let command = if use_rg {
             let mut args = vec!["rg".to_string(), "-n".to_string()];
