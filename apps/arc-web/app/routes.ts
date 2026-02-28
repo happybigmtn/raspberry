@@ -16,7 +16,11 @@ export default [
       route("runs", "routes/workflow-runs.tsx"),
     ]),
     route("runs", "routes/pipelines.tsx"),
-    route("runs/:id", "routes/run-detail.tsx"),
+    route("runs/:id", "routes/run-detail.tsx", [
+      index("routes/run-stages.tsx"),
+      route("files", "routes/run-files-changed.tsx"),
+      route("logs", "routes/run-logs.tsx"),
+    ]),
     route("insights", "routes/insights.tsx"),
     route("settings", "routes/settings.tsx"),
   ]),

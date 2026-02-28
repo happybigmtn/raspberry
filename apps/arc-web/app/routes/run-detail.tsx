@@ -1,5 +1,16 @@
+import { ChevronRightIcon } from "@heroicons/react/20/solid";
+import { Link, Outlet, useLocation } from "react-router";
 import { findRun, statusColors, ciConfig } from "../data/runs";
+import { workflowData } from "./workflow-detail";
 import type { Route } from "./+types/run-detail";
+
+const tabs = [
+  { name: "Stages", path: "" },
+  { name: "Files Changed", path: "/files" },
+  { name: "Logs", path: "/logs" },
+];
+
+export const handle = { hideHeader: true };
 
 export function meta({ params }: Route.MetaArgs) {
   const run = findRun(params.id);
@@ -8,6 +19,8 @@ export function meta({ params }: Route.MetaArgs) {
 
 export default function RunDetail({ params }: Route.ComponentProps) {
   const run = findRun(params.id);
+  const { pathname } = useLocation();
+  const basePath = `/runs/${params.id}`;
 
   if (!run) {
     return <p className="py-8 text-center text-sm text-navy-600">Run not found.</p>;
@@ -16,9 +29,19 @@ export default function RunDetail({ params }: Route.ComponentProps) {
   const colors = statusColors[run.status];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-ice-100">{run.title}</h2>
+    <div>
+      <nav className="mb-4 flex items-center gap-1 text-sm text-navy-600">
+        <Link to="/runs" className="text-ice-300 hover:text-white">Runs</Link>
+        <ChevronRightIcon className="size-3" />
+        <Link to={`/workflows/${run.workflow}`} className="text-ice-300 hover:text-white">
+          {workflowData[run.workflow]?.title ?? run.workflow}
+        </Link>
+        <ChevronRightIcon className="size-3" />
+        <span>{run.title}</span>
+      </nav>
+
+      <div className="mb-6">
+        <h2 className="text-xl font-semibold text-white">{run.title}</h2>
         <div className="mt-2 flex items-center gap-3 text-sm">
           <span className="flex items-center gap-1.5">
             <span className={`size-2 rounded-full ${colors.dot}`} />
@@ -28,38 +51,42 @@ export default function RunDetail({ params }: Route.ComponentProps) {
           {run.elapsed && (
             <span className={`font-mono text-xs ${run.elapsedWarning ? "text-amber" : "text-navy-600"}`}>{run.elapsed}</span>
           )}
+          {run.number != null && (
+            <span className="font-mono text-xs text-navy-600">#{run.number}</span>
+          )}
+          {run.ci && (
+            <span className={`flex items-center gap-1 font-mono text-xs ${ciConfig[run.ci].text}`}>
+              <span className={`size-1.5 rounded-full ${ciConfig[run.ci].dot}`} />
+              {ciConfig[run.ci].label}
+            </span>
+          )}
         </div>
       </div>
 
-      <div className="rounded-lg border border-white/[0.06] bg-navy-800/80 p-5 space-y-4">
-        {run.resources && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-navy-600">Resources</span>
-            <span className="font-mono text-sm text-ice-300">{run.resources}</span>
-          </div>
-        )}
-        {(run.additions != null || run.deletions != null) && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-navy-600">Changes</span>
-            <span className="font-mono text-sm">
-              {run.additions != null && <span className="text-mint">+{run.additions.toLocaleString()}</span>}
-              {run.additions != null && run.deletions != null && <span className="text-navy-600"> / </span>}
-              {run.deletions != null && <span className="text-coral">-{run.deletions.toLocaleString()}</span>}
-            </span>
-          </div>
-        )}
-        {run.number != null && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-navy-600">Pull Request</span>
-            <span className="font-mono text-sm text-ice-300">#{run.number}</span>
-          </div>
-        )}
-        {run.ci && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-navy-600">CI</span>
-            <span className={`font-mono text-sm ${ciConfig[run.ci].text}`}>{ciConfig[run.ci].label}</span>
-          </div>
-        )}
+      <div className="border-b border-white/[0.06]">
+        <nav className="-mb-px flex gap-6">
+          {tabs.map((tab) => {
+            const tabPath = `${basePath}${tab.path}`;
+            const isActive = pathname === tabPath;
+            return (
+              <Link
+                key={tab.name}
+                to={tabPath}
+                className={`border-b-2 pb-3 text-sm font-medium transition-colors ${
+                  isActive
+                    ? "border-teal-500 text-white"
+                    : "border-transparent text-navy-600 hover:border-white/10 hover:text-ice-300"
+                }`}
+              >
+                {tab.name}
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="mt-6">
+        <Outlet />
       </div>
     </div>
   );

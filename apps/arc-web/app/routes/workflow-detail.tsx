@@ -1,3 +1,4 @@
+import { ChevronRightIcon } from "@heroicons/react/20/solid";
 import { Link, Outlet, useLocation, useParams } from "react-router";
 import type { Route } from "./+types/workflow-detail";
 
@@ -257,6 +258,8 @@ const tabs = [
   { name: "Runs", path: "/runs" },
 ];
 
+export const handle = { hideHeader: true };
+
 export function meta({ params }: Route.MetaArgs) {
   const workflow = workflowData[params.name ?? ""];
   const title = workflow?.title ?? params.name;
@@ -275,6 +278,12 @@ export default function WorkflowDetail() {
 
   return (
     <div>
+      <nav className="mb-4 flex items-center gap-1 text-sm text-navy-600">
+        <Link to="/workflows" className="text-ice-300 hover:text-white">Workflows</Link>
+        <ChevronRightIcon className="size-3" />
+        <span>{workflow.title}</span>
+      </nav>
+
       <div className="mb-6 flex items-center gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">

@@ -4,6 +4,7 @@ export interface RunItem {
   id: string;
   repo: string;
   title: string;
+  workflow: string;
   number?: number;
   additions?: number;
   deletions?: number;
@@ -43,6 +44,7 @@ export const columns: {
         id: "run-1",
         repo: "api-server",
         title: "Add rate limiting to auth endpoints",
+        workflow: "implement",
         resources: "4 CPU / 8 GB",
         elapsed: "7m",
       },
@@ -50,6 +52,7 @@ export const columns: {
         id: "run-2",
         repo: "web-dashboard",
         title: "Migrate to React Router v7",
+        workflow: "implement",
         resources: "8 CPU / 16 GB",
         elapsed: "2h 15m",
       },
@@ -57,6 +60,7 @@ export const columns: {
         id: "run-3",
         repo: "cli-tools",
         title: "Fix config parsing for nested values",
+        workflow: "fix_build",
         resources: "2 CPU / 4 GB",
         elapsed: "45m",
       },
@@ -74,6 +78,7 @@ export const columns: {
         id: "run-4",
         repo: "api-server",
         title: "Update OpenAPI spec for v3",
+        workflow: "expand",
         additions: 567,
         deletions: 234,
         elapsed: "1h 12m",
@@ -82,6 +87,7 @@ export const columns: {
         id: "run-5",
         repo: "shared-types",
         title: "Add pipeline event types",
+        workflow: "implement",
         additions: 145,
         deletions: 23,
         elapsed: "28m",
@@ -100,6 +106,7 @@ export const columns: {
         id: "run-6",
         repo: "web-dashboard",
         title: "Add dark mode toggle",
+        workflow: "implement",
         number: 889,
         additions: 234,
         deletions: 67,
@@ -111,6 +118,7 @@ export const columns: {
         id: "run-7",
         repo: "infrastructure",
         title: "Terraform module for Redis cluster",
+        workflow: "implement",
         number: 156,
         additions: 412,
         deletions: 0,
@@ -133,6 +141,7 @@ export const columns: {
         id: "run-8",
         repo: "api-server",
         title: "Implement webhook retry logic",
+        workflow: "implement",
         number: 1249,
         additions: 189,
         deletions: 45,
@@ -145,6 +154,7 @@ export const columns: {
         id: "run-9",
         repo: "cli-tools",
         title: "Add --verbose flag to run command",
+        workflow: "expand",
         number: 430,
         additions: 56,
         deletions: 12,
@@ -156,6 +166,7 @@ export const columns: {
         id: "run-10",
         repo: "shared-types",
         title: "Export utility type helpers",
+        workflow: "sync_drift",
         number: 76,
         additions: 34,
         deletions: 8,
