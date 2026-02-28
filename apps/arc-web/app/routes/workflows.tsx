@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import { ChevronDownIcon, PlusIcon } from "@heroicons/react/20/solid";
-import { MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowsRightLeftIcon,
+  CodeBracketIcon,
+  MagnifyingGlassIcon,
+  RocketLaunchIcon,
+  WrenchIcon,
+} from "@heroicons/react/24/outline";
 import { Link } from "react-router";
 import type { Route } from "./+types/workflows";
 
@@ -54,13 +60,14 @@ interface Workflow {
   slug: string;
   filename: string;
   lastRun: string;
+  icon: ComponentType<{ className?: string }>;
 }
 
 const workflows: Workflow[] = [
-  { name: "Fix Build", slug: "fix_build", filename: "fix_build.dot", lastRun: "2 hours ago" },
-  { name: "Implement Feature", slug: "implement", filename: "implement.dot", lastRun: "4 days ago" },
-  { name: "Sync Drift", slug: "sync_drift", filename: "sync_drift.dot", lastRun: "1 day ago" },
-  { name: "Expand Product", slug: "expand", filename: "expand.dot", lastRun: "2 weeks ago" },
+  { name: "Fix Build", slug: "fix_build", filename: "fix_build.dot", lastRun: "2 hours ago", icon: WrenchIcon },
+  { name: "Implement Feature", slug: "implement", filename: "implement.dot", lastRun: "4 days ago", icon: CodeBracketIcon },
+  { name: "Sync Drift", slug: "sync_drift", filename: "sync_drift.dot", lastRun: "1 day ago", icon: ArrowsRightLeftIcon },
+  { name: "Expand Product", slug: "expand", filename: "expand.dot", lastRun: "2 weeks ago", icon: RocketLaunchIcon },
 ];
 
 function PlayIcon({ className }: { className?: string }) {
@@ -80,23 +87,30 @@ function EllipsisIcon({ className }: { className?: string }) {
 }
 
 function WorkflowCard({ workflow }: { workflow: Workflow }) {
+  const Icon = workflow.icon;
   return (
     <div className="group flex items-center gap-4 rounded-lg border border-white/[0.06] bg-navy-800/80 p-4 transition-all duration-200 hover:border-white/[0.12] hover:bg-navy-800 hover:shadow-lg hover:shadow-black/20">
+      <Link to={`/workflows/${workflow.slug}`} className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-white/[0.06] bg-navy-900/60 text-ice-300">
+          <Icon className="size-4" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-ice-100 group-hover:text-white">{workflow.name}</span>
+            <span className="font-mono text-xs text-navy-600">{workflow.filename}</span>
+          </div>
+          <p className="mt-1 text-xs text-navy-600">Last run {workflow.lastRun}</p>
+        </div>
+      </Link>
+
       <button
         type="button"
         title="Run workflow"
-        className="flex size-9 shrink-0 items-center justify-center rounded-md border border-mint/20 text-mint transition-colors hover:border-mint/50 hover:bg-mint/10 hover:text-white"
+        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-mint/20 text-mint transition-colors hover:border-mint/50 hover:bg-mint/10 hover:text-white"
       >
-        <PlayIcon className="size-4" />
+        <PlayIcon className="size-3.5" />
       </button>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <Link to={`/workflows/${workflow.slug}`} className="text-sm font-medium text-ice-100 hover:text-white">{workflow.name}</Link>
-          <span className="font-mono text-xs text-navy-600">{workflow.filename}</span>
-        </div>
-        <p className="mt-1 text-xs text-navy-600">Last run {workflow.lastRun}</p>
-      </div>
 
       <button
         type="button"

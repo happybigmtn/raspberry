@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { MagnifyingGlassIcon } from "@heroicons/react/24/outline";
-import { allRunsFlat, ciConfig, statusColors } from "../data/runs";
-import type { RunWithStatus } from "../data/runs";
+import { ChevronDownIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+import { allRunsFlat, ciConfig, columns, statusColors } from "../data/runs";
+import type { ColumnStatus, RunWithStatus } from "../data/runs";
 
 const runs = allRunsFlat();
 
@@ -58,24 +58,41 @@ function RunRow({ run }: { run: RunWithStatus }) {
 
 export default function WorkflowRuns() {
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<ColumnStatus | "all">("all");
   const filtered = runs.filter(
     (r) =>
-      r.title.toLowerCase().includes(query.toLowerCase()) ||
-      r.statusLabel.toLowerCase().includes(query.toLowerCase()) ||
-      (r.number != null && `#${r.number}`.includes(query)),
+      (statusFilter === "all" || r.status === statusFilter) &&
+      (r.title.toLowerCase().includes(query.toLowerCase()) ||
+        r.statusLabel.toLowerCase().includes(query.toLowerCase()) ||
+        (r.number != null && `#${r.number}`.includes(query))),
   );
 
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-navy-600" />
-        <input
-          type="text"
-          placeholder="Search runs..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="w-full rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
-        />
+      <div className="flex gap-3">
+        <div className="relative flex-1">
+          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-navy-600" />
+          <input
+            type="text"
+            placeholder="Search runs..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-9 pr-3 text-sm text-ice-100 placeholder-navy-600 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
+          />
+        </div>
+        <div className="relative">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as ColumnStatus | "all")}
+            className="appearance-none rounded-lg border border-white/[0.06] bg-navy-800/80 py-2 pl-3 pr-8 text-sm text-ice-100 outline-none transition-colors focus:border-teal-500/40 focus:ring-0"
+          >
+            <option value="all">All statuses</option>
+            {columns.map((col) => (
+              <option key={col.id} value={col.id}>{col.name}</option>
+            ))}
+          </select>
+          <ChevronDownIcon className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-navy-600" />
+        </div>
       </div>
       <div className="grid gap-2" style={{ gridTemplateColumns: "auto 5rem 1fr 8rem auto" }}>
         {filtered.map((run) => (
