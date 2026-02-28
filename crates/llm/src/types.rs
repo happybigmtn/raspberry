@@ -89,6 +89,28 @@ pub struct ToolResult {
     pub image_media_type: Option<String>,
 }
 
+impl ToolResult {
+    pub fn success(id: impl Into<String>, content: serde_json::Value) -> Self {
+        Self {
+            tool_call_id: id.into(),
+            content,
+            is_error: false,
+            image_data: None,
+            image_media_type: None,
+        }
+    }
+
+    pub fn error(id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: id.into(),
+            content: serde_json::Value::String(message.into()),
+            is_error: true,
+            image_data: None,
+            image_media_type: None,
+        }
+    }
+}
+
 // --- 3.3 ContentPart ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +122,6 @@ pub enum ContentPart {
     ToolCall(ToolCall),
     ToolResult(ToolResult),
     Thinking(ThinkingData),
-    RedactedThinking(ThinkingData),
     Other {
         kind: String,
         data: serde_json::Value,
@@ -137,11 +158,8 @@ impl Serialize for ContentPart {
                 map.serialize_entry("data", v)?;
             }
             Self::Thinking(v) => {
-                map.serialize_entry("kind", "thinking")?;
-                map.serialize_entry("data", v)?;
-            }
-            Self::RedactedThinking(v) => {
-                map.serialize_entry("kind", "redacted_thinking")?;
+                let kind = if v.redacted { "redacted_thinking" } else { "thinking" };
+                map.serialize_entry("kind", kind)?;
                 map.serialize_entry("data", v)?;
             }
             Self::Other { kind, data } => {
@@ -183,8 +201,8 @@ impl<'de> Deserialize<'de> for ContentPart {
             "thinking" => serde_json::from_value(data)
                 .map(Self::Thinking)
                 .map_err(serde::de::Error::custom),
-            "redacted_thinking" => serde_json::from_value(data)
-                .map(Self::RedactedThinking)
+            "redacted_thinking" => serde_json::from_value::<ThinkingData>(data)
+                .map(|mut td| { td.redacted = true; Self::Thinking(td) })
                 .map_err(serde::de::Error::custom),
             other => Ok(Self::Other {
                 kind: other.to_string(),
@@ -733,30 +751,10 @@ pub struct GenerateResult {
     pub output: Option<serde_json::Value>,
 }
 
-impl GenerateResult {
-    #[must_use]
-    pub fn text(&self) -> String {
-        self.response.text()
-    }
-
-    #[must_use]
-    pub fn reasoning(&self) -> Option<String> {
-        self.response.reasoning()
-    }
-
-    #[must_use]
-    pub fn tool_calls(&self) -> Vec<ToolCall> {
-        self.response.tool_calls()
-    }
-
-    #[must_use]
-    pub const fn finish_reason(&self) -> &FinishReason {
-        &self.response.finish_reason
-    }
-
-    #[must_use]
-    pub const fn usage(&self) -> &Usage {
-        &self.response.usage
+impl std::ops::Deref for GenerateResult {
+    type Target = Response;
+    fn deref(&self) -> &Response {
+        &self.response
     }
 }
 
@@ -766,35 +764,10 @@ pub struct StepResult {
     pub tool_results: Vec<ToolResult>,
 }
 
-impl StepResult {
-    #[must_use]
-    pub fn text(&self) -> String {
-        self.response.text()
-    }
-
-    #[must_use]
-    pub fn reasoning(&self) -> Option<String> {
-        self.response.reasoning()
-    }
-
-    #[must_use]
-    pub fn tool_calls(&self) -> Vec<ToolCall> {
-        self.response.tool_calls()
-    }
-
-    #[must_use]
-    pub const fn finish_reason(&self) -> &FinishReason {
-        &self.response.finish_reason
-    }
-
-    #[must_use]
-    pub const fn usage(&self) -> &Usage {
-        &self.response.usage
-    }
-
-    #[must_use]
-    pub fn warnings(&self) -> &[Warning] {
-        &self.response.warnings
+impl std::ops::Deref for StepResult {
+    type Target = Response;
+    fn deref(&self) -> &Response {
+        &self.response
     }
 }
 
@@ -1244,13 +1217,7 @@ mod tests {
             rate_limit: None,
         };
         let tool_calls = vec![ToolCall::new("call_1", "get_weather", serde_json::json!({"city": "SF"}))];
-        let tool_results = vec![ToolResult {
-            tool_call_id: "call_1".into(),
-            content: serde_json::json!("72F"),
-            is_error: false,
-            image_data: None,
-            image_media_type: None,
-        }];
+        let tool_results = vec![ToolResult::success("call_1", serde_json::json!("72F"))];
 
         let event = StreamEvent::step_finish(
             FinishReason::ToolCalls,

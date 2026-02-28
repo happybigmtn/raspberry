@@ -408,7 +408,6 @@ impl Session {
                         p,
                         llm::types::ContentPart::Other { .. }
                             | llm::types::ContentPart::Thinking(_)
-                            | llm::types::ContentPart::RedactedThinking(_)
                     )
                 })
                 .cloned()
@@ -632,13 +631,7 @@ and conversational filler.".to_string()),
         let mut results = Vec::new();
         for tc in tool_calls {
             if self.cancel_token.is_cancelled() {
-                results.push(ToolResult {
-                    tool_call_id: tc.id.clone(),
-                    content: serde_json::json!("Cancelled"),
-                    is_error: true,
-                    image_data: None,
-                    image_media_type: None,
-                });
+                results.push(ToolResult::error(tc.id.clone(), "Cancelled"));
                 continue;
             }
 
@@ -821,13 +814,7 @@ async fn execute_one_tool(
 ) -> ToolResult {
     if let Some(approval_fn) = tool_approval {
         if let Err(denial_message) = approval_fn(tool_name, arguments) {
-            return ToolResult {
-                tool_call_id: tool_call_id.to_string(),
-                content: serde_json::json!(denial_message),
-                is_error: true,
-                image_data: None,
-                image_media_type: None,
-            };
+            return ToolResult::error(tool_call_id, denial_message);
         }
     }
 
@@ -836,39 +823,15 @@ async fn execute_one_tool(
             if let Err(validation_error) =
                 validate_tool_args(&registered_tool.definition.parameters, arguments)
             {
-                return ToolResult {
-                    tool_call_id: tool_call_id.to_string(),
-                    content: serde_json::json!(validation_error),
-                    is_error: true,
-                    image_data: None,
-                    image_media_type: None,
-                };
+                return ToolResult::error(tool_call_id, validation_error);
             }
 
             match (registered_tool.executor)(arguments.clone(), env, cancel_token).await {
-                Ok(output) => ToolResult {
-                    tool_call_id: tool_call_id.to_string(),
-                    content: serde_json::json!(output),
-                    is_error: false,
-                    image_data: None,
-                    image_media_type: None,
-                },
-                Err(err) => ToolResult {
-                    tool_call_id: tool_call_id.to_string(),
-                    content: serde_json::json!(err),
-                    is_error: true,
-                    image_data: None,
-                    image_media_type: None,
-                },
+                Ok(output) => ToolResult::success(tool_call_id, serde_json::json!(output)),
+                Err(err) => ToolResult::error(tool_call_id, err),
             }
         }
-        None => ToolResult {
-            tool_call_id: tool_call_id.to_string(),
-            content: serde_json::json!(format!("Unknown tool: {tool_name}")),
-            is_error: true,
-            image_data: None,
-            image_media_type: None,
-        },
+        None => ToolResult::error(tool_call_id, format!("Unknown tool: {tool_name}")),
     }
 }
 

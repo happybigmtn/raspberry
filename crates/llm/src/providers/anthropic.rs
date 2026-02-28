@@ -13,57 +13,35 @@ use crate::types::{
 
 /// Provider adapter for the Anthropic Messages API.
 pub struct Adapter {
-    api_key: String,
-    base_url: String,
-    default_headers: std::collections::HashMap<String, String>,
-    client: reqwest::Client,
-    request_timeout: Option<std::time::Duration>,
-    stream_read_timeout: Option<std::time::Duration>,
+    pub(crate) http: super::http_api::HttpApi,
 }
 
 impl Adapter {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
-        let timeout = crate::types::AdapterTimeout::default();
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
         Self {
-            api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.to_string(),
-            default_headers: std::collections::HashMap::new(),
-            client,
-            request_timeout: timeout.request.map(std::time::Duration::from_secs_f64),
-            stream_read_timeout: timeout.stream_read.map(std::time::Duration::from_secs_f64),
+            http: super::http_api::HttpApi::new(api_key, DEFAULT_BASE_URL),
         }
     }
 
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.http.base_url = base_url.into();
         self
     }
 
     #[must_use]
-    pub fn with_default_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
-        self.default_headers = headers;
-        self
+    pub fn with_default_headers(self, headers: std::collections::HashMap<String, String>) -> Self {
+        Self { http: self.http.with_default_headers(headers) }
     }
 
     #[must_use]
-    pub fn with_timeout(mut self, timeout: crate::types::AdapterTimeout) -> Self {
-        self.client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
-        self.request_timeout = timeout.request.map(std::time::Duration::from_secs_f64);
-        self.stream_read_timeout = timeout.stream_read.map(std::time::Duration::from_secs_f64);
-        self
+    pub fn with_timeout(self, timeout: crate::types::AdapterTimeout) -> Self {
+        Self { http: self.http.with_timeout(timeout) }
     }
 
     fn messages_url(&self) -> String {
-        format!("{}/messages", self.base_url)
+        format!("{}/messages", self.http.base_url)
     }
 }
 
@@ -196,7 +174,7 @@ fn parse_content_block(block: &serde_json::Value) -> Option<ContentPart> {
                 .map(String::from),
             redacted: false,
         })),
-        "redacted_thinking" => Some(ContentPart::RedactedThinking(ThinkingData {
+        "redacted_thinking" => Some(ContentPart::Thinking(ThinkingData {
             text: block
                 .get("data")
                 .and_then(serde_json::Value::as_str)
@@ -231,6 +209,10 @@ fn content_part_to_api(part: &ContentPart) -> Option<serde_json::Value> {
                 "is_error": tr.is_error,
             }))
         }
+        ContentPart::Thinking(td) if td.redacted => Some(serde_json::json!({
+            "type": "redacted_thinking",
+            "data": td.text,
+        })),
         ContentPart::Thinking(td) => {
             let mut block = serde_json::json!({
                 "type": "thinking",
@@ -241,10 +223,6 @@ fn content_part_to_api(part: &ContentPart) -> Option<serde_json::Value> {
             }
             Some(block)
         }
-        ContentPart::RedactedThinking(td) => Some(serde_json::json!({
-            "type": "redacted_thinking",
-            "data": td.text,
-        })),
         ContentPart::Image(img) => {
             if let Some(url) = &img.url {
                 if crate::providers::common::is_file_path(url) {
@@ -918,34 +896,25 @@ enum SseResult {
 }
 
 struct SseReaderState {
-    byte_stream: futures::stream::BoxStream<'static, Result<bytes::Bytes, reqwest::Error>>,
-    buffer: String,
+    line_reader: super::common::LineReader,
     accumulator: StreamAccumulator,
     pending_events: std::collections::VecDeque<StreamEvent>,
-    done: bool,
     /// When true, `tool_use` events for the synthetic tool are converted to text events.
     json_schema_mode: bool,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
 impl SseReaderState {
     fn new(
-        byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>>
-            + Send
-            + 'static,
+        http_resp: reqwest::Response,
         rate_limit: Option<crate::types::RateLimitInfo>,
         json_schema_mode: bool,
         stream_read_timeout: Option<std::time::Duration>,
     ) -> Self {
-        use futures::StreamExt;
         Self {
-            byte_stream: byte_stream.boxed(),
-            buffer: String::new(),
+            line_reader: super::common::LineReader::new(http_resp, stream_read_timeout),
             accumulator: StreamAccumulator::new(rate_limit),
             pending_events: std::collections::VecDeque::new(),
-            done: false,
             json_schema_mode,
-            stream_read_timeout,
         }
     }
 
@@ -954,59 +923,24 @@ impl SseReaderState {
     /// SSE events are separated by double newlines. Each event has optional
     /// `event:` and `data:` lines.
     async fn next_sse_event(&mut self) -> SseResult {
-        use futures::StreamExt;
-
         loop {
-            // Try to extract a complete SSE event from the buffer.
-            if let Some(result) = self.try_parse_event() {
-                return result;
-            }
-
-            if self.done {
-                return SseResult::Done;
-            }
-
-            // Read more bytes from the stream.
-            let chunk_result = match self.stream_read_timeout {
-                Some(timeout) => tokio::time::timeout(timeout, self.byte_stream.next()).await,
-                None => Ok(self.byte_stream.next().await),
-            };
-            match chunk_result {
-                Ok(Some(Ok(chunk))) => {
-                    let text = String::from_utf8_lossy(&chunk);
-                    self.buffer.push_str(&text);
-                }
-                Ok(Some(Err(e))) => {
-                    return SseResult::Error(SdkError::Stream {
-                        message: e.to_string(),
-                    });
-                }
-                Ok(None) => {
-                    self.done = true;
-                    // Try one more time to parse any remaining data.
-                    if let Some(result) = self.try_parse_event() {
+            match self.line_reader.read_next_chunk("\n\n").await {
+                Ok(Some(event_block)) => {
+                    if let Some(result) = Self::parse_event_block(&event_block) {
                         return result;
                     }
-                    return SseResult::Done;
+                    // No data in this block (e.g. heartbeat comment); keep reading.
                 }
-                Err(_) => {
-                    return SseResult::Error(SdkError::Stream {
-                        message: "stream read timed out waiting for next event".to_string(),
-                    });
-                }
+                Ok(None) => return SseResult::Done,
+                Err(e) => return SseResult::Error(e),
             }
         }
     }
 
-    /// Attempt to parse one complete SSE event from the buffer.
+    /// Parse an SSE event block into an `SseResult`.
     ///
-    /// Returns `None` if no complete event is available yet.
-    fn try_parse_event(&mut self) -> Option<SseResult> {
-        // SSE events are terminated by a blank line (double newline).
-        let separator = self.buffer.find("\n\n")?;
-        let event_block = self.buffer[..separator].to_string();
-        self.buffer = self.buffer[separator + 2..].to_string();
-
+    /// Returns `None` for blocks with no `data:` lines (e.g. heartbeat comments).
+    fn parse_event_block(event_block: &str) -> Option<SseResult> {
         let mut event_type = String::new();
         let mut data_parts: Vec<String> = Vec::new();
 
@@ -1117,13 +1051,13 @@ fn build_api_request(
     };
 
     let url = adapter.messages_url();
-    let mut req_builder = adapter.client.post(&url);
+    let mut req_builder = adapter.http.client.post(&url);
     // Apply default_headers first so adapter-specific headers can override
-    for (key, value) in &adapter.default_headers {
+    for (key, value) in &adapter.http.default_headers {
         req_builder = req_builder.header(key, value);
     }
     req_builder = req_builder
-        .header("x-api-key", &adapter.api_key)
+        .header("x-api-key", &adapter.http.api_key)
         .header("anthropic-version", "2023-06-01");
 
     if let Some(beta_str) = build_beta_header(request.provider_options.as_ref(), auto_cache) {
@@ -1147,7 +1081,7 @@ impl ProviderAdapter for Adapter {
         let (_api_request, req_builder) = build_api_request(self, request, false);
 
         let mut req = req_builder;
-        if let Some(t) = self.request_timeout {
+        if let Some(t) = self.http.request_timeout {
             req = req.timeout(t);
         }
         let (body, headers) =
@@ -1235,12 +1169,11 @@ impl ProviderAdapter for Adapter {
         }
 
         let rate_limit = parse_rate_limit_headers(http_resp.headers());
-        let byte_stream = http_resp.bytes_stream();
         let json_schema_mode = uses_json_schema_format(request);
-        let stream_read_timeout = self.stream_read_timeout;
+        let stream_read_timeout = self.http.stream_read_timeout;
 
         let stream = futures::stream::unfold(
-            SseReaderState::new(byte_stream, rate_limit, json_schema_mode, stream_read_timeout),
+            SseReaderState::new(http_resp, rate_limit, json_schema_mode, stream_read_timeout),
             |mut state| async move {
                 loop {
                     // Drain any buffered events first.

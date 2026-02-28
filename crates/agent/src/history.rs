@@ -51,7 +51,7 @@ impl History {
                     // doesn't already contain thinking blocks (which preserve signatures).
                     let has_thinking_parts = provider_parts
                         .iter()
-                        .any(|p| matches!(p, ContentPart::Thinking(_) | ContentPart::RedactedThinking(_)));
+                        .any(|p| matches!(p, ContentPart::Thinking(_)));
                     if !has_thinking_parts {
                         if let Some(reasoning_text) = reasoning {
                             parts.push(ContentPart::Thinking(
@@ -308,13 +308,7 @@ mod tests {
     #[test]
     fn tool_results_turn_maps_to_tool_message() {
         let mut history = History::default();
-        let result = ToolResult {
-            tool_call_id: "call_1".into(),
-            content: serde_json::json!("file contents here"),
-            is_error: false,
-            image_data: None,
-            image_media_type: None,
-        };
+        let result = ToolResult::success("call_1", serde_json::json!("file contents here"));
         history.push(Turn::ToolResults {
             results: vec![result],
             timestamp: SystemTime::now(),
@@ -398,13 +392,7 @@ mod tests {
             timestamp: SystemTime::now(),
         });
         history.push(Turn::ToolResults {
-            results: vec![ToolResult {
-                tool_call_id: "c1".into(),
-                content: serde_json::json!("file1.rs\nfile2.rs"),
-                is_error: false,
-                image_data: None,
-                image_media_type: None,
-            }],
+            results: vec![ToolResult::success("c1", serde_json::json!("file1.rs\nfile2.rs"))],
             timestamp: SystemTime::now(),
         });
 

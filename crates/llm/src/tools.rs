@@ -197,23 +197,11 @@ pub async fn execute_all_tools_with_repair(
 
             async move {
                 let Some(t) = tool else {
-                    return ToolResult {
-                        tool_call_id: call_id,
-                        content: serde_json::Value::String(format!("Unknown tool: {call_name}")),
-                        is_error: true,
-                        image_data: None,
-                        image_media_type: None,
-                    };
+                    return ToolResult::error(call_id, format!("Unknown tool: {call_name}"));
                 };
 
                 let Some(handler) = &t.execute else {
-                    return ToolResult {
-                        tool_call_id: call_id,
-                        content: serde_json::Value::String(format!("Unknown tool: {call_name}")),
-                        is_error: true,
-                        image_data: None,
-                        image_media_type: None,
-                    };
+                    return ToolResult::error(call_id, format!("Unknown tool: {call_name}"));
                 };
 
                 let validated_args = match validate_tool_args(&args, &t.definition.parameters) {
@@ -223,46 +211,24 @@ pub async fn execute_all_tools_with_repair(
                             match repair_fn(call_clone, validation_error).await {
                                 Ok(repaired) => repaired,
                                 Err(repair_error) => {
-                                    return ToolResult {
-                                        tool_call_id: call_id,
-                                        content: serde_json::Value::String(format!(
-                                            "Tool call validation failed and repair failed: {repair_error}"
-                                        )),
-                                        is_error: true,
-                                        image_data: None,
-                                        image_media_type: None,
-                                    };
+                                    return ToolResult::error(
+                                        call_id,
+                                        format!("Tool call validation failed and repair failed: {repair_error}"),
+                                    );
                                 }
                             }
                         } else {
-                            return ToolResult {
-                                tool_call_id: call_id,
-                                content: serde_json::Value::String(format!(
-                                    "Tool call validation failed: {validation_error}"
-                                )),
-                                is_error: true,
-                                image_data: None,
-                                image_media_type: None,
-                            };
+                            return ToolResult::error(
+                                call_id,
+                                format!("Tool call validation failed: {validation_error}"),
+                            );
                         }
                     }
                 };
 
                 match handler(validated_args, ctx).await {
-                    Ok(result) => ToolResult {
-                        tool_call_id: call_id,
-                        content: result,
-                        is_error: false,
-                        image_data: None,
-                        image_media_type: None,
-                    },
-                    Err(err_msg) => ToolResult {
-                        tool_call_id: call_id,
-                        content: serde_json::Value::String(err_msg),
-                        is_error: true,
-                        image_data: None,
-                        image_media_type: None,
-                    },
+                    Ok(result) => ToolResult::success(call_id, result),
+                    Err(err_msg) => ToolResult::error(call_id, err_msg),
                 }
             }
         })

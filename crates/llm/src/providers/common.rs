@@ -198,6 +198,71 @@ pub async fn send_and_read_response(
     Ok((body, headers))
 }
 
+/// Shared line reader for SSE streams.
+///
+/// Buffers bytes from a `reqwest::Response` and splits them by a configurable
+/// delimiter (e.g. `"\n"` for Gemini/OpenAI-compatible, `"\n\n"` for
+/// Anthropic/OpenAI SSE event blocks).
+pub struct LineReader {
+    response: reqwest::Response,
+    buffer: String,
+    stream_read_timeout: Option<std::time::Duration>,
+}
+
+impl LineReader {
+    pub fn new(response: reqwest::Response, stream_read_timeout: Option<std::time::Duration>) -> Self {
+        Self {
+            response,
+            buffer: String::new(),
+            stream_read_timeout,
+        }
+    }
+
+    /// Read the next complete segment delimited by `delimiter`.
+    ///
+    /// Returns `Ok(Some(segment))` for each complete segment, `Ok(None)` when
+    /// the stream is exhausted, or `Err` on I/O or timeout errors.  When the
+    /// stream ends with data remaining in the buffer, the leftover is returned
+    /// as a final segment.
+    pub async fn read_next_chunk(&mut self, delimiter: &str) -> Result<Option<String>, SdkError> {
+        loop {
+            if let Some(pos) = self.buffer.find(delimiter) {
+                let segment = self.buffer[..pos].to_string();
+                self.buffer = self.buffer[pos + delimiter.len()..].to_string();
+                return Ok(Some(segment));
+            }
+
+            let chunk_result = match self.stream_read_timeout {
+                Some(timeout) => tokio::time::timeout(timeout, self.response.chunk()).await,
+                None => Ok(self.response.chunk().await),
+            };
+            match chunk_result {
+                Ok(Ok(Some(bytes))) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    self.buffer.push_str(&text);
+                }
+                Ok(Ok(None)) => {
+                    if self.buffer.is_empty() {
+                        return Ok(None);
+                    }
+                    let remaining = std::mem::take(&mut self.buffer);
+                    return Ok(Some(remaining));
+                }
+                Ok(Err(e)) => {
+                    return Err(SdkError::Stream {
+                        message: e.to_string(),
+                    });
+                }
+                Err(_) => {
+                    return Err(SdkError::Stream {
+                        message: "stream read timed out waiting for next event".to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

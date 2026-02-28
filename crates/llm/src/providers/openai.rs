@@ -16,39 +16,24 @@ use crate::types::{
 /// Per spec Section 2.7, this adapter uses the Responses API (not Chat Completions)
 /// to properly surface reasoning tokens, built-in tools, and server-side state.
 pub struct Adapter {
-    api_key: String,
-    base_url: String,
+    pub(crate) http: super::http_api::HttpApi,
     org_id: Option<String>,
     project_id: Option<String>,
-    default_headers: std::collections::HashMap<String, String>,
-    client: reqwest::Client,
-    request_timeout: Option<std::time::Duration>,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
 impl Adapter {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
-        let timeout = crate::types::AdapterTimeout::default();
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
         Self {
-            api_key: api_key.into(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            http: super::http_api::HttpApi::new(api_key, "https://api.openai.com/v1"),
             org_id: None,
             project_id: None,
-            default_headers: std::collections::HashMap::new(),
-            client,
-            request_timeout: timeout.request.map(std::time::Duration::from_secs_f64),
-            stream_read_timeout: timeout.stream_read.map(std::time::Duration::from_secs_f64),
         }
     }
 
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.http.base_url = base_url.into();
         self
     }
 
@@ -65,30 +50,23 @@ impl Adapter {
     }
 
     #[must_use]
-    pub fn with_default_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
-        self.default_headers = headers;
-        self
+    pub fn with_default_headers(self, headers: std::collections::HashMap<String, String>) -> Self {
+        Self { http: self.http.with_default_headers(headers), ..self }
     }
 
     #[must_use]
-    pub fn with_timeout(mut self, timeout: crate::types::AdapterTimeout) -> Self {
-        self.client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
-        self.request_timeout = timeout.request.map(std::time::Duration::from_secs_f64);
-        self.stream_read_timeout = timeout.stream_read.map(std::time::Duration::from_secs_f64);
-        self
+    pub fn with_timeout(self, timeout: crate::types::AdapterTimeout) -> Self {
+        Self { http: self.http.with_timeout(timeout), ..self }
     }
 
     /// Build a `reqwest::RequestBuilder` with default headers, org/project headers, and auth.
     fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
-        let mut req = self.client.post(url);
+        let mut req = self.http.client.post(url);
         // Apply default_headers first so adapter-specific headers can override
-        for (key, value) in &self.default_headers {
+        for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
-        req = req.bearer_auth(&self.api_key);
+        req = req.bearer_auth(&self.http.api_key);
         if let Some(org_id) = &self.org_id {
             req = req.header("OpenAI-Organization", org_id);
         }
@@ -479,10 +457,7 @@ fn parse_output(output: &[serde_json::Value]) -> (Vec<ContentPart>, bool) {
 
 /// Mutable state carried through SSE stream processing.
 struct SseStreamState {
-    byte_stream: std::pin::Pin<
-        Box<dyn futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
-    >,
-    buffer: String,
+    line_reader: super::common::LineReader,
     model: String,
     response_id: String,
     response_model: String,
@@ -496,59 +471,39 @@ struct SseStreamState {
     emitted_text_start: bool,
     raw_response: Option<serde_json::Value>,
     rate_limit: Option<crate::types::RateLimitInfo>,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
-/// Extract complete SSE messages from the buffer.
+/// Parse a single SSE message block into an (`event_type`, `data`) pair.
 ///
-/// Each SSE message consists of one or more lines (`event:` and `data:` prefixed)
-/// terminated by a blank line. Returns parsed (`event_type`, data) pairs.
-fn extract_sse_messages(buffer: &mut String) -> Vec<(Option<String>, String)> {
-    let mut messages = Vec::new();
+/// Each SSE message consists of one or more lines (`event:` and `data:` prefixed).
+/// Returns `None` if the block has no `data:` lines.
+fn parse_sse_message(message_block: &str) -> Option<(Option<String>, String)> {
+    let mut current_event: Option<String> = None;
+    let mut current_data = String::new();
 
-    while let Some(pos) = buffer.find("\n\n") {
-        let message_block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
-
-        let mut current_event: Option<String> = None;
-        let mut current_data = String::new();
-
-        for line in message_block.lines() {
-            if let Some(stripped) = line.strip_prefix("event: ") {
-                current_event = Some(stripped.to_string());
-            } else if let Some(stripped) = line.strip_prefix("event:") {
-                current_event = Some(stripped.trim().to_string());
-            } else if let Some(stripped) = line.strip_prefix("data: ") {
-                if !current_data.is_empty() {
-                    current_data.push('\n');
-                }
-                current_data.push_str(stripped);
-            } else if let Some(stripped) = line.strip_prefix("data:") {
-                if !current_data.is_empty() {
-                    current_data.push('\n');
-                }
-                current_data.push_str(stripped.trim());
+    for line in message_block.lines() {
+        if let Some(stripped) = line.strip_prefix("event: ") {
+            current_event = Some(stripped.to_string());
+        } else if let Some(stripped) = line.strip_prefix("event:") {
+            current_event = Some(stripped.trim().to_string());
+        } else if let Some(stripped) = line.strip_prefix("data: ") {
+            if !current_data.is_empty() {
+                current_data.push('\n');
             }
-        }
-
-        if !current_data.is_empty() {
-            messages.push((current_event, current_data));
+            current_data.push_str(stripped);
+        } else if let Some(stripped) = line.strip_prefix("data:") {
+            if !current_data.is_empty() {
+                current_data.push('\n');
+            }
+            current_data.push_str(stripped.trim());
         }
     }
 
-    messages
-}
-
-/// Dispatch SSE messages from the buffer and return the resulting `StreamEvent`s.
-fn dispatch_sse_messages(
-    state: &mut SseStreamState,
-    messages: Vec<(Option<String>, String)>,
-) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-    for (event_type, data) in messages {
-        events.extend(process_sse_event(state, event_type.as_deref(), &data));
+    if current_data.is_empty() {
+        None
+    } else {
+        Some((current_event, current_data))
     }
-    events
 }
 
 /// Process the next chunk(s) from the byte stream and return `StreamEvent`s.
@@ -556,44 +511,17 @@ async fn process_next_sse_events(
     state: &mut SseStreamState,
 ) -> Result<Vec<StreamEvent>, SdkError> {
     loop {
-        let messages = extract_sse_messages(&mut state.buffer);
-        if !messages.is_empty() {
-            let events = dispatch_sse_messages(state, messages);
-            if !events.is_empty() {
-                return Ok(events);
-            }
-            // All SSE messages were unhandled event types; continue reading.
-            continue;
-        }
-
-        let chunk_result = match state.stream_read_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, state.byte_stream.next()).await,
-            None => Ok(state.byte_stream.next().await),
-        };
-        match chunk_result {
-            Ok(Some(Ok(bytes))) => {
-                let text = String::from_utf8_lossy(&bytes);
-                state.buffer.push_str(&text);
-            }
-            Ok(Some(Err(e))) => {
-                return Err(SdkError::Stream {
-                    message: e.to_string(),
-                });
-            }
-            Ok(None) => {
-                // Stream ended. Process any remaining data in the buffer.
-                if !state.buffer.is_empty() {
-                    state.buffer.push_str("\n\n");
-                    let messages = extract_sse_messages(&mut state.buffer);
-                    return Ok(dispatch_sse_messages(state, messages));
+        match state.line_reader.read_next_chunk("\n\n").await? {
+            Some(message_block) => {
+                if let Some((event_type, data)) = parse_sse_message(&message_block) {
+                    let events = process_sse_event(state, event_type.as_deref(), &data);
+                    if !events.is_empty() {
+                        return Ok(events);
+                    }
                 }
-                return Ok(vec![]);
+                // No data or unhandled event type; keep reading.
             }
-            Err(_) => {
-                return Err(SdkError::Stream {
-                    message: "stream read timed out waiting for next event".to_string(),
-                });
-            }
+            None => return Ok(vec![]),
         }
     }
 }
@@ -915,10 +843,10 @@ impl ProviderAdapter for Adapter {
             crate::provider::validate_tool_choice(self, tc)?;
         }
         let request_body = build_request_body(request, false);
-        let url = format!("{}/responses", self.base_url);
+        let url = format!("{}/responses", self.http.base_url);
 
         let mut req = self.build_request(&url).json(&request_body);
-        if let Some(t) = self.request_timeout {
+        if let Some(t) = self.http.request_timeout {
             req = req.timeout(t);
         }
         let (body, headers) = send_and_read_response(req, "openai", "type").await?;
@@ -972,7 +900,7 @@ impl ProviderAdapter for Adapter {
             crate::provider::validate_tool_choice(self, tc)?;
         }
         let request_body = build_request_body(request, true);
-        let url = format!("{}/responses", self.base_url);
+        let url = format!("{}/responses", self.http.base_url);
 
         let http_resp = self
             .build_request(&url)
@@ -1002,12 +930,10 @@ impl ProviderAdapter for Adapter {
 
         let model = request.model.clone();
         let rate_limit = parse_rate_limit_headers(http_resp.headers());
-        let byte_stream = http_resp.bytes_stream();
+        let stream_read_timeout = self.http.stream_read_timeout;
 
-        let stream_read_timeout = self.stream_read_timeout;
         let state = SseStreamState {
-            byte_stream: Box::pin(byte_stream),
-            buffer: String::new(),
+            line_reader: super::common::LineReader::new(http_resp, stream_read_timeout),
             model,
             response_id: String::new(),
             response_model: String::new(),
@@ -1020,7 +946,6 @@ impl ProviderAdapter for Adapter {
             emitted_text_start: false,
             raw_response: None,
             rate_limit,
-            stream_read_timeout,
         };
 
         let stream = futures::stream::unfold(state, |mut state| async move {
@@ -1178,7 +1103,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("X-Custom".to_string(), "value".to_string());
         let adapter = Adapter::new("sk-test").with_default_headers(headers);
-        assert_eq!(adapter.default_headers.get("X-Custom").map(String::as_str), Some("value"));
+        assert_eq!(adapter.http.default_headers.get("X-Custom").map(String::as_str), Some("value"));
     }
 
     #[test]
@@ -1186,7 +1111,7 @@ mod tests {
         let adapter = Adapter::new("sk-test");
         assert!(adapter.org_id.is_none());
         assert!(adapter.project_id.is_none());
-        assert!(adapter.default_headers.is_empty());
+        assert!(adapter.http.default_headers.is_empty());
     }
 
     #[test]

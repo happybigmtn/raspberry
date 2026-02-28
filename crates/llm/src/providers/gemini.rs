@@ -15,53 +15,31 @@ const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta
 
 /// Provider adapter for the Google Gemini `generateContent` API.
 pub struct Adapter {
-    api_key: String,
-    base_url: String,
-    default_headers: std::collections::HashMap<String, String>,
-    client: reqwest::Client,
-    request_timeout: Option<std::time::Duration>,
-    stream_read_timeout: Option<std::time::Duration>,
+    pub(crate) http: super::http_api::HttpApi,
 }
 
 impl Adapter {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
-        let timeout = crate::types::AdapterTimeout::default();
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
         Self {
-            api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.to_string(),
-            default_headers: std::collections::HashMap::new(),
-            client,
-            request_timeout: timeout.request.map(std::time::Duration::from_secs_f64),
-            stream_read_timeout: timeout.stream_read.map(std::time::Duration::from_secs_f64),
+            http: super::http_api::HttpApi::new(api_key, DEFAULT_BASE_URL),
         }
     }
 
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.http.base_url = base_url.into();
         self
     }
 
     #[must_use]
-    pub fn with_default_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
-        self.default_headers = headers;
-        self
+    pub fn with_default_headers(self, headers: std::collections::HashMap<String, String>) -> Self {
+        Self { http: self.http.with_default_headers(headers) }
     }
 
     #[must_use]
-    pub fn with_timeout(mut self, timeout: crate::types::AdapterTimeout) -> Self {
-        self.client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
-        self.request_timeout = timeout.request.map(std::time::Duration::from_secs_f64);
-        self.stream_read_timeout = timeout.stream_read.map(std::time::Duration::from_secs_f64);
-        self
+    pub fn with_timeout(self, timeout: crate::types::AdapterTimeout) -> Self {
+        Self { http: self.http.with_timeout(timeout) }
     }
 }
 
@@ -652,10 +630,8 @@ fn process_sse_stream(http_resp: reqwest::Response, model: String, rate_limit: O
 
 /// Internal state for the SSE stream processor.
 struct SseStreamState {
-    http_resp: reqwest::Response,
+    line_reader: super::common::LineReader,
     model: String,
-    /// Buffered SSE text not yet split into complete lines.
-    line_buffer: String,
     /// Events extracted from a chunk but not yet yielded.
     pending_events: std::collections::VecDeque<StreamEvent>,
     /// Whether we have emitted a `StreamStart` event.
@@ -680,15 +656,13 @@ struct SseStreamState {
     finished: bool,
     /// Rate limit info parsed from HTTP response headers.
     rate_limit: Option<crate::types::RateLimitInfo>,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
 impl SseStreamState {
     fn new(http_resp: reqwest::Response, model: String, rate_limit: Option<crate::types::RateLimitInfo>, stream_read_timeout: Option<std::time::Duration>) -> Self {
         Self {
-            http_resp,
+            line_reader: super::common::LineReader::new(http_resp, stream_read_timeout),
             model,
-            line_buffer: String::new(),
             pending_events: std::collections::VecDeque::new(),
             stream_started: false,
             text_started: false,
@@ -701,7 +675,6 @@ impl SseStreamState {
             finish_reason_str: None,
             finished: false,
             rate_limit,
-            stream_read_timeout,
         }
     }
 
@@ -709,50 +682,10 @@ impl SseStreamState {
     ///
     /// Returns `Ok(None)` when the stream is exhausted.
     async fn read_line(&mut self) -> Result<Option<String>, SdkError> {
-        loop {
-            // Check if we already have a complete line in the buffer.
-            if let Some(newline_pos) = self.line_buffer.find('\n') {
-                let line = self.line_buffer[..newline_pos]
-                    .trim_end_matches('\r')
-                    .to_string();
-                self.line_buffer = self.line_buffer[newline_pos + 1..].to_string();
-                return Ok(Some(line));
-            }
-
-            // Read more bytes from the HTTP response.
-            let chunk_result = match self.stream_read_timeout {
-                Some(timeout) => tokio::time::timeout(timeout, self.http_resp.chunk()).await,
-                None => Ok(self.http_resp.chunk().await),
-            };
-            match chunk_result {
-                Ok(Ok(Some(bytes))) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    self.line_buffer.push_str(&text);
-                }
-                Ok(Ok(None)) => {
-                    // Stream ended. Return any remaining buffered content.
-                    if self.line_buffer.is_empty() {
-                        return Ok(None);
-                    }
-                    let remaining = std::mem::take(&mut self.line_buffer);
-                    let line = remaining.trim_end_matches('\r').to_string();
-                    if line.is_empty() {
-                        return Ok(None);
-                    }
-                    return Ok(Some(line));
-                }
-                Ok(Err(e)) => {
-                    return Err(SdkError::Stream {
-                        message: format!("error reading Gemini stream: {e}"),
-                    });
-                }
-                Err(_) => {
-                    return Err(SdkError::Stream {
-                        message: "stream read timed out waiting for next event".to_string(),
-                    });
-                }
-            }
-        }
+        self.line_reader
+            .read_next_chunk("\n")
+            .await
+            .map(|opt| opt.map(|s| s.trim_end_matches('\r').to_string()))
     }
 
     /// Extract stream events from a parsed SSE chunk and buffer them.
@@ -915,15 +848,15 @@ impl ProviderAdapter for Adapter {
 
         let url = format!(
             "{}/models/{}:generateContent?key={}",
-            self.base_url, request.model, self.api_key
+            self.http.base_url, request.model, self.http.api_key
         );
 
-        let mut req = self.client.post(&url);
-        for (key, value) in &self.default_headers {
+        let mut req = self.http.client.post(&url);
+        for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
         let mut gemini_req = req.json(&api_body);
-        if let Some(t) = self.request_timeout {
+        if let Some(t) = self.http.request_timeout {
             gemini_req = gemini_req.timeout(t);
         }
         let (body, headers) = send_gemini_response(gemini_req).await?;
@@ -984,17 +917,17 @@ impl ProviderAdapter for Adapter {
 
         let url = format!(
             "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, request.model, self.api_key
+            self.http.base_url, request.model, self.http.api_key
         );
 
-        let mut req = self.client.post(&url);
-        for (key, value) in &self.default_headers {
+        let mut req = self.http.client.post(&url);
+        for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
         let http_resp = send_streaming_request(req.json(&api_body)).await?;
 
         let rate_limit = parse_rate_limit_headers(http_resp.headers());
-        Ok(process_sse_stream(http_resp, request.model.clone(), rate_limit, self.stream_read_timeout))
+        Ok(process_sse_stream(http_resp, request.model.clone(), rate_limit, self.http.stream_read_timeout))
     }
 }
 

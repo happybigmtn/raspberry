@@ -1145,8 +1145,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.text(), "Hi there!");
-        assert_eq!(*result.finish_reason(), FinishReason::Stop);
-        assert_eq!(result.usage().input_tokens, 10);
+        assert_eq!(result.finish_reason, FinishReason::Stop);
+        assert_eq!(result.usage.input_tokens, 10);
         assert_eq!(result.steps.len(), 1);
     }
 
@@ -2164,13 +2164,7 @@ mod tests {
             serde_json::json!({"city": "SF"}),
         )];
 
-        let tool_results = vec![crate::types::ToolResult {
-            tool_call_id: "call_1".into(),
-            content: serde_json::json!("72F"),
-            is_error: false,
-            image_data: None,
-            image_media_type: None,
-        }];
+        let tool_results = vec![crate::types::ToolResult::success("call_1", serde_json::json!("72F"))];
 
         // Processing StepFinish should not panic and should not set the final response
         acc.process(&StreamEvent::step_finish(

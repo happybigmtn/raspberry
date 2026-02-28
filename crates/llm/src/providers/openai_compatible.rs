@@ -18,31 +18,16 @@ use crate::types::{
 /// Does NOT support reasoning tokens, built-in tools, or other Responses API
 /// features. Use the primary `OpenAiAdapter` for `OpenAI`'s own API.
 pub struct Adapter {
-    api_key: String,
-    base_url: String,
+    pub(crate) http: super::http_api::HttpApi,
     provider_name: String,
-    default_headers: std::collections::HashMap<String, String>,
-    client: reqwest::Client,
-    request_timeout: Option<std::time::Duration>,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
 impl Adapter {
     #[must_use]
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        let timeout = crate::types::AdapterTimeout::default();
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
         Self {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
+            http: super::http_api::HttpApi::new(api_key, base_url),
             provider_name: "openai-compatible".to_string(),
-            default_headers: std::collections::HashMap::new(),
-            client,
-            request_timeout: timeout.request.map(std::time::Duration::from_secs_f64),
-            stream_read_timeout: timeout.stream_read.map(std::time::Duration::from_secs_f64),
         }
     }
 
@@ -53,30 +38,23 @@ impl Adapter {
     }
 
     #[must_use]
-    pub fn with_default_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
-        self.default_headers = headers;
-        self
+    pub fn with_default_headers(self, headers: std::collections::HashMap<String, String>) -> Self {
+        Self { http: self.http.with_default_headers(headers), ..self }
     }
 
     #[must_use]
-    pub fn with_timeout(mut self, timeout: crate::types::AdapterTimeout) -> Self {
-        self.client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs_f64(timeout.connect))
-            .build()
-            .unwrap_or_default();
-        self.request_timeout = timeout.request.map(std::time::Duration::from_secs_f64);
-        self.stream_read_timeout = timeout.stream_read.map(std::time::Duration::from_secs_f64);
-        self
+    pub fn with_timeout(self, timeout: crate::types::AdapterTimeout) -> Self {
+        Self { http: self.http.with_timeout(timeout), ..self }
     }
 
     /// Build a `reqwest::RequestBuilder` with default headers and auth.
     fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
-        let mut req = self.client.post(url);
+        let mut req = self.http.client.post(url);
         // Apply default_headers first so adapter-specific headers can override
-        for (key, value) in &self.default_headers {
+        for (key, value) in &self.http.default_headers {
             req = req.header(key, value);
         }
-        req.bearer_auth(&self.api_key)
+        req.bearer_auth(&self.http.api_key)
     }
 }
 
@@ -410,10 +388,10 @@ impl ProviderAdapter for Adapter {
             crate::provider::validate_tool_choice(self, tc)?;
         }
         let api_body = build_api_request(request, None, &self.provider_name);
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.http.base_url);
 
         let mut req = self.build_request(&url).json(&api_body);
-        if let Some(t) = self.request_timeout {
+        if let Some(t) = self.http.request_timeout {
             req = req.timeout(t);
         }
         let (body, headers) = send_and_read_response(req, &self.provider_name, "type").await?;
@@ -482,7 +460,7 @@ impl ProviderAdapter for Adapter {
             crate::provider::validate_tool_choice(self, tc)?;
         }
         let api_body = build_api_request(request, Some(true), &self.provider_name);
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.http.base_url);
 
         let http_resp = self
             .build_request(&url)
@@ -516,7 +494,7 @@ impl ProviderAdapter for Adapter {
         let provider_name = self.provider_name.clone();
         let model = request.model.clone();
         let rate_limit = parse_rate_limit_headers(http_resp.headers());
-        let stream_read_timeout = self.stream_read_timeout;
+        let stream_read_timeout = self.http.stream_read_timeout;
 
         let stream = futures::stream::unfold(
             StreamState::new(http_resp, provider_name, model, rate_limit, stream_read_timeout),
@@ -601,8 +579,7 @@ struct FlattenState {
 
 /// Accumulated state while processing the SSE stream.
 struct StreamState {
-    response: reqwest::Response,
-    buffer: String,
+    line_reader: super::common::LineReader,
     provider_name: String,
     model: String,
     response_id: String,
@@ -614,7 +591,6 @@ struct StreamState {
     text_started: bool,
     done: bool,
     rate_limit: Option<crate::types::RateLimitInfo>,
-    stream_read_timeout: Option<std::time::Duration>,
 }
 
 impl StreamState {
@@ -626,8 +602,7 @@ impl StreamState {
         stream_read_timeout: Option<std::time::Duration>,
     ) -> Self {
         Self {
-            response,
-            buffer: String::new(),
+            line_reader: super::common::LineReader::new(response, stream_read_timeout),
             provider_name,
             model,
             response_id: String::new(),
@@ -639,7 +614,6 @@ impl StreamState {
             text_started: false,
             done: false,
             rate_limit,
-            stream_read_timeout,
         }
     }
 
@@ -648,41 +622,11 @@ impl StreamState {
         if self.done {
             return Ok(None);
         }
-
-        loop {
-            if let Some(newline_pos) = self.buffer.find('\n') {
-                let line = self.buffer[..newline_pos].to_string();
-                self.buffer = self.buffer[newline_pos + 1..].to_string();
-                return Ok(Some(line));
-            }
-
-            let chunk_result = match self.stream_read_timeout {
-                Some(timeout) => tokio::time::timeout(timeout, self.response.chunk()).await,
-                None => Ok(self.response.chunk().await),
-            };
-            match chunk_result {
-                Ok(Ok(Some(bytes))) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    self.buffer.push_str(&text);
-                }
-                Ok(Ok(None)) => {
-                    self.done = true;
-                    if self.buffer.is_empty() {
-                        return Ok(None);
-                    }
-                    let remaining = std::mem::take(&mut self.buffer);
-                    return Ok(Some(remaining));
-                }
-                Ok(Err(e)) => {
-                    return Err(SdkError::Stream {
-                        message: e.to_string(),
-                    });
-                }
-                Err(_) => {
-                    return Err(SdkError::Stream {
-                        message: "stream read timed out waiting for next event".to_string(),
-                    });
-                }
+        match self.line_reader.read_next_chunk("\n").await? {
+            Some(line) => Ok(Some(line)),
+            None => {
+                self.done = true;
+                Ok(None)
             }
         }
     }

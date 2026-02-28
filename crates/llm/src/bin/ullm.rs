@@ -222,14 +222,14 @@ async fn run_prompt(args: PromptArgs) -> Result<()> {
             let object = result.output.as_ref().unwrap_or(&serde_json::Value::Null);
             println!("{}", serde_json::to_string_pretty(object)?);
             if args.usage {
-                print_usage(result.usage());
+                print_usage(&result.usage);
             }
         }
         (true, None) => {
             let result = generate::generate(params).await?;
             print!("{}", result.text());
             if args.usage {
-                print_usage(result.usage());
+                print_usage(&result.usage);
             }
         }
         (false, Some(schema)) => {
