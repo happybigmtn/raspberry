@@ -19,6 +19,8 @@ export default [
     route("runs/:id", "routes/run-detail.tsx", [
       index("routes/run-overview.tsx"),
       route("stages/:stageId", "routes/run-stages.tsx"),
+      route("configuration", "routes/run-configuration.tsx"),
+      route("graph", "routes/run-graph.tsx"),
       route("files", "routes/run-files-changed.tsx"),
       route("usage", "routes/run-usage.tsx"),
     ]),

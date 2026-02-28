@@ -192,7 +192,7 @@ export default function RunStages() {
             <ul className="mt-2 space-y-0.5">
               <li>
                 <Link
-                  to={`/workflows/${run?.workflow}`}
+                  to={`/runs/${id}/configuration`}
                   className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ice-300 transition-colors hover:bg-white/[0.04] hover:text-white"
                 >
                   <DocumentTextIcon className="size-4 shrink-0 text-navy-600" />
@@ -201,7 +201,7 @@ export default function RunStages() {
               </li>
               <li>
                 <Link
-                  to={`/workflows/${run?.workflow}/diagram`}
+                  to={`/runs/${id}/graph`}
                   className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ice-300 transition-colors hover:bg-white/[0.04] hover:text-white"
                 >
                   <MapIcon className="size-4 shrink-0 text-navy-600" />
