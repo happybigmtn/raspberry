@@ -187,7 +187,7 @@ async fn end_to_end_linear_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -309,7 +309,7 @@ async fn end_to_end_branching_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -418,7 +418,7 @@ async fn end_to_end_human_gate_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -521,7 +521,7 @@ async fn goal_gate_routes_to_retry_target_on_failure() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -633,7 +633,7 @@ async fn goal_gate_routes_to_retry_target_when_present() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -945,7 +945,7 @@ async fn retry_on_failure_then_succeed() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1011,7 +1011,7 @@ async fn pipeline_with_many_nodes() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1329,7 +1329,7 @@ async fn smoke_test_with_mock_codergen_backend() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1427,7 +1427,7 @@ async fn end_to_end_parallel_fan_out_fan_in() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1534,7 +1534,7 @@ async fn resume_from_checkpoint_completes_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1626,7 +1626,7 @@ async fn resume_from_checkpoint_preserves_goal_gate_outcomes() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1660,7 +1660,7 @@ async fn graph_goal_in_context() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1690,7 +1690,7 @@ async fn event_streaming_lifecycle() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1760,7 +1760,7 @@ async fn context_flow_between_stages() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1803,7 +1803,7 @@ async fn tool_handler_e2e() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1864,7 +1864,7 @@ async fn auto_approve_interviewer_e2e() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1891,7 +1891,7 @@ async fn codergen_without_backend_simulated() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -1992,7 +1992,7 @@ async fn branching_loop_back_on_failure() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2076,7 +2076,7 @@ async fn human_gate_loops_back() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2128,7 +2128,7 @@ async fn scenario_ship_a_feature() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2208,7 +2208,7 @@ async fn scenario_parallel_expert_review() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2282,7 +2282,7 @@ async fn scenario_node_retries_on_retry_status() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2340,7 +2340,7 @@ async fn scenario_loop_restart_resets_context() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2402,7 +2402,7 @@ async fn scenario_bug_triage_router() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2452,7 +2452,7 @@ async fn scenario_crash_recovery() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2534,7 +2534,7 @@ async fn manager_loop_stop_condition_satisfied_e2e() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2584,7 +2584,7 @@ async fn manager_loop_max_cycles_exceeded_e2e() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2714,7 +2714,7 @@ async fn conditional_branching_success_fail_paths() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2762,7 +2762,7 @@ async fn edge_selection_condition_match_wins_over_weight() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2805,7 +2805,7 @@ async fn edge_selection_weight_breaks_ties() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2840,7 +2840,7 @@ async fn edge_selection_lexical_tiebreak() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2892,7 +2892,7 @@ async fn context_updates_visible_across_nodes() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2926,7 +2926,7 @@ async fn stylesheet_applies_model_override() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -2976,7 +2976,7 @@ async fn custom_handler_registration_and_execution() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3037,7 +3037,7 @@ async fn integration_smoke_plan_implement_review_done() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3526,7 +3526,7 @@ async fn sub_pipeline_e2e_through_engine() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3672,7 +3672,7 @@ async fn manager_loop_with_child_observer_e2e() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3795,7 +3795,7 @@ async fn graph_merge_e2e_through_engine() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3939,7 +3939,7 @@ async fn fidelity_default_is_compact() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -3982,7 +3982,7 @@ async fn fidelity_graph_default_applied() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4024,7 +4024,7 @@ async fn fidelity_node_overrides_graph_default() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4072,7 +4072,7 @@ async fn fidelity_edge_overrides_node_and_graph() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4110,7 +4110,7 @@ async fn fidelity_full_produces_empty_preamble() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4155,7 +4155,7 @@ async fn fidelity_truncate_preamble_minimal() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4216,7 +4216,7 @@ async fn fidelity_summary_low_mode() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4272,7 +4272,7 @@ async fn fidelity_summary_medium_mode() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4328,7 +4328,7 @@ async fn fidelity_summary_high_mode() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4377,7 +4377,7 @@ async fn fidelity_full_sets_thread_id_in_context() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4437,7 +4437,7 @@ async fn fidelity_full_nodes_share_thread_id() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4504,7 +4504,7 @@ async fn fidelity_resume_degrades_full_to_summary_high() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4587,7 +4587,7 @@ async fn fidelity_resume_degrade_only_affects_first_hop() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4657,7 +4657,7 @@ async fn fidelity_resume_no_degrade_when_not_full() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4693,7 +4693,7 @@ async fn fidelity_stored_in_checkpoint_context() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4768,7 +4768,7 @@ async fn fidelity_precedence_multi_node_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4825,7 +4825,7 @@ async fn fidelity_compact_preamble_includes_completed_stages_and_context() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -4873,7 +4873,7 @@ async fn fidelity_summary_low_excludes_context_values_in_pipeline() {
     registry_low.register("exit", Box::new(ExitHandler));
     registry_low.register("fidelity_capture", Box::new(FidelityCapturingHandler { captures: captures_low.clone() }));
     let engine_low = PipelineEngine::new(registry_low, Arc::new(EventEmitter::new()), local_env());
-    let config_low = RunConfig { logs_root: dir_low.path().to_path_buf(), cancel_token: None, dry_run: false, run_id: "test-run".into(), work_dir: None, base_sha: None, run_branch: None };
+    let config_low = RunConfig { logs_root: dir_low.path().to_path_buf(), cancel_token: None, dry_run: false, run_id: "test-run".into(), git_checkpoint: None, base_sha: None, run_branch: None };
     engine_low.run(&graph_low, &config_low).await.expect("run low");
 
     {
@@ -4907,7 +4907,7 @@ async fn fidelity_summary_low_excludes_context_values_in_pipeline() {
     registry_med.register("exit", Box::new(ExitHandler));
     registry_med.register("fidelity_capture", Box::new(FidelityCapturingHandler { captures: captures_med.clone() }));
     let engine_med = PipelineEngine::new(registry_med, Arc::new(EventEmitter::new()), local_env());
-    let config_med = RunConfig { logs_root: dir_med.path().to_path_buf(), cancel_token: None, dry_run: false, run_id: "test-run".into(), work_dir: None, base_sha: None, run_branch: None };
+    let config_med = RunConfig { logs_root: dir_med.path().to_path_buf(), cancel_token: None, dry_run: false, run_id: "test-run".into(), git_checkpoint: None, base_sha: None, run_branch: None };
     engine_med.run(&graph_med, &config_med).await.expect("run med");
 
     let preambles_med = captures_med.preambles.lock().unwrap();
@@ -4961,7 +4961,7 @@ async fn fidelity_thread_id_fallback_to_previous_node_in_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5004,7 +5004,7 @@ async fn fidelity_thread_id_from_node_class_in_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5050,7 +5050,7 @@ async fn fidelity_edge_thread_id_override_in_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5097,7 +5097,7 @@ async fn fidelity_full_without_explicit_thread_id_uses_previous_node() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5151,7 +5151,7 @@ async fn fidelity_from_parsed_dot_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5193,7 +5193,7 @@ async fn fidelity_checkpoint_roundtrip_preserves_fidelity() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5252,7 +5252,7 @@ async fn fidelity_node_thread_id_overrides_edge_thread_id_in_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5325,7 +5325,7 @@ async fn fidelity_resume_preserves_context_values_across_checkpoint() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -5514,7 +5514,7 @@ mod real_llm {
             logs_root: dir.path().to_path_buf(),
             cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
         };
@@ -5622,7 +5622,7 @@ mod real_llm {
             logs_root: dir.path().to_path_buf(),
             cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
         };
@@ -5760,7 +5760,7 @@ mod real_llm {
             logs_root: dir.path().to_path_buf(),
             cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
         };
@@ -5864,7 +5864,7 @@ mod real_llm {
             cancel_token: None,
             dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
         };
@@ -5948,7 +5948,7 @@ async fn human_gate_freeform_only_routes_text() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6067,7 +6067,7 @@ async fn human_gate_freeform_with_fixed_choice_match() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6171,7 +6171,7 @@ async fn human_gate_freeform_fallback_on_unmatched_text() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6288,7 +6288,7 @@ async fn human_gate_freeform_sets_allow_freeform_on_question() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6381,7 +6381,7 @@ async fn human_gate_without_freeform_sets_allow_freeform_false() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6623,7 +6623,7 @@ async fn tool_hooks_pre_success_allows_pipeline_to_proceed() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6662,7 +6662,7 @@ async fn tool_hooks_pre_failure_skips_tool_call() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6704,7 +6704,7 @@ async fn tool_hooks_post_success_does_not_affect_outcome() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6738,7 +6738,7 @@ async fn tool_hooks_post_failure_does_not_block_pipeline() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6774,7 +6774,7 @@ async fn tool_hooks_graph_level_applies_to_all_nodes() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6813,7 +6813,7 @@ async fn tool_hooks_node_level_overrides_graph_level() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6862,7 +6862,7 @@ async fn tool_hooks_pre_receives_node_id_env_var() {
         logs_root: dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -6958,7 +6958,7 @@ async fn attractor_e2e_with_real_llm() {
         logs_root: logs_dir.path().to_path_buf(),
         cancel_token: None, dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -7065,7 +7065,7 @@ async fn run_fidelity_prompt_pipeline(fidelity: &str) -> String {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -7208,7 +7208,7 @@ async fn large_context_values_are_offloaded_to_artifact_store() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -7383,7 +7383,7 @@ async fn artifact_pointers_rewritten_for_remote_execution_env() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -7497,7 +7497,7 @@ async fn node_dir_uses_visit_count_on_revisit() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -8063,7 +8063,7 @@ async fn full_pipeline_with_cli_backend_node() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -8151,7 +8151,7 @@ async fn stylesheet_backend_property_routes_to_cli() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -8265,4 +8265,140 @@ fn parse_real_gemini_json() {
     assert_eq!(response.text, "4");
     assert_eq!(response.input_tokens, 123);
     assert_eq!(response.output_tokens, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Git checkpoint e2e — Host mode (Docker / Local)
+// ---------------------------------------------------------------------------
+
+use arc_attractor::engine::GitCheckpointMode;
+
+/// End-to-end test: pipeline with `GitCheckpointMode::Host` emits `GitCheckpoint`
+/// events with valid commit SHAs and writes `diff.patch` per stage.
+#[tokio::test]
+async fn git_checkpoint_host_emits_events_and_diff_patch() {
+    // 1. Create a temporary git repo with an initial commit
+    let repo = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["-c", "user.name=test", "-c", "user.email=test@test",
+               "commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    // 2. Create a branch and worktree (like cli/run.rs setup_worktree)
+    let base_sha = {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    std::process::Command::new("git")
+        .args(["branch", "arc/run/test-docker", "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let worktree_path = repo.path().join("worktree");
+    std::process::Command::new("git")
+        .args(["worktree", "add"])
+        .arg(&worktree_path)
+        .arg("arc/run/test-docker")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    // Write a file in the worktree so there's something to commit
+    std::fs::write(worktree_path.join("hello.txt"), "from docker test").unwrap();
+
+    // 3. Build a simple pipeline: start -> work -> exit
+    let mut graph = Graph::new("DockerGitCheckpoint");
+    graph.attrs.insert("goal".to_string(), AttrValue::String("Test Host git checkpoint".to_string()));
+    let mut start = Node::new("start");
+    start.attrs.insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+    let mut exit = Node::new("exit");
+    exit.attrs.insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+    let mut work = Node::new("work");
+    work.attrs.insert("label".to_string(), AttrValue::String("Work".to_string()));
+    graph.nodes.insert("work".to_string(), work);
+    graph.edges.push(Edge::new("start", "work"));
+    graph.edges.push(Edge::new("work", "exit"));
+
+    // 4. Set up event collection and engine
+    let logs_dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = collect_events(&mut emitter);
+
+    let env: Arc<dyn arc_agent::ExecutionEnvironment> = Arc::new(
+        arc_agent::LocalExecutionEnvironment::new(worktree_path.clone()),
+    );
+    let mut registry = HandlerRegistry::new(Box::new(ContextSetterHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    let engine = PipelineEngine::new(registry, Arc::new(emitter), env);
+
+    let config = RunConfig {
+        logs_root: logs_dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id: "test-docker".into(),
+        git_checkpoint: Some(GitCheckpointMode::Host(worktree_path.clone())),
+        base_sha: Some(base_sha.clone()),
+        run_branch: Some("arc/run/test-docker".to_string()),
+    };
+
+    // 5. Run pipeline
+    let outcome = engine.run(&graph, &config).await.expect("pipeline should succeed");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    // 6. Assert GitCheckpoint events were emitted
+    let events = events.lock().unwrap();
+    let git_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let PipelineEvent::GitCheckpoint { node_id, git_commit_sha, .. } = e {
+                Some((node_id.clone(), git_commit_sha.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    // start, work, exit = 3 nodes, each gets a checkpoint commit
+    assert!(
+        git_events.len() >= 2,
+        "expected at least 2 GitCheckpoint events, got {}",
+        git_events.len()
+    );
+    // Each SHA should be a valid 40-char hex string
+    assert!(
+        git_events.iter().all(|(_, sha)| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())),
+        "all SHAs should be 40-char hex, got: {git_events:?}"
+    );
+
+    // 7. Assert diff.patch was written for the "work" node
+    let work_diff = logs_dir.path().join("nodes").join("work").join("diff.patch");
+    assert!(work_diff.exists(), "diff.patch should exist for work node");
+
+    // 8. Verify checkpoint.json has git_commit_sha
+    let checkpoint = Checkpoint::load(&logs_dir.path().join("checkpoint.json"))
+        .expect("checkpoint should load");
+    assert!(
+        checkpoint.git_commit_sha.is_some(),
+        "checkpoint should have git_commit_sha"
+    );
+
+    // Cleanup worktree
+    let _ = std::process::Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&worktree_path)
+        .current_dir(repo.path())
+        .output();
 }

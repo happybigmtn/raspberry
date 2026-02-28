@@ -667,9 +667,13 @@ impl ExecutionEnvironment for DaytonaExecutionEnvironment {
 ///
 /// The Daytona API uses direct exec (not a shell), so pipes, env vars,
 /// semicolons, etc. won't work without this wrapper.
+///
+/// Uses base64 encoding (matching the TypeScript/Python/Ruby Daytona SDKs)
+/// to avoid shell escaping issues with quotes and special characters.
 fn wrap_bash_command(command: &str) -> String {
-    // Shell-quote by replacing ' with '\'' then wrapping in single quotes.
-    format!("bash -c '{}'", command.replace('\'', "'\\''"))
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(command);
+    format!("sh -c \"echo '{encoded}' | base64 -d | sh\"")
 }
 
 #[cfg(test)]
@@ -685,24 +689,29 @@ mod tests {
     }
 
     #[test]
-    fn wrap_bash_simple() {
-        assert_eq!(wrap_bash_command("echo hello"), "bash -c 'echo hello'");
+    fn wrap_bash_uses_base64_encoding() {
+        let wrapped = wrap_bash_command("echo hello");
+        // Should use base64 pipe to sh
+        assert!(wrapped.starts_with("sh -c \"echo '"), "should start with sh -c wrapper");
+        assert!(wrapped.ends_with("' | base64 -d | sh\""), "should end with base64 -d | sh");
+        // The base64 of "echo hello" is "ZWNobyBoZWxsbw=="
+        assert!(wrapped.contains("ZWNobyBoZWxsbw=="), "should contain base64 of 'echo hello'");
     }
 
     #[test]
-    fn wrap_bash_with_pipe() {
-        assert_eq!(
-            wrap_bash_command("ls | grep foo"),
-            "bash -c 'ls | grep foo'"
-        );
+    fn wrap_bash_handles_single_quotes_safely() {
+        // Single quotes in the original command are safely encoded in base64
+        let wrapped = wrap_bash_command("echo 'hello world'");
+        assert!(wrapped.starts_with("sh -c \"echo '"), "should use sh -c wrapper");
+        // No raw single quotes from the original command should appear in the base64
+        assert!(!wrapped.contains("hello world"), "original command should be base64 encoded, not literal");
     }
 
     #[test]
-    fn wrap_bash_escapes_single_quotes() {
-        assert_eq!(
-            wrap_bash_command("echo 'hello world'"),
-            "bash -c 'echo '\\''hello world'\\'''"
-        );
+    fn wrap_bash_handles_pipes() {
+        let wrapped = wrap_bash_command("ls | grep foo");
+        assert!(wrapped.starts_with("sh -c \"echo '"), "should use sh -c wrapper");
+        assert!(wrapped.ends_with("' | base64 -d | sh\""), "should end with base64 -d | sh");
     }
 
     #[test]

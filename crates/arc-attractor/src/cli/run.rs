@@ -8,7 +8,7 @@ use chrono::{Local, Utc};
 use arc_util::terminal::Styles;
 
 use crate::checkpoint::Checkpoint;
-use crate::engine::{PipelineEngine, RunConfig};
+use crate::engine::{GitCheckpointMode, PipelineEngine, RunConfig};
 use crate::event::EventEmitter;
 use crate::handler::default_registry;
 use crate::interviewer::auto_approve::AutoApproveInterviewer;
@@ -107,10 +107,11 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         args.execution_env.or(toml_exec).unwrap_or_default()
     };
     let original_cwd = std::env::current_dir()?;
-    let git_clean = if execution_env_kind_preview == ExecutionEnvKind::Local {
-        crate::git::ensure_clean(&original_cwd).is_ok()
-    } else {
-        false
+    let git_clean = match execution_env_kind_preview {
+        ExecutionEnvKind::Local | ExecutionEnvKind::Docker => {
+            crate::git::ensure_clean(&original_cwd).is_ok()
+        }
+        ExecutionEnvKind::Daytona => false,
     };
 
     // 3. Create logs directory
@@ -346,6 +347,22 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         }
     });
 
+    // Set up git inside Daytona sandbox (if applicable)
+    let (daytona_run_id, daytona_base_sha, daytona_branch) = if execution_env_kind == ExecutionEnvKind::Daytona {
+        match setup_daytona_git(&*execution_env).await {
+            Ok((rid, base, branch)) => (Some(rid), Some(base), Some(branch)),
+            Err(e) => {
+                eprintln!(
+                    "{yellow}Warning:{reset} Daytona git setup failed ({e}), running without git checkpoints.",
+                    yellow = styles.yellow, reset = styles.reset,
+                );
+                (None, None, None)
+            }
+        }
+    } else {
+        (None, None, None)
+    };
+
     // Run setup commands inside the execution environment (once, not per-stage)
     if !setup_commands.is_empty() {
         emitter.emit(&crate::event::PipelineEvent::SetupStarted { command_count: setup_commands.len() });
@@ -480,15 +497,24 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     let engine = PipelineEngine::with_interviewer(registry, Arc::clone(&emitter), interviewer, Arc::clone(&execution_env));
 
     // 7. Execute
-    let run_id = worktree_run_id.unwrap_or_else(|| ulid::Ulid::new().to_string());
+    let run_id = worktree_run_id
+        .or(daytona_run_id)
+        .unwrap_or_else(|| ulid::Ulid::new().to_string());
     let config = RunConfig {
         logs_root: logs_dir.clone(),
         cancel_token: None,
         dry_run: dry_run_mode,
         run_id,
-        work_dir: worktree_work_dir,
-        base_sha: worktree_base_sha,
-        run_branch: worktree_branch,
+        git_checkpoint: match execution_env_kind {
+            ExecutionEnvKind::Local | ExecutionEnvKind::Docker => {
+                worktree_work_dir.map(GitCheckpointMode::Host)
+            }
+            ExecutionEnvKind::Daytona => {
+                daytona_base_sha.as_ref().map(|_| GitCheckpointMode::Remote)
+            }
+        },
+        base_sha: worktree_base_sha.or(daytona_base_sha),
+        run_branch: worktree_branch.or(daytona_branch),
     };
 
     let run_start = Instant::now();
@@ -614,6 +640,33 @@ fn setup_worktree(
     std::env::set_current_dir(&worktree_path)?;
 
     Ok((run_id, worktree_path.clone(), worktree_path, branch_name, base_sha))
+}
+
+/// Set up git inside a Daytona sandbox for checkpoint commits.
+/// Returns (run_id, base_sha, branch_name) on success.
+async fn setup_daytona_git(
+    exec_env: &dyn arc_agent::ExecutionEnvironment,
+) -> anyhow::Result<(String, String, String)> {
+    // Get current HEAD as base SHA
+    let sha_result = exec_env.exec_command("git rev-parse HEAD", 10_000, None, None, None).await
+        .map_err(|e| anyhow::anyhow!("git rev-parse HEAD failed: {e}"))?;
+    if sha_result.exit_code != 0 {
+        anyhow::bail!("git rev-parse HEAD failed (exit {}): {}", sha_result.exit_code, sha_result.stderr);
+    }
+    let base_sha = sha_result.stdout.trim().to_string();
+
+    let run_id = ulid::Ulid::new().to_string();
+    let branch_name = format!("arc/run/{run_id}");
+
+    // Create and checkout a run branch
+    let checkout_cmd = format!("git checkout -b {branch_name}");
+    let checkout_result = exec_env.exec_command(&checkout_cmd, 10_000, None, None, None).await
+        .map_err(|e| anyhow::anyhow!("git checkout failed: {e}"))?;
+    if checkout_result.exit_code != 0 {
+        anyhow::bail!("git checkout -b failed (exit {}): {}", checkout_result.exit_code, checkout_result.stderr);
+    }
+
+    Ok((run_id, base_sha, branch_name))
 }
 
 #[cfg(test)]

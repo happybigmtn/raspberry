@@ -271,7 +271,7 @@ async fn daytona_pipeline_artifact_offload_and_sync() {
         cancel_token: None,
         dry_run: false,
         run_id: "test-run".into(),
-        work_dir: None,
+        git_checkpoint: None,
         base_sha: None,
         run_branch: None,
     };
@@ -308,6 +308,170 @@ async fn daytona_pipeline_artifact_offload_and_sync() {
         remote_content.len() > 100 * 1024,
         "remote artifact should be >100KB, got {} bytes",
         remote_content.len()
+    );
+
+    env.cleanup().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// CLI Backend on Daytona — real CLI tools via exec_command
+// ---------------------------------------------------------------------------
+
+use arc_attractor::engine::GitCheckpointMode;
+
+// ---------------------------------------------------------------------------
+// Git checkpoint E2E on Daytona (Remote mode)
+// ---------------------------------------------------------------------------
+
+/// Handler that writes a file via exec_command so git has something to commit.
+struct FileWriterHandler;
+
+#[async_trait::async_trait]
+impl Handler for FileWriterHandler {
+    async fn execute(
+        &self,
+        node: &Node,
+        _context: &Context,
+        _graph: &Graph,
+        _logs_root: &Path,
+        services: &arc_attractor::handler::EngineServices,
+    ) -> Result<Outcome, AttractorError> {
+        let content = format!("output from {}", node.id);
+        let cmd = format!("echo '{content}' > {}.txt", node.id);
+        let _ = services.execution_env.exec_command(&cmd, 10_000, None, None, None).await;
+        Ok(Outcome::success())
+    }
+}
+
+/// Set up git inside a Daytona sandbox for checkpoint commits.
+/// Returns (run_id, base_sha, branch_name) on success.
+async fn setup_daytona_git(
+    exec_env: &dyn ExecutionEnvironment,
+) -> (String, String, String) {
+    // Get current HEAD as base SHA
+    let sha_result = exec_env.exec_command("git rev-parse HEAD", 10_000, None, None, None).await
+        .expect("git rev-parse HEAD should succeed");
+    assert_eq!(sha_result.exit_code, 0, "git rev-parse HEAD failed: {}", sha_result.stderr);
+    let base_sha = sha_result.stdout.trim().to_string();
+
+    let run_id = ulid::Ulid::new().to_string();
+    let branch_name = format!("arc/run/{run_id}");
+
+    let checkout_cmd = format!("git checkout -b {branch_name}");
+    let checkout_result = exec_env.exec_command(&checkout_cmd, 10_000, None, None, None).await
+        .expect("git checkout should succeed");
+    assert_eq!(
+        checkout_result.exit_code, 0,
+        "git checkout -b failed (exit {}): stdout={} stderr={}",
+        checkout_result.exit_code, checkout_result.stdout, checkout_result.stderr
+    );
+
+    (run_id, base_sha, branch_name)
+}
+
+#[tokio::test]
+#[ignore]
+async fn daytona_git_checkpoint_remote_emits_events() {
+    let env = create_env().await;
+    env.initialize().await.unwrap();
+    let env: Arc<dyn ExecutionEnvironment> = Arc::new(env);
+
+    // Install git if not available (the default ubuntu:22.04 image may not have it)
+    let git_check = env.exec_command("git --version", 10_000, None, None, None).await;
+    if git_check.as_ref().map_or(true, |r| r.exit_code != 0) {
+        let install = env.exec_command(
+            "apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1",
+            120_000, None, None, None,
+        ).await.expect("apt-get install git should not error");
+        assert_eq!(install.exit_code, 0, "git install failed: {}", install.stderr);
+    }
+
+    // Set up git in the sandbox
+    let (run_id, base_sha, branch_name) = setup_daytona_git(&*env).await;
+
+    // Pipeline: start -> work -> exit
+    let mut graph = Graph::new("DaytonaGitCheckpoint");
+    graph.attrs.insert(
+        "goal".to_string(),
+        AttrValue::String("Test Remote git checkpoint".to_string()),
+    );
+
+    let mut start = Node::new("start");
+    start.attrs.insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut exit = Node::new("exit");
+    exit.attrs.insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+
+    let mut work = Node::new("work");
+    work.attrs.insert("label".to_string(), AttrValue::String("Work".to_string()));
+    graph.nodes.insert("work".to_string(), work);
+
+    graph.edges.push(Edge::new("start", "work"));
+    graph.edges.push(Edge::new("work", "exit"));
+
+    // Set up event collection
+    let dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let events_clone = Arc::clone(&events);
+        emitter.on_event(move |event| {
+            events_clone.lock().unwrap().push(event.clone());
+        });
+    }
+
+    let mut registry = HandlerRegistry::new(Box::new(FileWriterHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+
+    let engine = PipelineEngine::new(registry, Arc::new(emitter), env.clone());
+    let config = RunConfig {
+        logs_root: dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id,
+        git_checkpoint: Some(GitCheckpointMode::Remote),
+        base_sha: Some(base_sha),
+        run_branch: Some(branch_name),
+    };
+
+    let outcome = engine.run(&graph, &config).await.expect("pipeline should succeed");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    // Assert GitCheckpoint events were emitted
+    let events = events.lock().unwrap();
+    let git_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let arc_attractor::event::PipelineEvent::GitCheckpoint { node_id, git_commit_sha, .. } = e {
+                Some((node_id.clone(), git_commit_sha.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        git_events.len() >= 2,
+        "expected at least 2 GitCheckpoint events, got {}",
+        git_events.len()
+    );
+    assert!(
+        git_events.iter().all(|(_, sha)| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())),
+        "all SHAs should be 40-char hex, got: {git_events:?}"
+    );
+
+    // Assert diff.patch was written for the work node
+    let work_diff = dir.path().join("nodes").join("work").join("diff.patch");
+    assert!(work_diff.exists(), "diff.patch should exist for work node");
+
+    // Verify checkpoint.json has git_commit_sha
+    let checkpoint = Checkpoint::load(&dir.path().join("checkpoint.json"))
+        .expect("checkpoint should load");
+    assert!(
+        checkpoint.git_commit_sha.is_some(),
+        "checkpoint should have git_commit_sha"
     );
 
     env.cleanup().await.unwrap();
