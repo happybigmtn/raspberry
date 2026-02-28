@@ -20,6 +20,7 @@ export default [
       index("routes/run-overview.tsx"),
       route("stages", "routes/run-stages.tsx"),
       route("files", "routes/run-files-changed.tsx"),
+      route("usage", "routes/run-usage.tsx"),
     ]),
     route("insights", "routes/insights.tsx"),
     route("settings", "routes/settings.tsx"),

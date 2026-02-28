@@ -1,0 +1,57 @@
+const stages = [
+  { stage: "Detect Drift", model: "Opus 4.6", inputTokens: 12_480, outputTokens: 3_210, runtime: "1m 12s", cost: 0.48 },
+  { stage: "Propose Changes", model: "Opus 4.6", inputTokens: 28_640, outputTokens: 8_750, runtime: "2m 34s", cost: 1.12 },
+  { stage: "Review Changes", model: "Opus 4.6", inputTokens: 9_120, outputTokens: 2_640, runtime: "0m 45s", cost: 0.31 },
+  { stage: "Apply Changes", model: "Opus 4.6", inputTokens: 21_300, outputTokens: 6_480, runtime: "1m 58s", cost: 0.87 },
+];
+
+const totalRuntime = "6m 29s";
+const totalCost = stages.reduce((sum, s) => sum + s.cost, 0);
+const totalInput = stages.reduce((sum, s) => sum + s.inputTokens, 0);
+const totalOutput = stages.reduce((sum, s) => sum + s.outputTokens, 0);
+
+function formatTokens(n: number) {
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
+export default function RunUsage() {
+  return (
+    <div className="rounded-lg border border-white/[0.06] overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-white/[0.06] bg-navy-800/60 text-left text-xs text-navy-600">
+            <th className="px-4 py-2.5 font-medium">Stage</th>
+            <th className="px-4 py-2.5 font-medium">Model</th>
+            <th className="px-4 py-2.5 font-medium text-right">Tokens</th>
+            <th className="px-4 py-2.5 font-medium text-right">Run time</th>
+            <th className="px-4 py-2.5 font-medium text-right">Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map((row) => (
+            <tr key={row.stage} className="border-b border-white/[0.06] last:border-b-0">
+              <td className="px-4 py-3 text-ice-100">{row.stage}</td>
+              <td className="px-4 py-3 font-mono text-xs text-ice-300">{row.model}</td>
+              <td className="px-4 py-3 text-right font-mono text-xs tabular-nums text-ice-300">
+                {formatTokens(row.inputTokens)} <span className="text-navy-600">/</span> {formatTokens(row.outputTokens)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-xs text-ice-300">{row.runtime}</td>
+              <td className="px-4 py-3 text-right font-mono text-xs text-ice-300">${row.cost.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="border-t border-white/[0.08] bg-navy-800/40">
+            <td className="px-4 py-3 font-medium text-white">Total</td>
+            <td />
+            <td className="px-4 py-3 text-right font-mono text-xs tabular-nums font-medium text-white">
+              {formatTokens(totalInput)} <span className="text-navy-600">/</span> {formatTokens(totalOutput)}
+            </td>
+            <td className="px-4 py-3 text-right font-mono text-xs font-medium text-white">{totalRuntime}</td>
+            <td className="px-4 py-3 text-right font-mono text-xs font-medium text-white">${totalCost.toFixed(2)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
