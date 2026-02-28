@@ -8,14 +8,15 @@ use agent::{
 use llm::client::Client;
 
 fn build_summarizer(provider: &str, client: &Client) -> WebFetchSummarizer {
-    let summarizer_model = match provider {
-        "openai" => "gpt-4o-mini",
-        "gemini" => "gemini-2.0-flash",
-        _ => "claude-haiku-4-5-20251001",
+    let (summarizer_model, provider_name) = match provider {
+        "openai" => ("gpt-4o-mini", Some("openai".to_string())),
+        "gemini" => ("gemini-2.0-flash", Some("gemini".to_string())),
+        _ => ("claude-haiku-4-5-20251001", None),
     };
     WebFetchSummarizer {
         client: client.clone(),
         model: summarizer_model.into(),
+        provider: provider_name,
     }
 }
 
@@ -420,9 +421,10 @@ async fn scenario_web_fetch(session: &mut Session, dir: &Path) {
     let path = dir.join("fetched.txt");
     assert!(path.exists(), "fetched.txt should have been created");
     let content = std::fs::read_to_string(&path).expect("failed to read fetched.txt");
+    let lower = content.to_lowercase();
     assert!(
-        content.contains("Example Domain"),
-        "Expected 'Example Domain' in fetched content, got first 200 chars: {}",
+        lower.contains("example domain") || lower.contains("example.com"),
+        "Expected 'Example Domain' or 'example.com' in fetched content, got first 200 chars: {}",
         &content[..content.len().min(200)]
     );
 

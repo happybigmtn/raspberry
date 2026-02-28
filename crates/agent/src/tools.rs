@@ -14,6 +14,7 @@ const MAX_WEB_FETCH_BYTES: usize = 100 * 1024;
 pub struct WebFetchSummarizer {
     pub client: Client,
     pub model: String,
+    pub provider: Option<String>,
 }
 
 /// Returns true if the input looks like it contains HTML markup.
@@ -535,7 +536,7 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                         let request = Request {
                             model: s.model.clone(),
                             messages: vec![Message::user(summarization_prompt)],
-                            provider: None,
+                            provider: s.provider.clone(),
                             tools: None,
                             tool_choice: None,
                             response_format: None,
@@ -547,7 +548,9 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                             metadata: None,
                             provider_options: None,
                         };
-                        let response = s.client.complete(&request).await.map_err(|e| format!("Summarization failed: {e}"))?;
+                        let response = s.client.complete(&request).await.map_err(|e| {
+                            format!("web_fetch summarization (model={}) failed: {e}", s.model)
+                        })?;
                         Ok(response.text())
                     }
                     (Some(_), None) => {
@@ -982,6 +985,7 @@ mod tests {
         let summarizer = WebFetchSummarizer {
             client,
             model: "mock-model".into(),
+            provider: None,
         };
 
         let tool = make_web_fetch_tool(Some(summarizer));
@@ -1025,6 +1029,59 @@ mod tests {
         let output = result.unwrap();
         assert!(output.contains("summarization unavailable"), "should note unavailability, got: {output}");
         assert!(output.contains("Rust is a systems programming language"), "should contain page content, got: {output}");
+    }
+
+    #[tokio::test]
+    async fn web_fetch_summarizer_routes_to_specified_provider() {
+        use crate::test_support::{MockErrorProvider, MockLlmProvider, text_response};
+        use llm::error::{ProviderErrorDetail, ProviderErrorKind, SdkError};
+        use llm::provider::ProviderAdapter;
+
+        // "other_provider" is the default — it rejects all requests.
+        let default_provider: Arc<dyn ProviderAdapter> = Arc::new(
+            MockErrorProvider {
+                error: SdkError::Provider {
+                    kind: ProviderErrorKind::NotFound,
+                    detail: Box::new(ProviderErrorDetail::new(
+                        "model not found", "other_provider",
+                    )),
+                },
+            },
+        );
+        // "target_provider" has the model we actually want.
+        let target_provider: Arc<dyn ProviderAdapter> = Arc::new(
+            MockLlmProvider::new(vec![text_response("summarized content")]),
+        );
+
+        let mut providers = HashMap::new();
+        providers.insert("other_provider".to_string(), default_provider);
+        providers.insert(target_provider.name().to_string(), target_provider);
+        let client = Client::new(providers, Some("other_provider".into()), vec![]);
+
+        let summarizer = WebFetchSummarizer {
+            client,
+            model: "target-model".into(),
+            provider: Some("mock".into()),
+        };
+
+        let tool = make_web_fetch_tool(Some(summarizer));
+        let env: Arc<dyn ExecutionEnvironment> = Arc::new(MockExecutionEnvironment {
+            exec_result: ExecResult {
+                stdout: "<html><body><p>Page content</p></body></html>".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+                duration_ms: 100,
+            },
+            ..Default::default()
+        });
+        let result = (tool.executor)(
+            serde_json::json!({"url": "https://example.com", "prompt": "Summarize this"}),
+            ToolContext { env, cancel: CancellationToken::new() },
+        )
+        .await;
+        let output = result.expect("summarization should succeed when provider is correctly routed");
+        assert_eq!(output, "summarized content");
     }
 
     #[test]

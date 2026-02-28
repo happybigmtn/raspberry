@@ -150,9 +150,15 @@ fn build_summarizer(provider: &str, llm_client: Option<Client>) -> Option<crate:
         // anthropic and unknown providers
         _ => "claude-haiku-4-5-20251001",
     };
+    let provider_name = match provider {
+        "openai" => Some("openai".to_string()),
+        "gemini" => Some("gemini".to_string()),
+        _ => None,
+    };
     Some(crate::tools::WebFetchSummarizer {
         client,
         model: model.into(),
+        provider: provider_name,
     })
 }
 
