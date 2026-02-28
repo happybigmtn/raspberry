@@ -2,6 +2,7 @@
 pub mod docker_env;
 
 pub mod cli;
+pub mod compaction;
 pub mod config;
 pub mod error;
 pub mod event;
@@ -18,6 +19,7 @@ pub mod skills;
 pub mod provider_profile;
 pub mod session;
 pub mod subagent;
+pub mod tool_execution;
 pub mod tool_registry;
 pub mod tools;
 pub mod truncation;
