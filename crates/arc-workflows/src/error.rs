@@ -41,18 +41,47 @@ impl fmt::Display for FailureClass {
 }
 
 impl FromStr for FailureClass {
-    type Err = String;
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "transient_infra" => Ok(Self::TransientInfra),
-            "deterministic" => Ok(Self::Deterministic),
-            "budget_exhausted" => Ok(Self::BudgetExhausted),
-            "compilation_loop" => Ok(Self::CompilationLoop),
-            "canceled" => Ok(Self::Canceled),
-            "structural" => Ok(Self::Structural),
-            other => Err(format!("unknown failure class: {other}")),
-        }
+        let normalized = s.trim().to_lowercase();
+        Ok(match normalized.as_str() {
+            // Canonical names
+            "transient_infra" => Self::TransientInfra,
+            "deterministic" => Self::Deterministic,
+            "budget_exhausted" => Self::BudgetExhausted,
+            "compilation_loop" => Self::CompilationLoop,
+            "canceled" => Self::Canceled,
+            "structural" => Self::Structural,
+
+            // Aliases: transient_infra
+            "transient" | "transient-infra" | "infra_transient" | "transient infra"
+            | "infrastructure_transient" | "retryable" | "toolchain_workspace_io"
+            | "toolchain-workspace-io" | "toolchain_or_dependency_registry_unavailable"
+            | "toolchain-dependency-registry-unavailable" => Self::TransientInfra,
+
+            // Aliases: deterministic
+            "non_transient" | "non-transient" | "permanent" | "logic" | "product" => {
+                Self::Deterministic
+            }
+
+            // Aliases: canceled
+            "cancelled" => Self::Canceled,
+
+            // Aliases: budget_exhausted
+            "budget-exhausted" | "budget exhausted" | "budget" => Self::BudgetExhausted,
+
+            // Aliases: compilation_loop
+            "compilation-loop" | "compilation loop" | "compile_loop" | "compile-loop" => {
+                Self::CompilationLoop
+            }
+
+            // Aliases: structural
+            "structure" | "scope_violation" | "write_scope_violation" => Self::Structural,
+
+            // Unknown → fail-closed to Deterministic
+            _ => Self::Deterministic,
+        })
     }
 }
 
@@ -390,7 +419,98 @@ mod tests {
 
     #[test]
     fn failure_class_from_str_invalid() {
-        assert!("unknown".parse::<FailureClass>().is_err());
+        assert_eq!(
+            "unknown".parse::<FailureClass>().unwrap(),
+            FailureClass::Deterministic
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_retryable() {
+        assert_eq!(
+            "retryable".parse::<FailureClass>().unwrap(),
+            FailureClass::TransientInfra
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_transient() {
+        assert_eq!(
+            "transient".parse::<FailureClass>().unwrap(),
+            FailureClass::TransientInfra
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_permanent() {
+        assert_eq!(
+            "permanent".parse::<FailureClass>().unwrap(),
+            FailureClass::Deterministic
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_cancelled_british() {
+        assert_eq!(
+            "cancelled".parse::<FailureClass>().unwrap(),
+            FailureClass::Canceled
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_budget() {
+        assert_eq!(
+            "budget".parse::<FailureClass>().unwrap(),
+            FailureClass::BudgetExhausted
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_compile_loop() {
+        assert_eq!(
+            "compile_loop".parse::<FailureClass>().unwrap(),
+            FailureClass::CompilationLoop
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_alias_scope_violation() {
+        assert_eq!(
+            "scope_violation".parse::<FailureClass>().unwrap(),
+            FailureClass::Structural
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_unknown_defaults_deterministic() {
+        assert_eq!(
+            "garbage_xyz".parse::<FailureClass>().unwrap(),
+            FailureClass::Deterministic
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_case_insensitive() {
+        assert_eq!(
+            "TRANSIENT_INFRA".parse::<FailureClass>().unwrap(),
+            FailureClass::TransientInfra
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_trims_whitespace() {
+        assert_eq!(
+            " transient_infra ".parse::<FailureClass>().unwrap(),
+            FailureClass::TransientInfra
+        );
+    }
+
+    #[test]
+    fn failure_class_from_str_empty_defaults_deterministic() {
+        assert_eq!(
+            "".parse::<FailureClass>().unwrap(),
+            FailureClass::Deterministic
+        );
     }
 
     #[test]

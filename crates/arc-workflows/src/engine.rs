@@ -44,9 +44,8 @@ fn classify_outcome(outcome: &Outcome) -> Option<FailureClass> {
             // Check handler hint in context_updates
             if let Some(hint) = outcome.context_updates.get("failure_class") {
                 if let Some(s) = hint.as_str() {
-                    if let Ok(fc) = s.parse::<FailureClass>() {
-                        return Some(fc);
-                    }
+                    let fc: FailureClass = s.parse().unwrap();
+                    return Some(fc);
                 }
             }
 
@@ -3328,16 +3327,16 @@ mod tests {
     }
 
     #[test]
-    fn classify_outcome_ignores_invalid_handler_hint() {
+    fn classify_outcome_unknown_hint_defaults_to_deterministic() {
         let mut outcome = Outcome::fail("timeout occurred");
         outcome.context_updates.insert(
             "failure_class".to_string(),
             serde_json::json!("not_a_valid_class"),
         );
-        // Falls through to string heuristics on failure_reason
+        // Unknown hint normalizes to Deterministic (fail-closed), taking priority over heuristics
         assert_eq!(
             classify_outcome(&outcome),
-            Some(FailureClass::TransientInfra)
+            Some(FailureClass::Deterministic)
         );
     }
 
