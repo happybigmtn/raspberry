@@ -72,6 +72,31 @@ impl Handler for FanInHandler {
             return Ok(Outcome::fail("all candidates failed"));
         }
 
+        // --- Fast-forward to winner's HEAD when git isolation is active ---
+        let best_head_sha = {
+            let empty_vec = vec![];
+            let arr = results.as_array().unwrap_or(&empty_vec);
+            arr.iter()
+                .find(|v| v.get("id").and_then(|v| v.as_str()) == Some(&best.id))
+                .and_then(|v| v.get("head_sha").and_then(|v| v.as_str()).map(String::from))
+        };
+
+        if let (Some(ref sha), Some(ref gs)) = (&best_head_sha, services.git_state()) {
+            match &gs.mode {
+                crate::engine::GitCheckpointMode::Host(work_dir) => {
+                    let wd = work_dir.clone();
+                    let s = sha.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::git::merge_ff_only(&wd, &s)
+                    })
+                    .await;
+                }
+                crate::engine::GitCheckpointMode::Remote(_) => {
+                    crate::engine::git_merge_ff_only_remote(&*services.execution_env, sha).await;
+                }
+            }
+        }
+
         let mut outcome = Outcome::success();
         outcome.context_updates.insert(
             "parallel.fan_in.best_id".to_string(),
@@ -81,6 +106,12 @@ impl Handler for FanInHandler {
             "parallel.fan_in.best_outcome".to_string(),
             serde_json::json!(best.status),
         );
+        if let Some(ref sha) = best_head_sha {
+            outcome.context_updates.insert(
+                "parallel.fan_in.best_head_sha".to_string(),
+                serde_json::json!(sha),
+            );
+        }
         outcome.notes = Some(format!("Selected best candidate: {}", best.id));
 
         Ok(outcome)
@@ -273,6 +304,7 @@ mod tests {
             execution_env: std::sync::Arc::new(arc_agent::LocalExecutionEnvironment::new(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )),
+            git_state: std::sync::RwLock::new(None),
         }
     }
 

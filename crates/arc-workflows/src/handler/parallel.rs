@@ -1,17 +1,98 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_agent::ExecutionEnvironment;
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
 use crate::context::Context;
+use crate::engine::GitCheckpointMode;
 use crate::error::ArcError;
 use crate::event::PipelineEvent;
 use crate::graph::{Graph, Node};
 use crate::outcome::{Outcome, StageStatus};
 
 use super::{EngineServices, Handler};
+
+// ---------------------------------------------------------------------------
+// WorktreeEnv — decorates an ExecutionEnvironment with a custom working dir
+// ---------------------------------------------------------------------------
+
+/// Wraps an existing `ExecutionEnvironment` so that all operations use a
+/// different working directory (the worktree path inside a remote sandbox).
+struct WorktreeEnv {
+    inner: Arc<dyn ExecutionEnvironment>,
+    worktree_dir: String,
+}
+
+#[async_trait]
+impl ExecutionEnvironment for WorktreeEnv {
+    async fn read_file(
+        &self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<String, String> {
+        self.inner.read_file(path, offset, limit).await
+    }
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        self.inner.write_file(path, content).await
+    }
+    async fn delete_file(&self, path: &str) -> Result<(), String> {
+        self.inner.delete_file(path).await
+    }
+    async fn file_exists(&self, path: &str) -> Result<bool, String> {
+        self.inner.file_exists(path).await
+    }
+    async fn list_directory(
+        &self,
+        path: &str,
+        depth: Option<usize>,
+    ) -> Result<Vec<arc_agent::execution_env::DirEntry>, String> {
+        self.inner.list_directory(path, depth).await
+    }
+    async fn exec_command(
+        &self,
+        command: &str,
+        timeout_ms: u64,
+        working_dir: Option<&str>,
+        env_vars: Option<&std::collections::HashMap<String, String>>,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<arc_agent::execution_env::ExecResult, String> {
+        // Default to worktree dir when no explicit working_dir is given
+        let wd = working_dir.unwrap_or(&self.worktree_dir);
+        self.inner
+            .exec_command(command, timeout_ms, Some(wd), env_vars, cancel_token)
+            .await
+    }
+    async fn grep(
+        &self,
+        pattern: &str,
+        path: &str,
+        options: &arc_agent::execution_env::GrepOptions,
+    ) -> Result<Vec<String>, String> {
+        self.inner.grep(pattern, path, options).await
+    }
+    async fn glob(&self, pattern: &str, path: Option<&str>) -> Result<Vec<String>, String> {
+        self.inner.glob(pattern, path).await
+    }
+    async fn initialize(&self) -> Result<(), String> {
+        self.inner.initialize().await
+    }
+    async fn cleanup(&self) -> Result<(), String> {
+        self.inner.cleanup().await
+    }
+    fn working_directory(&self) -> &str {
+        &self.worktree_dir
+    }
+    fn platform(&self) -> &str {
+        self.inner.platform()
+    }
+    fn os_version(&self) -> String {
+        self.inner.os_version()
+    }
+}
 
 /// Convert a Duration's milliseconds to u64, saturating on overflow.
 fn millis_u64(d: std::time::Duration) -> u64 {
@@ -94,6 +175,8 @@ fn parse_error_policy(raw: &str) -> ErrorPolicy {
 struct BranchResult {
     id: String,
     outcome: Outcome,
+    head_sha: Option<String>,
+    worktree_path: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -138,18 +221,145 @@ impl Handler for ParallelHandler {
         let max_parallel = usize::try_from(max_parallel).unwrap_or(4).max(1);
 
         let semaphore = Arc::new(Semaphore::new(max_parallel));
+        let git_state = services.git_state();
 
-        // Build branch tasks
-        let mut handles = Vec::new();
+        // --- Git isolation: checkpoint "parallel base" before fan-out ---
+        let base_sha: Option<String> = if let Some(ref gs) = git_state {
+            match &gs.mode {
+                GitCheckpointMode::Host(work_dir) => {
+                    let wd = work_dir.clone();
+                    let rid = gs.run_id.clone();
+                    let nid = node.id.clone();
+                    crate::engine::git_checkpoint_host(wd, rid, nid, "parallel_base".into(), 0, None)
+                        .await
+                }
+                GitCheckpointMode::Remote(_) => {
+                    crate::engine::git_checkpoint_remote(
+                        &*services.execution_env,
+                        &gs.run_id,
+                        &node.id,
+                        "parallel_base",
+                        0,
+                        None,
+                    )
+                    .await
+                }
+            }
+        } else {
+            None
+        };
+
+        // Build per-branch execution environments (sequentially for git setup)
+        struct BranchSetup {
+            target_id: String,
+            branch_index: usize,
+            branch_context: Context,
+            execution_env: Arc<dyn ExecutionEnvironment>,
+            worktree_path: Option<PathBuf>,
+        }
+
+        let mut branch_setups: Vec<BranchSetup> = Vec::new();
         for (branch_index, edge) in branches.iter().enumerate() {
             let target_id = edge.to.clone();
             let branch_context = context.clone_context();
+
+            let (branch_exec_env, worktree_path): (Arc<dyn ExecutionEnvironment>, Option<PathBuf>) =
+                if let (Some(ref gs), Some(ref bsha)) = (&git_state, &base_sha) {
+                    let branch_key = &target_id;
+                    let branch_name = format!(
+                        "arc/run/parallel/{}/{}/{}",
+                        gs.run_id, node.id, branch_key
+                    );
+
+                    match &gs.mode {
+                        GitCheckpointMode::Host(work_dir) => {
+                            let wt_path = logs_root
+                                .join("parallel")
+                                .join(&node.id)
+                                .join(branch_key)
+                                .join("worktree");
+                            let wd = work_dir.clone();
+                            let bn = branch_name.clone();
+                            let bs = bsha.clone();
+                            let wtp = wt_path.clone();
+                            tokio::task::spawn_blocking(move || {
+                                crate::git::create_branch_at(&wd, &bn, &bs)?;
+                                crate::git::add_worktree(&wd, &wtp, &bn)
+                            })
+                            .await
+                            .map_err(|e| {
+                                ArcError::Handler(format!("worktree setup join error: {e}"))
+                            })??;
+                            branch_context.set(
+                                "internal.work_dir",
+                                serde_json::json!(wt_path.to_string_lossy().as_ref()),
+                            );
+                            let env: Arc<dyn ExecutionEnvironment> = Arc::new(
+                                arc_agent::LocalExecutionEnvironment::new(wt_path.clone()),
+                            );
+                            (env, Some(wt_path))
+                        }
+                        GitCheckpointMode::Remote(_) => {
+                            let wt_path_str = format!(
+                                "/home/daytona/workspace/.arc-parallel/{}/{}",
+                                node.id, branch_key
+                            );
+                            let ok = crate::engine::git_create_branch_at_remote(
+                                &*services.execution_env,
+                                &branch_name,
+                                bsha,
+                            )
+                            .await;
+                            if !ok {
+                                return Err(ArcError::Handler(format!(
+                                    "failed to create remote branch {branch_name}"
+                                )));
+                            }
+                            let ok = crate::engine::git_add_worktree_remote(
+                                &*services.execution_env,
+                                &wt_path_str,
+                                &branch_name,
+                            )
+                            .await;
+                            if !ok {
+                                return Err(ArcError::Handler(format!(
+                                    "failed to add remote worktree {wt_path_str}"
+                                )));
+                            }
+                            branch_context.set(
+                                "internal.work_dir",
+                                serde_json::json!(&wt_path_str),
+                            );
+                            let env: Arc<dyn ExecutionEnvironment> = Arc::new(WorktreeEnv {
+                                inner: Arc::clone(&services.execution_env),
+                                worktree_dir: wt_path_str.clone(),
+                            });
+                            (env, Some(PathBuf::from(wt_path_str)))
+                        }
+                    }
+                } else {
+                    (Arc::clone(&services.execution_env), None)
+                };
+
+            branch_setups.push(BranchSetup {
+                target_id,
+                branch_index,
+                branch_context,
+                execution_env: branch_exec_env,
+                worktree_path,
+            });
+        }
+
+        // --- Fan out: concurrent execution ---
+        let mut handles = Vec::new();
+        for setup in branch_setups {
             let registry = Arc::clone(&services.registry);
             let emitter = Arc::clone(&services.emitter);
-            let execution_env = Arc::clone(&services.execution_env);
             let graph = graph.clone();
             let logs_root = logs_root.to_path_buf();
             let sem = Arc::clone(&semaphore);
+            let has_git = git_state.is_some();
+            let run_id = git_state.as_ref().map(|gs| gs.run_id.clone());
 
             let handle = tokio::spawn(async move {
                 let _permit = sem
@@ -158,52 +368,91 @@ impl Handler for ParallelHandler {
                     .map_err(|e| ArcError::Handler(format!("semaphore error: {e}")))?;
 
                 emitter.emit(&PipelineEvent::ParallelBranchStarted {
-                    branch: target_id.clone(),
-                    index: branch_index,
+                    branch: setup.target_id.clone(),
+                    index: setup.branch_index,
                 });
                 let branch_start = Instant::now();
 
-                let Some(target_node) = graph.nodes.get(&target_id) else {
-                    let outcome =
-                        Outcome::fail(format!("branch target node not found: {target_id}"));
+                let Some(target_node) = graph.nodes.get(&setup.target_id) else {
+                    let outcome = Outcome::fail(format!(
+                        "branch target node not found: {}",
+                        setup.target_id
+                    ));
                     emitter.emit(&PipelineEvent::ParallelBranchCompleted {
-                        branch: target_id.clone(),
-                        index: branch_index,
+                        branch: setup.target_id.clone(),
+                        index: setup.branch_index,
                         duration_ms: millis_u64(branch_start.elapsed()),
                         status: "fail".to_string(),
                     });
                     return Ok(BranchResult {
-                        id: target_id.clone(),
+                        id: setup.target_id.clone(),
                         outcome,
+                        head_sha: None,
+                        worktree_path: setup.worktree_path,
                     });
                 };
 
                 let branch_services = EngineServices {
                     registry: Arc::clone(&registry),
                     emitter: Arc::clone(&emitter),
-                    execution_env: Arc::clone(&execution_env),
+                    execution_env: Arc::clone(&setup.execution_env),
+                    git_state: std::sync::RwLock::new(None),
                 };
                 let handler = registry.resolve(target_node);
                 let outcome = handler
                     .execute(
                         target_node,
-                        &branch_context,
+                        &setup.branch_context,
                         &graph,
                         &logs_root,
                         &branch_services,
                     )
                     .await?;
 
+                // Checkpoint commit after branch execution (capture head_sha)
+                let head_sha = if has_git {
+                    let rid = run_id.as_deref().unwrap_or("unknown");
+                    let nid = &setup.target_id;
+                    let status_str = outcome.status.to_string();
+                    // Use exec_command to commit and capture HEAD in the branch worktree
+                    let add_result = setup
+                        .execution_env
+                        .exec_command("git add -A", 30_000, None, None, None)
+                        .await;
+                    if add_result.as_ref().is_ok_and(|r| r.exit_code == 0) {
+                        let msg = format!("arc({rid}): {nid} ({status_str})");
+                        let commit_cmd = format!(
+                            "git -c user.name=arc -c user.email=arc@local commit --allow-empty -m '{msg}'"
+                        );
+                        let _ = setup
+                            .execution_env
+                            .exec_command(&commit_cmd, 30_000, None, None, None)
+                            .await;
+                    }
+                    let sha_result = setup
+                        .execution_env
+                        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
+                        .await;
+                    match sha_result {
+                        Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 emitter.emit(&PipelineEvent::ParallelBranchCompleted {
-                    branch: target_id.clone(),
-                    index: branch_index,
+                    branch: setup.target_id.clone(),
+                    index: setup.branch_index,
                     duration_ms: millis_u64(branch_start.elapsed()),
                     status: outcome.status.to_string(),
                 });
 
                 Ok::<BranchResult, ArcError>(BranchResult {
-                    id: target_id,
+                    id: setup.target_id,
                     outcome,
+                    head_sha,
+                    worktree_path: setup.worktree_path,
                 })
             });
             handles.push(handle);
@@ -234,6 +483,8 @@ impl Handler for ParallelHandler {
                     let result = BranchResult {
                         id: String::new(),
                         outcome: Outcome::fail(e.to_string()),
+                        head_sha: None,
+                        worktree_path: None,
                     };
                     if error_policy == ErrorPolicy::FailFast {
                         results.push(result);
@@ -252,6 +503,8 @@ impl Handler for ParallelHandler {
                     let result = BranchResult {
                         id: String::new(),
                         outcome: Outcome::fail(format!("task join error: {join_err}")),
+                        head_sha: None,
+                        worktree_path: None,
                     };
                     if error_policy == ErrorPolicy::FailFast {
                         results.push(result);
@@ -265,6 +518,62 @@ impl Handler for ParallelHandler {
                         break;
                     }
                     results.push(result);
+                }
+            }
+        }
+
+        // --- Git isolation: clean up worktrees, then ff-merge winner ---
+        if let Some(ref gs) = git_state {
+            // Clean up worktrees first
+            for result in &results {
+                if let Some(ref wt_path) = result.worktree_path {
+                    match &gs.mode {
+                        GitCheckpointMode::Host(work_dir) => {
+                            let wd = work_dir.clone();
+                            let wtp = wt_path.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                crate::git::remove_worktree(&wd, &wtp)
+                            })
+                            .await;
+                        }
+                        GitCheckpointMode::Remote(_) => {
+                            let wt_str = wt_path.to_string_lossy().to_string();
+                            crate::engine::git_remove_worktree_remote(
+                                &*services.execution_env,
+                                &wt_str,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
+            // Fast-forward main branch to first successful branch (lexically sorted).
+            // This must happen here — before the engine creates its own checkpoint commit
+            // on the main branch — so that subsequent commits are descendants of the winner.
+            let mut successful: Vec<_> = results
+                .iter()
+                .filter(|r| r.outcome.status == StageStatus::Success && r.head_sha.is_some())
+                .collect();
+            successful.sort_by(|a, b| a.id.cmp(&b.id));
+            if let Some(winner) = successful.first() {
+                let sha = winner.head_sha.as_ref().unwrap();
+                match &gs.mode {
+                    GitCheckpointMode::Host(work_dir) => {
+                        let wd = work_dir.clone();
+                        let s = sha.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::git::merge_ff_only(&wd, &s)
+                        })
+                        .await;
+                    }
+                    GitCheckpointMode::Remote(_) => {
+                        crate::engine::git_merge_ff_only_remote(
+                            &*services.execution_env,
+                            sha,
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -284,10 +593,14 @@ impl Handler for ParallelHandler {
         let results_json: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "id": r.id,
                     "status": r.outcome.status.to_string(),
-                })
+                });
+                if let Some(ref sha) = r.head_sha {
+                    entry["head_sha"] = serde_json::json!(sha);
+                }
+                entry
             })
             .collect();
         context.set("parallel.results", serde_json::json!(results_json));
@@ -341,7 +654,7 @@ impl Handler for ParallelHandler {
             }
         };
 
-        // Build suggested_next_ids from successful branch targets
+        // Build suggested_next_ids from branch targets
         let branch_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
 
         let is_fail = status == StageStatus::Fail;
@@ -386,6 +699,7 @@ mod tests {
             execution_env: Arc::new(arc_agent::LocalExecutionEnvironment::new(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )),
+            git_state: std::sync::RwLock::new(None),
         }
     }
 

@@ -8743,6 +8743,33 @@ fn parse_real_gemini_json() {
 // ---------------------------------------------------------------------------
 
 use arc_workflows::engine::GitCheckpointMode;
+use arc_workflows::handler::fan_in::FanInHandler;
+use arc_workflows::handler::parallel::ParallelHandler;
+
+/// A handler that writes a file named `{node_id}.txt` into the execution environment's
+/// working directory. Used to verify git worktree isolation in parallel branches.
+struct FileWriterHandler;
+
+#[async_trait::async_trait]
+impl Handler for FileWriterHandler {
+    async fn execute(
+        &self,
+        node: &Node,
+        _context: &Context,
+        _graph: &Graph,
+        _logs_root: &Path,
+        services: &arc_workflows::handler::EngineServices,
+    ) -> Result<Outcome, ArcError> {
+        let work_dir = services.execution_env.working_directory().to_string();
+        let file_path = format!("{}/{}.txt", work_dir, node.id);
+        services
+            .execution_env
+            .write_file(&file_path, &format!("written by {}", node.id))
+            .await
+            .map_err(|e| ArcError::Handler(format!("write_file failed: {e}")))?;
+        Ok(Outcome::success())
+    }
+}
 
 /// End-to-end test: pipeline with `GitCheckpointMode::Host` emits `GitCheckpoint`
 /// events with valid commit SHAs and writes `diff.patch` per stage.
@@ -9078,3 +9105,300 @@ async fn git_checkpoint_host_writes_shadow_branch() {
         .current_dir(repo.path())
         .output();
 }
+
+// ---------------------------------------------------------------------------
+// Host e2e: parallel git branching with worktree isolation
+// ---------------------------------------------------------------------------
+
+/// End-to-end: parallel branches get isolated worktrees, fan-in fast-forwards to winner.
+///
+/// Pipeline: start -> fan_out -> {branch_a, branch_b} -> fan_in -> exit
+///
+/// Each branch writes a unique file. After fan-in, only the winner's file should
+/// be present in the main worktree.
+#[tokio::test]
+async fn parallel_git_branching_host_e2e() {
+    // 1. Create a temporary git repo with an initial commit
+    let repo = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    // 2. Set up run branch and worktree (same as cli/run.rs)
+    let base_sha = {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let run_id = "par-git-test";
+    let run_branch = format!("arc/run/{run_id}");
+    std::process::Command::new("git")
+        .args(["branch", &run_branch, "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let worktree_path = repo.path().join("worktree");
+    std::process::Command::new("git")
+        .args(["worktree", "add"])
+        .arg(&worktree_path)
+        .arg(&run_branch)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    // 3. Build pipeline: start -> fan_out -> {branch_a, branch_b} -> fan_in -> exit
+    let mut graph = Graph::new("ParallelGitBranching");
+    graph.attrs.insert(
+        "goal".to_string(),
+        AttrValue::String("Test parallel git branching".to_string()),
+    );
+
+    let mut start = Node::new("start");
+    start
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut fan_out = Node::new("fan_out");
+    fan_out
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("component".to_string()));
+    graph.nodes.insert("fan_out".to_string(), fan_out);
+
+    let branch_a = Node::new("branch_a");
+    graph.nodes.insert("branch_a".to_string(), branch_a);
+
+    let branch_b = Node::new("branch_b");
+    graph.nodes.insert("branch_b".to_string(), branch_b);
+
+    let mut fan_in = Node::new("fan_in");
+    fan_in.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("tripleoctagon".to_string()),
+    );
+    graph.nodes.insert("fan_in".to_string(), fan_in);
+
+    let mut exit = Node::new("exit");
+    exit.attrs
+        .insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit);
+
+    graph.edges.push(Edge::new("start", "fan_out"));
+    graph.edges.push(Edge::new("fan_out", "branch_a"));
+    graph.edges.push(Edge::new("fan_out", "branch_b"));
+    graph.edges.push(Edge::new("branch_a", "fan_in"));
+    graph.edges.push(Edge::new("branch_b", "fan_in"));
+    graph.edges.push(Edge::new("fan_in", "exit"));
+
+    // 4. Set up engine with FileWriterHandler for branches
+    let logs_dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = collect_events(&mut emitter);
+
+    let env: Arc<dyn arc_agent::ExecutionEnvironment> =
+        Arc::new(arc_agent::LocalExecutionEnvironment::new(worktree_path.clone()));
+
+    let mut registry = HandlerRegistry::new(Box::new(FileWriterHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("parallel", Box::new(ParallelHandler));
+    registry.register(
+        "parallel.fan_in",
+        Box::new(FanInHandler::new(None)), // heuristic select — picks branch_a (lexical tiebreak)
+    );
+
+    let engine = PipelineEngine::new(registry, Arc::new(emitter), env);
+
+    let config = RunConfig {
+        logs_root: logs_dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id: run_id.into(),
+        git_checkpoint: Some(GitCheckpointMode::Host(worktree_path.clone())),
+        base_sha: Some(base_sha.clone()),
+        run_branch: Some(run_branch.clone()),
+        meta_branch: None,
+    };
+
+    // 5. Run pipeline
+    let outcome = engine
+        .run(&graph, &config)
+        .await
+        .expect("parallel pipeline should succeed");
+    assert_eq!(
+        outcome.status,
+        StageStatus::Success,
+        "pipeline failed: {:?}",
+        outcome.failure_reason
+    );
+
+    // 6. Verify parallel.results has head_sha for each branch
+    let checkpoint = Checkpoint::load(&logs_dir.path().join("checkpoint.json"))
+        .expect("checkpoint should load");
+    let parallel_results = checkpoint
+        .context_values
+        .get("parallel.results")
+        .expect("parallel.results should be in context");
+    let results_arr = parallel_results.as_array().expect("should be an array");
+    assert_eq!(results_arr.len(), 2, "should have 2 branch results");
+
+    // Both branches should have head_sha
+    let branch_a_result = results_arr
+        .iter()
+        .find(|v| v.get("id").and_then(|v| v.as_str()) == Some("branch_a"))
+        .expect("branch_a result should exist");
+    let branch_b_result = results_arr
+        .iter()
+        .find(|v| v.get("id").and_then(|v| v.as_str()) == Some("branch_b"))
+        .expect("branch_b result should exist");
+
+    let sha_a = branch_a_result
+        .get("head_sha")
+        .and_then(|v| v.as_str())
+        .expect("branch_a should have head_sha");
+    let sha_b = branch_b_result
+        .get("head_sha")
+        .and_then(|v| v.as_str())
+        .expect("branch_b should have head_sha");
+
+    assert_eq!(sha_a.len(), 40, "SHA should be 40 hex chars");
+    assert_eq!(sha_b.len(), 40, "SHA should be 40 hex chars");
+    assert_ne!(sha_a, sha_b, "branch SHAs should differ");
+
+    // 7. Verify fan_in selected a winner and set best_head_sha
+    let best_id = checkpoint
+        .context_values
+        .get("parallel.fan_in.best_id")
+        .and_then(|v| v.as_str().map(String::from))
+        .expect("fan_in should have selected a best_id");
+    let best_head_sha = checkpoint
+        .context_values
+        .get("parallel.fan_in.best_head_sha")
+        .and_then(|v| v.as_str().map(String::from))
+        .expect("fan_in should have set best_head_sha");
+
+    // Heuristic select with both success: lexical tiebreak picks "branch_a"
+    assert_eq!(best_id, "branch_a", "heuristic should pick branch_a (lexical)");
+
+    // 8. Verify winner's file is in the main worktree, loser's is NOT
+    let winner_file = worktree_path.join(format!("{best_id}.txt"));
+    assert!(
+        winner_file.exists(),
+        "winner's file ({best_id}.txt) should exist in main worktree after ff-merge"
+    );
+    let winner_content = std::fs::read_to_string(&winner_file).unwrap();
+    assert!(
+        winner_content.contains(&format!("written by {best_id}")),
+        "winner's file should have correct content"
+    );
+
+    let loser_id = if best_id == "branch_a" {
+        "branch_b"
+    } else {
+        "branch_a"
+    };
+    let loser_file = worktree_path.join(format!("{loser_id}.txt"));
+    assert!(
+        !loser_file.exists(),
+        "loser's file ({loser_id}.txt) should NOT exist in main worktree"
+    );
+
+    // 9. Verify the main worktree HEAD matches the winner's head_sha
+    let main_head = {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // After fan-in ff-only + engine's own checkpoint commits, HEAD should be a
+    // descendant of best_head_sha.
+    let is_ancestor = std::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", &best_head_sha, &main_head])
+        .current_dir(&worktree_path)
+        .output()
+        .unwrap();
+    assert!(
+        is_ancestor.status.success(),
+        "best_head_sha ({best_head_sha}) should be an ancestor of current HEAD ({main_head})"
+    );
+
+    // 10. Verify parallel branch refs still exist (for debugging)
+    let branch_ref_a = format!("arc/run/parallel/{run_id}/fan_out/branch_a");
+    let ref_check = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", &branch_ref_a])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        ref_check.status.success(),
+        "parallel branch ref should still exist for debugging"
+    );
+
+    // 11. Verify final.patch contains the winner's changes
+    let final_patch = logs_dir.path().join("final.patch");
+    assert!(
+        final_patch.exists(),
+        "final.patch should exist in logs_root"
+    );
+    let patch_content = std::fs::read_to_string(&final_patch).unwrap();
+    assert!(
+        patch_content.contains(&format!("{best_id}.txt")),
+        "final.patch should contain winner's file"
+    );
+    assert!(
+        !patch_content.contains(&format!("{loser_id}.txt")),
+        "final.patch should NOT contain loser's file"
+    );
+
+    // 12. Verify events
+    let events = events.lock().unwrap();
+    let parallel_started: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, PipelineEvent::ParallelStarted { .. }))
+        .collect();
+    assert_eq!(
+        parallel_started.len(),
+        1,
+        "should have exactly one ParallelStarted event"
+    );
+
+    let parallel_completed: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, PipelineEvent::ParallelCompleted { .. }))
+        .collect();
+    assert_eq!(
+        parallel_completed.len(),
+        1,
+        "should have exactly one ParallelCompleted event"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&worktree_path)
+        .current_dir(repo.path())
+        .output();
+}
+
+// Daytona parallel git branching test is in daytona_integration.rs

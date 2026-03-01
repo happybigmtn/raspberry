@@ -99,6 +99,39 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create a new branch pointing at a specific SHA (without checking it out).
+pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["branch", name, sha])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| git_error(format!("git branch failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(git_error(format!("git branch failed: {stderr}")));
+    }
+
+    Ok(())
+}
+
+/// Fast-forward the current branch to a given SHA.
+/// Fails if the merge cannot be done as a fast-forward.
+pub fn merge_ff_only(work_dir: &Path, sha: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["merge", "--ff-only", sha])
+        .current_dir(work_dir)
+        .output()
+        .map_err(|e| git_error(format!("git merge --ff-only failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(git_error(format!("git merge --ff-only failed: {stderr}")));
+    }
+
+    Ok(())
+}
+
 /// Stage all changes and commit in `work_dir` with a structured message
 /// including trailers for completed node count and shadow commit pointer.
 /// Returns the new commit SHA.
@@ -373,6 +406,99 @@ mod tests {
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("test-branch"));
+    }
+
+    #[test]
+    fn create_branch_at_specific_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let initial_sha = head_sha(dir.path()).unwrap();
+
+        // Make a second commit so HEAD differs from initial_sha
+        fs::write(dir.path().join("f.txt"), "x").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "second",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Branch at the *initial* SHA (not HEAD)
+        create_branch_at(dir.path(), "at-initial", &initial_sha).unwrap();
+
+        let output = Command::new("git")
+            .args(["rev-parse", "at-initial"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let branch_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(branch_sha, initial_sha);
+    }
+
+    #[test]
+    fn merge_ff_only_advances_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let base_sha = head_sha(dir.path()).unwrap();
+
+        // Create a branch and worktree, make a commit there
+        create_branch(dir.path(), "ff-branch").unwrap();
+        let wt = dir.path().join("ff-wt");
+        add_worktree(dir.path(), &wt, "ff-branch").unwrap();
+        fs::write(wt.join("new.txt"), "data").unwrap();
+        checkpoint_commit(&wt, "run", "node", "ok", 1, None).unwrap();
+        let advanced_sha = head_sha(&wt).unwrap();
+        remove_worktree(dir.path(), &wt).unwrap();
+
+        // Main branch is still at base_sha
+        assert_eq!(head_sha(dir.path()).unwrap(), base_sha);
+
+        // Fast-forward main to advanced_sha
+        merge_ff_only(dir.path(), &advanced_sha).unwrap();
+        assert_eq!(head_sha(dir.path()).unwrap(), advanced_sha);
+    }
+
+    #[test]
+    fn merge_ff_only_fails_on_diverged() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+
+        // Create divergent history: commit on main
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "on main",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // A random SHA that isn't an ancestor/descendant
+        let err = merge_ff_only(dir.path(), "0000000000000000000000000000000000000000");
+        assert!(err.is_err());
     }
 
     #[test]

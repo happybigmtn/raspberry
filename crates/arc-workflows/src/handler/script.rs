@@ -180,6 +180,7 @@ mod tests {
             execution_env: std::sync::Arc::new(arc_agent::LocalExecutionEnvironment::new(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )),
+            git_state: std::sync::RwLock::new(None),
         }
     }
 

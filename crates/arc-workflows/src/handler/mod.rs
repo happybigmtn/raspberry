@@ -17,6 +17,7 @@ use arc_agent::ExecutionEnvironment;
 use async_trait::async_trait;
 
 use crate::context::Context;
+use crate::engine::GitState;
 use crate::error::ArcError;
 use crate::event::EventEmitter;
 use crate::graph::{shape_to_handler_type, Graph, Node};
@@ -28,6 +29,21 @@ pub struct EngineServices {
     pub registry: Arc<HandlerRegistry>,
     pub emitter: Arc<EventEmitter>,
     pub execution_env: Arc<dyn ExecutionEnvironment>,
+    /// Git state for the current run. Set via `set_git_state` at the start of
+    /// `run_internal` and read by parallel/fan-in handlers.
+    pub(crate) git_state: std::sync::RwLock<Option<Arc<GitState>>>,
+}
+
+impl EngineServices {
+    /// Read the current git state (if any).
+    pub fn git_state(&self) -> Option<Arc<GitState>> {
+        self.git_state.read().unwrap().clone()
+    }
+
+    /// Set the git state for the current run.
+    pub fn set_git_state(&self, state: Option<Arc<GitState>>) {
+        *self.git_state.write().unwrap() = state;
+    }
 }
 
 /// The handler interface for node execution.

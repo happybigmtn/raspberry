@@ -172,6 +172,7 @@ mod tests {
             registry: Arc::new(registry),
             emitter: Arc::new(EventEmitter::new()),
             execution_env: local_env(),
+            git_state: std::sync::RwLock::new(None),
         }
     }
 
@@ -180,6 +181,7 @@ mod tests {
             registry: Arc::new(registry),
             emitter: Arc::new(EventEmitter::new()),
             execution_env: local_env(),
+            git_state: std::sync::RwLock::new(None),
         }
     }
 

@@ -538,6 +538,228 @@ async fn daytona_git_checkpoint_remote_emits_events() {
 }
 
 // ---------------------------------------------------------------------------
+// Parallel git branching on Daytona (Remote mode)
+// ---------------------------------------------------------------------------
+
+use arc_workflows::handler::fan_in::FanInHandler;
+use arc_workflows::handler::parallel::ParallelHandler;
+
+/// End-to-end: parallel branches get isolated worktrees in Daytona sandbox,
+/// fan-in fast-forwards to winner.
+#[tokio::test]
+#[ignore]
+async fn daytona_parallel_git_branching_e2e() {
+    let env = create_env().await;
+    env.initialize().await.unwrap();
+    let env: Arc<dyn ExecutionEnvironment> = Arc::new(env);
+
+    // Install git if not available
+    let git_check = env
+        .exec_command("git --version", 10_000, None, None, None)
+        .await;
+    if git_check.as_ref().map_or(true, |r| r.exit_code != 0) {
+        let install = env
+            .exec_command(
+                "apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1",
+                120_000,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("apt-get install git should not error");
+        assert_eq!(
+            install.exit_code, 0,
+            "git install failed: {}",
+            install.stderr
+        );
+    }
+
+    // Set up git in the sandbox (uses existing repo from Daytona project clone)
+    let (run_id, base_sha, branch_name) = setup_daytona_git(&*env).await;
+
+    // Pipeline: start -> fan_out -> {branch_a, branch_b} -> fan_in -> exit
+    let mut graph = Graph::new("DaytonaParallelGitBranching");
+    graph.attrs.insert(
+        "goal".to_string(),
+        AttrValue::String("Test parallel git branching on Daytona".to_string()),
+    );
+
+    let mut start = Node::new("start");
+    start
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("Mdiamond".to_string()));
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut fan_out = Node::new("fan_out");
+    fan_out
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("component".to_string()));
+    graph.nodes.insert("fan_out".to_string(), fan_out);
+
+    let branch_a = Node::new("branch_a");
+    graph.nodes.insert("branch_a".to_string(), branch_a);
+
+    let branch_b = Node::new("branch_b");
+    graph.nodes.insert("branch_b".to_string(), branch_b);
+
+    let mut fan_in = Node::new("fan_in");
+    fan_in.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("tripleoctagon".to_string()),
+    );
+    graph.nodes.insert("fan_in".to_string(), fan_in);
+
+    let mut exit_node = Node::new("exit");
+    exit_node
+        .attrs
+        .insert("shape".to_string(), AttrValue::String("Msquare".to_string()));
+    graph.nodes.insert("exit".to_string(), exit_node);
+
+    graph.edges.push(Edge::new("start", "fan_out"));
+    graph.edges.push(Edge::new("fan_out", "branch_a"));
+    graph.edges.push(Edge::new("fan_out", "branch_b"));
+    graph.edges.push(Edge::new("branch_a", "fan_in"));
+    graph.edges.push(Edge::new("branch_b", "fan_in"));
+    graph.edges.push(Edge::new("fan_in", "exit"));
+
+    let logs_dir = tempfile::tempdir().unwrap();
+    let mut emitter = EventEmitter::new();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let events_clone = Arc::clone(&events);
+        emitter.on_event(move |event| {
+            events_clone.lock().unwrap().push(event.clone());
+        });
+    }
+
+    let mut registry = HandlerRegistry::new(Box::new(FileWriterHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("parallel", Box::new(ParallelHandler));
+    registry.register("parallel.fan_in", Box::new(FanInHandler::new(None)));
+
+    let engine = PipelineEngine::new(registry, Arc::new(emitter), Arc::clone(&env));
+
+    let config = RunConfig {
+        logs_root: logs_dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id: run_id.clone(),
+        git_checkpoint: Some(GitCheckpointMode::Remote(logs_dir.path().to_path_buf())),
+        base_sha: Some(base_sha),
+        run_branch: Some(branch_name),
+        meta_branch: None,
+    };
+
+    let outcome = engine
+        .run(&graph, &config)
+        .await
+        .expect("daytona parallel pipeline should succeed");
+    assert_eq!(
+        outcome.status,
+        StageStatus::Success,
+        "pipeline failed: {:?}",
+        outcome.failure_reason
+    );
+
+    // Verify parallel.results has head_sha for each branch
+    let checkpoint = Checkpoint::load(&logs_dir.path().join("checkpoint.json"))
+        .expect("checkpoint should load");
+    let parallel_results = checkpoint
+        .context_values
+        .get("parallel.results")
+        .expect("parallel.results should be in context");
+    let results_arr = parallel_results.as_array().expect("should be an array");
+    assert_eq!(results_arr.len(), 2, "should have 2 branch results");
+
+    // Both branches should have head_sha (40-char hex)
+    let has_sha = results_arr.iter().all(|v| {
+        v.get("head_sha")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+    });
+    assert!(has_sha, "all branches should have 40-char hex head_sha");
+
+    // Branch SHAs should differ (each branch made unique changes)
+    let sha_a = results_arr
+        .iter()
+        .find(|v| v.get("id").and_then(|v| v.as_str()) == Some("branch_a"))
+        .and_then(|v| v.get("head_sha").and_then(|v| v.as_str()))
+        .unwrap();
+    let sha_b = results_arr
+        .iter()
+        .find(|v| v.get("id").and_then(|v| v.as_str()) == Some("branch_b"))
+        .and_then(|v| v.get("head_sha").and_then(|v| v.as_str()))
+        .unwrap();
+    assert_ne!(sha_a, sha_b, "branch SHAs should differ");
+
+    // Verify fan_in selected a winner and set best_head_sha
+    let best_id = checkpoint
+        .context_values
+        .get("parallel.fan_in.best_id")
+        .and_then(|v| v.as_str().map(String::from))
+        .expect("fan_in should have selected a best_id");
+    assert_eq!(best_id, "branch_a", "heuristic should pick branch_a (lexical)");
+
+    let best_head_sha = checkpoint
+        .context_values
+        .get("parallel.fan_in.best_head_sha")
+        .and_then(|v| v.as_str().map(String::from));
+    assert!(
+        best_head_sha.is_some(),
+        "fan_in should have set best_head_sha"
+    );
+
+    // Verify winner's file exists in sandbox
+    let winner_check = env
+        .exec_command("cat branch_a.txt", 10_000, None, None, None)
+        .await
+        .expect("cat should succeed");
+    assert_eq!(winner_check.exit_code, 0, "winner's file should exist");
+    assert!(
+        winner_check.stdout.contains("branch_a"),
+        "winner's file should have correct content, got: {}",
+        winner_check.stdout
+    );
+
+    // Verify events
+    {
+        let events = events.lock().unwrap();
+        let parallel_started: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    arc_workflows::event::PipelineEvent::ParallelStarted { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            parallel_started.len(),
+            1,
+            "should have exactly one ParallelStarted event"
+        );
+        let parallel_completed: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    arc_workflows::event::PipelineEvent::ParallelCompleted { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            parallel_completed.len(),
+            1,
+            "should have exactly one ParallelCompleted event"
+        );
+    }
+
+    env.cleanup().await.expect("Daytona cleanup should succeed");
+}
+
+// ---------------------------------------------------------------------------
 // CLI Backend on Daytona — real CLI tools via exec_command
 // ---------------------------------------------------------------------------
 

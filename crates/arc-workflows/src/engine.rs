@@ -501,6 +501,16 @@ fn is_terminal(node: &Node) -> bool {
 
 // --- Pipeline engine ---
 
+/// Captured git state for a pipeline run, shared with handlers.
+#[derive(Debug, Clone)]
+pub struct GitState {
+    pub mode: GitCheckpointMode,
+    pub run_id: String,
+    pub base_sha: String,
+    pub run_branch: Option<String>,
+    pub meta_branch: Option<String>,
+}
+
 /// How git checkpointing should be performed for a pipeline run.
 #[derive(Debug, Clone)]
 pub enum GitCheckpointMode {
@@ -512,7 +522,7 @@ pub enum GitCheckpointMode {
 }
 
 /// Run a git checkpoint commit on the host filesystem (local/Docker bind-mount).
-async fn git_checkpoint_host(
+pub async fn git_checkpoint_host(
     work_dir: PathBuf,
     run_id: String,
     node_id: String,
@@ -546,7 +556,7 @@ async fn git_diff_host(work_dir: PathBuf, base: String) -> Option<String> {
 }
 
 /// Run a git checkpoint commit inside a remote execution environment.
-async fn git_checkpoint_remote(
+pub async fn git_checkpoint_remote(
     exec_env: &dyn ExecutionEnvironment,
     run_id: &str,
     node_id: &str,
@@ -622,6 +632,69 @@ async fn git_diff_remote(exec_env: &dyn ExecutionEnvironment, base: &str) -> Opt
     }
 }
 
+// --- Remote worktree helpers (for Daytona / sandbox environments) ---
+
+/// Create a branch at a specific SHA inside a remote execution environment.
+pub async fn git_create_branch_at_remote(
+    exec_env: &dyn ExecutionEnvironment,
+    name: &str,
+    sha: &str,
+) -> bool {
+    let cmd = format!("git branch {name} {sha}");
+    matches!(
+        exec_env.exec_command(&cmd, 30_000, None, None, None).await,
+        Ok(r) if r.exit_code == 0
+    )
+}
+
+/// Add a git worktree inside a remote execution environment.
+pub async fn git_add_worktree_remote(
+    exec_env: &dyn ExecutionEnvironment,
+    path: &str,
+    branch: &str,
+) -> bool {
+    let cmd = format!("git worktree add {path} {branch}");
+    matches!(
+        exec_env.exec_command(&cmd, 30_000, None, None, None).await,
+        Ok(r) if r.exit_code == 0
+    )
+}
+
+/// Remove a git worktree inside a remote execution environment.
+pub async fn git_remove_worktree_remote(
+    exec_env: &dyn ExecutionEnvironment,
+    path: &str,
+) -> bool {
+    let cmd = format!("git worktree remove --force {path}");
+    matches!(
+        exec_env.exec_command(&cmd, 30_000, None, None, None).await,
+        Ok(r) if r.exit_code == 0
+    )
+}
+
+/// Fast-forward merge to a given SHA inside a remote execution environment.
+pub async fn git_merge_ff_only_remote(
+    exec_env: &dyn ExecutionEnvironment,
+    sha: &str,
+) -> bool {
+    let cmd = format!("git merge --ff-only {sha}");
+    matches!(
+        exec_env.exec_command(&cmd, 30_000, None, None, None).await,
+        Ok(r) if r.exit_code == 0
+    )
+}
+
+/// Get the current HEAD SHA from a remote execution environment.
+pub async fn git_head_sha_remote(exec_env: &dyn ExecutionEnvironment) -> Option<String> {
+    match exec_env
+        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
+        .await
+    {
+        Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
+        _ => None,
+    }
+}
+
 /// Configuration for a pipeline run.
 pub struct RunConfig {
     pub logs_root: PathBuf,
@@ -657,6 +730,7 @@ impl PipelineEngine {
                 registry: Arc::new(registry),
                 emitter,
                 execution_env,
+                git_state: std::sync::RwLock::new(None),
             },
             interviewer: None,
         }
@@ -675,6 +749,7 @@ impl PipelineEngine {
                 registry: Arc::new(registry),
                 emitter,
                 execution_env,
+                git_state: std::sync::RwLock::new(None),
             },
             interviewer: Some(interviewer),
         }
@@ -870,6 +945,19 @@ impl PipelineEngine {
         let run_start = Instant::now();
         let run_id = config.run_id.clone();
         let artifact_store = ArtifactStore::new(Some(config.logs_root.clone()));
+
+        // Populate git_state for handlers (parallel, fan_in) when checkpointing is active
+        let git_state = match (&config.git_checkpoint, &config.base_sha) {
+            (Some(mode), Some(base_sha)) => Some(Arc::new(GitState {
+                mode: mode.clone(),
+                run_id: run_id.clone(),
+                base_sha: base_sha.clone(),
+                run_branch: config.run_branch.clone(),
+                meta_branch: config.meta_branch.clone(),
+            })),
+            _ => None,
+        };
+        self.services.set_git_state(git_state);
 
         self.services.emitter.emit(&PipelineEvent::PipelineStarted {
             name: graph.name.clone(),
