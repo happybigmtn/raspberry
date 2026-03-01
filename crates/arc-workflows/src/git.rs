@@ -13,11 +13,18 @@ fn git_error(msg: impl Into<String>) -> ArcError {
     ArcError::Engine(msg.into())
 }
 
+/// Return a pre-configured `git` command with auto-maintenance disabled.
+fn git_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(["-c", "maintenance.auto=0", "-c", "gc.auto=0"])
+        .current_dir(dir);
+    cmd
+}
+
 /// Assert the working directory is a clean git repo (no uncommitted changes).
 pub fn ensure_clean(repo: &Path) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_cmd(repo)
         .args(["status", "--porcelain"])
-        .current_dir(repo)
         .output()
         .map_err(|e| git_error(format!("git status failed: {e}")))?;
 
@@ -35,9 +42,8 @@ pub fn ensure_clean(repo: &Path) -> Result<()> {
 
 /// Return the SHA of HEAD.
 pub fn head_sha(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_cmd(repo)
         .args(["rev-parse", "HEAD"])
-        .current_dir(repo)
         .output()
         .map_err(|e| git_error(format!("git rev-parse failed: {e}")))?;
 
@@ -50,9 +56,8 @@ pub fn head_sha(repo: &Path) -> Result<String> {
 
 /// Create a new branch at HEAD without checking it out.
 pub fn create_branch(repo: &Path, name: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["branch", name, "HEAD"])
-        .current_dir(repo)
+    let output = git_cmd(repo)
+        .args(["branch", "--force", name, "HEAD"])
         .output()
         .map_err(|e| git_error(format!("git branch failed: {e}")))?;
 
@@ -66,11 +71,10 @@ pub fn create_branch(repo: &Path, name: &str) -> Result<()> {
 
 /// Add a git worktree for the given branch at `path`.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_cmd(repo)
         .args(["worktree", "add"])
         .arg(path)
         .arg(branch)
-        .current_dir(repo)
         .output()
         .map_err(|e| git_error(format!("git worktree add failed: {e}")))?;
 
@@ -84,10 +88,9 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
 
 /// Remove a git worktree.
 pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_cmd(repo)
         .args(["worktree", "remove", "--force"])
         .arg(path)
-        .current_dir(repo)
         .output()
         .map_err(|e| git_error(format!("git worktree remove failed: {e}")))?;
 
@@ -101,9 +104,8 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
 
 /// Create a new branch pointing at a specific SHA (without checking it out).
 pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["branch", name, sha])
-        .current_dir(repo)
+    let output = git_cmd(repo)
+        .args(["branch", "--force", name, sha])
         .output()
         .map_err(|e| git_error(format!("git branch failed: {e}")))?;
 
@@ -118,9 +120,8 @@ pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<()> {
 /// Fast-forward the current branch to a given SHA.
 /// Fails if the merge cannot be done as a fast-forward.
 pub fn merge_ff_only(work_dir: &Path, sha: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_cmd(work_dir)
         .args(["merge", "--ff-only", sha])
-        .current_dir(work_dir)
         .output()
         .map_err(|e| git_error(format!("git merge --ff-only failed: {e}")))?;
 
@@ -144,9 +145,8 @@ pub fn checkpoint_commit(
     shadow_sha: Option<&str>,
 ) -> Result<String> {
     // Stage everything
-    let output = Command::new("git")
+    let output = git_cmd(work_dir)
         .args(["add", "-A"])
-        .current_dir(work_dir)
         .output()
         .map_err(|e| git_error(format!("git add failed: {e}")))?;
 
@@ -177,7 +177,7 @@ pub fn checkpoint_commit(
     let message = trailerlink::format_message(&subject, "", &trailers);
 
     // Commit with arc identity (works even if user.name/email not configured)
-    let output = Command::new("git")
+    let output = git_cmd(work_dir)
         .args([
             "-c",
             "user.name=arc",
@@ -188,7 +188,6 @@ pub fn checkpoint_commit(
             "-m",
             &message,
         ])
-        .current_dir(work_dir)
         .output()
         .map_err(|e| git_error(format!("git commit failed: {e}")))?;
 
@@ -203,9 +202,8 @@ pub fn checkpoint_commit(
 /// Compute the diff between a base commit and HEAD.
 /// Returns the patch text (may be empty if no changes).
 pub fn diff_against(work_dir: &Path, base: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_cmd(work_dir)
         .args(["diff", base, "HEAD"])
-        .current_dir(work_dir)
         .output()
         .map_err(|e| git_error(format!("git diff failed: {e}")))?;
 
@@ -215,6 +213,44 @@ pub fn diff_against(work_dir: &Path, base: &str) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Remove any stale worktree at `path` (best-effort), then add a fresh one.
+pub fn replace_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
+    let _ = remove_worktree(repo, path);
+    add_worktree(repo, path, branch)
+}
+
+/// Hard-reset the working directory to a specific SHA.
+pub fn reset_hard(work_dir: &Path, sha: &str) -> Result<()> {
+    let output = git_cmd(work_dir)
+        .args(["reset", "--hard", sha])
+        .output()
+        .map_err(|e| git_error(format!("git reset --hard failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(git_error(format!("git reset --hard failed: {stderr}")));
+    }
+
+    Ok(())
+}
+
+/// Sanitize a string for use as a git ref component.
+/// Lowercases, replaces non-alphanumeric chars with dashes, collapses runs.
+pub fn sanitize_ref_component(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            result.push('-');
+            prev_dash = true;
+        }
+    }
+    result.trim_matches('-').to_string()
 }
 
 /// Git-native metadata storage for pipeline runs.
@@ -786,5 +822,97 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(read_back, artifact_data);
+    }
+
+    #[test]
+    fn sanitize_ref_component_lowercases() {
+        assert_eq!(sanitize_ref_component("Hello"), "hello");
+    }
+
+    #[test]
+    fn sanitize_ref_component_replaces_special_chars() {
+        assert_eq!(sanitize_ref_component("a/b:c d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn sanitize_ref_component_collapses_consecutive_dashes() {
+        assert_eq!(sanitize_ref_component("a///b"), "a-b");
+    }
+
+    #[test]
+    fn sanitize_ref_component_trims_leading_trailing_dashes() {
+        assert_eq!(sanitize_ref_component("--abc--"), "abc");
+    }
+
+    #[test]
+    fn sanitize_ref_component_mixed() {
+        assert_eq!(
+            sanitize_ref_component("My Node!@#123"),
+            "my-node-123"
+        );
+    }
+
+    #[test]
+    fn replace_worktree_on_clean_path() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        create_branch(dir.path(), "rw-branch").unwrap();
+
+        let wt_path = dir.path().join("rw-worktree");
+        replace_worktree(dir.path(), &wt_path, "rw-branch").unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        remove_worktree(dir.path(), &wt_path).unwrap();
+    }
+
+    #[test]
+    fn replace_worktree_replaces_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        create_branch(dir.path(), "stale-branch").unwrap();
+
+        let wt_path = dir.path().join("stale-wt");
+        add_worktree(dir.path(), &wt_path, "stale-branch").unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        // Calling replace_worktree again succeeds (removes stale, re-creates)
+        replace_worktree(dir.path(), &wt_path, "stale-branch").unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        remove_worktree(dir.path(), &wt_path).unwrap();
+    }
+
+    #[test]
+    fn reset_hard_resets_to_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let initial_sha = head_sha(dir.path()).unwrap();
+
+        // Make a commit
+        fs::write(dir.path().join("file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "add file",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_ne!(head_sha(dir.path()).unwrap(), initial_sha);
+
+        // Reset back
+        reset_hard(dir.path(), &initial_sha).unwrap();
+        assert_eq!(head_sha(dir.path()).unwrap(), initial_sha);
+        assert!(!dir.path().join("file.txt").exists());
     }
 }

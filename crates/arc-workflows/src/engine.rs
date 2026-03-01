@@ -555,6 +555,8 @@ async fn git_diff_host(work_dir: PathBuf, base: String) -> Option<String> {
     }
 }
 
+pub const GIT_REMOTE: &str = "git -c maintenance.auto=0 -c gc.auto=0";
+
 /// Run a git checkpoint commit inside a remote execution environment.
 pub async fn git_checkpoint_remote(
     exec_env: &dyn ExecutionEnvironment,
@@ -565,8 +567,9 @@ pub async fn git_checkpoint_remote(
     shadow_sha: Option<String>,
 ) -> Option<String> {
     // Stage everything
+    let add_cmd = format!("{GIT_REMOTE} add -A");
     let add_result = exec_env
-        .exec_command("git add -A", 30_000, None, None, None)
+        .exec_command(&add_cmd, 30_000, None, None, None)
         .await;
     if add_result.as_ref().map_or(true, |r| r.exit_code != 0) {
         return None;
@@ -604,18 +607,20 @@ pub async fn git_checkpoint_remote(
     }
 
     // Commit with arc identity using the message file
-    let commit_cmd =
-        "git -c user.name=arc -c user.email=arc@local commit --allow-empty -F /tmp/arc-commit-msg";
+    let commit_cmd = format!(
+        "{GIT_REMOTE} -c user.name=arc -c user.email=arc@local commit --allow-empty -F /tmp/arc-commit-msg"
+    );
     let commit_result = exec_env
-        .exec_command(commit_cmd, 30_000, None, None, None)
+        .exec_command(&commit_cmd, 30_000, None, None, None)
         .await;
     if commit_result.as_ref().map_or(true, |r| r.exit_code != 0) {
         return None;
     }
 
     // Get the new HEAD SHA
+    let sha_cmd = format!("{GIT_REMOTE} rev-parse HEAD");
     let sha_result = exec_env
-        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
+        .exec_command(&sha_cmd, 10_000, None, None, None)
         .await;
     match sha_result {
         Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
@@ -625,7 +630,7 @@ pub async fn git_checkpoint_remote(
 
 /// Run a git diff inside a remote execution environment.
 async fn git_diff_remote(exec_env: &dyn ExecutionEnvironment, base: &str) -> Option<String> {
-    let cmd = format!("git diff {base} HEAD");
+    let cmd = format!("{GIT_REMOTE} diff {base} HEAD");
     match exec_env.exec_command(&cmd, 30_000, None, None, None).await {
         Ok(r) if r.exit_code == 0 => Some(r.stdout),
         _ => None,
@@ -640,7 +645,7 @@ pub async fn git_create_branch_at_remote(
     name: &str,
     sha: &str,
 ) -> bool {
-    let cmd = format!("git branch {name} {sha}");
+    let cmd = format!("{GIT_REMOTE} branch --force {name} {sha}");
     matches!(
         exec_env.exec_command(&cmd, 30_000, None, None, None).await,
         Ok(r) if r.exit_code == 0
@@ -653,7 +658,7 @@ pub async fn git_add_worktree_remote(
     path: &str,
     branch: &str,
 ) -> bool {
-    let cmd = format!("git worktree add {path} {branch}");
+    let cmd = format!("{GIT_REMOTE} worktree add {path} {branch}");
     matches!(
         exec_env.exec_command(&cmd, 30_000, None, None, None).await,
         Ok(r) if r.exit_code == 0
@@ -665,7 +670,7 @@ pub async fn git_remove_worktree_remote(
     exec_env: &dyn ExecutionEnvironment,
     path: &str,
 ) -> bool {
-    let cmd = format!("git worktree remove --force {path}");
+    let cmd = format!("{GIT_REMOTE} worktree remove --force {path}");
     matches!(
         exec_env.exec_command(&cmd, 30_000, None, None, None).await,
         Ok(r) if r.exit_code == 0
@@ -677,7 +682,7 @@ pub async fn git_merge_ff_only_remote(
     exec_env: &dyn ExecutionEnvironment,
     sha: &str,
 ) -> bool {
-    let cmd = format!("git merge --ff-only {sha}");
+    let cmd = format!("{GIT_REMOTE} merge --ff-only {sha}");
     matches!(
         exec_env.exec_command(&cmd, 30_000, None, None, None).await,
         Ok(r) if r.exit_code == 0
@@ -686,13 +691,24 @@ pub async fn git_merge_ff_only_remote(
 
 /// Get the current HEAD SHA from a remote execution environment.
 pub async fn git_head_sha_remote(exec_env: &dyn ExecutionEnvironment) -> Option<String> {
+    let cmd = format!("{GIT_REMOTE} rev-parse HEAD");
     match exec_env
-        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
+        .exec_command(&cmd, 10_000, None, None, None)
         .await
     {
         Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
         _ => None,
     }
+}
+
+/// Remove any stale worktree at `path` (best-effort), then add a fresh one.
+pub async fn git_replace_worktree_remote(
+    exec_env: &dyn ExecutionEnvironment,
+    path: &str,
+    branch: &str,
+) -> bool {
+    let _ = git_remove_worktree_remote(exec_env, path).await;
+    git_add_worktree_remote(exec_env, path, branch).await
 }
 
 /// Configuration for a pipeline run.

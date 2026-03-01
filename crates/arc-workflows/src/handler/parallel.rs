@@ -268,7 +268,9 @@ impl Handler for ParallelHandler {
                     let branch_key = &target_id;
                     let branch_name = format!(
                         "arc/run/parallel/{}/{}/{}",
-                        gs.run_id, node.id, branch_key
+                        gs.run_id,
+                        crate::git::sanitize_ref_component(&node.id),
+                        crate::git::sanitize_ref_component(branch_key),
                     );
 
                     match &gs.mode {
@@ -284,7 +286,8 @@ impl Handler for ParallelHandler {
                             let wtp = wt_path.clone();
                             tokio::task::spawn_blocking(move || {
                                 crate::git::create_branch_at(&wd, &bn, &bs)?;
-                                crate::git::add_worktree(&wd, &wtp, &bn)
+                                crate::git::replace_worktree(&wd, &wtp, &bn)?;
+                                crate::git::reset_hard(&wtp, &bs)
                             })
                             .await
                             .map_err(|e| {
@@ -315,7 +318,7 @@ impl Handler for ParallelHandler {
                                     "failed to create remote branch {branch_name}"
                                 )));
                             }
-                            let ok = crate::engine::git_add_worktree_remote(
+                            let ok = crate::engine::git_replace_worktree_remote(
                                 &*services.execution_env,
                                 &wt_path_str,
                                 &branch_name,
@@ -324,6 +327,20 @@ impl Handler for ParallelHandler {
                             if !ok {
                                 return Err(ArcError::Handler(format!(
                                     "failed to add remote worktree {wt_path_str}"
+                                )));
+                            }
+                            // Reset worktree to the base SHA for a clean start
+                            let reset_cmd = format!(
+                                "{} reset --hard {bsha}",
+                                crate::engine::GIT_REMOTE
+                            );
+                            let reset_result = services
+                                .execution_env
+                                .exec_command(&reset_cmd, 30_000, Some(&wt_path_str), None, None)
+                                .await;
+                            if !matches!(reset_result, Ok(ref r) if r.exit_code == 0) {
+                                return Err(ArcError::Handler(format!(
+                                    "failed to reset remote worktree {wt_path_str}"
                                 )));
                             }
                             branch_context.set(
@@ -415,23 +432,26 @@ impl Handler for ParallelHandler {
                     let nid = &setup.target_id;
                     let status_str = outcome.status.to_string();
                     // Use exec_command to commit and capture HEAD in the branch worktree
+                    let git_r = crate::engine::GIT_REMOTE;
+                    let add_cmd = format!("{git_r} add -A");
                     let add_result = setup
                         .execution_env
-                        .exec_command("git add -A", 30_000, None, None, None)
+                        .exec_command(&add_cmd, 30_000, None, None, None)
                         .await;
                     if add_result.as_ref().is_ok_and(|r| r.exit_code == 0) {
                         let msg = format!("arc({rid}): {nid} ({status_str})");
                         let commit_cmd = format!(
-                            "git -c user.name=arc -c user.email=arc@local commit --allow-empty -m '{msg}'"
+                            "{git_r} -c user.name=arc -c user.email=arc@local commit --allow-empty -m '{msg}'"
                         );
                         let _ = setup
                             .execution_env
                             .exec_command(&commit_cmd, 30_000, None, None, None)
                             .await;
                     }
+                    let sha_cmd = format!("{git_r} rev-parse HEAD");
                     let sha_result = setup
                         .execution_env
-                        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
+                        .exec_command(&sha_cmd, 10_000, None, None, None)
                         .await;
                     match sha_result {
                         Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),

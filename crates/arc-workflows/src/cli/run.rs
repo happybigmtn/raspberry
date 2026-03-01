@@ -750,7 +750,7 @@ fn setup_worktree(
     crate::git::create_branch(original_cwd, &branch_name).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let worktree_path = logs_dir.join("worktree");
-    crate::git::add_worktree(original_cwd, &worktree_path, &branch_name)
+    crate::git::replace_worktree(original_cwd, &worktree_path, &branch_name)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     std::env::set_current_dir(&worktree_path)?;
@@ -876,7 +876,7 @@ async fn run_from_branch(
 
     // Re-attach worktree to the existing run branch
     let worktree_path = logs_dir.join("worktree");
-    crate::git::add_worktree(&original_cwd, &worktree_path, run_branch)
+    crate::git::replace_worktree(&original_cwd, &worktree_path, run_branch)
         .map_err(|e| anyhow::anyhow!("failed to attach worktree to {run_branch}: {e}"))?;
     std::env::set_current_dir(&worktree_path)?;
 
