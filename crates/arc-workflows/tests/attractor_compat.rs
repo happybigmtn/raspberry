@@ -2,9 +2,9 @@ use std::path::Path;
 
 use arc_workflows::parser::parse;
 
-fn parse_kilroy_dot(filename: &str) -> Result<arc_workflows::graph::types::Graph, String> {
+fn parse_attractor_dot(filename: &str) -> Result<arc_workflows::graph::types::Graph, String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test/kilroy")
+        .join("../../test/attractor")
         .join(filename);
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -12,12 +12,12 @@ fn parse_kilroy_dot(filename: &str) -> Result<arc_workflows::graph::types::Graph
 }
 
 // ---------------------------------------------------------------------------
-// Parsing tests: every kilroy DOT file must parse without error
+// Parsing tests: every attractor DOT file must parse without error
 // ---------------------------------------------------------------------------
 
 #[test]
-fn parse_kilroy_simple_example() {
-    let graph = parse_kilroy_dot("simple_example.dot").unwrap();
+fn parse_attractor_simple_example() {
+    let graph = parse_attractor_dot("simple_example.dot").unwrap();
     assert_eq!(graph.name, "Simple");
     assert_eq!(graph.goal(), "Run tests and report");
     assert_eq!(graph.nodes.len(), 4);
@@ -27,8 +27,8 @@ fn parse_kilroy_simple_example() {
 }
 
 #[test]
-fn parse_kilroy_batch_clean() {
-    let graph = parse_kilroy_dot("batch_clean.dot").unwrap();
+fn parse_attractor_batch_clean() {
+    let graph = parse_attractor_dot("batch_clean.dot").unwrap();
     assert_eq!(graph.name, "G");
     assert_eq!(graph.nodes.len(), 3);
     assert!(graph.find_start_node().is_some());
@@ -36,22 +36,22 @@ fn parse_kilroy_batch_clean() {
 }
 
 #[test]
-fn parse_kilroy_batch_has_errors() {
+fn parse_attractor_batch_has_errors() {
     // This file is intentionally missing llm_provider on the work node.
     // It should still parse successfully — validation is separate from parsing.
-    let graph = parse_kilroy_dot("batch_has_errors.dot").unwrap();
+    let graph = parse_attractor_dot("batch_has_errors.dot").unwrap();
     assert_eq!(graph.nodes.len(), 3);
 }
 
 #[test]
-fn parse_kilroy_batch_warnings_only() {
-    let graph = parse_kilroy_dot("batch_warnings_only.dot").unwrap();
+fn parse_attractor_batch_warnings_only() {
+    let graph = parse_attractor_dot("batch_warnings_only.dot").unwrap();
     assert_eq!(graph.nodes.len(), 3);
 }
 
 #[test]
-fn parse_kilroy_solitaire_fast() {
-    let graph = parse_kilroy_dot("solitaire_fast.dot").unwrap();
+fn parse_attractor_solitaire_fast() {
+    let graph = parse_attractor_dot("solitaire_fast.dot").unwrap();
     assert_eq!(graph.name, "solitaire");
     assert_eq!(
         graph.goal(),
@@ -73,8 +73,8 @@ fn parse_kilroy_solitaire_fast() {
 }
 
 #[test]
-fn parse_kilroy_consensus_task() {
-    let graph = parse_kilroy_dot("consensus_task.dot").unwrap();
+fn parse_attractor_consensus_task() {
+    let graph = parse_attractor_dot("consensus_task.dot").unwrap();
     assert_eq!(graph.name, "Workflow");
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
@@ -83,8 +83,8 @@ fn parse_kilroy_consensus_task() {
 }
 
 #[test]
-fn parse_kilroy_semport() {
-    let graph = parse_kilroy_dot("semport.dot").unwrap();
+fn parse_attractor_semport() {
+    let graph = parse_attractor_dot("semport.dot").unwrap();
     assert_eq!(graph.name, "Workflow");
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
@@ -93,8 +93,8 @@ fn parse_kilroy_semport() {
 }
 
 #[test]
-fn parse_kilroy_reference_template() {
-    let graph = parse_kilroy_dot("reference_template.dot").unwrap();
+fn parse_attractor_reference_template() {
+    let graph = parse_attractor_dot("reference_template.dot").unwrap();
     assert_eq!(graph.name, "reference_template");
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
@@ -109,16 +109,16 @@ fn parse_kilroy_reference_template() {
 }
 
 #[test]
-fn parse_kilroy_green_test_moderate() {
-    let graph = parse_kilroy_dot("green_test_moderate.dot").unwrap();
+fn parse_attractor_green_test_moderate() {
+    let graph = parse_attractor_dot("green_test_moderate.dot").unwrap();
     assert_eq!(graph.name, "linkcheck");
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
 }
 
 #[test]
-fn parse_kilroy_green_test_complex() {
-    let graph = parse_kilroy_dot("green_test_complex.dot").unwrap();
+fn parse_attractor_green_test_complex() {
+    let graph = parse_attractor_dot("green_test_complex.dot").unwrap();
     assert_eq!(graph.name, "dttf");
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
@@ -127,22 +127,22 @@ fn parse_kilroy_green_test_complex() {
 }
 
 #[test]
-fn parse_kilroy_green_test_vague() {
-    let graph = parse_kilroy_dot("green_test_vague.dot").unwrap();
+fn parse_attractor_green_test_vague() {
+    let graph = parse_attractor_dot("green_test_vague.dot").unwrap();
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
 }
 
 #[test]
-fn parse_kilroy_refactor_test_moderate() {
-    let graph = parse_kilroy_dot("refactor_test_moderate.dot").unwrap();
+fn parse_attractor_refactor_test_moderate() {
+    let graph = parse_attractor_dot("refactor_test_moderate.dot").unwrap();
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
 }
 
 #[test]
-fn parse_kilroy_refactor_test_complex() {
-    let graph = parse_kilroy_dot("refactor_test_complex.dot").unwrap();
+fn parse_attractor_refactor_test_complex() {
+    let graph = parse_attractor_dot("refactor_test_complex.dot").unwrap();
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
     // Large workflow
@@ -150,8 +150,8 @@ fn parse_kilroy_refactor_test_complex() {
 }
 
 #[test]
-fn parse_kilroy_refactor_test_vague() {
-    let graph = parse_kilroy_dot("refactor_test_vague.dot").unwrap();
+fn parse_attractor_refactor_test_vague() {
+    let graph = parse_attractor_dot("refactor_test_vague.dot").unwrap();
     assert!(graph.find_start_node().is_some());
     assert!(graph.find_exit_node().is_some());
 }
