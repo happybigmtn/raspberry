@@ -63,28 +63,18 @@
   --color-coral: #dc2626;
   --color-teal-300: #0891b2;
   --color-teal-500: #0e7490;
-
-  /* @pierre/diffs — light surfaces */
-  --diffs-bg-buffer-override: #ffffff;
-  --diffs-bg-context-override: #f8fafc;
-  --diffs-bg-hover-override: #f1f5f9;
-  --diffs-bg-separator-override: #e2e8f0;
-  --diffs-fg-number-override: #94a3b8;
-  --diffs-addition-color-override: #0d9488;
-  --diffs-fg-number-addition-override: rgba(13, 148, 136, 0.5);
-  --diffs-deletion-color-override: #dc2626;
-  --diffs-fg-number-deletion-override: rgba(220, 38, 38, 0.5);
-
-  /* Chart variables */
-  --chart-gridline: rgba(0, 0, 0, 0.06);
-  --chart-axis-label: rgba(71, 85, 105, 1);
 }
 
-/* ── Chart variables (dark defaults) ── */
+/* ── Chart variables ── */
 
 :root {
   --chart-gridline: rgba(255, 255, 255, 0.04);
   --chart-axis-label: rgba(75, 87, 104, 1);
+}
+
+.light {
+  --chart-gridline: rgba(0, 0, 0, 0.06);
+  --chart-axis-label: rgba(71, 85, 105, 1);
 }
 
 /* ── Background atmosphere ── */
@@ -145,4 +135,16 @@
   /* Deletions — coral */
   --diffs-deletion-color-override: #E86B6B;
   --diffs-fg-number-deletion-override: rgba(232, 107, 107, 0.5);
+}
+
+.light {
+  --diffs-bg-buffer-override: #ffffff;
+  --diffs-bg-context-override: #f8fafc;
+  --diffs-bg-hover-override: #f1f5f9;
+  --diffs-bg-separator-override: #e2e8f0;
+  --diffs-fg-number-override: #94a3b8;
+  --diffs-addition-color-override: #0d9488;
+  --diffs-fg-number-addition-override: rgba(13, 148, 136, 0.5);
+  --diffs-deletion-color-override: #dc2626;
+  --diffs-fg-number-deletion-override: rgba(220, 38, 38, 0.5);
 }
