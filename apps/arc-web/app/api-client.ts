@@ -51,6 +51,6 @@ export async function apiFetch(
  */
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
-  if (!res.ok) throw new Response(await res.text(), { status: res.status });
+  if (!res.ok) throw new Response(null, { status: res.status });
   return res.json() as Promise<T>;
 }

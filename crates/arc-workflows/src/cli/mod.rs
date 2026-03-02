@@ -110,7 +110,7 @@ pub struct RunArgs {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Execution environment for agent tools
+    /// Sandbox for agent tools
     #[arg(long, value_enum)]
     pub sandbox: Option<SandboxProvider>,
 
@@ -868,10 +868,10 @@ pub fn format_event_detail(event: &WorkflowRunEvent, styles: &Styles) -> String 
                     format!("{d}── SANDBOX_CLEANUP_FAILED ──────────────────{r}\n  {d}provider:{r} {provider}\n  {d}error:{r}    {error}\n")
                 }
                 SandboxEvent::SnapshotPulling { name } => {
-                    format!("{d}── SANDBOX_SNAPSHOT_PULLING ───────────────────{r}\n  {d}image:{r} {name}\n")
+                    format!("{d}── SANDBOX_SNAPSHOT_PULLING ───────────────────{r}\n  {d}name:{r} {name}\n")
                 }
                 SandboxEvent::SnapshotPulled { name, duration_ms } => {
-                    format!("{d}── SANDBOX_SNAPSHOT_PULLED ────────────────────{r}\n  {d}image:{r}       {name}\n  {d}duration_ms:{r} {duration_ms}\n")
+                    format!("{d}── SANDBOX_SNAPSHOT_PULLED ────────────────────{r}\n  {d}name:{r}       {name}\n  {d}duration_ms:{r} {duration_ms}\n")
                 }
                 SandboxEvent::SnapshotEnsuring { name } => {
                     format!("{d}── SANDBOX_SNAPSHOT_ENSURING ───────────────{r}\n  {d}name:{r} {name}\n")

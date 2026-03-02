@@ -7608,10 +7608,10 @@ async fn large_context_values_are_offloaded_to_artifact_store() {
 }
 
 // ---------------------------------------------------------------------------
-// Artifact sync to remote execution environments
+// Artifact sync to remote sandboxs
 // ---------------------------------------------------------------------------
 
-/// A mock execution environment where `file_exists` always returns false,
+/// A mock sandbox where `file_exists` always returns false,
 /// simulating a remote container that doesn't have local artifact files.
 struct RemoteMockEnv {
     working_dir: String,
@@ -7924,7 +7924,7 @@ async fn node_dir_uses_visit_count_on_revisit() {
 
 use arc_workflows::cli::cli_backend::{BackendRouter, AgentCliBackend};
 
-/// A mock execution environment for CLI backend e2e tests.
+/// A mock sandbox for CLI backend e2e tests.
 /// Records all exec_command and write_file calls, and returns configurable
 /// responses based on command content.
 struct CliTestEnv {
@@ -8966,7 +8966,7 @@ use arc_workflows::engine::GitCheckpointMode;
 use arc_workflows::handler::fan_in::FanInHandler;
 use arc_workflows::handler::parallel::ParallelHandler;
 
-/// A handler that writes a file named `{node_id}.txt` into the execution environment's
+/// A handler that writes a file named `{node_id}.txt` into the sandbox's
 /// working directory. Used to verify git worktree isolation in parallel branches.
 struct FileWriterHandler;
 

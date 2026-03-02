@@ -124,7 +124,7 @@ pub fn parse_v4a_patch(text: &str) -> Result<Vec<PatchOperation>, String> {
     Ok(ops)
 }
 
-/// Applies a list of patch operations using the given execution environment.
+/// Applies a list of patch operations using the given sandbox.
 ///
 /// # Errors
 /// Returns an error if any file operation fails.

@@ -35,7 +35,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Execution environment for agent tools
+    /// Sandbox for agent tools
     #[arg(long, value_enum)]
     pub sandbox: Option<SandboxProvider>,
 

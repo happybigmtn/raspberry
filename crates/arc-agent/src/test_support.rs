@@ -199,7 +199,7 @@ impl Sandbox for MockSandbox {
 
 // --- MutableMockSandbox ---
 
-/// A mock execution environment with Mutex-protected files for tests that need
+/// A mock sandbox with Mutex-protected files for tests that need
 /// write operations to be visible to subsequent reads (e.g., `apply_patch` tests).
 pub struct MutableMockSandbox {
     pub files: Mutex<HashMap<String, String>>,

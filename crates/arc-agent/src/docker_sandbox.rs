@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// Configuration for a Docker-based execution environment.
+/// Configuration for a Docker-based sandbox.
 pub struct DockerSandboxConfig {
     /// Docker image to use. Default: `"arc-agent:latest"`.
     pub image: String,
@@ -53,7 +53,7 @@ impl Default for DockerSandboxConfig {
     }
 }
 
-/// Execution environment that runs all operations inside a Docker container.
+/// Sandbox that runs all operations inside a Docker container.
 ///
 /// The host working directory is bind-mounted at `container_mount_point`. All file
 /// operations, commands, grep, and glob execute inside the container via `docker exec`.

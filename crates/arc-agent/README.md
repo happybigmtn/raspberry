@@ -9,7 +9,7 @@ The crate is organized around a central `Session` that drives an agentic loop:
 1. **User input** is appended to a conversation `History`
 2. The session builds a `Request` with system prompt, history, and tools
 3. An LLM generates a response (text and/or tool calls) via `unified-llm`
-4. Tool calls are executed through a `ToolRegistry` against an `Sandbox`
+4. Tool calls are executed through a `ToolRegistry` against a `Sandbox`
 5. Results are recorded and the loop continues until the LLM responds with text only (natural completion), a turn limit is reached, or the session is aborted
 
 ```

@@ -16,7 +16,7 @@ use crate::outcome::{Outcome, StageStatus};
 use super::{EngineServices, Handler};
 
 // ---------------------------------------------------------------------------
-// WorktreeSandbox — decorates an Sandbox with a custom working dir
+// WorktreeSandbox — decorates a Sandbox with a custom working dir
 // ---------------------------------------------------------------------------
 
 /// Wraps an existing `Sandbox` so that all operations use a
@@ -256,7 +256,7 @@ impl Handler for ParallelHandler {
             None
         };
 
-        // Build per-branch sandboxs (sequentially for git setup)
+        // Build per-branch sandboxes (sequentially for git setup)
         struct BranchSetup {
             target_id: String,
             branch_index: usize,

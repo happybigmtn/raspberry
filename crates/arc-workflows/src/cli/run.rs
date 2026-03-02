@@ -376,7 +376,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         if let Ok(handle) = rt {
             handle.spawn(async move {
                 if let Err(e) = sandbox_for_cleanup.cleanup().await {
-                    tracing::warn!(error = %e, "Execution environment cleanup failed");
+                    tracing::warn!(error = %e, "Sandbox cleanup failed");
                     eprintln!("Warning: sandbox cleanup failed: {e}");
                 }
             });

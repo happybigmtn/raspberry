@@ -382,7 +382,7 @@ pub async fn run_with_args(args: AgentArgs) -> anyhow::Result<()> {
     eprintln!("{}Using model: {model}{}", styles.dim, styles.reset,);
     let mut profile = build_profile(provider, model, Some(client.clone()));
 
-    // Build execution environment
+    // Build sandbox
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let cwd_str = cwd.to_string_lossy().to_string();
     let env: Arc<dyn crate::Sandbox> = Arc::new(LocalSandbox::new(cwd));

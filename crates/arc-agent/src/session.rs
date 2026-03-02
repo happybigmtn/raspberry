@@ -170,7 +170,7 @@ impl Session {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let model_name = self.provider_profile.model().to_string();
 
-        // Detect git info via execution environment
+        // Detect git info via sandbox
         let git_branch = self
             .sandbox
             .exec_command("git rev-parse --abbrev-ref HEAD", 5000, None, None, None)
