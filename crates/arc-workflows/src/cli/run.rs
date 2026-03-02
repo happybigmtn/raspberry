@@ -27,7 +27,7 @@ use super::backend::AgentApiBackend;
 use super::cli_backend::{BackendRouter, AgentCliBackend};
 use super::task_config;
 use super::{
-    compute_stage_cost, format_cost, format_duration_human, format_event_detail,
+    compute_stage_cost, format_cost, format_duration_human,
     format_event_summary, format_tokens_human, print_diagnostics, read_dot_file, SandboxProvider,
     RunArgs,
 };
@@ -154,7 +154,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         }
     }
 
-    if args.verbose >= 1 {
+    if args.verbose {
         eprintln!(
             "{dim}Logs: {}{reset}",
             logs_dir.display(),
@@ -230,11 +230,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         });
     }
 
-    if args.verbose >= 2 {
-        emitter.on_event(move |event| {
-            eprint!("{}", format_event_detail(event, styles));
-        });
-    } else if args.verbose >= 1 {
+    if args.verbose {
         emitter.on_event(move |event| {
             eprintln!("{}", format_event_summary(event, styles));
         });

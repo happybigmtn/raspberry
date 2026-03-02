@@ -25,14 +25,14 @@ use crate::outcome::StageUsage;
 pub struct AgentApiBackend {
     model: String,
     provider: Provider,
-    verbose: u8,
+    verbose: bool,
     styles: &'static Styles,
     sessions: Mutex<HashMap<String, Session>>,
 }
 
 impl AgentApiBackend {
     #[must_use]
-    pub fn new(model: String, provider: Provider, verbose: u8, styles: &'static Styles) -> Self {
+    pub fn new(model: String, provider: Provider, verbose: bool, styles: &'static Styles) -> Self {
         Self {
             model,
             provider,
@@ -283,7 +283,7 @@ impl CodergenBackend for AgentApiBackend {
                 }
 
                 // Verbose stderr printing (gated on verbosity)
-                if verbose >= 1 {
+                if verbose {
                     match &event.event {
                         AgentEvent::ToolCallStarted {
                             tool_name,
@@ -297,21 +297,6 @@ impl CodergenBackend for AgentApiBackend {
                                 bold = styles.bold,
                                 cyan = styles.cyan,
                                 args = format_tool_args(arguments),
-                            );
-                        }
-                        AgentEvent::ToolCallCompleted {
-                            tool_name,
-                            output,
-                            is_error,
-                            ..
-                        } if verbose >= 2 => {
-                            let label = if *is_error { "error" } else { "result" };
-                            eprintln!(
-                                "{dim}[{node_id}]   [{label}] {tool_name}:{reset}\n{}",
-                                serde_json::to_string_pretty(output)
-                                    .unwrap_or_else(|_| output.to_string()),
-                                dim = styles.dim,
-                                reset = styles.reset,
                             );
                         }
                         AgentEvent::Error { error } => {
@@ -379,7 +364,7 @@ impl CodergenBackend for AgentApiBackend {
         stage_usage.cost = super::compute_stage_cost(&stage_usage);
 
         // Print session summary to stderr.
-        if self.verbose >= 1 {
+        if self.verbose {
             let total_tokens = total_usage.input_tokens + total_usage.output_tokens;
             let token_str = if total_tokens >= 1000 {
                 format!("{}k tokens", total_tokens / 1000)
@@ -469,10 +454,10 @@ mod tests {
     #[test]
     fn agent_backend_stores_config() {
         let styles = Box::leak(Box::new(Styles::new(false)));
-        let backend = AgentApiBackend::new("claude-opus-4-6".to_string(), Provider::OpenAi, 2, styles);
+        let backend = AgentApiBackend::new("claude-opus-4-6".to_string(), Provider::OpenAi, true, styles);
         assert_eq!(backend.model, "claude-opus-4-6");
         assert_eq!(backend.provider, Provider::OpenAi);
-        assert_eq!(backend.verbose, 2);
+        assert!(backend.verbose);
     }
 
     #[test]
@@ -481,7 +466,7 @@ mod tests {
         let backend = AgentApiBackend::new(
             "claude-opus-4-6".to_string(),
             Provider::Anthropic,
-            0,
+            false,
             styles,
         );
         assert!(backend.sessions.lock().unwrap().is_empty());
@@ -493,7 +478,7 @@ mod tests {
         let backend = AgentApiBackend::new(
             "claude-opus-4-6".to_string(),
             Provider::Anthropic,
-            0,
+            false,
             styles,
         );
         let mut profile = backend.build_profile();

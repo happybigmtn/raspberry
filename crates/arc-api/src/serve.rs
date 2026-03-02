@@ -106,7 +106,7 @@ pub async fn serve_command(args: ServeArgs, styles: &'static Styles) -> anyhow::
                 Some(Box::new(AgentApiBackend::new(
                     model.clone(),
                     provider_enum,
-                    0,
+                    false,
                     styles,
                 )))
             }
