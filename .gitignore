@@ -2,3 +2,4 @@ target
 .env
 .entire
 .claude
+node_modules

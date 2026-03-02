@@ -4,10 +4,15 @@ info:
   version: "0.1.0"
   description: HTTP API for managing Arc pipeline executions.
 
+tags:
+  - name: Pipelines
+    description: Pipeline management operations
+
 paths:
   /pipelines:
     get:
       operationId: listPipelines
+      tags: [Pipelines]
       summary: List all pipelines
       responses:
         "200":
@@ -20,6 +25,7 @@ paths:
                   $ref: "#/components/schemas/PipelineStatusResponse"
     post:
       operationId: startPipeline
+      tags: [Pipelines]
       summary: Start a new pipeline
       requestBody:
         required: true
@@ -44,6 +50,7 @@ paths:
   /pipelines/{id}:
     get:
       operationId: getPipelineStatus
+      tags: [Pipelines]
       summary: Get pipeline status
       parameters:
         - name: id
@@ -64,6 +71,7 @@ paths:
   /pipelines/{id}/cancel:
     post:
       operationId: cancelPipeline
+      tags: [Pipelines]
       summary: Cancel a running pipeline
       parameters:
         - name: id
@@ -95,6 +103,7 @@ paths:
   /pipelines/{id}/graph:
     get:
       operationId: getGraph
+      tags: [Pipelines]
       summary: Get pipeline graph as SVG
       parameters:
         - name: id
@@ -121,6 +130,7 @@ paths:
   /pipelines/{id}/checkpoint:
     get:
       operationId: getCheckpoint
+      tags: [Pipelines]
       summary: Get pipeline checkpoint
       parameters:
         - name: id
@@ -140,6 +150,7 @@ paths:
   /pipelines/{id}/context:
     get:
       operationId: getContext
+      tags: [Pipelines]
       summary: Get pipeline context
       parameters:
         - name: id
@@ -160,6 +171,7 @@ paths:
   /pipelines/{id}/events:
     get:
       operationId: getEvents
+      tags: [Pipelines]
       summary: Subscribe to pipeline events via SSE
       parameters:
         - name: id
@@ -182,6 +194,7 @@ paths:
   /pipelines/{id}/questions:
     get:
       operationId: getQuestions
+      tags: [Pipelines]
       summary: Get pending questions for a pipeline
       parameters:
         - name: id
@@ -204,6 +217,7 @@ paths:
   /pipelines/{id}/questions/{qid}/answer:
     post:
       operationId: submitAnswer
+      tags: [Pipelines]
       summary: Submit an answer to a question
       parameters:
         - name: id
@@ -241,6 +255,7 @@ paths:
   /pipelines/{id}/retro:
     get:
       operationId: getRetro
+      tags: [Pipelines]
       summary: Get pipeline retrospective
       parameters:
         - name: id

@@ -15,7 +15,8 @@
     "rootDirs": [".", "./.react-router/types"],
     "baseUrl": ".",
     "paths": {
-      "~/*": ["./app/*"]
+      "~/*": ["./app/*"],
+      "@qltysh/arc-api-client": ["../../packages/arc-api-client/src/index.ts"]
     },
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,
