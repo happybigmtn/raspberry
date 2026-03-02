@@ -54,6 +54,8 @@ enum RunCommand {
 enum LlmCommand {
     /// Execute a prompt
     Prompt(arc_llm::cli::PromptArgs),
+    /// Interactive multi-turn chat
+    Chat(arc_llm::cli::ChatArgs),
 }
 
 #[tokio::main]
@@ -80,6 +82,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Llm { command } => match command {
             LlmCommand::Prompt(args) => arc_llm::cli::run_prompt(args).await?,
+            LlmCommand::Chat(args) => arc_llm::cli::run_chat(args).await?,
         },
         Command::Agent(args) => arc_agent::cli::run_with_args(args).await?,
         Command::Run { command } => match command {

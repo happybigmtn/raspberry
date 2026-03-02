@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -7,6 +7,7 @@ use futures::StreamExt;
 
 use crate::catalog;
 use crate::generate::{self, GenerateParams};
+use crate::types::Message;
 
 #[derive(Args)]
 pub struct PromptArgs {
@@ -167,6 +168,68 @@ fn print_usage(usage: &crate::types::Usage) {
         "Tokens: {} input, {} output, {} total",
         usage.input_tokens, usage.output_tokens, usage.total_tokens
     );
+}
+
+#[derive(Args)]
+pub struct ChatArgs {
+    /// Model to use
+    #[arg(short, long)]
+    pub model: Option<String>,
+
+    /// System prompt
+    #[arg(short, long)]
+    pub system: Option<String>,
+}
+
+pub async fn run_chat(args: ChatArgs) -> Result<()> {
+    let (model_id, provider) = resolve_model(args.model);
+    eprintln!("Using model: {model_id}");
+
+    let mut messages: Vec<Message> = Vec::new();
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    loop {
+        eprint!("> ");
+        io::stderr().flush()?;
+
+        let line = match lines.next() {
+            Some(Ok(line)) => line,
+            Some(Err(e)) => return Err(e.into()),
+            None => break, // EOF
+        };
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        messages.push(Message::user(trimmed));
+
+        let mut params = GenerateParams::new(&model_id)
+            .messages(messages.clone())
+            .max_tokens(4096);
+        if let Some(ref p) = provider {
+            params = params.provider(p);
+        }
+        if let Some(ref sys) = args.system {
+            params = params.system(sys);
+        }
+
+        let mut stream_result = generate::stream(params).await?;
+        let mut full_text = String::new();
+        while let Some(event) = stream_result.next().await {
+            if let crate::types::StreamEvent::TextDelta { delta, .. } = event? {
+                print!("{delta}");
+                full_text.push_str(&delta);
+            }
+        }
+        println!();
+
+        messages.push(Message::assistant(full_text));
+    }
+
+    Ok(())
 }
 
 pub async fn run_prompt(args: PromptArgs) -> Result<()> {

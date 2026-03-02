@@ -248,6 +248,48 @@ fn prompt_schema_stream_generates_json() {
     );
 }
 
+// == LLM: chat ================================================================
+
+#[test]
+#[ignore = "requires API key"]
+fn chat_multi_turn_with_system_prompt() {
+    let assert = arc()
+        .args([
+            "llm",
+            "chat",
+            "-m",
+            "claude-haiku-4-5",
+            "-s",
+            "You are a pilot. End every response with 'Roger that.'",
+        ])
+        .write_stdin("What is your profession?\nWhat did I just ask you?\n")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+
+    // Verify model info printed to stderr
+    assert!(
+        stderr.contains("Using model:"),
+        "stderr should show model info"
+    );
+
+    // Verify the system prompt influenced the output
+    assert!(
+        stdout.to_lowercase().contains("roger that"),
+        "response should follow pilot system prompt, got: {stdout}"
+    );
+
+    // Verify multi-turn: the second response should reference the first question
+    assert!(
+        stdout.to_lowercase().contains("profession")
+            || stdout.to_lowercase().contains("asked")
+            || stdout.to_lowercase().contains("pilot"),
+        "second response should show multi-turn context, got: {stdout}"
+    );
+}
+
 // == Agent ====================================================================
 
 #[test]
