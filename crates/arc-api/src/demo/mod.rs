@@ -817,50 +817,8 @@ mod runs {
         }
     }
 
-    pub fn verifications() -> Vec<RunVerification> {
-        vec![
-            RunVerification {
-                name: "Traceability".into(),
-                question: "Do we understand what this change is and why we're making it?".into(),
-                status: VerificationStatus::Pass,
-                controls: vec![
-                    RunVerificationControl { name: "Motivation".into(), description: "Origin of proposal identified".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Specifications".into(), description: "Requirements written down".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Documentation".into(), description: "Developer and user docs added".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Minimization".into(), description: "No extraneous changes".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                ],
-            },
-            RunVerification {
-                name: "Readability".into(),
-                question: "Can a human or agent quickly read this and understand what it does?".into(),
-                status: VerificationStatus::Pass,
-                controls: vec![
-                    RunVerificationControl { name: "Formatting".into(), description: "Code layout matches standard".into(), type_: Some(VerificationType::Automated), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Linting".into(), description: "Linter issues resolved".into(), type_: Some(VerificationType::Automated), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Style".into(), description: "House style applied".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                ],
-            },
-            RunVerification {
-                name: "Reliability".into(),
-                question: "Will this behave correctly and safely under real-world conditions?".into(),
-                status: VerificationStatus::Pass,
-                controls: vec![
-                    RunVerificationControl { name: "Completeness".into(), description: "Implementation covers requirements".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Defects".into(), description: "Potential or likely bugs remediated".into(), type_: Some(VerificationType::AiAnalysis), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Performance".into(), description: "Hot path impact identified".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Pass },
-                ],
-            },
-            RunVerification {
-                name: "Code Coverage".into(),
-                question: "Do we have trustworthy, automated evidence that it works?".into(),
-                status: VerificationStatus::Fail,
-                controls: vec![
-                    RunVerificationControl { name: "Test Coverage".into(), description: "Production code exercised by unit tests".into(), type_: Some(VerificationType::Analysis), status: VerificationStatus::Pass },
-                    RunVerificationControl { name: "Test Quality".into(), description: "Tests are robust and clear".into(), type_: Some(VerificationType::Ai), status: VerificationStatus::Fail },
-                    RunVerificationControl { name: "E2E Coverage".into(), description: "Browser automation exercises UX".into(), type_: Some(VerificationType::Analysis), status: VerificationStatus::Na },
-                ],
-            },
-        ]
+    pub fn verifications() -> Vec<arc_types::RunVerification> {
+        super::verifications::run_verifications()
     }
 
     pub fn configuration() -> String {
@@ -1131,60 +1089,636 @@ disk = 10
 mod verifications {
     use arc_types::*;
 
+    // ── Category definitions (name, question, controls) ─────────────────
+
+    struct CategoryDef {
+        name: &'static str,
+        question: &'static str,
+        controls: &'static [ControlDef],
+    }
+
+    struct ControlDef {
+        name: &'static str,
+        slug: &'static str,
+        description: &'static str,
+        type_: Option<VerificationType>,
+        mode: VerificationMode,
+        f1: Option<f64>,
+        pass_at_1: Option<f64>,
+        evaluations: &'static [EvaluationResult],
+        // Run-level status
+        run_status: VerificationStatus,
+        // Detail fields
+        detail_description: &'static str,
+        checks: &'static [&'static str],
+        pass_example: &'static str,
+        fail_example: &'static str,
+        // Recent results (None means use defaults)
+        recent_results: Option<&'static [RecentResultDef]>,
+    }
+
+    struct RecentResultDef {
+        run_id: &'static str,
+        run_title: &'static str,
+        workflow: &'static str,
+        result: VerificationStatus,
+        timestamp: &'static str,
+    }
+
+    const DEFAULT_RECENT_RESULTS: &[RecentResultDef] = &[
+        RecentResultDef { run_id: "run-047", run_title: "PR #312 \u{2014} Add OAuth2 PKCE flow", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "2h ago" },
+        RecentResultDef { run_id: "run-046", run_title: "PR #311 \u{2014} Update rate limiter config", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "5h ago" },
+        RecentResultDef { run_id: "run-044", run_title: "PR #309 \u{2014} Migrate to pnpm", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "1d ago" },
+        RecentResultDef { run_id: "run-042", run_title: "PR #307 \u{2014} Fix session timeout", workflow: "fix_build", result: VerificationStatus::Pass, timestamp: "2d ago" },
+        RecentResultDef { run_id: "run-040", run_title: "PR #305 \u{2014} Add webhook retries", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "3d ago" },
+    ];
+
+    const MOTIVATION_RESULTS: &[RecentResultDef] = &[
+        RecentResultDef { run_id: "run-047", run_title: "PR #312 \u{2014} Add OAuth2 PKCE flow", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "2h ago" },
+        RecentResultDef { run_id: "run-046", run_title: "PR #311 \u{2014} Update rate limiter config", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "5h ago" },
+        RecentResultDef { run_id: "run-044", run_title: "PR #309 \u{2014} Migrate to pnpm", workflow: "code_review", result: VerificationStatus::Fail, timestamp: "1d ago" },
+        RecentResultDef { run_id: "run-042", run_title: "PR #307 \u{2014} Fix session timeout", workflow: "fix_build", result: VerificationStatus::Pass, timestamp: "2d ago" },
+        RecentResultDef { run_id: "run-040", run_title: "PR #305 \u{2014} Add webhook retries", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "3d ago" },
+    ];
+
+    const DOCUMENTATION_RESULTS: &[RecentResultDef] = &[
+        RecentResultDef { run_id: "run-047", run_title: "PR #312 \u{2014} Add OAuth2 PKCE flow", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "2h ago" },
+        RecentResultDef { run_id: "run-046", run_title: "PR #311 \u{2014} Update rate limiter config", workflow: "code_review", result: VerificationStatus::Fail, timestamp: "5h ago" },
+        RecentResultDef { run_id: "run-044", run_title: "PR #309 \u{2014} Migrate to pnpm", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "1d ago" },
+        RecentResultDef { run_id: "run-042", run_title: "PR #307 \u{2014} Fix session timeout", workflow: "fix_build", result: VerificationStatus::Pass, timestamp: "2d ago" },
+        RecentResultDef { run_id: "run-040", run_title: "PR #305 \u{2014} Add webhook retries", workflow: "code_review", result: VerificationStatus::Fail, timestamp: "3d ago" },
+    ];
+
+    const ROLLOUT_ROLLBACK_RESULTS: &[RecentResultDef] = &[
+        RecentResultDef { run_id: "run-047", run_title: "PR #312 \u{2014} Add OAuth2 PKCE flow", workflow: "code_review", result: VerificationStatus::Fail, timestamp: "2h ago" },
+        RecentResultDef { run_id: "run-046", run_title: "PR #311 \u{2014} Update rate limiter config", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "5h ago" },
+        RecentResultDef { run_id: "run-044", run_title: "PR #309 \u{2014} Migrate to pnpm", workflow: "code_review", result: VerificationStatus::Fail, timestamp: "1d ago" },
+        RecentResultDef { run_id: "run-042", run_title: "PR #307 \u{2014} Fix session timeout", workflow: "fix_build", result: VerificationStatus::Fail, timestamp: "2d ago" },
+        RecentResultDef { run_id: "run-040", run_title: "PR #305 \u{2014} Add webhook retries", workflow: "code_review", result: VerificationStatus::Pass, timestamp: "3d ago" },
+    ];
+
+    use EvaluationResult::{Fail as F, Pass as P};
+
+    const ALL_CATEGORIES: &[CategoryDef] = &[
+        CategoryDef {
+            name: "Traceability",
+            question: "Do we understand what this change is and why we're making it?",
+            controls: &[
+                ControlDef {
+                    name: "Motivation", slug: "motivation",
+                    description: "Origin of proposal identified",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.87), pass_at_1: Some(0.82),
+                    evaluations: &[P, P, F, P, P, P, P, F, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Verifies that every change traces back to a clear origin \u{2014} whether a ticket, RFC, customer request, or incident. Without documented motivation, reviewers lack context for evaluating whether the change is appropriate.",
+                    checks: &["PR body or linked issue explains why the change is needed", "Commit messages reference a ticket or context", "No orphaned changes without traceable origin"],
+                    pass_example: "PR links to JIRA-1234 and explains the user-facing pain point being resolved.",
+                    fail_example: "PR description is empty or says only 'fix stuff'.",
+                    recent_results: Some(MOTIVATION_RESULTS),
+                },
+                ControlDef {
+                    name: "Specifications", slug: "specifications",
+                    description: "Requirements written down",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.83), pass_at_1: Some(0.78),
+                    evaluations: &[P, F, P, P, P, F, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Checks that functional and non-functional requirements are written down before implementation begins. Specifications prevent scope creep and ensure everyone agrees on what done looks like.",
+                    checks: &["Acceptance criteria listed in the issue or PR", "Edge cases documented", "Non-functional requirements (performance, security) stated when relevant"],
+                    pass_example: "Issue includes acceptance criteria with three testable scenarios.",
+                    fail_example: "Issue body says 'implement the feature' with no acceptance criteria.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Documentation", slug: "documentation",
+                    description: "Developer and user docs added",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.79), pass_at_1: Some(0.74),
+                    evaluations: &[P, P, P, F, P, P, F, P, P, F],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Ensures developer-facing and user-facing documentation is added or updated alongside code changes. Stale docs degrade team velocity and increase onboarding cost.",
+                    checks: &["README or docs updated for new features", "API documentation reflects endpoint changes", "Inline comments for non-obvious logic"],
+                    pass_example: "New API endpoint has corresponding OpenAPI spec update and usage example in docs.",
+                    fail_example: "New CLI flag added with no mention in README or --help text.",
+                    recent_results: Some(DOCUMENTATION_RESULTS),
+                },
+                ControlDef {
+                    name: "Minimization", slug: "minimization",
+                    description: "No extraneous changes",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Evaluate,
+                    f1: Some(0.72), pass_at_1: Some(0.68),
+                    evaluations: &[P, F, P, F, P, P, F, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Flags extraneous changes that inflate the diff \u{2014} formatting-only edits, unrelated refactors, or drive-by fixes. Keeping PRs focused improves review quality and reduces revert risk.",
+                    checks: &["No unrelated formatting or whitespace changes", "Refactors separated from feature work", "Each commit addresses a single concern"],
+                    pass_example: "PR touches only files directly related to the new caching layer.",
+                    fail_example: "PR adds a feature but also reformats 12 unrelated files.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Readability",
+            question: "Can a human or agent quickly read this and understand what it does?",
+            controls: &[
+                ControlDef {
+                    name: "Formatting", slug: "formatting",
+                    description: "Code layout matches standard",
+                    type_: Some(VerificationType::Automated), mode: VerificationMode::Active,
+                    f1: Some(0.99), pass_at_1: Some(0.98),
+                    evaluations: &[P, P, P, P, P, P, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Validates that code layout conforms to the project's formatting standard (e.g., Prettier, rustfmt). Automated formatting removes subjective style debates from code review.",
+                    checks: &["All files pass the project formatter", "No manual formatting overrides without justification"],
+                    pass_example: "All changed files pass `prettier --check` and `rustfmt --check`.",
+                    fail_example: "Several files have inconsistent indentation that the formatter would fix.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Linting", slug: "linting",
+                    description: "Linter issues resolved",
+                    type_: Some(VerificationType::Automated), mode: VerificationMode::Active,
+                    f1: Some(0.98), pass_at_1: Some(0.97),
+                    evaluations: &[P, P, P, P, P, P, P, P, F, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Confirms that static analysis findings are resolved. Linter warnings left unaddressed accumulate into tech debt and mask real issues.",
+                    checks: &["No new linter warnings introduced", "Existing warnings not suppressed without explanation", "Lint config not weakened"],
+                    pass_example: "ESLint and Clippy pass with zero warnings on changed files.",
+                    fail_example: "New `// eslint-disable-next-line` added to suppress a legitimate warning.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Style", slug: "style",
+                    description: "House style applied",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.81), pass_at_1: Some(0.76),
+                    evaluations: &[P, F, P, P, P, P, F, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Evaluates whether the code follows the team's house style conventions beyond what automated formatters catch \u{2014} naming, file organization, import ordering, and idiomatic patterns.",
+                    checks: &["Naming conventions followed (camelCase, snake_case as appropriate)", "Import ordering matches project convention", "Idiomatic patterns used for the language"],
+                    pass_example: "New TypeScript module uses camelCase variables, groups imports by source, and uses `Map` instead of plain objects for lookups.",
+                    fail_example: "Mix of camelCase and snake_case in the same module with random import ordering.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Reliability",
+            question: "Will this behave correctly and safely under real-world conditions and failures?",
+            controls: &[
+                ControlDef {
+                    name: "Completeness", slug: "completeness",
+                    description: "Implementation covers requirements",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.76), pass_at_1: Some(0.71),
+                    evaluations: &[P, P, F, P, F, P, P, P, F, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Checks that the implementation fully covers the specified requirements. Partial implementations ship broken experiences and create follow-up tickets that could have been avoided.",
+                    checks: &["All acceptance criteria addressed", "Edge cases handled", "Error states implemented"],
+                    pass_example: "Feature handles all three specified user roles with appropriate permissions.",
+                    fail_example: "Only the happy path is implemented; error and empty states are missing.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Defects", slug: "defects",
+                    description: "Potential or likely bugs remediated",
+                    type_: Some(VerificationType::AiAnalysis), mode: VerificationMode::Active,
+                    f1: Some(0.84), pass_at_1: Some(0.79),
+                    evaluations: &[P, P, P, F, P, P, P, P, P, F],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Identifies potential or likely bugs through static analysis and AI review. Catching defects before merge is orders of magnitude cheaper than finding them in production.",
+                    checks: &["No off-by-one errors in loops or slices", "Null/undefined handled at boundaries", "Race conditions considered in async code"],
+                    pass_example: "API handler validates input, handles missing fields gracefully, and returns appropriate HTTP status codes.",
+                    fail_example: "Array index accessed without bounds check; crashes on empty input.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Performance", slug: "performance",
+                    description: "Hot path impact identified",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Evaluate,
+                    f1: Some(0.69), pass_at_1: Some(0.63),
+                    evaluations: &[F, P, P, F, P, F, P, P, F, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Assesses whether the change impacts hot paths or introduces algorithmic regressions. Performance problems that ship to production are expensive to diagnose and fix.",
+                    checks: &["No N+1 queries introduced", "Large collections not processed synchronously", "Caching considered for repeated expensive operations"],
+                    pass_example: "Database query uses a JOIN instead of N separate queries for related records.",
+                    fail_example: "Loop makes a separate HTTP call for each item in a 1000-element list.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Code Coverage",
+            question: "Do we have trustworthy, automated evidence that it works and won't regress?",
+            controls: &[
+                ControlDef {
+                    name: "Test Coverage", slug: "test-coverage",
+                    description: "Production code exercised by unit tests",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.95), pass_at_1: Some(0.93),
+                    evaluations: &[P, P, P, P, P, P, F, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Measures whether production code is exercised by automated tests. Coverage gaps mean regressions can ship undetected.",
+                    checks: &["New code has corresponding unit tests", "Coverage does not decrease", "Critical paths have integration tests"],
+                    pass_example: "New service method has 6 unit tests covering happy path, error cases, and edge cases.",
+                    fail_example: "New 200-line module has zero test files.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Test Quality", slug: "test-quality",
+                    description: "Tests are robust and clear",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Evaluate,
+                    f1: Some(0.71), pass_at_1: Some(0.65),
+                    evaluations: &[P, F, F, P, P, F, P, F, P, P],
+                    run_status: VerificationStatus::Fail,
+                    detail_description: "Evaluates whether tests are robust, readable, and actually verify behavior rather than implementation details. Low-quality tests give false confidence.",
+                    checks: &["Tests verify behavior, not implementation", "Assertions are specific and meaningful", "Tests are independent and deterministic"],
+                    pass_example: "Tests assert on API response shape and status codes, not on internal method call counts.",
+                    fail_example: "Tests mock every dependency and only verify that mocks were called.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "E2E Coverage", slug: "e2e-coverage",
+                    description: "Browser automation exercises UX",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.91), pass_at_1: Some(0.88),
+                    evaluations: &[P, P, P, F, P, P, P, P, P, P],
+                    run_status: VerificationStatus::Na,
+                    detail_description: "Checks that user-facing workflows are exercised by end-to-end browser automation. E2E tests catch integration issues that unit tests miss.",
+                    checks: &["Critical user flows have Playwright/Cypress tests", "E2E tests run in CI", "No flaky E2E tests introduced"],
+                    pass_example: "New checkout flow has a Playwright test that completes a purchase end-to-end.",
+                    fail_example: "New multi-step wizard has no browser automation tests.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Maintainability",
+            question: "Will this be easy to modify or extend later without creating new risk?",
+            controls: &[
+                ControlDef {
+                    name: "Architecture", slug: "architecture",
+                    description: "Layering and dependency graph meets design",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.88), pass_at_1: Some(0.84),
+                    evaluations: &[P, P, P, P, F, P, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Validates that layering and dependency directions conform to the project's architectural design. Architectural violations compound over time and make systems harder to evolve.",
+                    checks: &["Dependencies point inward (domain doesn't depend on infra)", "No circular dependencies introduced", "Module boundaries respected"],
+                    pass_example: "New repository implementation depends on domain interfaces, not the other way around.",
+                    fail_example: "Domain model imports directly from the HTTP framework package.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Interfaces", slug: "interfaces",
+                    description: "",
+                    type_: None, mode: VerificationMode::Disabled,
+                    f1: None, pass_at_1: None,
+                    evaluations: &[],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Reviews public API surfaces for clarity, consistency, and backward compatibility. Interfaces are contracts \u{2014} once published, they're expensive to change.",
+                    checks: &["Public API types are well-defined", "Breaking changes documented", "Consistent naming across endpoints"],
+                    pass_example: "New endpoint follows existing naming and error format conventions.",
+                    fail_example: "New endpoint uses different error format than all other endpoints.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Duplication", slug: "duplication",
+                    description: "Similar and identical code blocks identified",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.96), pass_at_1: Some(0.94),
+                    evaluations: &[P, P, P, P, P, P, P, F, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Detects similar or identical code blocks that could be consolidated. Duplication increases maintenance burden and creates inconsistency risk.",
+                    checks: &["No copy-pasted logic across files", "Shared utilities used for common patterns", "Similar test setup consolidated"],
+                    pass_example: "Date formatting logic extracted into a shared utility used by 4 components.",
+                    fail_example: "Same 15-line validation function copy-pasted into three different handlers.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Simplicity", slug: "simplicity",
+                    description: "Extra review for reducing complexity",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.74), pass_at_1: Some(0.69),
+                    evaluations: &[P, F, P, P, F, P, P, F, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Flags unnecessarily complex code that could be simplified without changing behavior. Simpler code is easier to review, debug, and extend.",
+                    checks: &["No premature abstractions", "Control flow is straightforward", "Functions are focused and short"],
+                    pass_example: "Conditional logic uses early returns instead of deeply nested if-else chains.",
+                    fail_example: "Three-level generic abstraction for a function called in one place.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Dead Code", slug: "dead-code",
+                    description: "Unexecuted code and dependencies removed",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.93), pass_at_1: Some(0.90),
+                    evaluations: &[P, P, P, P, P, F, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Identifies unexecuted code paths and unused dependencies. Dead code misleads readers and bloats bundles.",
+                    checks: &["No unreachable code paths", "Unused imports and variables removed", "Deprecated functions removed if no longer called"],
+                    pass_example: "Old feature flag and its associated code paths removed after rollout completed.",
+                    fail_example: "Commented-out function left in file 'in case we need it later'.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Security",
+            question: "Does this preserve or improve our security posture and avoid vulnerabilities?",
+            controls: &[
+                ControlDef {
+                    name: "Vulnerabilities", slug: "vulnerabilities",
+                    description: "Security issues are remediated",
+                    type_: Some(VerificationType::AiAnalysis), mode: VerificationMode::Active,
+                    f1: Some(0.86), pass_at_1: Some(0.81),
+                    evaluations: &[P, P, F, P, P, P, P, P, F, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Scans for known security vulnerabilities using both AI analysis and static scanning tools. Shipping known vulnerabilities exposes users and the organization to risk.",
+                    checks: &["No SQL injection or XSS vectors", "User input sanitized at boundaries", "Authentication/authorization checks present"],
+                    pass_example: "User input passed through parameterized queries; HTML output escaped.",
+                    fail_example: "Raw SQL string concatenation with user-supplied values.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "IaC Scanning", slug: "iac-scanning",
+                    description: "",
+                    type_: None, mode: VerificationMode::Disabled,
+                    f1: None, pass_at_1: None,
+                    evaluations: &[],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Validates infrastructure-as-code definitions against security best practices. Misconfigured infrastructure is a leading cause of data breaches.",
+                    checks: &["No publicly accessible storage buckets", "Encryption at rest enabled", "Least-privilege IAM policies"],
+                    pass_example: "Terraform module creates S3 bucket with encryption, versioning, and private ACL.",
+                    fail_example: "CloudFormation template creates an RDS instance with no encryption and public accessibility.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Dependency Alerts", slug: "dependency-alerts",
+                    description: "Known CVEs are patched",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.97), pass_at_1: Some(0.95),
+                    evaluations: &[P, P, P, P, P, P, P, P, P, F],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Checks that third-party dependencies are free from known CVEs. Vulnerable dependencies are an easy attack vector that automated tools can detect.",
+                    checks: &["No dependencies with known critical CVEs", "Lock file updated to patched versions", "Unused dependencies removed"],
+                    pass_example: "Dependabot alert resolved by updating lodash from 4.17.20 to 4.17.21.",
+                    fail_example: "Package.json pins a version of axios with a known SSRF vulnerability.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Security Controls", slug: "security-controls",
+                    description: "Organization standards applied",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.80), pass_at_1: Some(0.75),
+                    evaluations: &[P, P, F, P, P, F, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Verifies that organization-specific security standards are applied \u{2014} rate limiting, audit logging, CORS policies, and secret management.",
+                    checks: &["Secrets not hardcoded in source", "Rate limiting on public endpoints", "Audit logging for sensitive operations"],
+                    pass_example: "API key loaded from environment variable; rate limiter configured on login endpoint.",
+                    fail_example: "AWS credentials committed in a config file.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Deployability",
+            question: "Is this changeset safe to ship to production immediately?",
+            controls: &[
+                ControlDef {
+                    name: "Compatibility", slug: "compatibility",
+                    description: "Breaking changes are avoided",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.89), pass_at_1: Some(0.85),
+                    evaluations: &[P, P, P, P, F, P, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Detects breaking changes in APIs, database schemas, or wire formats that could disrupt consumers. Breaking changes require coordination that surprises prevent.",
+                    checks: &["No removed or renamed public API fields", "Database migrations are backward-compatible", "Wire format changes are additive"],
+                    pass_example: "New field added to API response; no existing fields removed or renamed.",
+                    fail_example: "Column renamed in migration while old code is still deployed.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Rollout / Rollback", slug: "rollout-rollback",
+                    description: "Known rollback plan if deploy fails",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Evaluate,
+                    f1: Some(0.66), pass_at_1: Some(0.60),
+                    evaluations: &[F, P, F, P, F, P, P, F, P, F],
+                    run_status: VerificationStatus::Fail,
+                    detail_description: "Confirms that the change has a clear deployment plan and can be safely rolled back if issues arise. Every production deploy should be reversible.",
+                    checks: &["Feature flag available for gradual rollout", "Database migration is reversible", "Rollback procedure documented"],
+                    pass_example: "Feature behind a LaunchDarkly flag with 10% initial rollout and documented rollback steps.",
+                    fail_example: "Irreversible database migration with no rollback plan.",
+                    recent_results: Some(ROLLOUT_ROLLBACK_RESULTS),
+                },
+                ControlDef {
+                    name: "Observability", slug: "observability",
+                    description: "Logging, metrics, tracing instrumented",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Evaluate,
+                    f1: Some(0.73), pass_at_1: Some(0.67),
+                    evaluations: &[P, F, P, F, P, P, F, P, F, P],
+                    run_status: VerificationStatus::Fail,
+                    detail_description: "Ensures that logging, metrics, and tracing are instrumented for new code paths. Without observability, production issues are invisible until users report them.",
+                    checks: &["Structured logging for new operations", "Metrics emitted for key business events", "Distributed tracing propagated"],
+                    pass_example: "New payment endpoint logs transaction IDs, emits latency metrics, and propagates trace context.",
+                    fail_example: "New background job has no logging or metrics; failures are silent.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Cost", slug: "cost",
+                    description: "Tech ops costs estimated",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Evaluate,
+                    f1: Some(0.78), pass_at_1: Some(0.72),
+                    evaluations: &[P, P, F, P, F, P, P, F, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Estimates the infrastructure and operational cost impact of the change. Unchecked cost growth erodes margins and can cause budget surprises.",
+                    checks: &["New infrastructure resources sized appropriately", "No unbounded resource consumption", "Cost estimate provided for significant changes"],
+                    pass_example: "New Lambda function has memory limit set and estimated monthly cost noted in PR.",
+                    fail_example: "New service provisions a db.r5.4xlarge for a table with 100 rows.",
+                    recent_results: None,
+                },
+            ],
+        },
+        CategoryDef {
+            name: "Compliance",
+            question: "Does this meet our regulatory, contractual, and policy obligations?",
+            controls: &[
+                ControlDef {
+                    name: "Change Control", slug: "change-control",
+                    description: "Separation of Duties policy met",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.94), pass_at_1: Some(0.91),
+                    evaluations: &[P, P, P, P, P, P, P, P, F, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Validates that separation-of-duties policies are met \u{2014} the author is not the sole reviewer, approvals are obtained, and the change went through the proper process.",
+                    checks: &["PR has at least one approval from non-author", "Required reviewers have signed off", "No self-merging without policy exception"],
+                    pass_example: "PR approved by two team members before merge; CI checks all green.",
+                    fail_example: "Author approved and merged their own PR with no other reviewers.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "AI Governance", slug: "ai-governance",
+                    description: "AI involvement was acceptable",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.85), pass_at_1: Some(0.80),
+                    evaluations: &[P, P, P, F, P, P, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Checks that AI-generated or AI-assisted code meets the organization's governance requirements \u{2014} attribution, review depth, and acceptable use.",
+                    checks: &["AI-generated code clearly attributed", "Human review of AI suggestions documented", "AI usage within acceptable-use policy"],
+                    pass_example: "PR notes that implementation was AI-assisted; human reviewer verified logic and tests.",
+                    fail_example: "Entire module generated by AI with no human review or attribution.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Privacy", slug: "privacy",
+                    description: "PII is identified and handled to standards",
+                    type_: Some(VerificationType::Ai), mode: VerificationMode::Active,
+                    f1: Some(0.77), pass_at_1: Some(0.72),
+                    evaluations: &[P, F, P, P, P, F, P, P, P, F],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Ensures that personally identifiable information (PII) is identified, classified, and handled according to privacy standards (GDPR, CCPA).",
+                    checks: &["PII fields identified and documented", "Data retention policies applied", "Consent mechanisms in place for data collection"],
+                    pass_example: "New user profile endpoint masks email in logs and respects data deletion requests.",
+                    fail_example: "User email addresses logged in plaintext to application logs.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Accessibility", slug: "accessibility",
+                    description: "Software meets accessibility requirements",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.90), pass_at_1: Some(0.87),
+                    evaluations: &[P, P, P, P, P, F, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Verifies that UI changes meet accessibility requirements (WCAG 2.1 AA). Inaccessible software excludes users and creates legal risk.",
+                    checks: &["Semantic HTML elements used", "ARIA labels present on interactive elements", "Color contrast meets WCAG AA standards"],
+                    pass_example: "New modal uses <dialog>, has aria-labelledby, and focus is trapped within.",
+                    fail_example: "Custom dropdown built with <div> elements, no keyboard navigation, no ARIA roles.",
+                    recent_results: None,
+                },
+                ControlDef {
+                    name: "Licensing", slug: "licensing",
+                    description: "Supply chain meets IP policy",
+                    type_: Some(VerificationType::Analysis), mode: VerificationMode::Active,
+                    f1: Some(0.96), pass_at_1: Some(0.93),
+                    evaluations: &[P, P, P, P, P, P, P, P, P, P],
+                    run_status: VerificationStatus::Pass,
+                    detail_description: "Ensures that all third-party dependencies comply with the organization's intellectual property policy. License violations can have severe legal consequences.",
+                    checks: &["No GPL-licensed dependencies in proprietary code", "License file present for new dependencies", "Supply chain attestation where required"],
+                    pass_example: "New dependency uses MIT license; added to approved dependency list.",
+                    fail_example: "AGPL-licensed library added to a closed-source commercial product.",
+                    recent_results: None,
+                },
+            ],
+        },
+    ];
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    fn recent_results_from_def(defs: &[RecentResultDef]) -> Vec<RecentControlResult> {
+        defs.iter().map(|r| RecentControlResult {
+            run_id: r.run_id.into(),
+            run_title: r.run_title.into(),
+            workflow: r.workflow.into(),
+            result: r.result.clone(),
+            timestamp: r.timestamp.into(),
+        }).collect()
+    }
+
+    fn category_run_status(cat: &CategoryDef) -> VerificationStatus {
+        if cat.controls.iter().any(|c| c.run_status == VerificationStatus::Fail) {
+            VerificationStatus::Fail
+        } else if cat.controls.iter().all(|c| c.run_status == VerificationStatus::Na) {
+            VerificationStatus::Na
+        } else {
+            VerificationStatus::Pass
+        }
+    }
+
+    // ── Public API ──────────────────────────────────────────────────────
+
     pub fn categories() -> Vec<VerificationCategory> {
-        vec![
+        ALL_CATEGORIES.iter().map(|cat| {
             VerificationCategory {
-                name: "Traceability".into(),
-                question: "Do we understand what this change is and why we're making it?".into(),
-                controls: vec![
-                    VerificationControl { name: "Motivation".into(), slug: "motivation".into(), description: "Origin of proposal identified".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active), f1: Some(0.87), pass_at_1: Some(0.82), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass, EvaluationResult::Pass] },
-                    VerificationControl { name: "Specifications".into(), slug: "specifications".into(), description: "Requirements written down".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active), f1: Some(0.83), pass_at_1: Some(0.78), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass] },
-                    VerificationControl { name: "Documentation".into(), slug: "documentation".into(), description: "Developer and user docs added".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active), f1: Some(0.79), pass_at_1: Some(0.74), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass] },
-                    VerificationControl { name: "Minimization".into(), slug: "minimization".into(), description: "No extraneous changes".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Evaluate), f1: Some(0.72), pass_at_1: Some(0.68), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass] },
-                ],
-            },
-            VerificationCategory {
-                name: "Readability".into(),
-                question: "Can a human or agent quickly read this and understand what it does?".into(),
-                controls: vec![
-                    VerificationControl { name: "Formatting".into(), slug: "formatting".into(), description: "Code layout matches standard".into(), type_: Some(VerificationType::Automated), mode: Some(VerificationMode::Active), f1: Some(0.99), pass_at_1: Some(0.98), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass] },
-                    VerificationControl { name: "Linting".into(), slug: "linting".into(), description: "Linter issues resolved".into(), type_: Some(VerificationType::Automated), mode: Some(VerificationMode::Active), f1: Some(0.98), pass_at_1: Some(0.97), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Fail] },
-                    VerificationControl { name: "Style".into(), slug: "style".into(), description: "House style applied".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active), f1: Some(0.81), pass_at_1: Some(0.76), evaluations: vec![EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Pass] },
-                ],
-            },
-        ]
+                name: cat.name.into(),
+                question: cat.question.into(),
+                controls: cat.controls.iter().map(|c| VerificationControl {
+                    name: c.name.into(),
+                    slug: c.slug.into(),
+                    description: c.description.into(),
+                    type_: c.type_.clone(),
+                    mode: Some(c.mode.clone()),
+                    f1: c.f1,
+                    pass_at_1: c.pass_at_1,
+                    evaluations: c.evaluations.to_vec(),
+                }).collect(),
+            }
+        }).collect()
     }
 
     pub fn detail(slug: &str) -> Option<VerificationDetailResponse> {
-        let control_info = match slug {
-            "motivation" => ControlInfo { name: "Motivation".into(), slug: "motivation".into(), description: "Origin of proposal identified".into(), type_: Some(VerificationType::Ai), category: "Traceability".into() },
-            "formatting" => ControlInfo { name: "Formatting".into(), slug: "formatting".into(), description: "Code layout matches standard".into(), type_: Some(VerificationType::Automated), category: "Readability".into() },
-            _ => return None,
-        };
+        for cat in ALL_CATEGORIES {
+            for (idx, ctrl) in cat.controls.iter().enumerate() {
+                if ctrl.slug == slug {
+                    let siblings: Vec<SiblingControl> = cat.controls.iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != idx)
+                        .map(|(_, s)| SiblingControl {
+                            name: s.name.into(),
+                            slug: s.slug.into(),
+                            type_: s.type_.clone(),
+                            mode: Some(s.mode.clone()),
+                        })
+                        .collect();
 
-        Some(VerificationDetailResponse {
-            control: control_info,
-            performance: ControlPerformance {
-                mode: VerificationMode::Active,
-                f1: Some(0.87),
-                pass_at_1: Some(0.82),
-                evaluations: vec![EvaluationResult::Pass, EvaluationResult::Pass, EvaluationResult::Fail, EvaluationResult::Pass, EvaluationResult::Pass],
-            },
-            control_detail: ControlDetail {
-                description: "Verifies that every change traces back to a clear origin — whether a ticket, RFC, customer request, or incident.".into(),
-                checks: vec!["PR body or linked issue explains why the change is needed".into(), "Commit messages reference a ticket or context".into()],
-                pass_example: "PR links to JIRA-1234 and explains the user-facing pain point being resolved.".into(),
-                fail_example: "PR description is empty or says only 'fix stuff'.".into(),
-            },
-            recent_results: vec![
-                RecentControlResult { run_id: "run-047".into(), run_title: "PR #312 — Add OAuth2 PKCE flow".into(), workflow: "code_review".into(), result: VerificationStatus::Pass, timestamp: "2h ago".into() },
-                RecentControlResult { run_id: "run-046".into(), run_title: "PR #311 — Update rate limiter config".into(), workflow: "code_review".into(), result: VerificationStatus::Pass, timestamp: "5h ago".into() },
-            ],
-            siblings: vec![
-                SiblingControl { name: "Specifications".into(), slug: "specifications".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active) },
-                SiblingControl { name: "Documentation".into(), slug: "documentation".into(), type_: Some(VerificationType::Ai), mode: Some(VerificationMode::Active) },
-            ],
-        })
+                    let results = match ctrl.recent_results {
+                        Some(r) => recent_results_from_def(r),
+                        None => recent_results_from_def(DEFAULT_RECENT_RESULTS),
+                    };
+
+                    return Some(VerificationDetailResponse {
+                        control: ControlInfo {
+                            name: ctrl.name.into(),
+                            slug: ctrl.slug.into(),
+                            description: ctrl.description.into(),
+                            type_: ctrl.type_.clone(),
+                            category: cat.name.into(),
+                        },
+                        performance: ControlPerformance {
+                            mode: ctrl.mode.clone(),
+                            f1: ctrl.f1,
+                            pass_at_1: ctrl.pass_at_1,
+                            evaluations: ctrl.evaluations.to_vec(),
+                        },
+                        control_detail: ControlDetail {
+                            description: ctrl.detail_description.into(),
+                            checks: ctrl.checks.iter().map(|s| (*s).into()).collect(),
+                            pass_example: ctrl.pass_example.into(),
+                            fail_example: ctrl.fail_example.into(),
+                        },
+                        recent_results: results,
+                        siblings,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    pub fn run_verifications() -> Vec<RunVerification> {
+        ALL_CATEGORIES.iter().map(|cat| {
+            RunVerification {
+                name: cat.name.into(),
+                question: cat.question.into(),
+                status: category_run_status(cat),
+                controls: cat.controls.iter().map(|c| RunVerificationControl {
+                    name: c.name.into(),
+                    description: c.description.into(),
+                    type_: c.type_.clone(),
+                    status: c.run_status.clone(),
+                }).collect(),
+            }
+        }).collect()
     }
 }
 
