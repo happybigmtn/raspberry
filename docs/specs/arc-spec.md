@@ -955,7 +955,7 @@ ScriptHandler:
 Orchestrates sprint-based iteration by supervising a child pipeline. The manager observes the child's telemetry, evaluates progress via a guard function, and optionally steers the child through intervention.
 
 ```
-ManagerLoopHandler:
+SubWorkflowHandler:
     FUNCTION execute(node, context, graph, logs_root) -> Outcome:
         child_dotfile = graph.attrs.get("stack.child_dotfile")
         poll_interval = parse_duration(node.attrs.get("manager.poll_interval", "45s"))

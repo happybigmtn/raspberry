@@ -17,7 +17,7 @@ use crate::pipeline::prepare_pipeline;
 use super::{EngineServices, Handler};
 
 /// Orchestrates a child pipeline engine, polling for completion or stop conditions.
-pub struct ManagerLoopHandler;
+pub struct SubWorkflowHandler;
 
 /// Parse a duration string like "45s", "200ms", "5m" into a Duration.
 /// Falls back to 45 seconds on parse failure.
@@ -69,7 +69,7 @@ fn context_diff(
 }
 
 #[async_trait]
-impl Handler for ManagerLoopHandler {
+impl Handler for SubWorkflowHandler {
     async fn execute(
         &self,
         node: &Node,
@@ -247,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_pipeline_succeeds() {
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs.insert(
             "stack.child_dot_source".to_string(),
@@ -274,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_dot_source_fails() {
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs
             .insert("manager.max_cycles".to_string(), AttrValue::Integer(10));
@@ -301,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_dot_source_fails() {
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs.insert(
             "stack.child_dot_source".to_string(),
@@ -370,7 +370,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
         };
 
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         // Child pipeline with a "work" node (default handler = ContextEchoHandler)
         node.attrs.insert(
@@ -415,7 +415,7 @@ mod tests {
         let dot_path = dir.path().join("child.dot");
         std::fs::write(&dot_path, child_dot_succeeds()).unwrap();
 
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs.insert(
             "stack.child_dotfile".to_string(),
@@ -477,7 +477,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
         };
 
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs.insert(
             "stack.child_dot_source".to_string(),
@@ -540,7 +540,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
         };
 
-        let handler = ManagerLoopHandler;
+        let handler = SubWorkflowHandler;
         let mut node = Node::new("manager");
         node.attrs.insert(
             "stack.child_dot_source".to_string(),

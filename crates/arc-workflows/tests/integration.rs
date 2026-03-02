@@ -15,7 +15,7 @@ use arc_workflows::handler::codergen::{CodergenBackend, CodergenHandler, Coderge
 use arc_workflows::handler::conditional::ConditionalHandler;
 use arc_workflows::handler::default_registry;
 use arc_workflows::handler::exit::ExitHandler;
-use arc_workflows::handler::manager_loop::ManagerLoopHandler;
+use arc_workflows::handler::manager_loop::SubWorkflowHandler;
 use arc_workflows::handler::script::ScriptHandler;
 use arc_workflows::handler::start::StartHandler;
 use arc_workflows::handler::wait_human::WaitHumanHandler;
@@ -1255,7 +1255,7 @@ fn make_full_registry(interviewer: Arc<dyn Interviewer>) -> HandlerRegistry {
     registry.register("wait.human", Box::new(WaitHumanHandler::new(interviewer)));
     registry.register(
         "stack.manager_loop",
-        Box::new(ManagerLoopHandler),
+        Box::new(SubWorkflowHandler),
     );
     registry
 }
@@ -2668,7 +2668,7 @@ async fn manager_loop_stop_condition_satisfied_e2e() {
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
     registry.register("done_setter", Box::new(DoneSetterHandler));
-    registry.register("stack.manager_loop", Box::new(ManagerLoopHandler));
+    registry.register("stack.manager_loop", Box::new(SubWorkflowHandler));
     let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {
         logs_root: dir.path().to_path_buf(),
@@ -2742,7 +2742,7 @@ async fn manager_loop_max_cycles_exceeded_e2e() {
     let mut registry = HandlerRegistry::new(Box::new(SlowHandler));
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
-    registry.register("stack.manager_loop", Box::new(ManagerLoopHandler));
+    registry.register("stack.manager_loop", Box::new(SubWorkflowHandler));
     let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {
         logs_root: dir.path().to_path_buf(),
@@ -3323,7 +3323,7 @@ async fn manager_loop_runs_child_engine_e2e() {
     let mut registry = HandlerRegistry::new(Box::new(StartHandler));
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
-    registry.register("stack.manager_loop", Box::new(ManagerLoopHandler));
+    registry.register("stack.manager_loop", Box::new(SubWorkflowHandler));
 
     let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {
@@ -3456,7 +3456,7 @@ async fn manager_loop_context_flows_e2e() {
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
     registry.register("setter", Box::new(SetterHandler));
-    registry.register("stack.manager_loop", Box::new(ManagerLoopHandler));
+    registry.register("stack.manager_loop", Box::new(SubWorkflowHandler));
 
     let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {
@@ -3527,7 +3527,7 @@ async fn manager_loop_child_dotfile_e2e() {
     let mut registry = HandlerRegistry::new(Box::new(StartHandler));
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
-    registry.register("stack.manager_loop", Box::new(ManagerLoopHandler));
+    registry.register("stack.manager_loop", Box::new(SubWorkflowHandler));
 
     let engine = PipelineEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {

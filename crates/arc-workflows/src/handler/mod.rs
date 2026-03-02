@@ -138,7 +138,7 @@ pub fn default_registry(
     );
     registry.register(
         "stack.manager_loop",
-        Box::new(manager_loop::ManagerLoopHandler),
+        Box::new(manager_loop::SubWorkflowHandler),
     );
     registry
 }
