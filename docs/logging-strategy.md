@@ -24,6 +24,8 @@ Production runs at INFO level. INFO should be low-volume and high-signal — the
 - Hot loops or per-token streaming events (use DEBUG only if truly needed for diagnosis)
 - Data that belongs in user-facing output (`eprintln!` for CLI feedback, not tracing)
 - Redundant information already captured by a parent event (if you logged "starting X", you don't need to log every sub-step at the same level)
+- Events that are already traced via `EventEnum::trace()` — the event enums (`AgentEvent`, `PipelineEvent`, `ExecutionEnvEvent`) each have a `trace()` method called automatically at their emit site; do not add manual `info!`/`debug!` calls that duplicate what `trace()` already emits
+- Wrapper/forwarding variants that re-emit an inner event — `PipelineEvent::Agent`, `PipelineEvent::ExecutionEnv`, and `AgentEvent::SubAgentEvent` are no-ops in `trace()` because the inner event is already traced at its origin
 - Secrets, API keys, or auth tokens — even at DEBUG level
 
 ## Log Levels
@@ -165,3 +167,14 @@ The subscriber is initialized once in `arc-cli`. Library crates (`arc-agent`, `a
 - The events are captured by whatever subscriber the binary sets up
 
 When adding tracing to a new crate, start with the boundaries: INFO for the start/end of top-level operations, DEBUG for the individual steps within them. When in doubt about the level, use DEBUG — it's easy to promote something to INFO later, but hard to demote a noisy INFO event without breaking someone's log monitoring.
+
+## Event Enum Tracing
+
+The domain event enums (`AgentEvent`, `PipelineEvent`, `ExecutionEnvEvent`) each implement a `pub fn trace(&self)` method (or `trace(&self, session_id: &str)` for `AgentEvent`) that emits a structured tracing log line per variant. This method is called automatically from each enum's emit site, so every emitted event produces a log line without any additional code at the call site.
+
+**Rules for event tracing:**
+
+- **Add tracing for new variants** by adding a match arm in the enum's `trace()` method. Choose the level based on the guidelines above (INFO for lifecycle boundaries, DEBUG for individual steps, WARN/ERROR for failures).
+- **Do not add manual log calls at emit sites.** The `trace()` call in the emitter handles it. Adding `info!` or `debug!` next to an `emit()` call will double-log.
+- **Wrapper variants are no-ops.** When one event enum wraps another (`PipelineEvent::Agent` wraps `AgentEvent`, `AgentEvent::SubAgentEvent` wraps a child `AgentEvent`), the wrapper's `trace()` arm is `{}` because the inner event was already traced at its origin. This prevents double-logging.
+- **Streaming noise variants are no-ops.** `TextDelta` and `ToolCallOutputDelta` produce no log output — per-token events would flood the logs even at DEBUG level.
