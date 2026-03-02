@@ -1,4 +1,5 @@
-import { ChevronRightIcon } from "@heroicons/react/20/solid";
+import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/20/solid";
+import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import { Link, Outlet, useLocation } from "react-router";
 import { findRun, statusColors } from "../data/runs";
 import { workflowData } from "./workflow-detail";
@@ -67,6 +68,40 @@ export default function RunDetail({ params }: Route.ComponentProps) {
           </svg>
           Open PR
         </button>
+        {run.sandboxId && (
+          <Menu as="div" className="relative">
+            <MenuButton className="flex shrink-0 items-center gap-1.5 rounded-md border border-teal-500/20 px-3 py-1.5 text-sm font-medium text-teal-500 transition-colors hover:border-teal-500/50 hover:bg-teal-500/10 hover:text-fg">
+              <svg viewBox="0 0 16 16" fill="currentColor" className="size-3.5" aria-hidden="true">
+                <path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25ZM7.25 8a.749.749 0 0 1-.22.53l-2.25 2.25a.749.749 0 1 1-1.06-1.06L5.44 8 3.72 6.28a.749.749 0 1 1 1.06-1.06l2.25 2.25c.141.14.22.331.22.53Zm1.5 1.5h3a.75.75 0 0 1 0 1.5h-3a.75.75 0 0 1 0-1.5Z" />
+              </svg>
+              Terminal
+              <ChevronDownIcon className="size-4" aria-hidden="true" />
+            </MenuButton>
+            <MenuItems
+              transition
+              className="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-panel py-1 outline-1 -outline-offset-1 outline-line-strong transition data-closed:scale-95 data-closed:transform data-closed:opacity-0 data-enter:duration-100 data-enter:ease-out data-leave:duration-75 data-leave:ease-in"
+            >
+              <MenuItem>
+                <a
+                  href="https://22222-rjyrtjg8gelfyo1p.daytonaproxy01.net/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block px-4 py-2 text-sm text-fg-3 data-focus:bg-overlay data-focus:text-fg"
+                >
+                  Web Terminal
+                </a>
+              </MenuItem>
+              <MenuItem>
+                <button
+                  type="button"
+                  className="block w-full px-4 py-2 text-left text-sm text-fg-3 data-focus:bg-overlay data-focus:text-fg"
+                >
+                  Connect with SSH
+                </button>
+              </MenuItem>
+            </MenuItems>
+          </Menu>
+        )}
       </div>
 
       <div className="border-b border-line">

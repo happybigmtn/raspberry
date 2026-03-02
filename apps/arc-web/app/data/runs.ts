@@ -23,6 +23,7 @@ export interface RunItem {
   actionDisabled?: boolean;
   comments?: number;
   question?: string;
+  sandboxId?: string;
 }
 
 export type ColumnStatus = "working" | "pending" | "review" | "merge";
@@ -62,6 +63,7 @@ export const columns: {
         workflow: "implement",
         resources: "4 CPU / 8 GB",
         elapsed: "7m",
+        sandboxId: "sb-a1b2c3d4",
       },
       {
         id: "run-2",
@@ -70,6 +72,7 @@ export const columns: {
         workflow: "implement",
         resources: "8 CPU / 16 GB",
         elapsed: "2h 15m",
+        sandboxId: "sb-e5f6g7h8",
       },
       {
         id: "run-3",
@@ -78,6 +81,7 @@ export const columns: {
         workflow: "fix_build",
         resources: "2 CPU / 4 GB",
         elapsed: "45m",
+        sandboxId: "sb-i9j0k1l2",
       },
     ],
   },
@@ -98,6 +102,7 @@ export const columns: {
         deletions: 234,
         elapsed: "1h 12m",
         question: "Accept or push for another round?",
+        sandboxId: "sb-q7r8s9t0",
       },
       {
         id: "run-5",
@@ -108,6 +113,7 @@ export const columns: {
         deletions: 23,
         elapsed: "28m",
         question: "Proceed from investigation to fix?",
+        sandboxId: "sb-u1v2w3x4",
       },
     ],
   },
@@ -127,6 +133,7 @@ export const columns: {
         number: 889,
         additions: 234,
         deletions: 67,
+        sandboxId: "sb-m3n4o5p6",
         checks: [
           { name: "lint", status: "success", duration: "23s" },
           { name: "typecheck", status: "success", duration: "1m 12s" },
@@ -155,6 +162,7 @@ export const columns: {
           { name: "build", status: "pending" },
         ],
         elapsed: "12m",
+        sandboxId: "sb-y5z6a7b8",
         actionDisabled: true,
         comments: 1,
       },
@@ -190,6 +198,7 @@ export const columns: {
           { name: "bundle-size", status: "success", duration: "34s" },
           { name: "accessibility", status: "success", duration: "1m 12s" },
         ],
+        sandboxId: "sb-c9d0e1f2",
         elapsed: "3d",
         elapsedWarning: true,
         comments: 7,
@@ -210,6 +219,7 @@ export const columns: {
           { name: "coverage", status: "success", duration: "2m 4s" },
           { name: "bundle-size", status: "skipped" },
         ],
+        sandboxId: "sb-g3h4i5j6",
         elapsed: "1h 5m",
         comments: 2,
       },
@@ -227,6 +237,7 @@ export const columns: {
           { name: "unit-tests", status: "success", duration: "1m 15s" },
           { name: "build", status: "success", duration: "58s" },
         ],
+        sandboxId: "sb-k7l8m9n0",
         elapsed: "48m",
         comments: 0,
       },
