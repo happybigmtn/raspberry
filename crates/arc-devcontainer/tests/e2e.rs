@@ -316,3 +316,132 @@ async fn container_env_empty_when_not_specified() {
         .unwrap();
     assert!(config.container_env.is_empty());
 }
+
+// === Gap e2e tests: local features exercising dependsOn, containerEnv, lifecycle hooks ===
+
+/// Gap 5: Local path feature references are resolved through the full pipeline.
+#[tokio::test]
+async fn local_feature_refs_resolved() {
+    let config = DevcontainerResolver::resolve(&fixture_path("local-features"))
+        .await
+        .unwrap();
+
+    // Base image preserved
+    assert!(config.dockerfile.contains("FROM mcr.microsoft.com/devcontainers/base:ubuntu"));
+
+    // Feature install.sh snippets are in the Dockerfile
+    assert!(config.dockerfile.contains("node-feature"));
+    assert!(config.dockerfile.contains("python-feature"));
+
+    // Node feature option "version=20" passed as env var
+    assert!(config.dockerfile.contains("export VERSION=\"20\""));
+}
+
+/// Gap 1: dependsOn auto-injects missing features through the full pipeline.
+/// node-feature dependsOn ./base-utils which is NOT listed in devcontainer.json features.
+#[tokio::test]
+async fn depends_on_auto_injects_missing_feature() {
+    let config = DevcontainerResolver::resolve(&fixture_path("local-features"))
+        .await
+        .unwrap();
+
+    // base-utils was auto-injected and its install.sh snippet is in the Dockerfile
+    assert!(config.dockerfile.contains("base-utils"));
+
+    // base-utils must appear before node-feature (dependency ordering)
+    let base_pos = config.dockerfile.find("base-utils").unwrap();
+    let node_pos = config.dockerfile.find("node-feature").unwrap();
+    assert!(
+        base_pos < node_pos,
+        "base-utils (pos {base_pos}) should appear before node-feature (pos {node_pos})"
+    );
+}
+
+/// Gap 2: Feature containerEnv is merged into the Dockerfile and config.
+#[tokio::test]
+async fn feature_container_env_merged() {
+    let config = DevcontainerResolver::resolve(&fixture_path("local-features"))
+        .await
+        .unwrap();
+
+    // Feature containerEnv values baked into Dockerfile
+    assert!(config.dockerfile.contains("ENV NODE_INSTALLED=true"));
+    assert!(config.dockerfile.contains("ENV NODE_PATH=/usr/local/lib/node_modules"));
+    assert!(config.dockerfile.contains("ENV PYTHON_INSTALLED=true"));
+    assert!(config.dockerfile.contains("ENV BASE_UTILS_INSTALLED=true"));
+
+    // Devcontainer.json containerEnv also present
+    assert!(config.dockerfile.contains("ENV DEVCONTAINER=true"));
+
+    // All values in config.container_env
+    assert_eq!(config.container_env.get("NODE_INSTALLED").map(String::as_str), Some("true"));
+    assert_eq!(config.container_env.get("PYTHON_INSTALLED").map(String::as_str), Some("true"));
+    assert_eq!(config.container_env.get("BASE_UTILS_INSTALLED").map(String::as_str), Some("true"));
+    assert_eq!(config.container_env.get("DEVCONTAINER").map(String::as_str), Some("true"));
+}
+
+/// Gap 3: Feature lifecycle hooks are appended after devcontainer.json lifecycle commands.
+#[tokio::test]
+async fn feature_lifecycle_hooks_appended() {
+    let config = DevcontainerResolver::resolve(&fixture_path("local-features"))
+        .await
+        .unwrap();
+
+    // onCreateCommand: devcontainer.json first, then features
+    // devcontainer.json: "echo devcontainer-setup"
+    // base-utils: "echo base-utils-setup"
+    // node-feature: "echo node-setup"
+    assert!(config.on_create_commands.len() >= 2);
+    assert!(matches!(&config.on_create_commands[0], Command::Shell(s) if s == "echo devcontainer-setup"));
+
+    // Feature on_create_commands appear after devcontainer.json's
+    let feature_on_create: Vec<&str> = config.on_create_commands[1..]
+        .iter()
+        .filter_map(|cmd| match cmd {
+            Command::Shell(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(feature_on_create.contains(&"echo base-utils-setup"));
+    assert!(feature_on_create.contains(&"echo node-setup"));
+
+    // postCreateCommand: devcontainer.json first, then python-feature
+    assert!(config.post_create_commands.len() >= 2);
+    assert!(matches!(&config.post_create_commands[0], Command::Shell(s) if s == "echo devcontainer-post-create"));
+    let feature_post_create: Vec<&str> = config.post_create_commands[1..]
+        .iter()
+        .filter_map(|cmd| match cmd {
+            Command::Shell(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(feature_post_create.contains(&"echo python-post-create"));
+
+    // postStartCommand: only node-feature contributes (no devcontainer.json postStartCommand)
+    assert!(!config.post_start_commands.is_empty());
+    let post_start: Vec<&str> = config.post_start_commands
+        .iter()
+        .filter_map(|cmd| match cmd {
+            Command::Shell(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(post_start.contains(&"echo node-started"));
+}
+
+/// Gap 2+3: Feature ordering affects both containerEnv and lifecycle hook collection.
+/// python-feature installsAfter node-feature, so node's env/hooks come first.
+#[tokio::test]
+async fn feature_ordering_preserved_in_env_and_hooks() {
+    let config = DevcontainerResolver::resolve(&fixture_path("local-features"))
+        .await
+        .unwrap();
+
+    // In the Dockerfile, node-feature layers come before python-feature layers
+    let node_layer_pos = config.dockerfile.find("node-feature").unwrap();
+    let python_layer_pos = config.dockerfile.find("python-feature").unwrap();
+    assert!(
+        node_layer_pos < python_layer_pos,
+        "node-feature (pos {node_layer_pos}) should be installed before python-feature (pos {python_layer_pos})"
+    );
+}

@@ -540,7 +540,15 @@ pub async fn resolve_features(
         return Ok(ResolvedFeatures::default());
     }
 
-    let tmp_dir = std::env::temp_dir().join("devcontainer-features");
+    let unique_id = format!(
+        "devcontainer-features-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let tmp_dir = std::env::temp_dir().join(unique_id);
     tokio::fs::create_dir_all(&tmp_dir).await.map_err(|e| {
         DevcontainerError::Feature(format!("failed to create temp dir: {e}"))
     })?;
