@@ -10,18 +10,23 @@ use tracing::warn;
 /// JWT claims for service-to-service authentication.
 #[derive(Debug, Deserialize)]
 struct Claims {
+    #[allow(dead_code)]
     iss: String,
     #[allow(dead_code)]
     iat: u64,
     #[allow(dead_code)]
     exp: u64,
+    sub: Option<String>,
 }
 
 /// Authentication mode resolved at startup.
 #[derive(Clone)]
 pub enum AuthMode {
-    /// JWT verification is enabled with the given decoding key.
-    Jwt(Arc<DecodingKey>),
+    /// JWT verification is enabled with the given decoding key and allowed users.
+    Jwt {
+        key: Arc<DecodingKey>,
+        allowed_usernames: Vec<String>,
+    },
     /// Authentication is explicitly disabled (insecure, for development only).
     Disabled,
 }
@@ -40,7 +45,10 @@ fn decode_pem_env(name: &str, value: &str) -> String {
 ///
 /// Call this once at startup before serving requests. Panics if the
 /// configuration is invalid (JWT strategy but no public key).
-pub fn resolve_auth_mode(api_config: &crate::server_config::ApiConfig) -> AuthMode {
+pub fn resolve_auth_mode(
+    api_config: &crate::server_config::ApiConfig,
+    allowed_usernames: Vec<String>,
+) -> AuthMode {
     use crate::server_config::ApiAuthenticationStrategy;
 
     match api_config.authentication_strategy {
@@ -60,7 +68,10 @@ pub fn resolve_auth_mode(api_config: &crate::server_config::ApiConfig) -> AuthMo
             let pem = decode_pem_env("ARC_JWT_PUBLIC_KEY", &raw);
             let key = DecodingKey::from_ed_pem(pem.as_bytes())
                 .expect("ARC_JWT_PUBLIC_KEY contains an invalid Ed25519 PEM public key");
-            AuthMode::Jwt(Arc::new(key))
+            AuthMode::Jwt {
+                key: Arc::new(key),
+                allowed_usernames,
+            }
         }
     }
 }
@@ -81,9 +92,12 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedService {
             .get::<AuthMode>()
             .expect("AuthMode extension must be added to the router");
 
-        let key = match auth_mode {
+        let (key, allowed_usernames) = match auth_mode {
             AuthMode::Disabled => return Ok(AuthenticatedService),
-            AuthMode::Jwt(key) => key,
+            AuthMode::Jwt {
+                key,
+                allowed_usernames,
+            } => (key, allowed_usernames),
         };
 
         let header = parts
@@ -103,8 +117,21 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedService {
         let token_data = jsonwebtoken::decode::<Claims>(token, key, &validation)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-        if token_data.claims.iss != "arc-web" {
-            return Err(StatusCode::UNAUTHORIZED);
+        // Fail closed: if no usernames are allowed, reject all requests
+        if allowed_usernames.is_empty() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        // Extract GitHub username from sub claim URL (last path segment)
+        let username = token_data
+            .claims
+            .sub
+            .as_deref()
+            .and_then(|s| s.rsplit('/').next())
+            .ok_or(StatusCode::FORBIDDEN)?;
+
+        if !allowed_usernames.iter().any(|u| u == username) {
+            return Err(StatusCode::FORBIDDEN);
         }
 
         Ok(AuthenticatedService)
@@ -157,24 +184,39 @@ mod tests {
         (encoding, decoding)
     }
 
-    fn sign_token(key: &jsonwebtoken::EncodingKey, iss: &str, exp_secs: u64) -> String {
+    fn sign_token(
+        key: &jsonwebtoken::EncodingKey,
+        iss: &str,
+        exp_secs: u64,
+        sub: Option<&str>,
+    ) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let claims = serde_json::json!({
+        let mut claims = serde_json::json!({
             "iss": iss,
             "iat": now,
             "exp": now + exp_secs,
         });
+        if let Some(sub) = sub {
+            claims["sub"] = serde_json::Value::String(sub.to_string());
+        }
         let header = jsonwebtoken::Header::new(Algorithm::EdDSA);
         jsonwebtoken::encode(&header, &claims, key).expect("failed to sign token")
+    }
+
+    fn jwt_mode(decoding: DecodingKey, allowed_usernames: Vec<&str>) -> AuthMode {
+        AuthMode::Jwt {
+            key: Arc::new(decoding),
+            allowed_usernames: allowed_usernames.into_iter().map(String::from).collect(),
+        }
     }
 
     #[tokio::test]
     async fn rejects_missing_auth_header() {
         let (_, decoding) = generate_test_keypair();
-        let app = test_router(AuthMode::Jwt(Arc::new(decoding)));
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
 
         let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
@@ -185,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_token() {
         let (_, decoding) = generate_test_keypair();
-        let app = test_router(AuthMode::Jwt(Arc::new(decoding)));
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
 
         let req = Request::builder()
             .uri("/test")
@@ -198,11 +240,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_valid_token() {
+    async fn accepts_valid_token_with_matching_username() {
         let (encoding, decoding) = generate_test_keypair();
-        let app = test_router(AuthMode::Jwt(Arc::new(decoding)));
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
 
-        let token = sign_token(&encoding, "arc-web", 60);
+        let token = sign_token(
+            &encoding,
+            "arc-web",
+            60,
+            Some("https://github.com/brynary"),
+        );
 
         let req = Request::builder()
             .uri("/test")
@@ -215,11 +262,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_token_with_non_matching_username() {
+        let (encoding, decoding) = generate_test_keypair();
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
+
+        let token = sign_token(
+            &encoding,
+            "arc-web",
+            60,
+            Some("https://github.com/someone-else"),
+        );
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_token_with_missing_sub() {
+        let (encoding, decoding) = generate_test_keypair();
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
+
+        let token = sign_token(&encoding, "arc-web", 60, None);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_when_allowed_usernames_empty() {
+        let (encoding, decoding) = generate_test_keypair();
+        let app = test_router(jwt_mode(decoding, vec![]));
+
+        let token = sign_token(
+            &encoding,
+            "arc-web",
+            60,
+            Some("https://github.com/brynary"),
+        );
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn rejects_wrong_issuer() {
         let (encoding, decoding) = generate_test_keypair();
-        let app = test_router(AuthMode::Jwt(Arc::new(decoding)));
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
 
-        let token = sign_token(&encoding, "wrong-issuer", 60);
+        let token = sign_token(
+            &encoding,
+            "wrong-issuer",
+            60,
+            Some("https://github.com/brynary"),
+        );
 
         let req = Request::builder()
             .uri("/test")
@@ -234,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_expired_token() {
         let (encoding, decoding) = generate_test_keypair();
-        let app = test_router(AuthMode::Jwt(Arc::new(decoding)));
+        let app = test_router(jwt_mode(decoding, vec!["brynary"]));
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -244,6 +357,7 @@ mod tests {
             "iss": "arc-web",
             "iat": now - 200,
             "exp": now - 100,
+            "sub": "https://github.com/brynary",
         });
         let header = jsonwebtoken::Header::new(Algorithm::EdDSA);
         let token = jsonwebtoken::encode(&header, &claims, &encoding).unwrap();
@@ -266,7 +380,10 @@ mod tests {
             authentication_strategy: ApiAuthenticationStrategy::InsecureDisabled,
             ..ApiConfig::default()
         };
-        assert!(matches!(resolve_auth_mode(&config), AuthMode::Disabled));
+        assert!(matches!(
+            resolve_auth_mode(&config, vec![]),
+            AuthMode::Disabled
+        ));
     }
 
     #[tokio::test]

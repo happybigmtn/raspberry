@@ -122,7 +122,10 @@ pub async fn serve_command(args: ServeArgs, styles: &'static Styles) -> anyhow::
     let auth_mode = if args.demo {
         crate::jwt_auth::AuthMode::Disabled
     } else {
-        crate::jwt_auth::resolve_auth_mode(&server_config.api)
+        crate::jwt_auth::resolve_auth_mode(
+            &server_config.api,
+            server_config.web.auth.allowed_usernames.clone(),
+        )
     };
 
     let state = create_app_state_with_options(db, factory, dry_run_mode, args.demo);
