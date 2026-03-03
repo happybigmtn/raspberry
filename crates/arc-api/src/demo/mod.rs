@@ -867,7 +867,7 @@ mod workflows {
                 title: "Fix Build".into(), slug: "fix_build".into(), filename: "fix_build.dot".into(),
                 description: "Automatically diagnoses and fixes CI build failures by analyzing error logs, identifying root causes, and applying targeted code changes.".into(),
                 config: r#"version = 1
-task = "Diagnose and fix CI build failures"
+goal = "Diagnose and fix CI build failures"
 graph = "fix_build.dot"
 
 [llm]
@@ -917,7 +917,7 @@ disk = 10
                 title: "Implement Feature".into(), slug: "implement".into(), filename: "implement.dot".into(),
                 description: "Generates production-ready code from a technical blueprint, including tests, documentation, and a pull request ready for review.".into(),
                 config: r#"version = 1
-task = "Implement feature from technical blueprint"
+goal = "Implement feature from technical blueprint"
 graph = "implement.dot"
 
 [llm]
@@ -986,7 +986,7 @@ disk = 20
                 title: "Sync Drift".into(), slug: "sync_drift".into(), filename: "sync_drift.dot".into(),
                 description: "Detects configuration and code drift between environments, then generates reconciliation patches to bring everything back in sync.".into(),
                 config: r#"version = 1
-task = "Detect and reconcile configuration drift across environments"
+goal = "Detect and reconcile configuration drift across environments"
 graph = "sync_drift.dot"
 
 [llm]
@@ -1042,7 +1042,7 @@ disk = 10
                 title: "Expand Product".into(), slug: "expand".into(), filename: "expand.dot".into(),
                 description: "Evolves the product by analyzing usage patterns and specifications to propose and implement incremental improvements.".into(),
                 config: r#"version = 1
-task = "Propose and implement incremental product improvements"
+goal = "Propose and implement incremental product improvements"
 graph = "expand.dot"
 
 [llm]

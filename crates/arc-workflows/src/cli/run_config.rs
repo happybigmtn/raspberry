@@ -10,9 +10,9 @@ const SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskConfig {
+pub struct WorkflowRunConfig {
     pub version: u32,
-    pub task: String,
+    pub goal: String,
     pub graph: String,
     pub directory: Option<String>,
     pub llm: Option<LlmConfig>,
@@ -42,14 +42,14 @@ pub struct SandboxConfig {
     pub daytona: Option<DaytonaConfig>,
 }
 
-/// Load and validate a task config from a TOML file.
+/// Load and validate a run config from a TOML file.
 ///
 /// The `graph` path in the returned config is resolved relative to the
 /// TOML file's parent directory.
-pub fn load_task_config(path: &Path) -> anyhow::Result<TaskConfig> {
+pub fn load_run_config(path: &Path) -> anyhow::Result<WorkflowRunConfig> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let config = parse_task_config(&contents)?;
+    let config = parse_run_config(&contents)?;
 
     Ok(config)
 }
@@ -67,13 +67,13 @@ pub fn resolve_graph_path(toml_path: &Path, graph: &str) -> PathBuf {
     }
 }
 
-fn parse_task_config(contents: &str) -> anyhow::Result<TaskConfig> {
-    let config: TaskConfig =
-        toml::from_str(contents).context("Failed to parse task config TOML")?;
+fn parse_run_config(contents: &str) -> anyhow::Result<WorkflowRunConfig> {
+    let config: WorkflowRunConfig =
+        toml::from_str(contents).context("Failed to parse run config TOML")?;
 
     if config.version != SUPPORTED_VERSION {
         bail!(
-            "Unsupported task config version {}. Only version {SUPPORTED_VERSION} is supported.",
+            "Unsupported run config version {}. Only version {SUPPORTED_VERSION} is supported.",
             config.version
         );
     }
@@ -163,14 +163,14 @@ mod tests {
     fn parse_toml_with_vars() {
         let toml = r#"
 version = 1
-task = "Run tests"
+goal = "Run tests"
 graph = "workflow.dot"
 
 [vars]
 repo_url = "https://github.com/org/repo"
 language = "python"
 "#;
-        let config = parse_task_config(toml).unwrap();
+        let config = parse_run_config(toml).unwrap();
         let vars = config.vars.unwrap();
         assert_eq!(vars["repo_url"], "https://github.com/org/repo");
         assert_eq!(vars["language"], "python");
@@ -223,13 +223,13 @@ language = "python"
     fn parse_toml_with_sandbox() {
         let toml = r#"
 version = 1
-task = "Run tests"
+goal = "Run tests"
 graph = "workflow.dot"
 
 [sandbox]
 provider = "daytona"
 "#;
-        let config = parse_task_config(toml).unwrap();
+        let config = parse_run_config(toml).unwrap();
         let sandbox = config.sandbox.unwrap();
         assert_eq!(sandbox.provider.as_deref(), Some("daytona"));
         assert!(sandbox.daytona.is_none());
@@ -239,7 +239,7 @@ provider = "daytona"
     fn parse_toml_with_daytona_config() {
         let toml = r#"
 version = 1
-task = "Run tests"
+goal = "Run tests"
 graph = "workflow.dot"
 
 [sandbox]
@@ -258,7 +258,7 @@ memory = 8
 disk = 10
 dockerfile = "FROM rust:1.85-slim-bookworm\nRUN apt-get update"
 "#;
-        let config = parse_task_config(toml).unwrap();
+        let config = parse_run_config(toml).unwrap();
         let sandbox = config.sandbox.unwrap();
         assert_eq!(sandbox.provider.as_deref(), Some("daytona"));
 
@@ -282,7 +282,7 @@ dockerfile = "FROM rust:1.85-slim-bookworm\nRUN apt-get update"
     fn parse_toml_with_daytona_no_snapshot() {
         let toml = r#"
 version = 1
-task = "Run tests"
+goal = "Run tests"
 graph = "workflow.dot"
 
 [sandbox]
@@ -291,7 +291,7 @@ provider = "daytona"
 [sandbox.daytona]
 auto_stop_interval = 30
 "#;
-        let config = parse_task_config(toml).unwrap();
+        let config = parse_run_config(toml).unwrap();
         let daytona = config.sandbox.unwrap().daytona.unwrap();
         assert_eq!(daytona.auto_stop_interval, Some(30));
         assert!(daytona.snapshot.is_none());
@@ -301,12 +301,12 @@ auto_stop_interval = 30
     fn parse_minimal_toml() {
         let toml = r#"
 version = 1
-task = "Run tests"
+goal = "Run tests"
 graph = "workflow.dot"
 "#;
-        let config = parse_task_config(toml).unwrap();
+        let config = parse_run_config(toml).unwrap();
         assert_eq!(config.version, 1);
-        assert_eq!(config.task, "Run tests");
+        assert_eq!(config.goal, "Run tests");
         assert_eq!(config.graph, "workflow.dot");
         assert!(config.directory.is_none());
         assert!(config.llm.is_none());
@@ -317,7 +317,7 @@ graph = "workflow.dot"
     fn parse_full_toml() {
         let toml = r#"
 version = 1
-task = "Full workflow"
+goal = "Full workflow"
 graph = "workflow.dot"
 directory = "/tmp/repo"
 
@@ -329,8 +329,8 @@ provider = "anthropic"
 commands = ["pip install -r requirements.txt", "npm install"]
 timeout_ms = 60000
 "#;
-        let config = parse_task_config(toml).unwrap();
-        assert_eq!(config.task, "Full workflow");
+        let config = parse_run_config(toml).unwrap();
+        assert_eq!(config.goal, "Full workflow");
         assert_eq!(config.directory.as_deref(), Some("/tmp/repo"));
 
         let llm = config.llm.unwrap();
@@ -346,13 +346,13 @@ timeout_ms = 60000
     fn unsupported_version_rejected() {
         let toml = r#"
 version = 2
-task = "x"
+goal = "x"
 graph = "p.dot"
 "#;
-        let err = parse_task_config(toml).unwrap_err();
+        let err = parse_run_config(toml).unwrap_err();
         assert!(
             err.to_string()
-                .contains("Unsupported task config version 2"),
+                .contains("Unsupported run config version 2"),
             "unexpected error: {err}"
         );
     }
@@ -373,17 +373,17 @@ graph = "p.dot"
 
     #[test]
     fn missing_required_fields() {
-        let no_task = r#"
+        let no_goal = r#"
 version = 1
 graph = "p.dot"
 "#;
-        assert!(parse_task_config(no_task).is_err());
+        assert!(parse_run_config(no_goal).is_err());
 
         let no_graph = r#"
 version = 1
-task = "x"
+goal = "x"
 "#;
-        assert!(parse_task_config(no_graph).is_err());
+        assert!(parse_run_config(no_graph).is_err());
     }
 
     #[tokio::test]

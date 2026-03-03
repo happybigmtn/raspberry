@@ -27,7 +27,7 @@ export default function WorkflowDefinition() {
   return (
     <div className="flex flex-col gap-6">
       <CollapsibleFile
-        file={{ name: "task.toml", contents: workflow.config, lang: "toml" }}
+        file={{ name: "run.toml", contents: workflow.config, lang: "toml" }}
         defaultOpen={false}
       />
       {dotReady && (

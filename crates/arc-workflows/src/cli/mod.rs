@@ -2,7 +2,7 @@ pub mod backend;
 pub mod cli_backend;
 pub mod run;
 pub mod runs;
-pub mod task_config;
+pub mod run_config;
 pub mod validate;
 
 use std::path::Path;

@@ -25,8 +25,8 @@ use arc_llm::provider::Provider;
 
 use super::backend::AgentApiBackend;
 use super::cli_backend::{BackendRouter, AgentCliBackend};
-use super::task_config;
-use super::task_config::TaskConfig;
+use super::run_config;
+use super::run_config::WorkflowRunConfig;
 use super::{
     compute_stage_cost, format_cost, format_duration_human,
     format_event_summary, format_tokens_human, print_diagnostics, read_dot_file,
@@ -52,13 +52,13 @@ fn default_model_for_provider(provider: Provider) -> &'static str {
 fn resolve_model_provider(
     cli_model: Option<&str>,
     cli_provider: Option<&str>,
-    task_cfg: Option<&TaskConfig>,
+    run_cfg: Option<&WorkflowRunConfig>,
     graph: &crate::graph::types::Graph,
 ) -> (String, Option<String>) {
-    let toml_model = task_cfg
+    let toml_model = run_cfg
         .and_then(|c| c.llm.as_ref())
         .and_then(|l| l.model.as_deref());
-    let toml_provider = task_cfg
+    let toml_provider = run_cfg
         .and_then(|c| c.llm.as_ref())
         .and_then(|l| l.provider.as_deref());
 
@@ -125,16 +125,16 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--workflow is required unless --run-branch is provided"))?;
 
-    // 0. Load task config if TOML, resolve DOT path, run setup
-    let (dot_path, task_cfg) = if workflow_path.extension().is_some_and(|ext| ext == "toml") {
-        let cfg = task_config::load_task_config(workflow_path)?;
-        let dot = task_config::resolve_graph_path(workflow_path, &cfg.graph);
+    // 0. Load run config if TOML, resolve DOT path, run setup
+    let (dot_path, run_cfg) = if workflow_path.extension().is_some_and(|ext| ext == "toml") {
+        let cfg = run_config::load_run_config(workflow_path)?;
+        let dot = run_config::resolve_graph_path(workflow_path, &cfg.graph);
         (dot, Some(cfg))
     } else {
         (workflow_path.clone(), None)
     };
 
-    if let Some(ref cfg) = task_cfg {
+    if let Some(ref cfg) = run_cfg {
         if let Some(ref dir) = cfg.directory {
             std::env::set_current_dir(dir)
                 .map_err(|e| anyhow::anyhow!("Failed to set working directory to {dir}: {e}"))?;
@@ -142,7 +142,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     }
 
     // Collect setup commands — they'll be run inside the sandbox
-    let setup_commands: Vec<String> = task_cfg
+    let setup_commands: Vec<String> = run_cfg
         .as_ref()
         .and_then(|c| c.setup.as_ref())
         .map(|s| s.commands.clone())
@@ -150,8 +150,8 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
 
     // 1. Parse and validate workflow
     let source = read_dot_file(&dot_path)?;
-    let source = match task_cfg.as_ref().and_then(|c| c.vars.as_ref()) {
-        Some(vars) => task_config::expand_vars(&source, vars)?,
+    let source = match run_cfg.as_ref().and_then(|c| c.vars.as_ref()) {
+        Some(vars) => run_config::expand_vars(&source, vars)?,
         None => source,
     };
     let (graph, diagnostics) = WorkflowBuilder::new().prepare(&source)?;
@@ -184,7 +184,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     // 2. Pre-flight: check git cleanliness before creating any files
     //    (must happen before logs dir is created, which may be inside the repo)
     let sandbox_provider_preview = {
-        let toml_exec = task_cfg
+        let toml_exec = run_cfg
             .as_ref()
             .and_then(|c| c.sandbox.as_ref())
             .and_then(|e| e.provider.as_deref())
@@ -203,7 +203,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     };
 
     if args.preflight {
-        return run_preflight(&graph, &task_cfg, &args, git_clean, sandbox_provider_preview, styles).await;
+        return run_preflight(&graph, &run_cfg, &args, git_clean, sandbox_provider_preview, styles).await;
     }
 
     // 3. Create logs directory
@@ -219,7 +219,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     tokio::fs::write(logs_dir.join("run.pid"), std::process::id().to_string()).await?;
     if workflow_path.extension().is_some_and(|ext| ext == "toml") {
         if let Ok(toml_contents) = tokio::fs::read(workflow_path).await {
-            tokio::fs::write(logs_dir.join("task.toml"), toml_contents).await?;
+            tokio::fs::write(logs_dir.join("run.toml"), toml_contents).await?;
         }
     }
 
@@ -368,7 +368,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     };
 
     // 5. Resolve sandbox: CLI flag > TOML > default
-    let toml_sandbox = task_cfg
+    let toml_sandbox = run_cfg
         .as_ref()
         .and_then(|c| c.sandbox.as_ref())
         .and_then(|e| e.provider.as_deref())
@@ -400,7 +400,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let daytona_config = task_cfg
+    let daytona_config = run_cfg
         .as_ref()
         .and_then(|c| c.sandbox.as_ref())
         .and_then(|e| e.daytona.clone());
@@ -554,7 +554,7 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
     let (model, provider) = resolve_model_provider(
         args.model.as_deref(),
         args.provider.as_deref(),
-        task_cfg.as_ref(),
+        run_cfg.as_ref(),
         &graph,
     );
 
@@ -1045,7 +1045,7 @@ async fn run_from_branch(
 /// a structured report.
 async fn run_preflight(
     graph: &crate::graph::types::Graph,
-    task_cfg: &Option<task_config::TaskConfig>,
+    run_cfg: &Option<run_config::WorkflowRunConfig>,
     args: &RunArgs,
     git_clean: bool,
     sandbox_provider: SandboxProvider,
@@ -1055,7 +1055,7 @@ async fn run_preflight(
 
     // 1. Sandbox boot check
     let original_cwd = std::env::current_dir()?;
-    let daytona_config = task_cfg
+    let daytona_config = run_cfg
         .as_ref()
         .and_then(|c| c.sandbox.as_ref())
         .and_then(|e| e.daytona.clone());
@@ -1124,7 +1124,7 @@ async fn run_preflight(
     let (model, provider) = resolve_model_provider(
         args.model.as_deref(),
         args.provider.as_deref(),
-        task_cfg.as_ref(),
+        run_cfg.as_ref(),
         graph,
     );
 
@@ -1142,7 +1142,7 @@ async fn run_preflight(
     };
 
     // 5. Count setup commands for display
-    let setup_command_count = task_cfg
+    let setup_command_count = run_cfg
         .as_ref()
         .and_then(|c| c.setup.as_ref())
         .map_or(0, |s| s.commands.len());
@@ -1337,12 +1337,12 @@ mod tests {
     #[test]
     fn resolve_model_provider_cli_overrides_toml() {
         let graph = crate::graph::types::Graph::new("test");
-        let cfg = task_config::TaskConfig {
+        let cfg = run_config::WorkflowRunConfig {
             version: 1,
-            task: "test".to_string(),
+            goal: "test".to_string(),
             graph: "test.dot".to_string(),
             directory: None,
-            llm: Some(task_config::LlmConfig {
+            llm: Some(run_config::LlmConfig {
                 model: Some("toml-model".to_string()),
                 provider: Some("openai".to_string()),
             }),
@@ -1367,12 +1367,12 @@ mod tests {
         graph.attrs.insert("default_model".to_string(), AttrValue::String("graph-model".to_string()));
         graph.attrs.insert("default_provider".to_string(), AttrValue::String("gemini".to_string()));
 
-        let cfg = task_config::TaskConfig {
+        let cfg = run_config::WorkflowRunConfig {
             version: 1,
-            task: "test".to_string(),
+            goal: "test".to_string(),
             graph: "test.dot".to_string(),
             directory: None,
-            llm: Some(task_config::LlmConfig {
+            llm: Some(run_config::LlmConfig {
                 model: Some("toml-model".to_string()),
                 provider: Some("openai".to_string()),
             }),

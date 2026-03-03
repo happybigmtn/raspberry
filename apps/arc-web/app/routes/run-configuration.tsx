@@ -97,7 +97,7 @@ export default function RunConfiguration({ loaderData }: Route.ComponentProps) {
       <div className="min-w-0 flex-1">
         {configText ? (
           <CollapsibleFile
-            file={{ name: "task.toml", contents: configText, lang: "toml" }}
+            file={{ name: "run.toml", contents: configText, lang: "toml" }}
           />
         ) : (
           <p className="text-sm text-fg-muted">No configuration found.</p>
