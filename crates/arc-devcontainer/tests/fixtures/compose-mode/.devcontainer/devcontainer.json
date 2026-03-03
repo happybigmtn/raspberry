@@ -1,0 +1,10 @@
+{
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "node",
+  "postCreateCommand": "npm install",
+  "remoteEnv": {
+    "NODE_ENV": "development"
+  }
+}

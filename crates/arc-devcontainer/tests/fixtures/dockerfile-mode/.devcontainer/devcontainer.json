@@ -1,0 +1,10 @@
+{
+  // This is a JSONC file with comments
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "developer",
+  "postCreateCommand": "npm install",
+  "forwardPorts": [4000],
+}

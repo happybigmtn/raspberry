@@ -1,0 +1,21 @@
+[package]
+name = "arc-devcontainer"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Parse and resolve devcontainer.json into Dockerfiles and lifecycle hooks"
+
+[lib]
+doctest = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3"
