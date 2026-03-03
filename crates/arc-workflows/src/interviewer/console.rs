@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 use arc_util::terminal::Styles;
 use async_trait::async_trait;
 use dialoguer::console::Term;
+use dialoguer::theme::ColorfulTheme;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{Answer, AnswerValue, Interviewer, Question, QuestionType};
@@ -69,7 +70,7 @@ fn ask_select_interactive(question: &Question) -> Answer {
         all_items.push("Other (free text)...".to_string());
     }
 
-    let selection = dialoguer::Select::new()
+    let selection = dialoguer::Select::with_theme(&ColorfulTheme::default())
         .with_prompt(&question.text)
         .items(&all_items)
         .default(0)
@@ -78,7 +79,7 @@ fn ask_select_interactive(question: &Question) -> Answer {
     match selection {
         Ok(Some(idx)) if has_freeform && idx == question.options.len() => {
             // User chose the free-text option
-            dialoguer::Input::<String>::new()
+            dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
                 .with_prompt("Enter your response")
                 .interact_on(&Term::stderr())
                 .map_or_else(|_| Answer::skipped(), Answer::text)
@@ -103,7 +104,7 @@ fn ask_multi_select_interactive(question: &Question) -> Answer {
         .map(|opt| format!("{} - {}", opt.key, opt.label))
         .collect();
 
-    let selection = dialoguer::MultiSelect::new()
+    let selection = dialoguer::MultiSelect::with_theme(&ColorfulTheme::default())
         .with_prompt(&question.text)
         .items(&items)
         .interact_on_opt(&Term::stderr());
@@ -124,7 +125,7 @@ fn ask_multi_select_interactive(question: &Question) -> Answer {
 
 /// Ask a yes/no or confirmation question using dialoguer's `Confirm` widget on a TTY.
 fn ask_confirm_interactive(question: &Question) -> Answer {
-    let confirmed = dialoguer::Confirm::new()
+    let confirmed = dialoguer::Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt(&question.text)
         .default(true)
         .interact_on_opt(&Term::stderr());
@@ -137,7 +138,7 @@ fn ask_confirm_interactive(question: &Question) -> Answer {
 
 /// Ask a freeform question using dialoguer's `Input` widget on a TTY.
 fn ask_freeform_interactive(question: &Question) -> Answer {
-    dialoguer::Input::<String>::new()
+    dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
         .with_prompt(&question.text)
         .interact_on(&Term::stderr())
         .map_or_else(|_| Answer::skipped(), Answer::text)

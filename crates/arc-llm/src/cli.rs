@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
+
+use dialoguer::console::Term;
+use dialoguer::theme::ColorfulTheme;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -221,17 +224,28 @@ pub async fn run_chat(args: ChatArgs) -> Result<()> {
     eprintln!("Using model: {model_id}");
 
     let mut messages: Vec<Message> = Vec::new();
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
+    let is_tty = io::stdin().is_terminal();
 
     loop {
-        eprint!("> ");
-        io::stderr().flush()?;
-
-        let line = match lines.next() {
-            Some(Ok(line)) => line,
-            Some(Err(e)) => return Err(e.into()),
-            None => break, // EOF
+        let line = if is_tty {
+            let result = tokio::task::spawn_blocking(|| {
+                dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
+                    .with_prompt(">")
+                    .interact_on(&Term::stderr())
+            })
+            .await?;
+            match result {
+                Ok(line) => line,
+                Err(_) => break,
+            }
+        } else {
+            eprint!("> ");
+            io::stderr().flush()?;
+            let mut buf = String::new();
+            if io::stdin().read_line(&mut buf)? == 0 {
+                break;
+            }
+            buf.trim_end().to_string()
         };
 
         let trimmed = line.trim();
