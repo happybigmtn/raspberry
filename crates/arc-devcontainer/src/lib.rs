@@ -285,15 +285,30 @@ impl DevcontainerResolver {
 
         let forwarded_ports = Self::parse_forward_ports(&devcontainer.forward_ports);
 
+        // Collect devcontainer.json lifecycle commands, then append feature lifecycle commands
+        let mut on_create_commands = Self::collect_commands(&devcontainer.on_create_command, &vars);
+        let mut post_create_commands = Self::collect_commands(&devcontainer.post_create_command, &vars);
+        let mut post_start_commands = Self::collect_commands(&devcontainer.post_start_command, &vars);
+
+        for cmd in &resolved_features.on_create_commands {
+            on_create_commands.push(Self::convert_lifecycle_command(cmd));
+        }
+        for cmd in &resolved_features.post_create_commands {
+            post_create_commands.push(Self::convert_lifecycle_command(cmd));
+        }
+        for cmd in &resolved_features.post_start_commands {
+            post_start_commands.push(Self::convert_lifecycle_command(cmd));
+        }
+
         Ok(DevcontainerConfig {
             dockerfile: dockerfile_content,
             build_context,
             build_args,
             build_target,
             initialize_commands: Self::collect_commands(&devcontainer.initialize_command, &vars),
-            on_create_commands: Self::collect_commands(&devcontainer.on_create_command, &vars),
-            post_create_commands: Self::collect_commands(&devcontainer.post_create_command, &vars),
-            post_start_commands: Self::collect_commands(&devcontainer.post_start_command, &vars),
+            on_create_commands,
+            post_create_commands,
+            post_start_commands,
             environment,
             container_env: merged_container_env,
             remote_user: devcontainer.remote_user.clone(),
@@ -368,6 +383,14 @@ impl DevcontainerResolver {
                 .iter()
                 .map(|(k, v)| (k.clone(), variables::substitute(v, vars)))
                 .collect(),
+        }
+    }
+
+    fn convert_lifecycle_command(cmd: &types::LifecycleCommand) -> Command {
+        match cmd {
+            types::LifecycleCommand::String(s) => Command::Shell(s.clone()),
+            types::LifecycleCommand::Array(arr) => Command::Args(arr.clone()),
+            types::LifecycleCommand::Object(map) => Command::Parallel(map.clone()),
         }
     }
 

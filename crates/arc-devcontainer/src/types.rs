@@ -126,6 +126,11 @@ pub struct FeatureMetadata {
     /// Environment variables contributed by this feature
     #[serde(default)]
     pub container_env: HashMap<String, String>,
+
+    /// Lifecycle hooks contributed by this feature
+    pub on_create_command: Option<LifecycleCommand>,
+    pub post_create_command: Option<LifecycleCommand>,
+    pub post_start_command: Option<LifecycleCommand>,
 }
 
 /// A single option for a devcontainer feature.
@@ -246,6 +251,20 @@ mod tests {
         let json = r#"{"image": "ubuntu", "unknownField": true, "customizations": {}}"#;
         let config: DevcontainerJson = serde_json::from_str(json).unwrap();
         assert_eq!(config.image.as_deref(), Some("ubuntu"));
+    }
+
+    #[test]
+    fn parse_feature_metadata_lifecycle_hooks() {
+        let json = r#"{
+            "id": "python",
+            "onCreateCommand": "pip install -r requirements.txt",
+            "postCreateCommand": ["python", "setup.py"],
+            "postStartCommand": {"server": "python app.py"}
+        }"#;
+        let meta: FeatureMetadata = serde_json::from_str(json).unwrap();
+        assert!(matches!(meta.on_create_command, Some(LifecycleCommand::String(ref s)) if s == "pip install -r requirements.txt"));
+        assert!(matches!(meta.post_create_command, Some(LifecycleCommand::Array(ref arr)) if arr == &["python", "setup.py"]));
+        assert!(matches!(meta.post_start_command, Some(LifecycleCommand::Object(ref map)) if map.len() == 1));
     }
 
     #[test]

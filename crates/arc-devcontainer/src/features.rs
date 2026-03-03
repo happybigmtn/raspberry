@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tracing::info;
 
-use crate::types::FeatureMetadata;
+use crate::types::{FeatureMetadata, LifecycleCommand};
 use crate::DevcontainerError;
 
 /// A resolved feature layer ready to be inserted into a Dockerfile.
@@ -22,6 +22,9 @@ pub struct FeatureLayer {
 pub struct ResolvedFeatures {
     pub layers: Vec<FeatureLayer>,
     pub container_env: HashMap<String, String>,
+    pub on_create_commands: Vec<LifecycleCommand>,
+    pub post_create_commands: Vec<LifecycleCommand>,
+    pub post_start_commands: Vec<LifecycleCommand>,
 }
 
 /// Extract the directory name from a feature ID.
@@ -412,11 +415,25 @@ pub async fn resolve_features(
                 installs_after: Vec::new(),
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             });
 
         // Collect feature containerEnv (later features override earlier)
         for (k, v) in &metadata.container_env {
             resolved.container_env.insert(k.clone(), v.clone());
+        }
+
+        // Collect feature lifecycle hooks
+        if let Some(cmd) = &metadata.on_create_command {
+            resolved.on_create_commands.push(cmd.clone());
+        }
+        if let Some(cmd) = &metadata.post_create_command {
+            resolved.post_create_commands.push(cmd.clone());
+        }
+        if let Some(cmd) = &metadata.post_start_command {
+            resolved.post_start_commands.push(cmd.clone());
         }
 
         let dockerfile_snippet = generate_layer(id, &dir_name, &options, &metadata);
@@ -472,6 +489,9 @@ mod tests {
                         installs_after: Vec::new(),
                     depends_on: HashMap::new(),
                     container_env: HashMap::new(),
+                    on_create_command: None,
+                    post_create_command: None,
+                    post_start_command: None,
                     },
                 )
             })
@@ -496,6 +516,9 @@ mod tests {
                 installs_after: vec!["b".to_string()],
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -508,6 +531,9 @@ mod tests {
                 installs_after: Vec::new(),
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
 
@@ -536,6 +562,9 @@ mod tests {
                 installs_after: Vec::new(),
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -548,6 +577,9 @@ mod tests {
                 installs_after: vec!["a".to_string()],
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -560,6 +592,9 @@ mod tests {
                 installs_after: vec!["a".to_string()],
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -572,6 +607,9 @@ mod tests {
                 installs_after: vec!["b".to_string(), "c".to_string()],
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
 
@@ -607,6 +645,9 @@ mod tests {
             installs_after: Vec::new(),
             depends_on: HashMap::new(),
             container_env: HashMap::new(),
+            on_create_command: None,
+            post_create_command: None,
+            post_start_command: None,
         };
 
         let snippet = generate_layer(
@@ -643,6 +684,9 @@ mod tests {
             installs_after: Vec::new(),
             depends_on: HashMap::new(),
             container_env: HashMap::new(),
+            on_create_command: None,
+            post_create_command: None,
+            post_start_command: None,
         };
 
         let snippet = generate_layer(
@@ -667,6 +711,9 @@ mod tests {
             installs_after: Vec::new(),
             depends_on: HashMap::new(),
             container_env: HashMap::new(),
+            on_create_command: None,
+            post_create_command: None,
+            post_start_command: None,
         };
 
         let snippet = generate_layer(
@@ -699,6 +746,9 @@ mod tests {
                 installs_after: Vec::new(),
                 depends_on: depends,
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -711,6 +761,9 @@ mod tests {
                 installs_after: Vec::new(),
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
 
@@ -735,6 +788,9 @@ mod tests {
                 installs_after: vec!["b".to_string()],
                 depends_on: depends,
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
         metadata.insert(
@@ -747,6 +803,9 @@ mod tests {
                 installs_after: Vec::new(),
                 depends_on: HashMap::new(),
                 container_env: HashMap::new(),
+                on_create_command: None,
+                post_create_command: None,
+                post_start_command: None,
             },
         );
 
@@ -799,6 +858,9 @@ mod tests {
                 env.insert("BAR".to_string(), "from_a".to_string());
                 env
             },
+            on_create_command: None,
+            post_create_command: None,
+            post_start_command: None,
         };
         let meta_b = FeatureMetadata {
             id: Some("b".to_string()),
@@ -812,6 +874,9 @@ mod tests {
                 env.insert("FOO".to_string(), "from_b".to_string());
                 env
             },
+            on_create_command: None,
+            post_create_command: None,
+            post_start_command: None,
         };
 
         // A is sorted first, then B — B's FOO overrides A's
@@ -823,5 +888,26 @@ mod tests {
 
         assert_eq!(resolved.container_env.get("FOO").map(String::as_str), Some("from_b"));
         assert_eq!(resolved.container_env.get("BAR").map(String::as_str), Some("from_a"));
+    }
+
+    #[test]
+    fn feature_lifecycle_hooks_collected() {
+        let mut resolved = ResolvedFeatures::default();
+
+        let cmds = [
+            LifecycleCommand::String("setup-a".to_string()),
+            LifecycleCommand::Array(vec!["make".to_string(), "build".to_string()]),
+        ];
+
+        // Simulate collecting from two features
+        resolved.on_create_commands.push(cmds[0].clone());
+        resolved.post_create_commands.push(cmds[1].clone());
+        resolved.post_start_commands.push(cmds[0].clone());
+
+        assert_eq!(resolved.on_create_commands.len(), 1);
+        assert!(matches!(&resolved.on_create_commands[0], LifecycleCommand::String(s) if s == "setup-a"));
+        assert_eq!(resolved.post_create_commands.len(), 1);
+        assert!(matches!(&resolved.post_create_commands[0], LifecycleCommand::Array(arr) if arr.len() == 2));
+        assert_eq!(resolved.post_start_commands.len(), 1);
     }
 }
