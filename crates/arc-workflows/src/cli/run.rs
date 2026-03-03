@@ -26,11 +26,69 @@ use arc_llm::provider::Provider;
 use super::backend::AgentApiBackend;
 use super::cli_backend::{BackendRouter, AgentCliBackend};
 use super::task_config;
+use super::task_config::TaskConfig;
 use super::{
     compute_stage_cost, format_cost, format_duration_human,
-    format_event_summary, format_tokens_human, print_diagnostics, read_dot_file, SandboxProvider,
-    RunArgs,
+    format_event_summary, format_tokens_human, print_diagnostics, read_dot_file, RunMode,
+    SandboxProvider, RunArgs,
 };
+
+/// Return the default model string for a given provider name.
+fn default_model_for_provider(provider: Option<&str>) -> String {
+    match provider {
+        Some("openai") => "gpt-5.2".to_string(),
+        Some("gemini") => "gemini-3.1-pro-preview".to_string(),
+        Some("kimi") => "kimi-k2.5".to_string(),
+        Some("zai") => "glm-4.7".to_string(),
+        Some("minimax") => "minimax-m2.5".to_string(),
+        _ => "claude-opus-4-6".to_string(),
+    }
+}
+
+/// Resolve model and provider through the full precedence chain:
+/// CLI flag > TOML config > DOT graph attrs > provider-specific defaults.
+/// Then resolve through the catalog for alias expansion.
+fn resolve_model_provider(
+    cli_model: Option<&str>,
+    cli_provider: Option<&str>,
+    task_cfg: Option<&TaskConfig>,
+    graph: &crate::graph::types::Graph,
+) -> (String, Option<String>) {
+    let toml_model = task_cfg
+        .and_then(|c| c.llm.as_ref())
+        .and_then(|l| l.model.as_deref());
+    let toml_provider = task_cfg
+        .and_then(|c| c.llm.as_ref())
+        .and_then(|l| l.provider.as_deref());
+
+    // Precedence: CLI flag > TOML > DOT graph attrs > defaults
+    let provider = cli_provider
+        .or(toml_provider)
+        .or_else(|| {
+            graph
+                .attrs
+                .get("default_provider")
+                .and_then(|v| v.as_str())
+        })
+        .map(String::from);
+
+    let model = cli_model
+        .or(toml_model)
+        .or_else(|| {
+            graph
+                .attrs
+                .get("default_model")
+                .and_then(|v| v.as_str())
+        })
+        .map(String::from)
+        .unwrap_or_else(|| default_model_for_provider(provider.as_deref()));
+
+    // Resolve model alias through catalog
+    match arc_llm::catalog::get_model_info(&model) {
+        Some(info) => (info.id, provider.or(Some(info.provider))),
+        None => (model, provider),
+    }
+}
 
 /// Accumulates token usage and cost across all workflow stages.
 #[derive(Default)]
@@ -50,6 +108,14 @@ struct CostAccumulator {
 ///
 /// Returns an error if the workflow cannot be read, parsed, validated, or executed.
 pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Result<()> {
+    let run_mode = if args.preflight {
+        RunMode::Preflight
+    } else if args.dry_run {
+        RunMode::DryRun
+    } else {
+        RunMode::Normal
+    };
+
     // Handle --run-branch resume: read everything from git metadata
     if let Some(branch) = args.run_branch.clone() {
         return run_from_branch(args, &branch, styles).await;
@@ -136,6 +202,10 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         }
         SandboxProvider::Daytona => false,
     };
+
+    if run_mode == RunMode::Preflight {
+        return run_preflight(&graph, &task_cfg, &args, git_clean, sandbox_provider_preview, styles).await;
+    }
 
     // 3. Create logs directory
     let logs_dir = args.logs_dir.unwrap_or_else(|| {
@@ -482,48 +552,12 @@ pub async fn run_command(args: RunArgs, styles: &'static Styles) -> anyhow::Resu
         }
     };
 
-    let toml_model = task_cfg
-        .as_ref()
-        .and_then(|c| c.llm.as_ref())
-        .and_then(|l| l.model.clone());
-    let toml_provider = task_cfg
-        .as_ref()
-        .and_then(|c| c.llm.as_ref())
-        .and_then(|l| l.provider.clone());
-
-    // Precedence: CLI flag > TOML > DOT graph attrs > defaults
-    let provider = args.provider.or(toml_provider).or_else(|| {
-        graph
-            .attrs
-            .get("default_provider")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    });
-
-    let model = args
-        .model
-        .or(toml_model)
-        .or_else(|| {
-            graph
-                .attrs
-                .get("default_model")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-        .unwrap_or_else(|| match provider.as_deref() {
-            Some("openai") => "gpt-5.2".to_string(),
-            Some("gemini") => "gemini-3.1-pro-preview".to_string(),
-            Some("kimi") => "kimi-k2.5".to_string(),
-            Some("zai") => "glm-4.7".to_string(),
-            Some("minimax") => "minimax-m2.5".to_string(),
-            _ => "claude-opus-4-6".to_string(),
-        });
-
-    // Resolve model alias through catalog
-    let (model, provider) = match arc_llm::catalog::get_model_info(&model) {
-        Some(info) => (info.id, provider.or(Some(info.provider))),
-        None => (model, provider),
-    };
+    let (model, provider) = resolve_model_provider(
+        args.model.as_deref(),
+        args.provider.as_deref(),
+        task_cfg.as_ref(),
+        &graph,
+    );
 
     // Parse provider string to enum (defaults to Anthropic)
     let provider_enum: Provider = provider
@@ -1005,6 +1039,184 @@ async fn run_from_branch(
     }
 }
 
+/// Validate run configuration without executing the workflow.
+///
+/// Boots the sandbox (init + cleanup), checks LLM provider availability,
+/// resolves the model/provider through the full precedence chain, and prints
+/// a structured report.
+async fn run_preflight(
+    graph: &crate::graph::types::Graph,
+    task_cfg: &Option<task_config::TaskConfig>,
+    args: &RunArgs,
+    git_clean: bool,
+    sandbox_provider: SandboxProvider,
+    styles: &'static Styles,
+) -> anyhow::Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // 1. Sandbox boot check
+    let original_cwd = std::env::current_dir()?;
+    let daytona_config = task_cfg
+        .as_ref()
+        .and_then(|c| c.sandbox.as_ref())
+        .and_then(|e| e.daytona.clone());
+
+    let sandbox_ready = match sandbox_provider {
+        SandboxProvider::Docker => {
+            let config = DockerSandboxConfig {
+                host_working_directory: original_cwd.to_string_lossy().to_string(),
+                ..DockerSandboxConfig::default()
+            };
+            match DockerSandbox::new(config) {
+                Ok(env) => {
+                    let sandbox: Arc<dyn Sandbox> = Arc::new(env);
+                    match sandbox.initialize().await {
+                        Ok(()) => {
+                            let _ = sandbox.cleanup().await;
+                            true
+                        }
+                        Err(e) => {
+                            errors.push(format!("Sandbox init failed: {e}"));
+                            let _ = sandbox.cleanup().await;
+                            false
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("Docker sandbox creation failed: {e}"));
+                    false
+                }
+            }
+        }
+        SandboxProvider::Daytona => {
+            match daytona_sdk::Client::new().await {
+                Ok(daytona_client) => {
+                    let config = daytona_config.unwrap_or_default();
+                    let env = crate::daytona_sandbox::DaytonaSandbox::new(daytona_client, config);
+                    let sandbox: Arc<dyn Sandbox> = Arc::new(env);
+                    match sandbox.initialize().await {
+                        Ok(()) => {
+                            let _ = sandbox.cleanup().await;
+                            true
+                        }
+                        Err(e) => {
+                            errors.push(format!("Sandbox init failed: {e}"));
+                            let _ = sandbox.cleanup().await;
+                            false
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("Daytona client creation failed: {e}"));
+                    false
+                }
+            }
+        }
+        SandboxProvider::Local => {
+            let env = LocalSandbox::new(original_cwd.clone());
+            let sandbox: Arc<dyn Sandbox> = Arc::new(env);
+            match sandbox.initialize().await {
+                Ok(()) => {
+                    let _ = sandbox.cleanup().await;
+                    true
+                }
+                Err(e) => {
+                    errors.push(format!("Sandbox init failed: {e}"));
+                    let _ = sandbox.cleanup().await;
+                    false
+                }
+            }
+        }
+    };
+
+    // 2. LLM client check
+    let (llm_available, llm_providers) = match arc_llm::client::Client::from_env().await {
+        Ok(c) => {
+            let names = c.provider_names().iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            if names.is_empty() {
+                errors.push("No LLM providers configured (no API keys found)".to_string());
+                (false, names)
+            } else {
+                (true, names)
+            }
+        }
+        Err(e) => {
+            errors.push(format!("LLM client init failed: {e}"));
+            (false, Vec::new())
+        }
+    };
+
+    // 3. Model/provider resolution
+    let (model, provider) = resolve_model_provider(
+        args.model.as_deref(),
+        args.provider.as_deref(),
+        task_cfg.as_ref(),
+        graph,
+    );
+
+    // 4. Provider parse check
+    let provider_valid = if let Some(ref p) = provider {
+        match p.parse::<Provider>() {
+            Ok(_) => true,
+            Err(e) => {
+                errors.push(format!("Invalid provider \"{p}\": {e}"));
+                false
+            }
+        }
+    } else {
+        true // None means default (Anthropic), which is valid
+    };
+
+    // 5. Collect setup commands for display
+    let setup_commands: Vec<String> = task_cfg
+        .as_ref()
+        .and_then(|c| c.setup.as_ref())
+        .map(|s| s.commands.clone())
+        .unwrap_or_default();
+
+    // 6. Print structured report to stdout
+    println!("workflow={}", graph.name);
+    println!("nodes={}", graph.nodes.len());
+    println!("edges={}", graph.edges.len());
+    println!("goal={}", graph.goal());
+    println!("sandbox={sandbox_provider}");
+    println!("sandbox_ready={sandbox_ready}");
+    println!("git_clean={git_clean}");
+    println!("llm_available={llm_available}");
+    println!("llm_providers={}", llm_providers.join(","));
+    println!("model={model}");
+    println!("provider={}", provider.as_deref().unwrap_or("anthropic"));
+    println!("provider_valid={provider_valid}");
+    println!("setup_commands={}", setup_commands.len());
+
+    // 7. Print warnings/errors to stderr
+    for err in &errors {
+        eprintln!(
+            "{red}error{reset}: {err}",
+            red = styles.red,
+            reset = styles.reset,
+        );
+    }
+
+    // 8. Final verdict
+    let ok = sandbox_ready && llm_available && provider_valid;
+    if ok {
+        eprintln!(
+            "\n{green}Preflight: OK{reset}",
+            green = styles.green,
+            reset = styles.reset,
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "\n{red}Preflight: FAIL{reset}",
+            red = styles.red,
+            reset = styles.reset,
+        );
+        std::process::exit(1);
+    }
+}
+
 /// Generate a retro report for a completed workflow run.
 ///
 /// Derives a basic retro from the checkpoint, then optionally runs the retro agent
@@ -1103,6 +1315,119 @@ async fn generate_retro(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_for_anthropic() {
+        assert_eq!(default_model_for_provider(None), "claude-opus-4-6");
+        assert_eq!(default_model_for_provider(Some("anthropic")), "claude-opus-4-6");
+    }
+
+    #[test]
+    fn default_model_for_openai() {
+        assert_eq!(default_model_for_provider(Some("openai")), "gpt-5.2");
+    }
+
+    #[test]
+    fn default_model_for_gemini() {
+        assert_eq!(default_model_for_provider(Some("gemini")), "gemini-3.1-pro-preview");
+    }
+
+    #[test]
+    fn default_model_for_kimi() {
+        assert_eq!(default_model_for_provider(Some("kimi")), "kimi-k2.5");
+    }
+
+    #[test]
+    fn default_model_for_zai() {
+        assert_eq!(default_model_for_provider(Some("zai")), "glm-4.7");
+    }
+
+    #[test]
+    fn default_model_for_minimax() {
+        assert_eq!(default_model_for_provider(Some("minimax")), "minimax-m2.5");
+    }
+
+    #[test]
+    fn resolve_model_provider_defaults() {
+        let graph = crate::graph::types::Graph::new("test");
+        let (model, provider) = resolve_model_provider(None, None, None, &graph);
+        assert_eq!(model, "claude-opus-4-6");
+        // Catalog resolves anthropic as the provider for claude-opus-4-6
+        assert_eq!(provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_provider_cli_overrides_toml() {
+        let graph = crate::graph::types::Graph::new("test");
+        let cfg = task_config::TaskConfig {
+            version: 1,
+            task: "test".to_string(),
+            graph: "test.dot".to_string(),
+            directory: None,
+            llm: Some(task_config::LlmConfig {
+                model: Some("toml-model".to_string()),
+                provider: Some("openai".to_string()),
+            }),
+            setup: None,
+            sandbox: None,
+            vars: None,
+        };
+        let (model, provider) = resolve_model_provider(
+            Some("gpt-5.2"),
+            Some("openai"),
+            Some(&cfg),
+            &graph,
+        );
+        assert_eq!(model, "gpt-5.2");
+        assert_eq!(provider, Some("openai".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_provider_toml_overrides_graph() {
+        use crate::graph::types::AttrValue;
+        let mut graph = crate::graph::types::Graph::new("test");
+        graph.attrs.insert("default_model".to_string(), AttrValue::String("graph-model".to_string()));
+        graph.attrs.insert("default_provider".to_string(), AttrValue::String("gemini".to_string()));
+
+        let cfg = task_config::TaskConfig {
+            version: 1,
+            task: "test".to_string(),
+            graph: "test.dot".to_string(),
+            directory: None,
+            llm: Some(task_config::LlmConfig {
+                model: Some("toml-model".to_string()),
+                provider: Some("openai".to_string()),
+            }),
+            setup: None,
+            sandbox: None,
+            vars: None,
+        };
+        let (model, provider) = resolve_model_provider(None, None, Some(&cfg), &graph);
+        assert_eq!(model, "toml-model");
+        assert_eq!(provider, Some("openai".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_provider_graph_attrs_used_as_fallback() {
+        use crate::graph::types::AttrValue;
+        let mut graph = crate::graph::types::Graph::new("test");
+        graph.attrs.insert("default_model".to_string(), AttrValue::String("gpt-5.2".to_string()));
+        graph.attrs.insert("default_provider".to_string(), AttrValue::String("openai".to_string()));
+
+        let (model, provider) = resolve_model_provider(None, None, None, &graph);
+        assert_eq!(model, "gpt-5.2");
+        assert_eq!(provider, Some("openai".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_provider_alias_expansion() {
+        let graph = crate::graph::types::Graph::new("test");
+        let (model, provider) = resolve_model_provider(Some("opus"), None, None, &graph);
+        assert_eq!(model, "claude-opus-4-6");
+        assert_eq!(provider, Some("anthropic".to_string()));
+    }
+
     #[test]
     fn redact_removes_aws_key_from_compact_json() {
         let envelope = serde_json::json!({

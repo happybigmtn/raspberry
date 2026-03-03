@@ -18,6 +18,17 @@ use crate::outcome::StageUsage;
 use crate::validation::{Diagnostic, Severity};
 use arc_agent::AgentEvent;
 
+/// Whether the run executes normally, simulates LLM calls, or just checks config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunMode {
+    /// Full execution
+    Normal,
+    /// Execute with simulated LLM backend
+    DryRun,
+    /// Validate configuration without executing
+    Preflight,
+}
+
 /// Sandbox provider for agent tool operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum SandboxProvider {
@@ -85,6 +96,10 @@ pub struct RunArgs {
     /// Execute with simulated LLM backend
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Validate run configuration without executing
+    #[arg(long, conflicts_with_all = ["resume", "run_branch", "dry_run"])]
+    pub preflight: bool,
 
     /// Auto-approve all human gates
     #[arg(long)]
