@@ -22,15 +22,25 @@ import {
 } from "@heroicons/react/24/outline";
 import { Form, Link, Outlet, redirect, useLocation, useMatches } from "react-router";
 import { useTheme } from "../lib/theme";
+import { getAppConfig } from "../lib/config.server";
 import { isGitHubAppConfigured } from "../lib/github.server";
 import { requireUser } from "../lib/session.server";
 import type { Route } from "./+types/app-shell";
 
+const DEMO_USER = {
+  userUrl: "",
+  githubLogin: "demo",
+  name: "Demo User",
+  email: "demo@example.com",
+  avatarUrl: "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png",
+};
+
 export async function loader({ request }: Route.LoaderArgs) {
-  if (!isGitHubAppConfigured()) {
+  const authDisabled = getAppConfig().web.auth.provider === "insecure_disabled";
+  if (!authDisabled && !isGitHubAppConfigured()) {
     throw redirect("/setup");
   }
-  const user = await requireUser(request);
+  const user = authDisabled ? DEMO_USER : await requireUser(request);
   return { user };
 }
 

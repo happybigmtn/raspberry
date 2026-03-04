@@ -1,15 +1,19 @@
 import { redirect } from "react-router";
+import { getAppConfig } from "../lib/config.server";
 import { isGitHubAppConfigured } from "../lib/github.server";
 import { getUser } from "../lib/session.server";
 import type { Route } from "./+types/redirect-home";
 
 export async function loader({ request }: Route.LoaderArgs) {
-  if (!isGitHubAppConfigured()) {
+  const authDisabled = getAppConfig().web.auth.provider === "insecure_disabled";
+  if (!authDisabled && !isGitHubAppConfigured()) {
     return redirect("/setup");
   }
-  const user = await getUser(request);
-  if (!user) {
-    return redirect("/auth/login");
+  if (!authDisabled) {
+    const user = await getUser(request);
+    if (!user) {
+      return redirect("/auth/login");
+    }
   }
   return redirect("/start");
 }
