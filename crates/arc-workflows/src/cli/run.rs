@@ -744,6 +744,8 @@ pub async fn run_command(
         eprintln!("{}", styles.red.apply_to(format!("Failure: {failure}")),);
     }
 
+    print_final_output(&logs_dir, styles);
+
     // 9. Exit code
     match outcome.status {
         StageStatus::Success | StageStatus::PartialSuccess => Ok(()),
@@ -1019,9 +1021,36 @@ async fn run_from_branch(
         HumanDuration(Duration::from_millis(run_duration_ms))
     );
 
+    print_final_output(&logs_dir, styles);
+
     match outcome.status {
         StageStatus::Success | StageStatus::PartialSuccess => Ok(()),
         _ => std::process::exit(1),
+    }
+}
+
+/// Print the final stage output from the checkpoint, if available.
+fn print_final_output(logs_dir: &std::path::Path, styles: &Styles) {
+    let checkpoint_path = logs_dir.join("checkpoint.json");
+    let Ok(data) = std::fs::read_to_string(&checkpoint_path) else {
+        return;
+    };
+    let Ok(checkpoint) = serde_json::from_str::<Checkpoint>(&data) else {
+        return;
+    };
+
+    // Find the last stage that produced a response (walk completed_nodes in reverse,
+    // looking for a "response.{node_id}" entry in context_values).
+    for node_id in checkpoint.completed_nodes.iter().rev() {
+        let key = format!("response.{node_id}");
+        if let Some(serde_json::Value::String(response)) = checkpoint.context_values.get(&key) {
+            let text = response.trim();
+            if !text.is_empty() {
+                eprintln!("\n{}", styles.bold.apply_to("=== Output ==="));
+                eprintln!("{text}");
+            }
+            return;
+        }
     }
 }
 
