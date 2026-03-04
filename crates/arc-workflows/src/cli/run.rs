@@ -1278,6 +1278,7 @@ async fn generate_retro(
     }
 
     // Run retro agent session
+    eprintln!("\n{}", styles.bold.apply_to("=== Retro ==="));
     eprintln!("{}", styles.dim.apply_to(format!("Running retro ({model})...")));
     let retro_start = std::time::Instant::now();
     let narrative_result = if dry_run_mode {
