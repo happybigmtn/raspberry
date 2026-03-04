@@ -4080,7 +4080,7 @@ mod tests {
             .insert("goal".to_string(), AttrValue::String("test".to_string()));
         g.attrs.insert(
             "stall_timeout".to_string(),
-            AttrValue::Duration(Duration::from_millis(200)),
+            AttrValue::Duration(Duration::from_millis(50)),
         );
         g.attrs
             .insert("default_max_retry".to_string(), AttrValue::Integer(0));
@@ -4140,7 +4140,7 @@ mod tests {
             .insert("goal".to_string(), AttrValue::String("test".to_string()));
         g.attrs.insert(
             "stall_timeout".to_string(),
-            AttrValue::Duration(Duration::from_millis(200)),
+            AttrValue::Duration(Duration::from_millis(100)),
         );
         g.attrs
             .insert("default_max_retry".to_string(), AttrValue::Integer(0));
@@ -4173,8 +4173,8 @@ mod tests {
         registry.register(
             "emitting",
             Box::new(EmittingHandler {
-                interval_ms: 100,
-                total_ms: 500,
+                interval_ms: 10,
+                total_ms: 50,
             }),
         );
         let engine = WorkflowRunEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
@@ -4231,7 +4231,7 @@ mod tests {
         g.edges.push(Edge::new("work", "exit"));
 
         let mut registry = make_registry();
-        registry.register("slow", Box::new(SlowHandler { sleep_ms: 200 }));
+        registry.register("slow", Box::new(SlowHandler { sleep_ms: 50 }));
         let engine = WorkflowRunEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
         let config = RunConfig {
             logs_root: dir.path().to_path_buf(),

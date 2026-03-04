@@ -10943,7 +10943,7 @@ impl Handler for KeepaliveHandler {
 async fn e2e_stall_watchdog_triggers_from_dot_parsed_pipeline() {
     // Parse a DOT graph with stall_timeout set to 200ms
     let dot = r#"digraph StallTest {
-        graph [goal="Test stall watchdog", stall_timeout="200ms", default_max_retry=0]
+        graph [goal="Test stall watchdog", stall_timeout="50ms", default_max_retry=0]
         start [shape=Mdiamond]
         work  [type="hanging", label="Work"]
         exit  [shape=Msquare]
@@ -10954,7 +10954,7 @@ async fn e2e_stall_watchdog_triggers_from_dot_parsed_pipeline() {
     // Verify the stall_timeout was parsed correctly
     assert_eq!(
         graph.stall_timeout(),
-        Some(std::time::Duration::from_millis(200)),
+        Some(std::time::Duration::from_millis(50)),
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -11007,7 +11007,7 @@ async fn e2e_stall_watchdog_kept_alive_by_handler_events() {
     // Parse a DOT graph with stall_timeout 200ms, but the handler emits events
     // every 100ms for 500ms total — the watchdog should NOT trigger.
     let dot = r#"digraph StallAliveTest {
-        graph [goal="Test stall keepalive", stall_timeout="200ms", default_max_retry=0]
+        graph [goal="Test stall keepalive", stall_timeout="100ms", default_max_retry=0]
         start [shape=Mdiamond]
         work  [type="keepalive", label="Work"]
         exit  [shape=Msquare]
@@ -11022,8 +11022,8 @@ async fn e2e_stall_watchdog_kept_alive_by_handler_events() {
     registry.register(
         "keepalive",
         Box::new(KeepaliveHandler {
-            interval_ms: 100,
-            total_ms: 500,
+            interval_ms: 10,
+            total_ms: 50,
         }),
     );
 
@@ -11062,7 +11062,7 @@ async fn e2e_stall_watchdog_disabled_with_zero_timeout() {
     let mut registry = HandlerRegistry::new(Box::new(StartHandler));
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
-    registry.register("slow", Box::new(SlowTestHandler { sleep_ms: 200 }));
+    registry.register("slow", Box::new(SlowTestHandler { sleep_ms: 50 }));
 
     let engine = WorkflowRunEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
     let config = RunConfig {
@@ -11103,10 +11103,10 @@ impl Handler for SlowTestHandler {
 
 #[tokio::test]
 async fn e2e_stall_watchdog_with_explicit_timeout_override() {
-    // A short stall_timeout of 100ms should trigger faster than the default 600s.
+    // A short stall_timeout of 50ms should trigger faster than the default 600s.
     // This tests that the graph attribute is actually respected.
     let dot = r#"digraph StallOverrideTest {
-        graph [goal="Test stall override", stall_timeout="100ms", default_max_retry=0]
+        graph [goal="Test stall override", stall_timeout="50ms", default_max_retry=0]
         start [shape=Mdiamond]
         work  [type="hanging", label="Work"]
         exit  [shape=Msquare]
@@ -11115,7 +11115,7 @@ async fn e2e_stall_watchdog_with_explicit_timeout_override() {
     let graph = parse(dot).expect("parse should succeed");
     assert_eq!(
         graph.stall_timeout(),
-        Some(std::time::Duration::from_millis(100)),
+        Some(std::time::Duration::from_millis(50)),
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -11144,9 +11144,9 @@ async fn e2e_stall_watchdog_with_explicit_timeout_override() {
     assert!(result.is_err(), "expected stall watchdog error");
     let err = result.unwrap_err().to_string();
     assert!(err.contains("stall watchdog"), "got: {err}");
-    // Should trigger well under 2 seconds (100ms timeout + check interval overhead)
+    // Should trigger well under 1 second (50ms timeout + check interval overhead)
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
+        elapsed < std::time::Duration::from_secs(1),
         "stall watchdog took too long: {elapsed:?}"
     );
 }
