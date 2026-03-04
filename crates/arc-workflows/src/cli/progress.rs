@@ -328,11 +328,11 @@ impl ProgressUI {
                             bar.set_style(style_header_done());
                             bar.set_prefix(dur);
                             bar.finish_with_message(format!("Sandbox: {display_provider}"));
-                        }
-                        if let Some(detail_str) = &detail {
-                            let detail_bar = tty.multi.add(ProgressBar::new_spinner());
-                            detail_bar.set_style(style_sandbox_detail());
-                            detail_bar.finish_with_message(detail_str.clone());
+                            if let Some(detail_str) = &detail {
+                                let detail_bar = tty.multi.insert_after(&bar, ProgressBar::new_spinner());
+                                detail_bar.set_style(style_sandbox_detail());
+                                detail_bar.finish_with_message(detail_str.clone());
+                            }
                         }
                     }
                     ProgressRenderer::Plain => {
