@@ -10,6 +10,52 @@ use rand::Rng;
 use crate::doctor;
 
 // ---------------------------------------------------------------------------
+// OpenSSL helpers
+// ---------------------------------------------------------------------------
+
+/// Run an openssl subcommand and return stdout on success.
+fn run_openssl(args: &[&str], description: &str) -> Result<Vec<u8>> {
+    let output = Command::new("openssl")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run openssl for: {description}"))?;
+    if !output.status.success() {
+        bail!(
+            "openssl {description} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output.stdout)
+}
+
+/// Run an openssl subcommand that reads key material from stdin.
+fn run_openssl_with_stdin(args: &[&str], stdin_data: &[u8], description: &str) -> Result<Vec<u8>> {
+    let mut child = Command::new("openssl")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to spawn openssl for: {description}"))?;
+    child
+        .stdin
+        .take()
+        .context("openssl process missing stdin")?
+        .write_all(stdin_data)
+        .with_context(|| format!("failed to write to openssl stdin for: {description}"))?;
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed to read openssl output for: {description}"))?;
+    if !output.status.success() {
+        bail!(
+            "openssl {description} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output.stdout)
+}
+
+// ---------------------------------------------------------------------------
 // Session secret
 // ---------------------------------------------------------------------------
 
@@ -24,46 +70,12 @@ fn generate_session_secret() -> String {
 // ---------------------------------------------------------------------------
 
 fn generate_jwt_keypair() -> Result<(String, String)> {
-    let private_output = Command::new("openssl")
-        .args(["genpkey", "-algorithm", "Ed25519"])
-        .output()
-        .context("failed to run openssl genpkey")?;
-    if !private_output.status.success() {
-        bail!(
-            "openssl genpkey failed: {}",
-            String::from_utf8_lossy(&private_output.stderr)
-        );
-    }
-    let private_pem = private_output.stdout;
+    let private_pem = run_openssl(&["genpkey", "-algorithm", "Ed25519"], "generate keypair")?;
+    let public_pem = run_openssl_with_stdin(&["pkey", "-pubout"], &private_pem, "extract public key")?;
 
-    let mut child = Command::new("openssl")
-        .args(["pkey", "-pubout"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn openssl pkey")?;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&private_pem)
-        .context("failed to write private key to openssl stdin")?;
-    let public_output = child
-        .wait_with_output()
-        .context("failed to read openssl pkey output")?;
-    if !public_output.status.success() {
-        bail!(
-            "openssl pkey -pubout failed: {}",
-            String::from_utf8_lossy(&public_output.stderr)
-        );
-    }
-
-    let private_pem_str =
-        String::from_utf8(private_pem).context("private key is not valid UTF-8")?;
-    let public_pem_str =
-        String::from_utf8(public_output.stdout).context("public key is not valid UTF-8")?;
-    Ok((private_pem_str, public_pem_str))
+    let private_str = String::from_utf8(private_pem).context("private key is not valid UTF-8")?;
+    let public_str = String::from_utf8(public_pem).context("public key is not valid UTF-8")?;
+    Ok((private_str, public_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -73,92 +85,45 @@ fn generate_jwt_keypair() -> Result<(String, String)> {
 fn generate_mtls_certs(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).context("failed to create certs directory")?;
 
-    // 1. CA key
-    let ca_key_output = Command::new("openssl")
-        .args(["genpkey", "-algorithm", "Ed25519"])
-        .output()
-        .context("failed to generate CA key")?;
-    if !ca_key_output.status.success() {
-        bail!("openssl genpkey (CA) failed");
-    }
+    // 1. CA key + self-signed cert
+    let ca_key = run_openssl(&["genpkey", "-algorithm", "Ed25519"], "generate CA key")?;
     let ca_key_path = dir.join("ca.key");
-    std::fs::write(&ca_key_path, &ca_key_output.stdout)?;
+    std::fs::write(&ca_key_path, &ca_key)?;
 
-    // 2. CA self-signed cert
-    let ca_cert_output = Command::new("openssl")
-        .args([
-            "req", "-new", "-x509", "-key",
-            ca_key_path.to_str().unwrap(),
-            "-days", "3650",
-            "-subj", "/CN=Arc CA",
-        ])
-        .output()
-        .context("failed to generate CA cert")?;
-    if !ca_cert_output.status.success() {
-        bail!(
-            "openssl req (CA cert) failed: {}",
-            String::from_utf8_lossy(&ca_cert_output.stderr)
-        );
-    }
+    let ca_cert = run_openssl(
+        &["req", "-new", "-x509", "-key", ca_key_path.to_str().context("CA key path is not valid UTF-8")?, "-days", "3650", "-subj", "/CN=Arc CA"],
+        "generate CA cert",
+    )?;
     let ca_cert_path = dir.join("ca.crt");
-    std::fs::write(&ca_cert_path, &ca_cert_output.stdout)?;
+    std::fs::write(&ca_cert_path, &ca_cert)?;
 
-    // 3. Server key
-    let server_key_output = Command::new("openssl")
-        .args(["genpkey", "-algorithm", "Ed25519"])
-        .output()
-        .context("failed to generate server key")?;
-    if !server_key_output.status.success() {
-        bail!("openssl genpkey (server) failed");
-    }
+    // 2. Server key + CSR signed by CA
+    let server_key = run_openssl(&["genpkey", "-algorithm", "Ed25519"], "generate server key")?;
     let server_key_path = dir.join("server.key");
-    std::fs::write(&server_key_path, &server_key_output.stdout)?;
+    std::fs::write(&server_key_path, &server_key)?;
 
-    // 4. Server CSR
-    let mut csr_child = Command::new("openssl")
-        .args(["req", "-new", "-key", "/dev/stdin", "-subj", "/CN=localhost"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn openssl req (CSR)")?;
-    csr_child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&server_key_output.stdout)?;
-    let csr_output = csr_child.wait_with_output()?;
-    if !csr_output.status.success() {
-        bail!(
-            "openssl req (CSR) failed: {}",
-            String::from_utf8_lossy(&csr_output.stderr)
-        );
-    }
+    let csr = run_openssl_with_stdin(
+        &["req", "-new", "-key", "/dev/stdin", "-subj", "/CN=localhost"],
+        &server_key,
+        "generate server CSR",
+    )?;
 
-    // 5. Sign server cert with CA
     let csr_path = dir.join("server.csr");
-    std::fs::write(&csr_path, &csr_output.stdout)?;
-    let server_cert_output = Command::new("openssl")
-        .args([
-            "x509", "-req",
-            "-in", csr_path.to_str().unwrap(),
-            "-CA", ca_cert_path.to_str().unwrap(),
-            "-CAkey", ca_key_path.to_str().unwrap(),
-            "-CAcreateserial",
-            "-days", "3650",
-        ])
-        .output()
-        .context("failed to sign server cert")?;
-    if !server_cert_output.status.success() {
-        bail!(
-            "openssl x509 (sign) failed: {}",
-            String::from_utf8_lossy(&server_cert_output.stderr)
-        );
-    }
-    let server_cert_path = dir.join("server.crt");
-    std::fs::write(&server_cert_path, &server_cert_output.stdout)?;
+    std::fs::write(&csr_path, &csr)?;
 
-    // Clean up CSR and serial file
+    let server_cert = run_openssl(
+        &[
+            "x509", "-req",
+            "-in", csr_path.to_str().context("CSR path is not valid UTF-8")?,
+            "-CA", ca_cert_path.to_str().context("CA cert path is not valid UTF-8")?,
+            "-CAkey", ca_key_path.to_str().context("CA key path is not valid UTF-8")?,
+            "-CAcreateserial", "-days", "3650",
+        ],
+        "sign server cert",
+    )?;
+    std::fs::write(dir.join("server.crt"), &server_cert)?;
+
+    // Clean up temporary files
     let _ = std::fs::remove_file(&csr_path);
     let _ = std::fs::remove_file(dir.join("ca.srl"));
 
@@ -384,7 +349,7 @@ pub async fn run_setup() -> Result<()> {
     })
     .await??;
 
-    let mut api_keys: Vec<(Provider, String, String)> = Vec::new();
+    let mut env_pairs: Vec<(String, String)> = Vec::new();
     for idx in selected_indices {
         let provider = Provider::ALL[idx];
         let env_var = provider.api_key_env_vars()[0];
@@ -395,7 +360,7 @@ pub async fn run_setup() -> Result<()> {
         let key: String =
             tokio::task::spawn_blocking(move || prompt_input(&prompt)).await??;
 
-        api_keys.push((provider, env_var.to_string(), key));
+        env_pairs.push((env_var.to_string(), key));
     }
     eprintln!();
 
@@ -412,12 +377,6 @@ pub async fn run_setup() -> Result<()> {
         jwt_public_pem.as_bytes(),
     );
 
-    let api_key_entries: Vec<(String, String)> = api_keys
-        .iter()
-        .map(|(_, env_var, key)| (env_var.clone(), key.clone()))
-        .collect();
-
-    let mut env_pairs: Vec<(String, String)> = api_key_entries;
     env_pairs.push(("ARC_JWT_PRIVATE_KEY".to_string(), jwt_private_b64));
     env_pairs.push(("ARC_JWT_PUBLIC_KEY".to_string(), jwt_public_b64));
     env_pairs.push(("SESSION_SECRET".to_string(), session_secret));
