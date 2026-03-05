@@ -273,7 +273,7 @@
     "primary": {
       "type": "button",
       "label": "Get Started",
-      "href": "/getting-started/quick-start"
+      "href": "https://arc.dev/getting-started/quick-start"
     }
   },
   "contextual": {
