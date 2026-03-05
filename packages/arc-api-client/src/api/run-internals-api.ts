@@ -24,9 +24,9 @@ import { BASE_PATH, COLLECTION_FORMATS, type RequestArgs, BaseAPI, RequiredError
 // @ts-ignore
 import type { ErrorResponse } from '../models';
 // @ts-ignore
-import type { RunStage } from '../models';
+import type { PaginatedStageTurnList } from '../models';
 // @ts-ignore
-import type { StageTurn } from '../models';
+import type { RunStage } from '../models';
 /**
  * RunInternalsApi - axios parameter creator
  */
@@ -71,10 +71,12 @@ export const RunInternalsApiAxiosParamCreator = function (configuration?: Config
          * @summary List Stage Turns
          * @param {string} id 
          * @param {string} stageId 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listStageTurns: async (id: string, stageId: string, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listStageTurns: async (id: string, stageId: string, pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             // verify required parameter 'id' is not null or undefined
             assertParamExists('listStageTurns', 'id', id)
             // verify required parameter 'stageId' is not null or undefined
@@ -92,6 +94,14 @@ export const RunInternalsApiAxiosParamCreator = function (configuration?: Config
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -233,11 +243,13 @@ export const RunInternalsApiFp = function(configuration?: Configuration) {
          * @summary List Stage Turns
          * @param {string} id 
          * @param {string} stageId 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listStageTurns(id: string, stageId: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<StageTurn>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listStageTurns(id, stageId, options);
+        async listStageTurns(id: string, stageId: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedStageTurnList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listStageTurns(id, stageId, pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['RunInternalsApi.listStageTurns']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -305,11 +317,13 @@ export const RunInternalsApiFactory = function (configuration?: Configuration, b
          * @summary List Stage Turns
          * @param {string} id 
          * @param {string} stageId 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listStageTurns(id: string, stageId: string, options?: RawAxiosRequestConfig): AxiosPromise<Array<StageTurn>> {
-            return localVarFp.listStageTurns(id, stageId, options).then((request) => request(axios, basePath));
+        listStageTurns(id: string, stageId: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedStageTurnList> {
+            return localVarFp.listStageTurns(id, stageId, pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
@@ -364,11 +378,13 @@ export class RunInternalsApi extends BaseAPI {
      * @summary List Stage Turns
      * @param {string} id 
      * @param {string} stageId 
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listStageTurns(id: string, stageId: string, options?: RawAxiosRequestConfig) {
-        return RunInternalsApiFp(this.configuration).listStageTurns(id, stageId, options).then((request) => request(this.axios, this.basePath));
+    public listStageTurns(id: string, stageId: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return RunInternalsApiFp(this.configuration).listStageTurns(id, stageId, pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**

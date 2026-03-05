@@ -24,7 +24,7 @@ import { BASE_PATH, COLLECTION_FORMATS, type RequestArgs, BaseAPI, RequiredError
 // @ts-ignore
 import type { ErrorResponse } from '../models';
 // @ts-ignore
-import type { RetroListItem } from '../models';
+import type { PaginatedRetroList } from '../models';
 /**
  * RetrosApi - axios parameter creator
  */
@@ -33,10 +33,12 @@ export const RetrosApiAxiosParamCreator = function (configuration?: Configuratio
         /**
          * 
          * @summary List Retros
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listRetros: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listRetros: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/retros`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -48,6 +50,14 @@ export const RetrosApiAxiosParamCreator = function (configuration?: Configuratio
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -106,11 +116,13 @@ export const RetrosApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Retros
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listRetros(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<RetroListItem>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listRetros(options);
+        async listRetros(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedRetroList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listRetros(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['RetrosApi.listRetros']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -140,11 +152,13 @@ export const RetrosApiFactory = function (configuration?: Configuration, basePat
         /**
          * 
          * @summary List Retros
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listRetros(options?: RawAxiosRequestConfig): AxiosPromise<Array<RetroListItem>> {
-            return localVarFp.listRetros(options).then((request) => request(axios, basePath));
+        listRetros(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedRetroList> {
+            return localVarFp.listRetros(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
@@ -166,11 +180,13 @@ export class RetrosApi extends BaseAPI {
     /**
      * 
      * @summary List Retros
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listRetros(options?: RawAxiosRequestConfig) {
-        return RetrosApiFp(this.configuration).listRetros(options).then((request) => request(this.axios, this.basePath));
+    public listRetros(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return RetrosApiFp(this.configuration).listRetros(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**

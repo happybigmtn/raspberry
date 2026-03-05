@@ -5,7 +5,7 @@ import { CheckCircleIcon, ArrowPathIcon, PauseCircleIcon, XCircleIcon } from "@h
 import { DocumentTextIcon, MapIcon, CommandLineIcon, ChatBubbleLeftIcon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { apiJson } from "../api-client";
 import { formatDurationSecs } from "../lib/format";
-import type { RunStage, StageTurn as ApiStageTurn } from "@qltysh/arc-api-client";
+import type { RunStage, StageTurn as ApiStageTurn, PaginatedStageTurnList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/run-stages";
 
 export const handle = { wide: true };
@@ -32,7 +32,8 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const selectedStageId = params.stageId ?? stages[0]?.id;
   let turns: ApiStageTurn[] = [];
   if (selectedStageId) {
-    turns = await apiJson<ApiStageTurn[]>(`/runs/${params.id}/stages/${selectedStageId}/turns`, { request });
+    const { data } = await apiJson<PaginatedStageTurnList>(`/runs/${params.id}/stages/${selectedStageId}/turns`, { request });
+    turns = data;
   }
 
   return { stages, turns };

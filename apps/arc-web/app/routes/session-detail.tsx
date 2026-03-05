@@ -10,7 +10,7 @@ import {
   WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import { apiJson } from "../api-client";
-import type { SessionDetail as ApiSessionDetail, SessionGroup } from "@qltysh/arc-api-client";
+import type { SessionDetail as ApiSessionDetail, PaginatedSessionGroupList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/session-detail";
 
 export const handle = { hideHeader: true, wide: true };
@@ -20,9 +20,9 @@ export function meta({}: Route.MetaArgs) {
 }
 
 export async function loader({ request, params }: Route.LoaderArgs) {
-  const [apiSession, apiGroups] = await Promise.all([
+  const [apiSession, { data: apiGroups }] = await Promise.all([
     apiJson<ApiSessionDetail>(`/sessions/${params.sessionId}`, { request }),
-    apiJson<SessionGroup[]>("/sessions", { request }),
+    apiJson<PaginatedSessionGroupList>("/sessions", { request }),
   ]);
   const session: Session = {
     id: apiSession.id,
@@ -236,7 +236,7 @@ interface SessionGroupType {
   sessions: { id: string; title: string; repo: string; time: string }[];
 }
 
-const sessionGroups: SessionGroup[] = [
+const sessionGroups: SessionGroupType[] = [
   {
     label: "Today",
     sessions: [

@@ -401,15 +401,15 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of conversation turns
+          description: Paginated list of conversation turns
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/StageTurn"
+                $ref: "#/components/schemas/PaginatedStageTurnList"
         "404":
           description: Run or stage not found
           content:
@@ -574,15 +574,16 @@ paths:
       operationId: listWorkflows
       tags: [Workflows]
       summary: List Workflows
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of workflows
+          description: Paginated list of workflows
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/WorkflowListItem"
+                $ref: "#/components/schemas/PaginatedWorkflowList"
 
   /workflows/{name}:
     get:
@@ -620,15 +621,15 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of runs
+          description: Paginated list of runs
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/RunListItem"
+                $ref: "#/components/schemas/PaginatedRunList"
         "404":
           description: Workflow not found
           content:
@@ -708,15 +709,16 @@ paths:
       operationId: listRetros
       tags: [Retros]
       summary: List Retros
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of retros
+          description: Paginated list of retros
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/RetroListItem"
+                $ref: "#/components/schemas/PaginatedRetroList"
 
   # ── Sessions ──────────────────────────────────────────────────────────
 
@@ -725,15 +727,16 @@ paths:
       operationId: listSessions
       tags: [Sessions]
       summary: List Sessions
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of session groups
+          description: Paginated list of session groups
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SessionGroup"
+                $ref: "#/components/schemas/PaginatedSessionGroupList"
     post:
       operationId: createSession
       tags: [Sessions]
@@ -845,15 +848,16 @@ paths:
       operationId: listSavedQueries
       tags: [Insights]
       summary: List Saved Queries
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of saved queries
+          description: Paginated list of saved queries
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SavedQuery"
+                $ref: "#/components/schemas/PaginatedSavedQueryList"
     post:
       operationId: createSavedQuery
       tags: [Insights]
@@ -946,15 +950,16 @@ paths:
       operationId: listQueryHistory
       tags: [Insights]
       summary: List Query History
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of history entries
+          description: Paginated list of history entries
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/HistoryEntry"
+                $ref: "#/components/schemas/PaginatedHistoryEntryList"
 
   # ── Usage ────────────────────────────────────────────────────────────
 
@@ -996,15 +1001,16 @@ paths:
       operationId: listProjects
       tags: [Projects]
       summary: List Projects
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of projects
+          description: Paginated list of projects
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Project"
+                $ref: "#/components/schemas/PaginatedProjectList"
 
   /projects/{id}/branches:
     get:
@@ -1017,15 +1023,15 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
-          description: Array of branches
+          description: Paginated list of branches
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Branch"
+                $ref: "#/components/schemas/PaginatedBranchList"
         "404":
           description: Project not found
           content:
@@ -1080,6 +1086,110 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RunListItem"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedWorkflowList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowListItem"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedRetroList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetroListItem"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedSessionGroupList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionGroup"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedProjectList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedBranchList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Branch"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedSavedQueryList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedQuery"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedHistoryEntryList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryEntry"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    PaginatedStageTurnList:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/StageTurn"
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 

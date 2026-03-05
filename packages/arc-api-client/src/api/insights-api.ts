@@ -28,7 +28,9 @@ import type { ExecuteQueryRequest } from '../models';
 // @ts-ignore
 import type { ExecuteQueryResponse } from '../models';
 // @ts-ignore
-import type { HistoryEntry } from '../models';
+import type { PaginatedHistoryEntryList } from '../models';
+// @ts-ignore
+import type { PaginatedSavedQueryList } from '../models';
 // @ts-ignore
 import type { SaveQueryRequest } from '../models';
 // @ts-ignore
@@ -145,10 +147,12 @@ export const InsightsApiAxiosParamCreator = function (configuration?: Configurat
         /**
          * 
          * @summary List Query History
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listQueryHistory: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listQueryHistory: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/insights/history`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -160,6 +164,14 @@ export const InsightsApiAxiosParamCreator = function (configuration?: Configurat
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -175,10 +187,12 @@ export const InsightsApiAxiosParamCreator = function (configuration?: Configurat
         /**
          * 
          * @summary List Saved Queries
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listSavedQueries: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listSavedQueries: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/insights/queries`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -190,6 +204,14 @@ export const InsightsApiAxiosParamCreator = function (configuration?: Configurat
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -292,11 +314,13 @@ export const InsightsApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Query History
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listQueryHistory(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<HistoryEntry>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listQueryHistory(options);
+        async listQueryHistory(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedHistoryEntryList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listQueryHistory(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['InsightsApi.listQueryHistory']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -304,11 +328,13 @@ export const InsightsApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Saved Queries
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listSavedQueries(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<SavedQuery>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listSavedQueries(options);
+        async listSavedQueries(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedSavedQueryList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listSavedQueries(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['InsightsApi.listSavedQueries']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -369,20 +395,24 @@ export const InsightsApiFactory = function (configuration?: Configuration, baseP
         /**
          * 
          * @summary List Query History
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listQueryHistory(options?: RawAxiosRequestConfig): AxiosPromise<Array<HistoryEntry>> {
-            return localVarFp.listQueryHistory(options).then((request) => request(axios, basePath));
+        listQueryHistory(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedHistoryEntryList> {
+            return localVarFp.listQueryHistory(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
          * @summary List Saved Queries
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listSavedQueries(options?: RawAxiosRequestConfig): AxiosPromise<Array<SavedQuery>> {
-            return localVarFp.listSavedQueries(options).then((request) => request(axios, basePath));
+        listSavedQueries(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedSavedQueryList> {
+            return localVarFp.listSavedQueries(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
@@ -438,21 +468,25 @@ export class InsightsApi extends BaseAPI {
     /**
      * 
      * @summary List Query History
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listQueryHistory(options?: RawAxiosRequestConfig) {
-        return InsightsApiFp(this.configuration).listQueryHistory(options).then((request) => request(this.axios, this.basePath));
+    public listQueryHistory(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return InsightsApiFp(this.configuration).listQueryHistory(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**
      * 
      * @summary List Saved Queries
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listSavedQueries(options?: RawAxiosRequestConfig) {
-        return InsightsApiFp(this.configuration).listSavedQueries(options).then((request) => request(this.axios, this.basePath));
+    public listSavedQueries(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return InsightsApiFp(this.configuration).listSavedQueries(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**

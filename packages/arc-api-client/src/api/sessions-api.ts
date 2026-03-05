@@ -28,11 +28,11 @@ import type { CreateSessionResponse } from '../models';
 // @ts-ignore
 import type { ErrorResponse } from '../models';
 // @ts-ignore
+import type { PaginatedSessionGroupList } from '../models';
+// @ts-ignore
 import type { SendMessageRequest } from '../models';
 // @ts-ignore
 import type { SessionDetail } from '../models';
-// @ts-ignore
-import type { SessionGroup } from '../models';
 // @ts-ignore
 import type { SteerRun200Response } from '../models';
 /**
@@ -78,10 +78,12 @@ export const SessionsApiAxiosParamCreator = function (configuration?: Configurat
         /**
          * 
          * @summary List Sessions
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listSessions: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listSessions: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/sessions`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -93,6 +95,14 @@ export const SessionsApiAxiosParamCreator = function (configuration?: Configurat
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -237,11 +247,13 @@ export const SessionsApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Sessions
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listSessions(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<SessionGroup>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listSessions(options);
+        async listSessions(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedSessionGroupList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listSessions(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['SessionsApi.listSessions']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -308,11 +320,13 @@ export const SessionsApiFactory = function (configuration?: Configuration, baseP
         /**
          * 
          * @summary List Sessions
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listSessions(options?: RawAxiosRequestConfig): AxiosPromise<Array<SessionGroup>> {
-            return localVarFp.listSessions(options).then((request) => request(axios, basePath));
+        listSessions(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedSessionGroupList> {
+            return localVarFp.listSessions(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
@@ -366,11 +380,13 @@ export class SessionsApi extends BaseAPI {
     /**
      * 
      * @summary List Sessions
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listSessions(options?: RawAxiosRequestConfig) {
-        return SessionsApiFp(this.configuration).listSessions(options).then((request) => request(this.axios, this.basePath));
+    public listSessions(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return SessionsApiFp(this.configuration).listSessions(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**

@@ -4,7 +4,7 @@ import { MagnifyingGlassIcon, ChevronDownIcon } from "@heroicons/react/24/outlin
 import { smoothnessConfig, formatDuration } from "../data/retros";
 import type { SmoothnessRating } from "../data/retros";
 import { apiJson } from "../api-client";
-import type { RetroListItem } from "@qltysh/arc-api-client";
+import type { PaginatedRetroList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/retros";
 
 interface RetroRow {
@@ -18,7 +18,7 @@ interface RetroRow {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const apiRetros = await apiJson<RetroListItem[]>("/retros", { request });
+  const { data: apiRetros } = await apiJson<PaginatedRetroList>("/retros", { request });
   const retros: RetroRow[] = apiRetros.map((r) => ({
     run_id: r.run_id,
     workflow_name: r.workflow_name,

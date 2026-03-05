@@ -22,11 +22,11 @@ import { DUMMY_BASE_URL, assertParamExists, setApiKeyToObject, setBasicAuthToObj
 // @ts-ignore
 import { BASE_PATH, COLLECTION_FORMATS, type RequestArgs, BaseAPI, RequiredError, operationServerMap } from '../base';
 // @ts-ignore
-import type { Branch } from '../models';
-// @ts-ignore
 import type { ErrorResponse } from '../models';
 // @ts-ignore
-import type { Project } from '../models';
+import type { PaginatedBranchList } from '../models';
+// @ts-ignore
+import type { PaginatedProjectList } from '../models';
 /**
  * ProjectsApi - axios parameter creator
  */
@@ -36,10 +36,12 @@ export const ProjectsApiAxiosParamCreator = function (configuration?: Configurat
          * 
          * @summary List Branches
          * @param {string} id 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listBranches: async (id: string, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listBranches: async (id: string, pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             // verify required parameter 'id' is not null or undefined
             assertParamExists('listBranches', 'id', id)
             const localVarPath = `/projects/{id}/branches`
@@ -55,6 +57,14 @@ export const ProjectsApiAxiosParamCreator = function (configuration?: Configurat
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
 
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
+
             localVarHeaderParameter['Accept'] = 'application/json';
 
             setSearchParams(localVarUrlObj, localVarQueryParameter);
@@ -69,10 +79,12 @@ export const ProjectsApiAxiosParamCreator = function (configuration?: Configurat
         /**
          * 
          * @summary List Projects
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listProjects: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listProjects: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/projects`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -84,6 +96,14 @@ export const ProjectsApiAxiosParamCreator = function (configuration?: Configurat
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -109,11 +129,13 @@ export const ProjectsApiFp = function(configuration?: Configuration) {
          * 
          * @summary List Branches
          * @param {string} id 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listBranches(id: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<Branch>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listBranches(id, options);
+        async listBranches(id: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedBranchList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listBranches(id, pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['ProjectsApi.listBranches']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -121,11 +143,13 @@ export const ProjectsApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Projects
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listProjects(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<Project>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listProjects(options);
+        async listProjects(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedProjectList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listProjects(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['ProjectsApi.listProjects']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -143,20 +167,24 @@ export const ProjectsApiFactory = function (configuration?: Configuration, baseP
          * 
          * @summary List Branches
          * @param {string} id 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listBranches(id: string, options?: RawAxiosRequestConfig): AxiosPromise<Array<Branch>> {
-            return localVarFp.listBranches(id, options).then((request) => request(axios, basePath));
+        listBranches(id: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedBranchList> {
+            return localVarFp.listBranches(id, pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
          * @summary List Projects
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listProjects(options?: RawAxiosRequestConfig): AxiosPromise<Array<Project>> {
-            return localVarFp.listProjects(options).then((request) => request(axios, basePath));
+        listProjects(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedProjectList> {
+            return localVarFp.listProjects(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
     };
 };
@@ -169,21 +197,25 @@ export class ProjectsApi extends BaseAPI {
      * 
      * @summary List Branches
      * @param {string} id 
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listBranches(id: string, options?: RawAxiosRequestConfig) {
-        return ProjectsApiFp(this.configuration).listBranches(id, options).then((request) => request(this.axios, this.basePath));
+    public listBranches(id: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return ProjectsApiFp(this.configuration).listBranches(id, pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**
      * 
      * @summary List Projects
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listProjects(options?: RawAxiosRequestConfig) {
-        return ProjectsApiFp(this.configuration).listProjects(options).then((request) => request(this.axios, this.basePath));
+    public listProjects(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return ProjectsApiFp(this.configuration).listProjects(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 }
 

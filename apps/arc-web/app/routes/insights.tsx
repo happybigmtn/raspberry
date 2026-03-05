@@ -1,7 +1,7 @@
 import { Link, Outlet, useNavigate } from "react-router";
 import { PlusIcon } from "@heroicons/react/24/outline";
 import { apiJson } from "../api-client";
-import type { SavedQuery as ApiSavedQuery, HistoryEntry as ApiHistoryEntry } from "@qltysh/arc-api-client";
+import type { PaginatedSavedQueryList, PaginatedHistoryEntryList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/insights";
 
 export function meta({}: Route.MetaArgs) {
@@ -29,9 +29,9 @@ export interface HistoryEntry {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const [apiQueries, apiHistory] = await Promise.all([
-    apiJson<ApiSavedQuery[]>("/insights/queries", { request }),
-    apiJson<ApiHistoryEntry[]>("/insights/history", { request }),
+  const [{ data: apiQueries }, { data: apiHistory }] = await Promise.all([
+    apiJson<PaginatedSavedQueryList>("/insights/queries", { request }),
+    apiJson<PaginatedHistoryEntryList>("/insights/history", { request }),
   ]);
   const savedQueries: SavedQuery[] = apiQueries.map((q) => ({
     id: q.id,

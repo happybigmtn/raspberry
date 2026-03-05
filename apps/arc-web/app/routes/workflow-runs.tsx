@@ -5,7 +5,7 @@ import { ciConfig, deriveCiStatus, statusColors } from "../data/runs";
 import type { ColumnStatus, RunWithStatus } from "../data/runs";
 import { apiJson } from "../api-client";
 import { formatElapsedSecs, formatDurationSecs } from "../lib/format";
-import type { RunListItem } from "@qltysh/arc-api-client";
+import type { PaginatedRunList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/workflow-runs";
 
 const columnNames: Record<ColumnStatus, string> = {
@@ -16,7 +16,7 @@ const columnNames: Record<ColumnStatus, string> = {
 };
 
 export async function loader({ request, params }: Route.LoaderArgs) {
-  const apiRuns = await apiJson<RunListItem[]>(`/workflows/${params.name}/runs`, { request });
+  const { data: apiRuns } = await apiJson<PaginatedRunList>(`/workflows/${params.name}/runs`, { request });
   const runs: RunWithStatus[] = apiRuns.map((r) => ({
     id: r.id,
     repo: r.repo,

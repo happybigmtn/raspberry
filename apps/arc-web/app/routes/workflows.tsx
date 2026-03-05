@@ -14,7 +14,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router";
 import { apiJson } from "../api-client";
-import type { WorkflowListItem } from "@qltysh/arc-api-client";
+import type { PaginatedWorkflowList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/workflows";
 
 export function meta({}: Route.MetaArgs) {
@@ -105,7 +105,7 @@ interface WorkflowData {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const apiWorkflows = await apiJson<WorkflowListItem[]>("/workflows", { request });
+  const { data: apiWorkflows } = await apiJson<PaginatedWorkflowList>("/workflows", { request });
   const workflows: WorkflowData[] = apiWorkflows.map((w) => ({
     name: w.name,
     slug: w.slug,

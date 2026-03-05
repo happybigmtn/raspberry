@@ -40,7 +40,15 @@ models/file-diff.ts
 models/health-response.ts
 models/history-entry.ts
 models/index.ts
+models/paginated-branch-list.ts
+models/paginated-history-entry-list.ts
+models/paginated-project-list.ts
+models/paginated-retro-list.ts
 models/paginated-run-list.ts
+models/paginated-saved-query-list.ts
+models/paginated-session-group-list.ts
+models/paginated-stage-turn-list.ts
+models/paginated-workflow-list.ts
 models/pagination-meta.ts
 models/preview-url-request.ts
 models/preview-url-response.ts

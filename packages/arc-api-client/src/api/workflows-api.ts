@@ -24,13 +24,13 @@ import { BASE_PATH, COLLECTION_FORMATS, type RequestArgs, BaseAPI, RequiredError
 // @ts-ignore
 import type { ErrorResponse } from '../models';
 // @ts-ignore
-import type { RunListItem } from '../models';
+import type { PaginatedRunList } from '../models';
+// @ts-ignore
+import type { PaginatedWorkflowList } from '../models';
 // @ts-ignore
 import type { StartRunResponse } from '../models';
 // @ts-ignore
 import type { WorkflowDetail } from '../models';
-// @ts-ignore
-import type { WorkflowListItem } from '../models';
 /**
  * WorkflowsApi - axios parameter creator
  */
@@ -40,10 +40,12 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
          * 
          * @summary List Workflow Runs
          * @param {string} name 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listWorkflowRuns: async (name: string, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listWorkflowRuns: async (name: string, pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             // verify required parameter 'name' is not null or undefined
             assertParamExists('listWorkflowRuns', 'name', name)
             const localVarPath = `/workflows/{name}/runs`
@@ -59,6 +61,14 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
 
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
+
             localVarHeaderParameter['Accept'] = 'application/json';
 
             setSearchParams(localVarUrlObj, localVarQueryParameter);
@@ -73,10 +83,12 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
         /**
          * 
          * @summary List Workflows
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listWorkflows: async (options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        listWorkflows: async (pageLimit?: number, pageOffset?: number, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/workflows`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, DUMMY_BASE_URL);
@@ -88,6 +100,14 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
             const localVarRequestOptions = { method: 'GET', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
+
+            if (pageLimit !== undefined) {
+                localVarQueryParameter['page[limit]'] = pageLimit;
+            }
+
+            if (pageOffset !== undefined) {
+                localVarQueryParameter['page[offset]'] = pageOffset;
+            }
 
             localVarHeaderParameter['Accept'] = 'application/json';
 
@@ -181,11 +201,13 @@ export const WorkflowsApiFp = function(configuration?: Configuration) {
          * 
          * @summary List Workflow Runs
          * @param {string} name 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listWorkflowRuns(name: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<RunListItem>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listWorkflowRuns(name, options);
+        async listWorkflowRuns(name: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedRunList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listWorkflowRuns(name, pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['WorkflowsApi.listWorkflowRuns']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -193,11 +215,13 @@ export const WorkflowsApiFp = function(configuration?: Configuration) {
         /**
          * 
          * @summary List Workflows
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async listWorkflows(options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<Array<WorkflowListItem>>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.listWorkflows(options);
+        async listWorkflows(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<PaginatedWorkflowList>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.listWorkflows(pageLimit, pageOffset, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['WorkflowsApi.listWorkflows']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -241,20 +265,24 @@ export const WorkflowsApiFactory = function (configuration?: Configuration, base
          * 
          * @summary List Workflow Runs
          * @param {string} name 
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listWorkflowRuns(name: string, options?: RawAxiosRequestConfig): AxiosPromise<Array<RunListItem>> {
-            return localVarFp.listWorkflowRuns(name, options).then((request) => request(axios, basePath));
+        listWorkflowRuns(name: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedRunList> {
+            return localVarFp.listWorkflowRuns(name, pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
          * @summary List Workflows
+         * @param {number} [pageLimit] 
+         * @param {number} [pageOffset] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        listWorkflows(options?: RawAxiosRequestConfig): AxiosPromise<Array<WorkflowListItem>> {
-            return localVarFp.listWorkflows(options).then((request) => request(axios, basePath));
+        listWorkflows(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig): AxiosPromise<PaginatedWorkflowList> {
+            return localVarFp.listWorkflows(pageLimit, pageOffset, options).then((request) => request(axios, basePath));
         },
         /**
          * 
@@ -287,21 +315,25 @@ export class WorkflowsApi extends BaseAPI {
      * 
      * @summary List Workflow Runs
      * @param {string} name 
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listWorkflowRuns(name: string, options?: RawAxiosRequestConfig) {
-        return WorkflowsApiFp(this.configuration).listWorkflowRuns(name, options).then((request) => request(this.axios, this.basePath));
+    public listWorkflowRuns(name: string, pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return WorkflowsApiFp(this.configuration).listWorkflowRuns(name, pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**
      * 
      * @summary List Workflows
+     * @param {number} [pageLimit] 
+     * @param {number} [pageOffset] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public listWorkflows(options?: RawAxiosRequestConfig) {
-        return WorkflowsApiFp(this.configuration).listWorkflows(options).then((request) => request(this.axios, this.basePath));
+    public listWorkflows(pageLimit?: number, pageOffset?: number, options?: RawAxiosRequestConfig) {
+        return WorkflowsApiFp(this.configuration).listWorkflows(pageLimit, pageOffset, options).then((request) => request(this.axios, this.basePath));
     }
 
     /**

@@ -52,8 +52,15 @@ pub async fn get_stage_turns(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
     Path((_id, _stage_id)): Path<(String, String)>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(runs::turns())).into_response()
+    let all_items = runs::turns();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -408,8 +415,15 @@ pub async fn get_run_retro(
 pub async fn list_workflows(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(workflows::list_items())).into_response()
+    let all_items = workflows::list_items();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 pub async fn get_workflow(
@@ -427,12 +441,18 @@ pub async fn list_workflow_runs(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    let items: Vec<_> = runs::list_items()
+    let all_items: Vec<_> = runs::list_items()
         .into_iter()
         .filter(|r| r.workflow == name)
         .collect();
-    (StatusCode::OK, Json(items)).into_response()
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 pub async fn trigger_workflow_run_stub(
@@ -472,8 +492,15 @@ pub async fn get_verification_detail(
 pub async fn list_retros(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(retros::list_items())).into_response()
+    let all_items = retros::list_items();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 // ── Sessions ───────────────────────────────────────────────────────────
@@ -481,8 +508,15 @@ pub async fn list_retros(
 pub async fn list_sessions(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(sessions::groups())).into_response()
+    let all_items = sessions::groups();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 pub async fn create_session_stub(
@@ -529,8 +563,15 @@ pub async fn session_events_stub(
 pub async fn list_saved_queries(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(insights::saved_queries())).into_response()
+    let all_items = insights::saved_queries();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 pub async fn save_query_stub(
@@ -583,8 +624,15 @@ pub async fn execute_query_stub(
 pub async fn list_query_history(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(insights::history())).into_response()
+    let all_items = insights::history();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 // ── Settings ───────────────────────────────────────────────────────────
@@ -601,16 +649,30 @@ pub async fn get_settings(
 pub async fn list_projects(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(projects::list_items())).into_response()
+    let all_items = projects::list_items();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 pub async fn list_branches(
     _auth: AuthenticatedService,
     State(_state): State<Arc<AppState>>,
     Path(_id): Path<String>,
+    Query(pagination): Query<PaginationParams>,
 ) -> Response {
-    (StatusCode::OK, Json(projects::branches())).into_response()
+    let all_items = projects::branches();
+    let limit = pagination.limit.clamp(1, 100) as usize;
+    let offset = pagination.offset as usize;
+    let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
+    let has_more = page.len() > limit;
+    let data: Vec<_> = page.into_iter().take(limit).collect();
+    (StatusCode::OK, Json(json!({ "data": data, "meta": { "has_more": has_more } }))).into_response()
 }
 
 // ── Usage ──────────────────────────────────────────────────────────────

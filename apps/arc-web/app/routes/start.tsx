@@ -21,7 +21,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router";
 import { apiJson } from "../api-client";
-import type { Project, SessionGroup } from "@qltysh/arc-api-client";
+import type { PaginatedProjectList, PaginatedSessionGroupList } from "@qltysh/arc-api-client";
 import type { Route } from "./+types/start";
 
 export const handle = { hideHeader: true, wide: true };
@@ -31,9 +31,9 @@ export function meta({}: Route.MetaArgs) {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const [apiProjects, apiSessions] = await Promise.all([
-    apiJson<Project[]>("/projects", { request }),
-    apiJson<SessionGroup[]>("/sessions", { request }),
+  const [{ data: apiProjects }, { data: apiSessions }] = await Promise.all([
+    apiJson<PaginatedProjectList>("/projects", { request }),
+    apiJson<PaginatedSessionGroupList>("/sessions", { request }),
   ]);
   const projects = apiProjects.map((p) => ({ id: p.id, name: p.name }));
   const sessionGroups = apiSessions.map((g) => ({
