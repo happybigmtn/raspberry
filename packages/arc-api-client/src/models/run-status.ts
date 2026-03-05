@@ -16,6 +16,8 @@
 
 
 export const RunStatus = {
+    QUEUED: 'queued',
+    STARTING: 'starting',
     RUNNING: 'running',
     COMPLETED: 'completed',
     FAILED: 'failed',

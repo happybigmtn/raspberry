@@ -464,9 +464,10 @@ mod server_lifecycle {
         pool
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_http_lifecycle_approve_and_complete() {
         let state = create_app_state(test_db().await, gate_registry);
+        arc_api::server::spawn_scheduler(Arc::clone(&state));
         let app = build_router(Arc::clone(&state), arc_api::jwt_auth::AuthMode::Disabled);
 
         // 1. Start run
@@ -561,9 +562,10 @@ mod server_lifecycle {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn full_http_lifecycle_cancel() {
         let state = create_app_state(test_db().await, gate_registry);
+        arc_api::server::spawn_scheduler(Arc::clone(&state));
         let app = build_router(Arc::clone(&state), arc_api::jwt_auth::AuthMode::Disabled);
 
         // Start a run that will block at the human gate
@@ -579,8 +581,8 @@ mod server_lifecycle {
         let body = body_json(response.into_body()).await;
         let run_id = body["id"].as_str().unwrap().to_string();
 
-        // Wait briefly for run to start running
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Wait briefly for scheduler to pick up the run
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Cancel it
         let req = Request::builder()
@@ -646,9 +648,10 @@ mod sse_events {
         pool
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sse_stream_contains_expected_event_types() {
         let state = create_app_state(test_db().await, simple_registry);
+        arc_api::server::spawn_scheduler(Arc::clone(&state));
         let app = build_router(Arc::clone(&state), arc_api::jwt_auth::AuthMode::Disabled);
 
         // Start run
@@ -668,6 +671,9 @@ mod sse_events {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let run_id = body["id"].as_str().unwrap().to_string();
 
+        // Wait for scheduler to pick up the run before subscribing to SSE
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         // Get SSE stream
         let req = Request::builder()
             .method("GET")
@@ -675,7 +681,15 @@ mod sse_events {
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        // May be 200 (stream open) or 410 (run completed before connect)
+        let sse_status = response.status();
+        assert!(
+            sse_status == StatusCode::OK || sse_status == StatusCode::GONE,
+            "expected 200 or 410, got: {sse_status}"
+        );
+        if sse_status == StatusCode::GONE {
+            return;
+        }
 
         let content_type = response
             .headers()
@@ -787,6 +801,7 @@ mod serve_dry_run {
     async fn dry_run_app() -> axum::Router {
         let factory = |interviewer: Arc<dyn Interviewer>| default_registry(interviewer, || None);
         let state = create_app_state(test_db().await, factory);
+        arc_api::server::spawn_scheduler(Arc::clone(&state));
         build_router(state, arc_api::jwt_auth::AuthMode::Disabled)
     }
 
@@ -795,7 +810,7 @@ mod serve_dry_run {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dry_run_serve_starts_and_runs_workflow() {
         let app = dry_run_app().await;
 

@@ -95,6 +95,7 @@ impl Default for WebConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct ServerConfig {
     pub data_dir: Option<PathBuf>,
+    pub max_concurrent_runs: Option<usize>,
     #[serde(default)]
     pub web: WebConfig,
     #[serde(default)]
@@ -314,6 +315,20 @@ ca = "~/.arc/certs/ca.crt"
         assert_eq!(tls.cert, PathBuf::from("~/.arc/certs/server.crt"));
         assert_eq!(tls.key, PathBuf::from("~/.arc/certs/server.key"));
         assert_eq!(tls.ca, PathBuf::from("~/.arc/certs/ca.crt"));
+    }
+
+    #[test]
+    fn parse_max_concurrent_runs() {
+        let toml = r#"max_concurrent_runs = 8"#;
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.max_concurrent_runs, Some(8));
+    }
+
+    #[test]
+    fn parse_max_concurrent_runs_defaults_to_none() {
+        let toml = "";
+        let config: ServerConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.max_concurrent_runs, None);
     }
 
     #[test]

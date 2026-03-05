@@ -1088,6 +1088,8 @@ components:
     RunStatus:
       type: string
       enum:
+        - queued
+        - starting
         - running
         - completed
         - failed
@@ -1121,6 +1123,8 @@ components:
           $ref: "#/components/schemas/RunStatus"
         error:
           type: string
+        queue_position:
+          type: integer
 
     ApiQuestionOption:
       type: object

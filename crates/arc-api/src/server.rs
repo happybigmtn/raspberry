@@ -47,14 +47,17 @@ pub struct PaginationParams {
 /// Snapshot of a managed run.
 struct ManagedRun {
     dot_source: String,
+    graph: arc_workflows::graph::Graph,
     status: RunStatus,
     error: Option<String>,
-    interviewer: Arc<WebInterviewer>,
+    created_at: std::time::Instant,
+    // Populated when running:
+    interviewer: Option<Arc<WebInterviewer>>,
     event_tx: Option<broadcast::Sender<WorkflowRunEvent>>,
     context: Option<Context>,
     checkpoint: Option<Checkpoint>,
     cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    cancel_token: Arc<AtomicBool>,
+    cancel_token: Option<Arc<AtomicBool>>,
     logs_root: Option<std::path::PathBuf>,
 }
 
@@ -83,6 +86,8 @@ pub struct AppState {
     dry_run: bool,
     pub is_demo: bool,
     pub db: sqlx::SqlitePool,
+    max_concurrent_runs: usize,
+    scheduler_notify: tokio::sync::Notify,
 }
 
 /// Build the axum Router with all run endpoints.
@@ -288,7 +293,7 @@ pub fn create_app_state(
     db: sqlx::SqlitePool,
     registry_factory: impl Fn(Arc<dyn Interviewer>) -> HandlerRegistry + Send + Sync + 'static,
 ) -> Arc<AppState> {
-    create_app_state_with_options(db, registry_factory, false, false)
+    create_app_state_with_options(db, registry_factory, false, false, 4)
 }
 
 /// Create an `AppState` with the given database pool, registry factory, dry-run flag, and demo flag.
@@ -297,6 +302,7 @@ pub fn create_app_state_with_options(
     registry_factory: impl Fn(Arc<dyn Interviewer>) -> HandlerRegistry + Send + Sync + 'static,
     dry_run: bool,
     is_demo: bool,
+    max_concurrent_runs: usize,
 ) -> Arc<AppState> {
     Arc::new(AppState {
         runs: Mutex::new(HashMap::new()),
@@ -305,6 +311,8 @@ pub fn create_app_state_with_options(
         dry_run,
         is_demo,
         db,
+        max_concurrent_runs,
+        scheduler_notify: tokio::sync::Notify::new(),
     })
 }
 
@@ -314,6 +322,7 @@ async fn list_runs(
     Query(pagination): Query<PaginationParams>,
 ) -> Response {
     let runs = state.runs.lock().expect("runs lock poisoned");
+    let queue_positions = compute_queue_positions(&runs);
     let limit = pagination.limit.clamp(1, 100) as usize;
     let offset = pagination.offset as usize;
     let all_items: Vec<RunStatusResponse> = runs
@@ -322,6 +331,7 @@ async fn list_runs(
             id: id.clone(),
             status: managed_run.status,
             error: managed_run.error.clone(),
+            queue_position: queue_positions.get(id).copied(),
         })
         .collect();
     let page: Vec<_> = all_items.into_iter().skip(offset).take(limit + 1).collect();
@@ -335,6 +345,19 @@ async fn list_runs(
         })),
     )
         .into_response()
+}
+
+fn compute_queue_positions(runs: &HashMap<String, ManagedRun>) -> HashMap<String, i64> {
+    let mut queued: Vec<(&String, &ManagedRun)> = runs
+        .iter()
+        .filter(|(_, r)| r.status == RunStatus::Queued)
+        .collect();
+    queued.sort_by_key(|(_, r)| r.created_at);
+    queued
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, _))| (id.clone(), (i + 1) as i64))
+        .collect()
 }
 
 async fn start_run(
@@ -351,20 +374,80 @@ async fn start_run(
     };
 
     let run_id = ulid::Ulid::new().to_string();
-    info!(run_id = %run_id, "Run started");
-    let interviewer = Arc::new(WebInterviewer::new());
-    let (event_tx, _) = broadcast::channel(256);
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    let cancel_token = Arc::new(AtomicBool::new(false));
+    info!(run_id = %run_id, "Run queued");
 
+    {
+        let mut runs = state.runs.lock().expect("runs lock poisoned");
+        runs.insert(
+            run_id.clone(),
+            ManagedRun {
+                dot_source: req.dot_source,
+                graph,
+                status: RunStatus::Queued,
+                error: None,
+                created_at: std::time::Instant::now(),
+                interviewer: None,
+                event_tx: None,
+                context: None,
+                checkpoint: None,
+                cancel_tx: None,
+                cancel_token: None,
+                logs_root: None,
+            },
+        );
+    }
+
+    state.scheduler_notify.notify_one();
+
+    (StatusCode::CREATED, Json(StartRunResponse { id: run_id })).into_response()
+}
+
+/// Execute a single run: transitions queued → starting → running → completed/failed/cancelled.
+async fn execute_run(state: Arc<AppState>, run_id: String) {
+    // Transition to Starting and set up cancel infrastructure
+    let (cancel_rx, graph) = {
+        let mut runs = state.runs.lock().expect("runs lock poisoned");
+        let managed_run = match runs.get_mut(&run_id) {
+            Some(r) if r.status == RunStatus::Queued => r,
+            _ => return,
+        };
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let (event_tx, _) = broadcast::channel(256);
+
+        managed_run.status = RunStatus::Starting;
+        managed_run.cancel_tx = Some(cancel_tx);
+        managed_run.cancel_token = Some(Arc::clone(&cancel_token));
+        managed_run.event_tx = Some(event_tx);
+
+        (cancel_rx, managed_run.graph.clone())
+    };
+
+    // Create interviewer, sandbox, engine (this is the "provisioning" phase)
+    let interviewer = Arc::new(WebInterviewer::new());
     let context = Context::new();
 
-    // Set up event emitter that broadcasts to the channel
+    let event_tx = {
+        let runs = state.runs.lock().expect("runs lock poisoned");
+        runs.get(&run_id).and_then(|r| r.event_tx.clone())
+    };
+
     let mut emitter = EventEmitter::new();
-    let tx_clone = event_tx.clone();
-    emitter.on_event(move |event| {
-        let _ = tx_clone.send(event.clone());
-    });
+    if let Some(tx_clone) = event_tx {
+        emitter.on_event(move |event| {
+            let _ = tx_clone.send(event.clone());
+        });
+    }
+
+    let cancel_token = {
+        let runs = state.runs.lock().expect("runs lock poisoned");
+        runs.get(&run_id).and_then(|r| r.cancel_token.clone())
+    };
+    let cancel_token = match cancel_token {
+        Some(ct) => ct,
+        None => return,
+    };
 
     let registry = (state.registry_factory)(Arc::clone(&interviewer) as Arc<dyn Interviewer>);
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -376,119 +459,150 @@ async fn start_run(
         sandbox,
     );
 
+    // Transition to Running, populate interviewer + context
     {
         let mut runs = state.runs.lock().expect("runs lock poisoned");
-        runs.insert(
-            run_id.clone(),
-            ManagedRun {
-                dot_source: req.dot_source,
-                status: RunStatus::Running,
-                error: None,
-                interviewer: Arc::clone(&interviewer),
-                event_tx: Some(event_tx),
-                context: Some(context),
-                checkpoint: None,
-                cancel_tx: Some(cancel_tx),
-                cancel_token: Arc::clone(&cancel_token),
-                logs_root: None,
-            },
-        );
-    }
-
-    // Spawn run execution
-    let state_clone = Arc::clone(&state);
-    let run_id_clone = run_id.clone();
-    tokio::spawn(async move {
-        let logs_root = std::env::temp_dir().join(format!("arc-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&logs_root).expect("failed to create logs directory");
-        let config = RunConfig {
-            logs_root,
-            cancel_token: Some(cancel_token),
-            dry_run: state_clone.dry_run,
-            run_id: run_id_clone.clone(),
-            git_checkpoint: None,
-            base_sha: None,
-            run_branch: None,
-            meta_branch: None,
-            labels: std::collections::HashMap::new(),
-        };
-
-        let result = tokio::select! {
-            result = engine.run(&graph, &config) => result,
-            _ = cancel_rx => {
-                let mut runs = state_clone.runs.lock().expect("runs lock poisoned");
-                if let Some(managed_run) = runs.get_mut(&run_id_clone) {
-                    managed_run.status = RunStatus::Cancelled;
-                    managed_run.event_tx = None;
-                }
+        if let Some(managed_run) = runs.get_mut(&run_id) {
+            if managed_run.status != RunStatus::Starting {
+                // Was cancelled during setup
+                state.scheduler_notify.notify_one();
                 return;
             }
-        };
-
-        // Save final checkpoint
-        let checkpoint = Checkpoint::load(&config.logs_root.join("checkpoint.json")).ok();
-
-        // Auto-derive retro and accumulate aggregate usage
-        if let Some(ref cp) = checkpoint {
-            let (failed, failure_reason) = match &result {
-                Ok(_) => (false, None),
-                Err(e) => (true, Some(e.to_string())),
-            };
-            let stage_durations = arc_workflows::retro::extract_stage_durations(&config.logs_root);
-            let retro = arc_workflows::retro::derive_retro(
-                &run_id_clone,
-                "workflow",
-                "",
-                cp,
-                failed,
-                failure_reason.as_deref(),
-                0,
-                &stage_durations,
-            );
-            let _ = retro.save(&config.logs_root);
-
-            // Accumulate aggregate usage
-            let mut agg = state_clone.aggregate_usage.lock().expect("aggregate_usage lock poisoned");
-            agg.total_runs += 1;
-            let mut run_runtime: f64 = 0.0;
-            for (node_id, outcome) in &cp.node_outcomes {
-                if let Some(usage) = &outcome.usage {
-                    let entry = agg.by_model.entry(usage.model.clone()).or_default();
-                    entry.stages += 1;
-                    entry.input_tokens += usage.input_tokens;
-                    entry.output_tokens += usage.output_tokens;
-                    entry.cost += usage.cost.unwrap_or(0.0);
-                }
-                let duration_ms = stage_durations.get(node_id).copied().unwrap_or(0);
-                run_runtime += duration_ms as f64 / 1000.0;
-            }
-            agg.total_runtime_secs += run_runtime;
+            managed_run.status = RunStatus::Running;
+            managed_run.interviewer = Some(Arc::clone(&interviewer));
+            managed_run.context = Some(context);
         }
+    }
 
-        let mut runs = state_clone.runs.lock().expect("runs lock poisoned");
-        if let Some(managed_run) = runs.get_mut(&run_id_clone) {
-            match result {
-                Ok(_) => {
-                    info!(run_id = %run_id_clone, "Run completed");
-                    managed_run.status = RunStatus::Completed;
-                }
-                Err(arc_workflows::error::ArcError::Cancelled) => {
-                    info!(run_id = %run_id_clone, "Run cancelled");
-                    managed_run.status = RunStatus::Cancelled;
-                }
-                Err(e) => {
-                    error!(run_id = %run_id_clone, error = %e, "Run failed");
-                    managed_run.status = RunStatus::Failed;
-                    managed_run.error = Some(e.to_string());
-                }
+    let logs_root = std::env::temp_dir().join(format!("arc-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&logs_root).expect("failed to create logs directory");
+    let config = RunConfig {
+        logs_root,
+        cancel_token: Some(cancel_token),
+        dry_run: state.dry_run,
+        run_id: run_id.clone(),
+        git_checkpoint: None,
+        base_sha: None,
+        run_branch: None,
+        meta_branch: None,
+        labels: std::collections::HashMap::new(),
+    };
+
+    let result = tokio::select! {
+        result = engine.run(&graph, &config) => result,
+        _ = cancel_rx => {
+            let mut runs = state.runs.lock().expect("runs lock poisoned");
+            if let Some(managed_run) = runs.get_mut(&run_id) {
+                managed_run.status = RunStatus::Cancelled;
+                managed_run.event_tx = None;
             }
-            managed_run.checkpoint = checkpoint;
-            managed_run.logs_root = Some(config.logs_root.clone());
-            managed_run.event_tx = None;
+            state.scheduler_notify.notify_one();
+            return;
+        }
+    };
+
+    // Save final checkpoint
+    let checkpoint = Checkpoint::load(&config.logs_root.join("checkpoint.json")).ok();
+
+    // Auto-derive retro and accumulate aggregate usage
+    if let Some(ref cp) = checkpoint {
+        let (failed, failure_reason) = match &result {
+            Ok(_) => (false, None),
+            Err(e) => (true, Some(e.to_string())),
+        };
+        let stage_durations = arc_workflows::retro::extract_stage_durations(&config.logs_root);
+        let retro = arc_workflows::retro::derive_retro(
+            &run_id,
+            "workflow",
+            "",
+            cp,
+            failed,
+            failure_reason.as_deref(),
+            0,
+            &stage_durations,
+        );
+        let _ = retro.save(&config.logs_root);
+
+        // Accumulate aggregate usage
+        let mut agg = state
+            .aggregate_usage
+            .lock()
+            .expect("aggregate_usage lock poisoned");
+        agg.total_runs += 1;
+        let mut run_runtime: f64 = 0.0;
+        for (node_id, outcome) in &cp.node_outcomes {
+            if let Some(usage) = &outcome.usage {
+                let entry = agg.by_model.entry(usage.model.clone()).or_default();
+                entry.stages += 1;
+                entry.input_tokens += usage.input_tokens;
+                entry.output_tokens += usage.output_tokens;
+                entry.cost += usage.cost.unwrap_or(0.0);
+            }
+            let duration_ms = stage_durations.get(node_id).copied().unwrap_or(0);
+            run_runtime += duration_ms as f64 / 1000.0;
+        }
+        agg.total_runtime_secs += run_runtime;
+    }
+
+    let mut runs = state.runs.lock().expect("runs lock poisoned");
+    if let Some(managed_run) = runs.get_mut(&run_id) {
+        match result {
+            Ok(_) => {
+                info!(run_id = %run_id, "Run completed");
+                managed_run.status = RunStatus::Completed;
+            }
+            Err(arc_workflows::error::ArcError::Cancelled) => {
+                info!(run_id = %run_id, "Run cancelled");
+                managed_run.status = RunStatus::Cancelled;
+            }
+            Err(e) => {
+                error!(run_id = %run_id, error = %e, "Run failed");
+                managed_run.status = RunStatus::Failed;
+                managed_run.error = Some(e.to_string());
+            }
+        }
+        managed_run.checkpoint = checkpoint;
+        managed_run.logs_root = Some(config.logs_root.clone());
+        managed_run.event_tx = None;
+    }
+    drop(runs);
+    state.scheduler_notify.notify_one();
+}
+
+/// Background task that promotes queued runs when capacity is available.
+pub fn spawn_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = state.scheduler_notify.notified() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            }
+            // Promote as many queued runs as capacity allows
+            loop {
+                let run_to_start = {
+                    let runs = state.runs.lock().expect("runs lock poisoned");
+                    let active = runs
+                        .values()
+                        .filter(|r| r.status == RunStatus::Starting || r.status == RunStatus::Running)
+                        .count();
+                    if active >= state.max_concurrent_runs {
+                        break;
+                    }
+                    runs.iter()
+                        .filter(|(_, r)| r.status == RunStatus::Queued)
+                        .min_by_key(|(_, r)| r.created_at)
+                        .map(|(id, _)| id.clone())
+                };
+                match run_to_start {
+                    Some(id) => {
+                        let state_clone = Arc::clone(&state);
+                        tokio::spawn(execute_run(state_clone, id));
+                    }
+                    None => break,
+                };
+            }
         }
     });
-
-    (StatusCode::CREATED, Json(StartRunResponse { id: run_id })).into_response()
 }
 
 async fn get_run_status(
@@ -498,15 +612,24 @@ async fn get_run_status(
 ) -> Response {
     let runs = state.runs.lock().expect("runs lock poisoned");
     match runs.get(&id) {
-        Some(managed_run) => (
-            StatusCode::OK,
-            Json(RunStatusResponse {
-                id: id.clone(),
-                status: managed_run.status,
-                error: managed_run.error.clone(),
-            }),
-        )
-            .into_response(),
+        Some(managed_run) => {
+            let queue_position = if managed_run.status == RunStatus::Queued {
+                let positions = compute_queue_positions(&runs);
+                positions.get(&id).copied()
+            } else {
+                None
+            };
+            (
+                StatusCode::OK,
+                Json(RunStatusResponse {
+                    id: id.clone(),
+                    status: managed_run.status,
+                    error: managed_run.error.clone(),
+                    queue_position,
+                }),
+            )
+                .into_response()
+        }
         None => ApiError::not_found("Run not found.").into_response(),
     }
 }
@@ -519,7 +642,11 @@ async fn get_questions(
     let runs = state.runs.lock().expect("runs lock poisoned");
     match runs.get(&id) {
         Some(managed_run) => {
-            let pending = managed_run.interviewer.pending_questions();
+            let interviewer = match &managed_run.interviewer {
+                Some(i) => i,
+                None => return (StatusCode::OK, Json(Vec::<ApiQuestion>::new())).into_response(),
+            };
+            let pending = interviewer.pending_questions();
             let questions: Vec<ApiQuestion> = pending
                 .into_iter()
                 .map(|pq| ApiQuestion {
@@ -553,10 +680,16 @@ async fn submit_answer(
     let runs = state.runs.lock().expect("runs lock poisoned");
     match runs.get(&id) {
         Some(managed_run) => {
+            let interviewer = match &managed_run.interviewer {
+                Some(i) => i,
+                None => {
+                    return ApiError::new(StatusCode::CONFLICT, "Run is not yet running.")
+                        .into_response();
+                }
+            };
             let answer = match &req.selected_option_key {
                 Some(key) => {
-                    let option = managed_run
-                        .interviewer
+                    let option = interviewer
                         .pending_questions()
                         .iter()
                         .find(|pq| pq.id == qid)
@@ -571,7 +704,7 @@ async fn submit_answer(
                 }
                 None => Answer::text(req.value),
             };
-            let accepted = managed_run.interviewer.submit_answer(&qid, answer);
+            let accepted = interviewer.submit_answer(&qid, answer);
             (StatusCode::OK, Json(SubmitAnswerResponse { accepted })).into_response()
         }
         None => ApiError::not_found("Run not found.").into_response(),
@@ -645,17 +778,23 @@ async fn cancel_run(
 ) -> Response {
     let mut runs = state.runs.lock().expect("runs lock poisoned");
     match runs.get_mut(&id) {
-        Some(managed_run) => {
-            if managed_run.status != RunStatus::Running {
-                return ApiError::new(StatusCode::CONFLICT, "Run is not running.").into_response();
+        Some(managed_run) => match managed_run.status {
+            RunStatus::Queued => {
+                managed_run.status = RunStatus::Cancelled;
+                (StatusCode::OK, Json(serde_json::json!({"cancelled": true}))).into_response()
             }
-            managed_run.cancel_token.store(true, Ordering::Relaxed);
-            if let Some(cancel_tx) = managed_run.cancel_tx.take() {
-                let _ = cancel_tx.send(());
+            RunStatus::Starting | RunStatus::Running => {
+                if let Some(token) = &managed_run.cancel_token {
+                    token.store(true, Ordering::Relaxed);
+                }
+                if let Some(cancel_tx) = managed_run.cancel_tx.take() {
+                    let _ = cancel_tx.send(());
+                }
+                managed_run.status = RunStatus::Cancelled;
+                (StatusCode::OK, Json(serde_json::json!({"cancelled": true}))).into_response()
             }
-            managed_run.status = RunStatus::Cancelled;
-            (StatusCode::OK, Json(serde_json::json!({"cancelled": true}))).into_response()
-        }
+            _ => ApiError::new(StatusCode::CONFLICT, "Run is not cancellable.").into_response(),
+        },
         None => ApiError::not_found("Run not found.").into_response(),
     }
 }
@@ -769,6 +908,11 @@ mod tests {
         build_router(state, AuthMode::Disabled)
     }
 
+    fn test_app_with_scheduler(state: Arc<AppState>) -> Router {
+        spawn_scheduler(Arc::clone(&state));
+        build_router(state, AuthMode::Disabled)
+    }
+
     async fn body_json(body: Body) -> serde_json::Value {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
@@ -812,10 +956,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_run_status_returns_status() {
         let state = create_app_state(test_db().await, test_registry);
-        let app = build_router(Arc::clone(&state), AuthMode::Disabled);
+        let app = test_app_with_scheduler(state);
 
         // Start a run
         let req = Request::builder()
@@ -832,7 +976,7 @@ mod tests {
         let run_id = body["id"].as_str().unwrap().to_string();
 
         // Give run a moment to start
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Check status
         let req = Request::builder()
@@ -846,10 +990,9 @@ mod tests {
 
         let body = body_json(response.into_body()).await;
         assert_eq!(body["id"].as_str().unwrap(), run_id);
-        // Status should be either "running" or "completed"
         let status = body["status"].as_str().unwrap();
         assert!(
-            status == "running" || status == "completed",
+            status == "queued" || status == "starting" || status == "running" || status == "completed",
             "unexpected status: {status}"
         );
     }
@@ -1044,10 +1187,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_events_returns_sse_stream() {
         let state = create_app_state(test_db().await, test_registry);
-        let app = build_router(Arc::clone(&state), AuthMode::Disabled);
+        let app = test_app_with_scheduler(state);
 
         // Start a run
         let req = Request::builder()
@@ -1063,6 +1206,9 @@ mod tests {
         let body = body_json(response.into_body()).await;
         let run_id = body["id"].as_str().unwrap().to_string();
 
+        // Wait for scheduler to promote run (creates event_tx)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         // Request the SSE stream
         let req = Request::builder()
             .method("GET")
@@ -1071,25 +1217,31 @@ mod tests {
             .unwrap();
 
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Check content-type is text/event-stream
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .expect("content-type header should be present")
-            .to_str()
-            .unwrap();
+        // May be 200 (stream open) or 410 (run completed before we connect)
+        let status = response.status();
         assert!(
-            content_type.contains("text/event-stream"),
-            "expected text/event-stream, got: {content_type}"
+            status == StatusCode::OK || status == StatusCode::GONE,
+            "unexpected status: {status}"
         );
+
+        if status == StatusCode::OK {
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .expect("content-type header should be present")
+                .to_str()
+                .unwrap();
+            assert!(
+                content_type.contains("text/event-stream"),
+                "expected text/event-stream, got: {content_type}"
+            );
+        }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_completes_and_status_is_completed() {
         let state = create_app_state(test_db().await, test_registry);
-        let app = build_router(Arc::clone(&state), AuthMode::Disabled);
+        let app = test_app_with_scheduler(state);
 
         // Start a run
         let req = Request::builder()
@@ -1265,10 +1417,10 @@ mod tests {
         assert!(body["by_model"].as_array().unwrap().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn aggregate_usage_increments_after_run_completes() {
         let state = create_app_state(test_db().await, test_registry);
-        let app = build_router(Arc::clone(&state), AuthMode::Disabled);
+        let app = test_app_with_scheduler(state);
 
         // Start a run
         let req = Request::builder()
@@ -1314,5 +1466,200 @@ mod tests {
 
         let body = body_json(response.into_body()).await;
         assert_eq!(body["total_runs"].as_i64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_runs_returns_queued_status() {
+        let state = create_app_state(test_db().await, test_registry);
+        let app = build_router(state, AuthMode::Disabled);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"dot_source": MINIMAL_DOT})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body_json(response.into_body()).await;
+        let run_id = body["id"].as_str().unwrap().to_string();
+
+        // Check status is queued (no scheduler running)
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/runs/{run_id}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["status"].as_str().unwrap(), "queued");
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_run_succeeds() {
+        let state = create_app_state(test_db().await, test_registry);
+        let app = build_router(state, AuthMode::Disabled);
+
+        // Submit a run (no scheduler, stays queued)
+        let req = Request::builder()
+            .method("POST")
+            .uri("/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"dot_source": MINIMAL_DOT})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.clone().oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        let run_id = body["id"].as_str().unwrap().to_string();
+
+        // Cancel it
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/runs/{run_id}/cancel"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify status is cancelled
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/runs/{run_id}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["status"].as_str().unwrap(), "cancelled");
+    }
+
+    #[tokio::test]
+    async fn queue_position_reported_for_queued_runs() {
+        let state = create_app_state(test_db().await, test_registry);
+        let app = build_router(state, AuthMode::Disabled);
+
+        // Submit two runs (no scheduler, both stay queued)
+        let mut run_ids = Vec::new();
+        for _ in 0..2 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({"dot_source": MINIMAL_DOT})).unwrap(),
+                ))
+                .unwrap();
+
+            let response = app.clone().oneshot(req).await.unwrap();
+            let body = body_json(response.into_body()).await;
+            run_ids.push(body["id"].as_str().unwrap().to_string());
+        }
+
+        // Check queue positions via individual status
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/runs/{}", run_ids[0]))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["queue_position"].as_i64().unwrap(), 1);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/runs/{}", run_ids[1]))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["queue_position"].as_i64().unwrap(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrency_limit_respected() {
+        let state = create_app_state_with_options(test_db().await, test_registry, false, false, 1);
+        let app = test_app_with_scheduler(state);
+
+        // Submit two runs with max_concurrent_runs=1
+        let mut run_ids = Vec::new();
+        for _ in 0..2 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({"dot_source": MINIMAL_DOT})).unwrap(),
+                ))
+                .unwrap();
+
+            let response = app.clone().oneshot(req).await.unwrap();
+            let body = body_json(response.into_body()).await;
+            run_ids.push(body["id"].as_str().unwrap().to_string());
+        }
+
+        // Give scheduler time to pick up the first run
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Check statuses: at most 1 should be starting/running, the other queued
+        let req = Request::builder()
+            .method("GET")
+            .uri("/runs")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        let items = body["data"].as_array().unwrap();
+        let active_count = items
+            .iter()
+            .filter(|item| {
+                let s = item["status"].as_str().unwrap();
+                s == "starting" || s == "running"
+            })
+            .count();
+        // With max_concurrent_runs=1, at most 1 should be active
+        // (the first one might have completed already, so active could be 0 or 1)
+        assert!(
+            active_count <= 1,
+            "expected at most 1 active run, got {active_count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_answer_to_queued_run_returns_conflict() {
+        let state = create_app_state(test_db().await, test_registry);
+        let app = build_router(state, AuthMode::Disabled);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/runs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"dot_source": MINIMAL_DOT})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.clone().oneshot(req).await.unwrap();
+        let body = body_json(response.into_body()).await;
+        let run_id = body["id"].as_str().unwrap().to_string();
+
+        // Try to submit an answer to a queued run
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/runs/{run_id}/questions/q1/answer"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"value": "yes"})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 }

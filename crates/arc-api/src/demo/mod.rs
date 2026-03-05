@@ -132,6 +132,7 @@ pub async fn get_run_status(
                 id: id.clone(),
                 status: arc_types::RunStatus::Running,
                 error: None,
+                queue_position: None,
             }),
         )
             .into_response(),

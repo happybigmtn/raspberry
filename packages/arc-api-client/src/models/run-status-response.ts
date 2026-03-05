@@ -21,6 +21,7 @@ export interface RunStatusResponse {
     'id': string;
     'status': RunStatus;
     'error'?: string;
+    'queue_position'?: number;
 }
 
 

@@ -44,6 +44,10 @@ pub struct ServeArgs {
     /// Serve static demo data (disables auth, read-only)
     #[arg(long)]
     pub demo: bool,
+
+    /// Maximum number of concurrent run executions
+    #[arg(long)]
+    pub max_concurrent_runs: Option<usize>,
 }
 
 /// Start the HTTP API server.
@@ -135,7 +139,12 @@ pub async fn serve_command(args: ServeArgs, styles: &'static Styles) -> anyhow::
         .as_ref()
         .map(|_| client_auth_from_mode(&auth_mode));
 
-    let state = create_app_state_with_options(db, factory, dry_run_mode, args.demo);
+    let max_concurrent_runs = args
+        .max_concurrent_runs
+        .or(server_config.max_concurrent_runs)
+        .unwrap_or(4);
+    let state = create_app_state_with_options(db, factory, dry_run_mode, args.demo, max_concurrent_runs);
+    crate::server::spawn_scheduler(Arc::clone(&state));
     let router = build_router(state, auth_mode);
 
     let addr = format!("{}:{}", args.host, args.port);
