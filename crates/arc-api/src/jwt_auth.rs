@@ -109,6 +109,39 @@ pub fn resolve_auth_mode(
     AuthMode::Strategies(strategies)
 }
 
+/// Extract the login from JWT claims.
+fn extract_jwt_login(parts: &Parts, key: &DecodingKey, validation: &Validation) -> Option<String> {
+    let header = parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())?;
+    let token = header.strip_prefix("Bearer ")?;
+    let token_data = jsonwebtoken::decode::<Claims>(token, key, validation).ok()?;
+    token_data
+        .claims
+        .sub
+        .as_deref()
+        .and_then(|s| s.rsplit('/').next())
+        .map(String::from)
+}
+
+/// Extract the CN from mTLS peer certificates.
+fn extract_mtls_cn(parts: &Parts) -> Option<String> {
+    let peer_certs = parts
+        .extensions
+        .get::<PeerCertificates>()
+        .and_then(|pc| pc.0.as_ref())?;
+    let cert = peer_certs.first()?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(cert).ok()?;
+    let cn = parsed
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(String::from);
+    cn
+}
+
 /// Try to authenticate via JWT.
 fn try_jwt(
     parts: &Parts,
@@ -215,6 +248,68 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedService {
             match result {
                 Ok(()) => return Ok(AuthenticatedService),
                 Err(e) => last_err = e,
+            }
+        }
+
+        Err(last_err)
+    }
+}
+
+/// Axum extractor that authenticates and extracts the user's login.
+///
+/// - Demo mode → `login: "demo"`
+/// - JWT → login from the `sub` claim (last path segment of URL)
+/// - mTLS → CN from the peer certificate
+pub struct AuthenticatedUser {
+    pub login: String,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let auth_mode = parts
+            .extensions
+            .get::<AuthMode>()
+            .expect("AuthMode extension must be added to the router");
+
+        let strategies = match auth_mode {
+            AuthMode::Disabled => {
+                return Ok(AuthenticatedUser {
+                    login: "demo".to_string(),
+                })
+            }
+            AuthMode::Strategies(strategies) => strategies,
+        };
+
+        if strategies.is_empty() {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        let mut last_err = StatusCode::UNAUTHORIZED;
+
+        for strategy in strategies {
+            match strategy {
+                AuthStrategy::Jwt {
+                    key,
+                    validation,
+                    allowed_usernames,
+                } => {
+                    if try_jwt(parts, key, validation, allowed_usernames).is_ok() {
+                        if let Some(login) = extract_jwt_login(parts, key, validation) {
+                            return Ok(AuthenticatedUser { login });
+                        }
+                    }
+                    last_err = StatusCode::UNAUTHORIZED;
+                }
+                AuthStrategy::Mtls => {
+                    if try_mtls(parts).is_ok() {
+                        if let Some(login) = extract_mtls_cn(parts) {
+                            return Ok(AuthenticatedUser { login });
+                        }
+                    }
+                    last_err = StatusCode::UNAUTHORIZED;
+                }
             }
         }
 

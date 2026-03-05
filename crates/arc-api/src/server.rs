@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 use arc_agent::LocalSandbox;
 
-use crate::jwt_auth::{AuthMode, AuthenticatedService};
+use crate::jwt_auth::{AuthMode, AuthenticatedService, AuthenticatedUser};
 use arc_workflows::checkpoint::Checkpoint;
 use arc_workflows::context::Context;
 use arc_workflows::engine::{RunConfig, WorkflowRunEngine};
@@ -57,7 +57,11 @@ pub struct AppState {
 pub fn build_router(state: Arc<AppState>, auth_mode: AuthMode) -> Router {
     let is_demo = state.is_demo;
 
-    let mut router = Router::new();
+    let mut router = Router::new()
+        .route("/", get(root))
+        .route("/health", get(health))
+        .route("/openapi.json", get(openapi_spec))
+        .route("/user", get(get_user));
 
     if is_demo {
         router = router
@@ -188,6 +192,31 @@ pub fn build_router(state: Arc<AppState>, auth_mode: AuthMode) -> Router {
 
 async fn not_implemented() -> Response {
     StatusCode::NOT_IMPLEMENTED.into_response()
+}
+
+async fn root() -> Response {
+    Json(serde_json::json!({
+        "urls": {
+            "openapi_url": "/openapi.json",
+            "current_user_url": "/user",
+            "health_url": "/health"
+        }
+    }))
+    .into_response()
+}
+
+async fn health() -> Response {
+    Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
+async fn openapi_spec() -> Response {
+    let yaml = include_str!("../../../openapi/arc-api.yaml");
+    let value: serde_json::Value = serde_yaml::from_str(yaml).expect("embedded OpenAPI YAML is invalid");
+    Json(value).into_response()
+}
+
+async fn get_user(user: AuthenticatedUser) -> Response {
+    Json(serde_json::json!({"login": user.login})).into_response()
 }
 
 /// Create an `AppState` with the given registry factory and database pool.

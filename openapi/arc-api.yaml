@@ -5,6 +5,8 @@ info:
   description: HTTP API for managing Arc workflow run executions.
 
 tags:
+  - name: Discovery
+    description: API discovery and health
   - name: Runs
     description: Run management operations
   - name: Human-in-the-Loop
@@ -31,6 +33,65 @@ tags:
     description: Platform configuration
 
 paths:
+  # ── Discovery ────────────────────────────────────────────────────────
+
+  /:
+    get:
+      operationId: getRoot
+      tags: [Discovery]
+      summary: API Discovery
+      description: Returns discovery URLs for the API.
+      responses:
+        "200":
+          description: Discovery URLs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RootResponse"
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Discovery]
+      summary: Health Check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /openapi.json:
+    get:
+      operationId: getOpenApiSpec
+      tags: [Discovery]
+      summary: OpenAPI Specification
+      description: Returns the OpenAPI spec as JSON.
+      responses:
+        "200":
+          description: OpenAPI specification
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /user:
+    get:
+      operationId: getUser
+      tags: [Discovery]
+      summary: Current User
+      description: Returns info about the authenticated user.
+      responses:
+        "200":
+          description: User info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          description: Not authenticated
+
   # ── Runs ──────────────────────────────────────────────────────────────
 
   /runs:
@@ -1833,4 +1894,44 @@ components:
         id:
           type: string
         name:
+          type: string
+
+    # ── Discovery Schemas ──────────────────────────────────────────────
+
+    RootResponseUrls:
+      type: object
+      required:
+        - openapi_url
+        - current_user_url
+        - health_url
+      properties:
+        openapi_url:
+          type: string
+        current_user_url:
+          type: string
+        health_url:
+          type: string
+
+    RootResponse:
+      type: object
+      required:
+        - urls
+      properties:
+        urls:
+          $ref: "#/components/schemas/RootResponseUrls"
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+
+    UserResponse:
+      type: object
+      required:
+        - login
+      properties:
+        login:
           type: string

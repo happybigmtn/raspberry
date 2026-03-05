@@ -1,4 +1,5 @@
 api.ts
+api/discovery-api.ts
 api/human-in-the-loop-api.ts
 api/insights-api.ts
 api/projects-api.ts
@@ -33,6 +34,7 @@ models/execute-query-request.ts
 models/execute-query-response.ts
 models/file-checkpoint.ts
 models/file-diff.ts
+models/health-response.ts
 models/history-entry.ts
 models/index.ts
 models/preview-url-request.ts
@@ -41,6 +43,8 @@ models/project.ts
 models/recent-control-result.ts
 models/retro-list-item.ts
 models/retro-stats.ts
+models/root-response-urls.ts
+models/root-response.ts
 models/run-files.ts
 models/run-list-item-status.ts
 models/run-list-item.ts
@@ -74,6 +78,7 @@ models/tool-use.ts
 models/usage-by-model.ts
 models/usage-stage.ts
 models/usage-totals.ts
+models/user-response.ts
 models/verification-category.ts
 models/verification-control.ts
 models/verification-detail-response.ts
