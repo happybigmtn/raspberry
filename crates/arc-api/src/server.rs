@@ -293,7 +293,7 @@ pub fn create_app_state(
     db: sqlx::SqlitePool,
     registry_factory: impl Fn(Arc<dyn Interviewer>) -> HandlerRegistry + Send + Sync + 'static,
 ) -> Arc<AppState> {
-    create_app_state_with_options(db, registry_factory, false, false, 4)
+    create_app_state_with_options(db, registry_factory, false, false, 5)
 }
 
 /// Create an `AppState` with the given database pool, registry factory, dry-run flag, and demo flag.
