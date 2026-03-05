@@ -18,16 +18,16 @@ pub struct AgentArgs {
     pub prompt: String,
 
     /// LLM provider (anthropic, openai, gemini, kimi, zai, minimax, inception)
-    #[arg(long, default_value = "anthropic")]
-    pub provider: String,
+    #[arg(long)]
+    pub provider: Option<String>,
 
     /// Model name (defaults per provider)
     #[arg(long)]
     pub model: Option<String>,
 
     /// Permission level for tool execution
-    #[arg(long, default_value = "read-write", value_enum)]
-    pub permissions: PermissionLevel,
+    #[arg(long, value_enum)]
+    pub permissions: Option<PermissionLevel>,
 
     /// Skip interactive prompts; deny tools outside permission level
     #[arg(long)]
@@ -46,8 +46,8 @@ pub struct AgentArgs {
     pub skills_dir: Option<String>,
 
     /// Output format (text for human-readable, json for NDJSON event stream)
-    #[arg(long, default_value = "text", value_enum)]
-    pub output_format: OutputFormat,
+    #[arg(long, value_enum)]
+    pub output_format: Option<OutputFormat>,
 }
 
 #[derive(Parser)]
@@ -68,6 +68,41 @@ pub enum PermissionLevel {
     ReadOnly,
     ReadWrite,
     Full,
+}
+
+impl AgentArgs {
+    /// Fill `None` fields from cli.toml values, then hardcoded defaults.
+    pub fn apply_cli_defaults(
+        &mut self,
+        provider: Option<&str>,
+        model: Option<&str>,
+        permissions: Option<&str>,
+        output_format: Option<&str>,
+    ) {
+        if self.provider.is_none() {
+            self.provider = Some(
+                provider
+                    .map(String::from)
+                    .unwrap_or_else(|| "anthropic".to_string()),
+            );
+        }
+        if self.model.is_none() {
+            self.model = model.map(String::from);
+        }
+        if self.permissions.is_none() {
+            self.permissions = Some(match permissions {
+                Some("read-only") => PermissionLevel::ReadOnly,
+                Some("full") => PermissionLevel::Full,
+                _ => PermissionLevel::ReadWrite,
+            });
+        }
+        if self.output_format.is_none() {
+            self.output_format = Some(match output_format {
+                Some("json") => OutputFormat::Json,
+                _ => OutputFormat::Text,
+            });
+        }
+    }
 }
 
 pub fn default_model(provider: Provider) -> &'static str {
@@ -345,6 +380,8 @@ pub async fn run_with_args(args: AgentArgs) -> anyhow::Result<()> {
     // Parse provider string to enum early for compile-time safety
     let provider: Provider = args
         .provider
+        .as_deref()
+        .unwrap_or("anthropic")
         .parse()
         .map_err(|e: String| anyhow::anyhow!("{e}"))?;
 
@@ -378,8 +415,9 @@ pub async fn run_with_args(args: AgentArgs) -> anyhow::Result<()> {
     let env: Arc<dyn crate::Sandbox> = Arc::new(LocalSandbox::new(cwd));
 
     // Build tool approval callback
+    let permissions = args.permissions.unwrap_or(PermissionLevel::ReadWrite);
     let is_interactive = std::io::stdin().is_terminal() && !args.auto_approve;
-    let tool_approval = build_tool_approval(args.permissions, is_interactive, styles);
+    let tool_approval = build_tool_approval(permissions, is_interactive, styles);
 
     let config = SessionConfig {
         tool_approval: Some(tool_approval),
@@ -446,7 +484,7 @@ pub async fn run_with_args(args: AgentArgs) -> anyhow::Result<()> {
 
     // Subscribe to events
     let verbose = args.verbose;
-    let output_format = args.output_format;
+    let output_format = args.output_format.unwrap_or(OutputFormat::Text);
     let mut rx = session.subscribe();
     tokio::spawn(async move {
         match output_format {

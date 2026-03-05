@@ -1,3 +1,4 @@
+mod cli_config;
 mod doctor;
 mod logging;
 mod setup;
@@ -92,6 +93,8 @@ async fn main() -> Result<()> {
         eprintln!("Warning: failed to initialize logging: {err:#}");
     }
 
+    let cli_config = cli_config::load_cli_config(None)?;
+
     let command_name = match &cli.command {
         Command::Llm { .. } => "llm",
         Command::Agent(_) => "agent",
@@ -105,11 +108,33 @@ async fn main() -> Result<()> {
     debug!(command = %command_name, "CLI command started");
 
     match cli.command {
-        Command::Llm { command } => match command {
-            LlmCommand::Prompt(args) => arc_llm::cli::run_prompt(args).await?,
-            LlmCommand::Chat(args) => arc_llm::cli::run_chat(args).await?,
-        },
-        Command::Agent(args) => arc_agent::cli::run_with_args(args).await?,
+        Command::Llm { command } => {
+            let llm_defaults = cli_config.llm.as_ref();
+            match command {
+                LlmCommand::Prompt(mut args) => {
+                    if args.model.is_none() {
+                        args.model = llm_defaults.and_then(|l| l.model.clone());
+                    }
+                    arc_llm::cli::run_prompt(args).await?
+                }
+                LlmCommand::Chat(mut args) => {
+                    if args.model.is_none() {
+                        args.model = llm_defaults.and_then(|l| l.model.clone());
+                    }
+                    arc_llm::cli::run_chat(args).await?
+                }
+            }
+        }
+        Command::Agent(mut args) => {
+            let agent_defaults = cli_config.agent.as_ref();
+            args.apply_cli_defaults(
+                agent_defaults.and_then(|a| a.provider.as_deref()),
+                agent_defaults.and_then(|a| a.model.as_deref()),
+                agent_defaults.and_then(|a| a.permissions.as_deref()),
+                agent_defaults.and_then(|a| a.output_format.as_deref()),
+            );
+            arc_agent::cli::run_with_args(args).await?
+        }
         Command::Run { command } => match command {
             RunCommand::Start(args) => {
                 let styles: &'static arc_util::terminal::Styles =

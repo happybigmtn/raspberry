@@ -199,6 +199,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "semver",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
