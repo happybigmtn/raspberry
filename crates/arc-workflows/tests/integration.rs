@@ -7652,6 +7652,174 @@ async fn hook_sandbox_false_runs_on_host() {
     assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "host");
 }
 
+// --- Prompt and Agent hook TOML parsing ---
+
+#[test]
+fn hook_toml_prompt_and_agent_parsing() {
+    let toml = r#"
+version = 1
+goal = "Test prompt/agent hooks"
+graph = "test.dot"
+
+[[hooks]]
+event = "stage_start"
+type = "prompt"
+prompt = "Should this stage proceed?"
+model = "haiku"
+
+[[hooks]]
+event = "run_complete"
+type = "agent"
+prompt = "Verify all tests pass."
+model = "sonnet"
+max_tool_rounds = 10
+timeout_ms = 120000
+"#;
+
+    let cfg: arc_workflows::cli::run_config::WorkflowRunConfig =
+        toml::from_str(toml).unwrap();
+    assert_eq!(cfg.hooks.len(), 2);
+
+    // Prompt hook
+    assert_eq!(cfg.hooks[0].event, arc_workflows::hook::HookEvent::StageStart);
+    assert!(matches!(
+        cfg.hooks[0].resolved_hook_type(),
+        Some(arc_workflows::hook::HookType::Prompt { prompt, model })
+            if prompt == "Should this stage proceed?" && model == Some("haiku".into())
+    ));
+    assert_eq!(cfg.hooks[0].timeout(), std::time::Duration::from_millis(30000));
+
+    // Agent hook
+    assert_eq!(cfg.hooks[1].event, arc_workflows::hook::HookEvent::RunComplete);
+    assert!(matches!(
+        cfg.hooks[1].resolved_hook_type(),
+        Some(arc_workflows::hook::HookType::Agent { prompt, model, max_tool_rounds })
+            if prompt == "Verify all tests pass."
+            && model == Some("sonnet".into())
+            && max_tool_rounds == Some(10)
+    ));
+    assert_eq!(cfg.hooks[1].timeout(), std::time::Duration::from_millis(120000));
+}
+
+// --- Prompt/Agent hook E2E with real LLM ---
+
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_API_KEY"]
+async fn hook_prompt_proceed_allows_run() {
+    dotenvy::dotenv().ok();
+
+    let hooks = vec![arc_workflows::hook::HookDefinition {
+        name: Some("prompt-proceed".into()),
+        event: arc_workflows::hook::HookEvent::RunStart,
+        command: None,
+        hook_type: Some(arc_workflows::hook::HookType::Prompt {
+            prompt: "A workflow is starting. Always approve. Respond with {\"ok\": true}.".into(),
+            model: Some("haiku".into()),
+        }),
+        matcher: None,
+        blocking: None,
+        timeout_ms: Some(30000),
+        sandbox: None,
+    }];
+    let engine = engine_with_hooks(hooks);
+    let graph = parse(simple_linear_dot()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_run_config(dir.path());
+
+    let outcome = engine.run(&graph, &config).await.unwrap();
+    assert_eq!(outcome.status, StageStatus::Success);
+}
+
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_API_KEY"]
+async fn hook_prompt_block_prevents_run() {
+    dotenvy::dotenv().ok();
+
+    // Use a factual question that evaluates to false: "Is 2+2=5?"
+    let hooks = vec![arc_workflows::hook::HookDefinition {
+        name: Some("prompt-block".into()),
+        event: arc_workflows::hook::HookEvent::RunStart,
+        command: None,
+        hook_type: Some(arc_workflows::hook::HookType::Prompt {
+            prompt: "Check: is 2+2 equal to 5? If the statement is true, respond {\"ok\": true}. If false, respond {\"ok\": false, \"reason\": \"math check failed\"}.".into(),
+            model: Some("haiku".into()),
+        }),
+        matcher: None,
+        blocking: None,
+        timeout_ms: Some(30000),
+        sandbox: None,
+    }];
+    let engine = engine_with_hooks(hooks);
+    let graph = parse(simple_linear_dot()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_run_config(dir.path());
+
+    let result = engine.run(&graph, &config).await;
+    assert!(result.is_err(), "Prompt hook block should cause error, got: {result:?}");
+}
+
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_API_KEY"]
+async fn hook_agent_proceed_allows_run() {
+    dotenvy::dotenv().ok();
+
+    let hooks = vec![arc_workflows::hook::HookDefinition {
+        name: Some("agent-proceed".into()),
+        event: arc_workflows::hook::HookEvent::RunStart,
+        command: None,
+        hook_type: Some(arc_workflows::hook::HookType::Agent {
+            prompt: "A workflow is starting. Always approve. Respond with {\"ok\": true}. Do not use any tools.".into(),
+            model: Some("haiku".into()),
+            max_tool_rounds: Some(1),
+        }),
+        matcher: None,
+        blocking: None,
+        timeout_ms: Some(60000),
+        sandbox: None,
+    }];
+    let engine = engine_with_hooks(hooks);
+    let graph = parse(simple_linear_dot()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_run_config(dir.path());
+
+    let outcome = engine.run(&graph, &config).await.unwrap();
+    assert_eq!(outcome.status, StageStatus::Success);
+}
+
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_API_KEY"]
+async fn hook_agent_with_tool_use() {
+    dotenvy::dotenv().ok();
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("hook_check.txt");
+    std::fs::write(&marker, "READY").unwrap();
+
+    let hooks = vec![arc_workflows::hook::HookDefinition {
+        name: Some("agent-tools".into()),
+        event: arc_workflows::hook::HookEvent::RunStart,
+        command: None,
+        hook_type: Some(arc_workflows::hook::HookType::Agent {
+            prompt: format!(
+                "Read the file at {} using the read_file tool. If it contains 'READY', respond with {{\"ok\": true}}. Otherwise respond with {{\"ok\": false, \"reason\": \"not ready\"}}.",
+                marker.display()
+            ),
+            model: Some("haiku".into()),
+            max_tool_rounds: Some(5),
+        }),
+        matcher: None,
+        blocking: None,
+        timeout_ms: Some(60000),
+        sandbox: None,
+    }];
+    let engine = engine_with_hooks(hooks);
+    let graph = parse(simple_linear_dot()).unwrap();
+    let config = make_run_config(dir.path());
+
+    let outcome = engine.run(&graph, &config).await.unwrap();
+    assert_eq!(outcome.status, StageStatus::Success);
+}
+
 // --- Events emitted correctly alongside hooks ---
 
 #[tokio::test]

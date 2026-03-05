@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -16,7 +17,7 @@ pub trait HookExecutor: Send + Sync {
         &self,
         definition: &HookDefinition,
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookResult;
 }
@@ -94,7 +95,7 @@ impl HookExecutorImpl {
         definition: &HookDefinition,
         command: &str,
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: &Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookDecision {
         let context_json = serde_json::to_string(context).unwrap_or_default();
@@ -165,11 +166,27 @@ impl HookExecutorImpl {
         }
     }
 
+    /// Strip markdown code fences from LLM responses.
+    ///
+    /// LLMs often wrap JSON in ```json ... ``` blocks.
+    fn strip_code_fences(text: &str) -> &str {
+        let trimmed = text.trim();
+        let inner = trimmed
+            .strip_prefix("```json")
+            .or_else(|| trimmed.strip_prefix("```"))
+            .unwrap_or(trimmed);
+        let inner = inner
+            .strip_suffix("```")
+            .unwrap_or(inner);
+        inner.trim()
+    }
+
     /// Parse a prompt/agent hook LLM response into a `HookDecision`.
     ///
     /// Fail-open: invalid JSON or missing fields → `Proceed`.
     pub fn parse_prompt_response(response_text: &str) -> HookDecision {
-        match serde_json::from_str::<PromptHookResponse>(response_text.trim()) {
+        let cleaned = Self::strip_code_fences(response_text);
+        match serde_json::from_str::<PromptHookResponse>(cleaned) {
             Ok(resp) if resp.ok => HookDecision::Proceed,
             Ok(resp) => HookDecision::Block {
                 reason: resp.reason,
@@ -199,7 +216,8 @@ impl HookExecutorImpl {
 
             let params = arc_llm::generate::GenerateParams::new(resolved_model)
                 .system(system)
-                .prompt(user_msg);
+                .prompt(user_msg)
+                .max_tokens(1024);
 
             match arc_llm::generate::generate(params).await {
                 Ok(result) => Self::parse_prompt_response(&result.response.text()),
@@ -222,14 +240,15 @@ impl HookExecutorImpl {
 
     /// Execute an agent hook: multi-turn LLM call with sandbox tool access.
     ///
-    /// Uses a manual tool loop with `Client::complete()` to avoid closure
-    /// lifetime issues with the sandbox reference.
+    /// Reuses the core `ToolRegistry` from `arc_agent` so the agent hook has
+    /// the same tools (read_file, write_file, shell, grep, glob, etc.) as
+    /// a normal agent session.
     async fn execute_agent(
         prompt: &str,
         model: &Option<String>,
         max_tool_rounds: Option<u32>,
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         timeout: std::time::Duration,
     ) -> HookDecision {
         let result = tokio::time::timeout(timeout, async {
@@ -249,30 +268,11 @@ impl HookExecutorImpl {
             let system = "You are a hook evaluator for a workflow engine. Given context about a workflow event, evaluate the condition and respond with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Respond ONLY with valid JSON.";
             let user_msg = format!("Hook prompt: {prompt}\n\nEvent context:\n{context_json}");
 
-            let tool_defs = vec![
-                arc_llm::types::ToolDefinition {
-                    name: "exec_command".into(),
-                    description: "Execute a shell command in the sandbox".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "command": { "type": "string", "description": "Shell command to execute" }
-                        },
-                        "required": ["command"]
-                    }),
-                },
-                arc_llm::types::ToolDefinition {
-                    name: "read_file".into(),
-                    description: "Read a file from the sandbox".into(),
-                    parameters: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Path to the file to read" }
-                        },
-                        "required": ["path"]
-                    }),
-                },
-            ];
+            // Reuse the same tool registry as normal agent sessions.
+            let config = arc_agent::SessionConfig::default();
+            let mut registry = arc_agent::ToolRegistry::new();
+            arc_agent::register_core_tools(&mut registry, &config, None);
+            let tool_defs = registry.definitions();
 
             let mut messages = vec![
                 arc_llm::types::Message::system(system),
@@ -280,6 +280,7 @@ impl HookExecutorImpl {
             ];
 
             let rounds = max_tool_rounds.unwrap_or(50);
+            let cancel = tokio_util::sync::CancellationToken::new();
 
             for _ in 0..rounds {
                 let request = arc_llm::types::Request {
@@ -314,36 +315,30 @@ impl HookExecutorImpl {
                 // Append assistant message with tool calls
                 messages.push(response.message.clone());
 
-                // Execute each tool call against the sandbox
+                // Execute each tool call via the shared registry
                 for tc in &tool_calls {
-                    let args = &tc.arguments;
-
-                    let result_json = match tc.name.as_str() {
-                        "exec_command" => {
-                            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                            match sandbox.exec_command(command, 30_000, None, None, None).await {
-                                Ok(r) => serde_json::json!({
-                                    "exit_code": r.exit_code,
-                                    "stdout": r.stdout,
-                                    "stderr": r.stderr,
-                                }),
-                                Err(e) => serde_json::json!({ "error": e.to_string() }),
-                            }
-                        }
-                        "read_file" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                            match sandbox.read_file(path, None, None).await {
-                                Ok(content) => serde_json::json!({ "content": content }),
-                                Err(e) => serde_json::json!({ "error": e.to_string() }),
-                            }
-                        }
-                        other => serde_json::json!({ "error": format!("unknown tool: {other}") }),
+                    let tool = registry.get(&tc.name).cloned();
+                    let ctx = arc_agent::tool_registry::ToolContext {
+                        env: sandbox.clone(),
+                        cancel: cancel.child_token(),
                     };
-
+                    let result = match tool {
+                        Some(t) => match (t.executor)(tc.arguments.clone(), ctx).await {
+                            Ok(output) => arc_llm::types::ToolResult::success(
+                                tc.id.clone(),
+                                serde_json::json!(output),
+                            ),
+                            Err(err) => arc_llm::types::ToolResult::error(tc.id.clone(), err),
+                        },
+                        None => arc_llm::types::ToolResult::error(
+                            tc.id.clone(),
+                            format!("Unknown tool: {}", tc.name),
+                        ),
+                    };
                     messages.push(arc_llm::types::Message::tool_result(
-                        tc.id.clone(),
-                        result_json,
-                        false,
+                        result.tool_call_id,
+                        result.content,
+                        result.is_error,
                     ));
                 }
             }
@@ -447,14 +442,14 @@ impl HookExecutor for HookExecutorImpl {
         &self,
         definition: &HookDefinition,
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookResult {
         let start = Instant::now();
 
         let decision = match definition.resolved_hook_type() {
             Some(HookType::Command { ref command }) => {
-                Self::execute_command(definition, command, context, sandbox, work_dir).await
+                Self::execute_command(definition, command, context, &sandbox, work_dir).await
             }
             Some(HookType::Http {
                 ref url,
@@ -509,6 +504,10 @@ mod tests {
 
     fn make_context() -> HookContext {
         HookContext::new(HookEvent::StageStart, "run-1".into(), "test-wf".into())
+    }
+
+    fn make_sandbox() -> Arc<dyn Sandbox> {
+        Arc::new(arc_agent::LocalSandbox::new(std::env::current_dir().unwrap()))
     }
 
     fn make_definition(command: &str) -> HookDefinition {
@@ -586,8 +585,8 @@ mod tests {
         let executor = HookExecutorImpl;
         let def = make_definition("exit 0");
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert_eq!(result.decision, HookDecision::Proceed);
         assert_eq!(result.hook_name.as_deref(), Some("test-hook"));
     }
@@ -597,8 +596,8 @@ mod tests {
         let executor = HookExecutorImpl;
         let def = make_definition("exit 1");
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert!(matches!(result.decision, HookDecision::Block { .. }));
     }
 
@@ -607,8 +606,8 @@ mod tests {
         let executor = HookExecutorImpl;
         let def = make_definition("exit 2");
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert!(matches!(result.decision, HookDecision::Block { .. }));
     }
 
@@ -618,8 +617,8 @@ mod tests {
         let def =
             make_definition(r#"echo '{"decision": "skip", "reason": "test skip"}'"#);
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert_eq!(
             result.decision,
             HookDecision::Skip {
@@ -635,8 +634,8 @@ mod tests {
         let def = make_definition("echo $ARC_EVENT:$ARC_RUN_ID:$ARC_WORKFLOW");
         let mut ctx = make_context();
         ctx.node_id = Some("plan".into());
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert_eq!(result.decision, HookDecision::Proceed);
     }
 
@@ -654,8 +653,8 @@ mod tests {
             sandbox: Some(false),
         };
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
         assert!(matches!(result.decision, HookDecision::Block { .. }));
     }
 
@@ -692,6 +691,37 @@ mod tests {
         assert_eq!(
             HookExecutorImpl::parse_prompt_response("not json"),
             HookDecision::Proceed,
+        );
+    }
+
+    #[test]
+    fn parse_prompt_response_strips_code_fences() {
+        assert_eq!(
+            HookExecutorImpl::parse_prompt_response("```json\n{\"ok\": false, \"reason\": \"no\"}\n```"),
+            HookDecision::Block {
+                reason: Some("no".into())
+            },
+        );
+    }
+
+    #[test]
+    fn strip_code_fences_plain() {
+        assert_eq!(HookExecutorImpl::strip_code_fences(r#"{"ok": true}"#), r#"{"ok": true}"#);
+    }
+
+    #[test]
+    fn strip_code_fences_json() {
+        assert_eq!(
+            HookExecutorImpl::strip_code_fences("```json\n{\"ok\": true}\n```"),
+            "{\"ok\": true}"
+        );
+    }
+
+    #[test]
+    fn strip_code_fences_bare() {
+        assert_eq!(
+            HookExecutorImpl::strip_code_fences("```\n{\"ok\": true}\n```"),
+            "{\"ok\": true}"
         );
     }
 
@@ -968,8 +998,8 @@ mod tests {
             sandbox: Some(false),
         };
         let ctx = make_context();
-        let sandbox = arc_agent::LocalSandbox::new(std::env::current_dir().unwrap());
-        let result = executor.execute(&def, &ctx, &sandbox, None).await;
+        let sandbox = make_sandbox();
+        let result = executor.execute(&def, &ctx, sandbox, None).await;
 
         mock.assert_async().await;
         assert_eq!(result.decision, HookDecision::Proceed);

@@ -56,7 +56,7 @@ impl HookRunner {
     pub async fn run(
         &self,
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookDecision {
         let matching = self.filter_hooks(context);
@@ -125,7 +125,7 @@ impl HookRunner {
         &self,
         hooks: &[&HookDefinition],
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookDecision {
         let mut merged = HookDecision::Proceed;
@@ -137,7 +137,7 @@ impl HookRunner {
             );
             let result = self
                 .command_executor
-                .execute(hook, context, sandbox, work_dir)
+                .execute(hook, context, sandbox.clone(), work_dir)
                 .await;
             tracing::debug!(
                 hook = %hook.effective_name(),
@@ -174,7 +174,7 @@ impl HookRunner {
         &self,
         hooks: &[&HookDefinition],
         context: &HookContext,
-        sandbox: &dyn Sandbox,
+        sandbox: Arc<dyn Sandbox>,
         work_dir: Option<&Path>,
     ) -> HookDecision {
         for hook in hooks {
@@ -185,7 +185,7 @@ impl HookRunner {
             );
             let result = self
                 .command_executor
-                .execute(hook, context, sandbox, work_dir)
+                .execute(hook, context, sandbox.clone(), work_dir)
                 .await;
             tracing::debug!(
                 hook = %hook.effective_name(),
@@ -222,7 +222,7 @@ mod tests {
             &self,
             definition: &HookDefinition,
             _context: &HookContext,
-            _sandbox: &dyn Sandbox,
+            _sandbox: Arc<dyn Sandbox>,
             _work_dir: Option<&Path>,
         ) -> HookResult {
             HookResult {
@@ -233,8 +233,8 @@ mod tests {
         }
     }
 
-    fn make_sandbox() -> arc_agent::LocalSandbox {
-        arc_agent::LocalSandbox::new(std::env::current_dir().unwrap())
+    fn make_sandbox() -> Arc<dyn Sandbox> {
+        Arc::new(arc_agent::LocalSandbox::new(std::env::current_dir().unwrap()))
     }
 
     fn make_context(event: HookEvent) -> HookContext {
@@ -259,7 +259,7 @@ mod tests {
         let runner = HookRunner::new(HookConfig::default());
         let ctx = make_context(HookEvent::RunStart);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         assert_eq!(decision, HookDecision::Proceed);
     }
 
@@ -350,7 +350,7 @@ mod tests {
         );
         let ctx = make_context(HookEvent::RunStart);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         assert!(matches!(decision, HookDecision::Block { .. }));
     }
 
@@ -371,7 +371,7 @@ mod tests {
         );
         let ctx = make_context(HookEvent::StageStart);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         assert!(matches!(decision, HookDecision::Skip { .. }));
     }
 
@@ -392,7 +392,7 @@ mod tests {
         );
         let ctx = make_context(HookEvent::StageComplete);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         // Non-blocking hooks don't affect the decision
         assert_eq!(decision, HookDecision::Proceed);
     }
@@ -409,7 +409,7 @@ mod tests {
         let runner = HookRunner::new(config);
         let ctx = make_context(HookEvent::RunStart);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         assert_eq!(decision, HookDecision::Proceed);
     }
 
@@ -425,7 +425,7 @@ mod tests {
         let runner = HookRunner::new(config);
         let ctx = make_context(HookEvent::RunStart);
         let sandbox = make_sandbox();
-        let decision = runner.run(&ctx, &sandbox, None).await;
+        let decision = runner.run(&ctx, sandbox.clone(), None).await;
         assert!(matches!(decision, HookDecision::Block { .. }));
     }
 }

@@ -804,7 +804,7 @@ impl WorkflowRunEngine {
             return HookDecision::Proceed;
         };
         runner
-            .run(hook_context, self.services.sandbox.as_ref(), work_dir)
+            .run(hook_context, self.services.sandbox.clone(), work_dir)
             .await
     }
 
