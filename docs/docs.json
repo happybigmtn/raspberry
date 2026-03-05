@@ -17,9 +17,9 @@
             "group": "Getting Started",
             "icon": "rocket",
             "pages": [
-              "getting-started/overview",
-              "getting-started/quick-start",
-              "getting-started/workflows"
+              "getting-started/introduction",
+              "getting-started/why-arc",
+              "getting-started/quick-start"
             ]
           },
           {
@@ -28,7 +28,8 @@
             "pages": [
               "core-concepts/how-arc-works",
               "core-concepts/workflows",
-              "core-concepts/agents"
+              "core-concepts/agents",
+              "core-concepts/models"
             ]
           },
           {
