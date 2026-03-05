@@ -105,7 +105,7 @@ fn print_models_table(models: &[crate::types::ModelInfo], s: &Styles) {
     println!(
         "{}",
         s.bold_dim.apply_to(format!(
-            "{:<24} {:<12} {:<24} {:>10}  {:>7} {:>7}   {:>10}",
+            "{:<30} {:<12} {:<24} {:>10}  {:>7} {:>7}   {:>10}",
             "MODEL", "PROVIDER", "ALIASES", "CONTEXT", "COST", "", "SPEED",
         )),
     );
@@ -113,7 +113,7 @@ fn print_models_table(models: &[crate::types::ModelInfo], s: &Styles) {
         let aliases = model.aliases.join(", ");
         println!(
             "{} {} {} {:>10}  {:>7} / {:<7}  {}",
-            s.bold.apply_to(format!("{:<24}", model.id)),
+            s.bold.apply_to(format!("{:<30}", model.id)),
             s.dim.apply_to(format!("{:<12}", model.provider)),
             s.dim.apply_to(format!("{:<24}", aliases)),
             format_context_window(model.context_window),
@@ -398,7 +398,7 @@ async fn test_models(provider: Option<&str>, model: Option<&str>, s: &Styles) ->
     println!(
         "{}",
         s.bold_dim.apply_to(format!(
-            "{:<24} {:<12} {:>10}  {:>7}   {:>7}  {:>10}  RESULT",
+            "{:<30} {:<12} {:>10}  {:>7}   {:>7}  {:>10}  RESULT",
             "MODEL", "PROVIDER", "CONTEXT", "COST", "", "SPEED",
         )),
     );
@@ -427,7 +427,7 @@ async fn test_models(provider: Option<&str>, model: Option<&str>, s: &Styles) ->
 
         println!(
             "{} {} {:>10}  {:>7} / {:<7}  {}  {}",
-            s.bold.apply_to(format!("{:<24}", info.id)),
+            s.bold.apply_to(format!("{:<30}", info.id)),
             s.dim.apply_to(format!("{:<12}", info.provider)),
             format_context_window(info.context_window),
             format_cost(info.input_cost_per_million),
