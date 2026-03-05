@@ -1,7 +1,164 @@
 ---
 title: "Checkpoints"
-description: "Saving and resuming workflow state"
+description: "How Arc uses Git to checkpoint and resume workflow runs"
 ---
 
-## Resume
+Arc checkpoints every workflow run using Git. After each node completes, Arc commits the file changes and execution state so that interrupted runs can be resumed exactly where they left off. This happens automatically — no configuration required beyond running inside a Git repository.
 
+## Two branches, two purposes
+
+Each run creates two Git branches that work in tandem:
+
+| Branch | Ref format | Contains |
+|---|---|---|
+| **Run branch** | `arc/run/{run_id}` | File changes made by agents and commands — the actual work product |
+| **Metadata branch** | `refs/arc/{run_id}` | Checkpoint JSON, the workflow graph, a run manifest, and offloaded artifacts |
+
+The run branch is a regular Git branch that grows one commit per completed node. The metadata branch is an orphan branch (no shared history with your code) that stores structured data using Git's object database directly — no working tree needed.
+
+### Run branch commits
+
+After each node finishes, Arc stages all file changes and creates a commit on the run branch:
+
+```
+arc(01JKXYZ...): plan (success)
+
+Arc-Run: 01JKXYZ...
+Arc-Completed: 2
+Arc-Checkpoint: a1b2c3d4...
+```
+
+The commit message follows a structured format:
+
+| Part | Description |
+|---|---|
+| Subject line | `arc({run_id}): {node_id} ({status})` |
+| `Arc-Run` trailer | The run ID |
+| `Arc-Completed` trailer | Number of completed nodes so far |
+| `Arc-Checkpoint` trailer | SHA of the corresponding commit on the metadata branch |
+
+The `Arc-Checkpoint` trailer links each run branch commit to its metadata branch commit, so you can navigate from file changes to the full execution state and back.
+
+### Metadata branch
+
+The metadata branch (`refs/arc/{run_id}`) is an orphan branch that stores structured run data using Git's object storage directly (via `git2`). It is initialized at run start with:
+
+- **`manifest.json`** — Run metadata: run ID, graph name, node/edge counts, base SHA, and branch name
+- **`graph.dot`** — The workflow DOT source as it was parsed
+
+After each node, the metadata branch is updated with:
+
+- **`checkpoint.json`** — Full execution state (see below)
+- **`artifacts/*.json`** — Any offloaded artifact data (large context values over 100KB)
+
+## What's in a checkpoint
+
+The `checkpoint.json` captures everything needed to resume a run:
+
+| Field | Description |
+|---|---|
+| `timestamp` | When the checkpoint was created |
+| `current_node` | The node that just completed |
+| `next_node_id` | The next node the engine would execute |
+| `completed_nodes` | Ordered list of all completed node IDs |
+| `node_retries` | How many retry attempts each node has used |
+| `node_outcomes` | Full outcome (status, context updates, usage) for each completed node |
+| `context_values` | Snapshot of the entire [run context](/execution/context) |
+| `logs` | Internal log entries |
+| `git_commit_sha` | SHA of the run branch commit at this checkpoint |
+| `loop_failure_signatures` | Failure signature counts for loop detection |
+| `restart_failure_signatures` | Failure signature counts across loop-restart edges |
+
+The checkpoint is also saved to `checkpoint.json` in the logs directory for quick local access.
+
+## Worktrees
+
+Arc uses Git worktrees to isolate workflow runs from your working directory. When a run starts in a clean Git repository:
+
+1. Arc records the current HEAD as the **base SHA**
+2. Creates a new branch `arc/run/{run_id}` at that SHA
+3. Adds a worktree at `{logs_dir}/worktree` on that branch
+4. Changes into the worktree directory for the duration of the run
+
+This means your original working directory stays untouched while the agent makes changes in the worktree. When the run completes, Arc removes the worktree and restores your original directory.
+
+<Note>
+If the working directory has uncommitted changes, Arc skips worktree setup and runs in place, logging a warning. Git checkpointing is disabled in this case.
+</Note>
+
+For Daytona sandboxes, the worktree is created inside the remote sandbox instead. The metadata branch is still written to the host repository so that runs can be resumed locally.
+
+## Resuming a run
+
+There are two ways to resume an interrupted run:
+
+### From a checkpoint file
+
+Resume from a `checkpoint.json` saved in the logs directory:
+
+```bash
+arc run start workflow.dot --resume path/to/logs/checkpoint.json
+```
+
+Arc loads the checkpoint, restores the context and execution state, and continues from the next node after the checkpoint.
+
+### From a run branch
+
+Resume from the Git branches created during a previous run:
+
+```bash
+arc run start --run-branch arc/run/01JKXYZ...
+```
+
+This reads the checkpoint, manifest, and graph DOT from the metadata branch (`refs/arc/01JKXYZ...`), re-attaches a worktree to the existing run branch, and resumes execution. No workflow file argument is needed — everything is recovered from Git.
+
+<Accordion title="What happens during resume">
+1. Arc reads `checkpoint.json` from the metadata branch
+2. Reads `manifest.json` and `graph.dot` to reconstruct the workflow
+3. Creates a fresh worktree attached to the existing run branch
+4. Restores the full context, completed node list, retry counts, and failure signatures
+5. If the checkpointed node used `full` fidelity, downgrades the first resumed node to `summary:high` (since the original conversation thread no longer exists in memory)
+6. Continues execution from `next_node_id`
+</Accordion>
+
+## The checkpoint cycle
+
+Here's the full sequence that runs after every node completes:
+
+1. **Save checkpoint to disk** — Write `checkpoint.json` to the logs directory
+2. **Write metadata branch** — Serialize the checkpoint and any new artifacts to the metadata branch (shadow commit)
+3. **Commit to run branch** — Stage all file changes, commit with structured trailers linking to the shadow commit SHA
+4. **Update checkpoint** — Re-save `checkpoint.json` with the `git_commit_sha` field set
+
+Steps 2-4 are best-effort — if any Git operation fails, the run continues and logs a warning. The disk checkpoint from step 1 is always available as a fallback.
+
+## Inspecting run history
+
+Because checkpoints are plain Git commits, you can inspect them with standard Git tools:
+
+```bash
+# View the commit log for a run
+git log arc/run/01JKXYZ... --oneline
+
+# See what an agent changed at a specific node
+git show arc/run/01JKXYZ...
+
+# Diff the full run against the starting point
+git diff main..arc/run/01JKXYZ...
+
+# Read checkpoint data from the metadata branch
+git show refs/arc/01JKXYZ...:checkpoint.json | jq .current_node
+```
+
+## When checkpointing is active
+
+Git checkpointing activates automatically when:
+
+- The working directory is a clean Git repository (local and Docker sandboxes)
+- The sandbox is Daytona (metadata branch on the host, commits inside the sandbox)
+
+It is skipped when:
+
+- The working directory has uncommitted changes
+- The working directory is not a Git repository
+- The run uses `--dry-run`

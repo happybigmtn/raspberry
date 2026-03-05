@@ -1,0 +1,186 @@
+---
+title: "Retros"
+description: "Automatic retrospectives that analyze every workflow run"
+---
+
+After every workflow run, Arc generates a **retro** — a structured retrospective that captures what happened, what went well, and what didn't. Retros combine deterministic metrics extracted from the run's checkpoint with a qualitative narrative produced by an LLM agent that analyzes the full event stream.
+
+The goal is continuous improvement. Retros give you a searchable history of how your workflows perform over time, surface friction patterns that would otherwise go unnoticed, and identify follow-up work before it falls through the cracks.
+
+## What's in a retro
+
+A retro has two layers: **quantitative stats** derived cheaply from checkpoint data, and an **agent-generated narrative** that interprets the run holistically.
+
+### Quantitative layer
+
+The quantitative layer is extracted directly from the [checkpoint](/execution/checkpoints) and event stream — no LLM calls required:
+
+| Field | Description |
+|---|---|
+| **Per-stage breakdown** | Duration, retry count, cost, files touched, status, and failure reason for each stage |
+| **Aggregate stats** | Total duration, total cost, total retries, all files touched, stages completed vs. failed |
+
+### Narrative layer
+
+An LLM agent reads the run's `progress.jsonl` event stream and produces a structured analysis:
+
+| Field | Description |
+|---|---|
+| **Smoothness** | Overall rating on a 5-point scale (see below) |
+| **Intent** | What the run was trying to accomplish |
+| **Outcome** | What actually happened |
+| **Learnings** | What was discovered about the repo, code, workflow, or tools |
+| **Friction points** | Where things got stuck and why |
+| **Open items** | Follow-up work, tech debt, test gaps, or investigations identified |
+
+The agent has tool access to grep and read the event stream, so it can inspect actual tool call patterns, error messages, and approach pivots — not just pass/fail signals.
+
+## Smoothness ratings
+
+Every retro includes a smoothness rating that grades the overall quality of the run's execution:
+
+| Rating | Meaning |
+|---|---|
+| **Effortless** | Goal achieved on the first try. No retries, no wrong approaches. Agent moved efficiently from start to finish. |
+| **Smooth** | Goal achieved with minor hiccups — 1–2 retries or a brief wrong approach quickly corrected. No human intervention needed. |
+| **Bumpy** | Goal achieved but with notable friction: multiple retries, at least one significant wrong approach, or substantial time on dead ends. |
+| **Struggled** | Goal achieved only with difficulty: many retries, major approach changes, human intervention, or partial failures requiring recovery. |
+| **Failed** | Run did not achieve its stated goal. Some stages may have completed, but the overall intent was not fulfilled. |
+
+The rating considers the full context visible in agent events — tool call patterns, error recovery sequences, approach pivots — not just stage pass/fail counts.
+
+## Learnings, friction points, and open items
+
+### Learnings
+
+Learnings capture what was discovered during the run, categorized by type:
+
+| Category | Examples |
+|---|---|
+| `repo` | Repository structure, build system quirks, CI configuration |
+| `code` | Bug root causes, module boundaries, API contracts |
+| `workflow` | Node ordering issues, missing stages, prompt improvements |
+| `tool` | Tool limitations, MCP server behavior, command output parsing |
+
+### Friction points
+
+Friction points identify where the run got stuck and what caused the slowdown:
+
+| Kind | Description |
+|---|---|
+| `retry` | A stage needed multiple attempts |
+| `timeout` | A stage or tool call hit a time limit |
+| `wrong_approach` | The agent pursued a dead end before pivoting |
+| `tool_failure` | A tool or command failed unexpectedly |
+| `ambiguity` | Unclear requirements or conflicting signals caused confusion |
+
+Each friction point can optionally reference the `stage_id` where it occurred.
+
+### Open items
+
+Open items capture follow-up work identified during the run:
+
+| Kind | Description |
+|---|---|
+| `tech_debt` | Code quality issues worth addressing later |
+| `follow_up` | Work that's related but out of scope for this run |
+| `investigation` | Unknowns that need further research |
+| `test_gap` | Missing test coverage discovered during the run |
+
+## How retros are generated
+
+Retro generation happens in two phases after a run completes:
+
+1. **Derive** — Arc extracts stage durations from `progress.jsonl` and builds a retro from the checkpoint data. This is deterministic, fast, and produces the quantitative layer. The retro is saved immediately as `retro.json` in the run's logs directory.
+
+2. **Narrate** — An LLM agent session analyzes the run data. The agent has read access to `progress.jsonl`, `checkpoint.json`, and `manifest.json`. It uses grep and read tools to find interesting signals — failures, retries, errors, approach changes — then calls a `submit_retro` tool with its structured analysis. The narrative fields are merged into the existing retro and saved.
+
+Both phases run automatically at the end of every CLI run. The API server derives the quantitative layer but does not currently run the narrative agent.
+
+## Accessing retros
+
+### CLI
+
+Retros are saved to `{logs_dir}/retro.json` after every run. The path is printed at the end of the run output:
+
+```
+Retro: smooth — Successfully implemented the feature
+  Retro saved to ~/arc-logs/01JKXYZ.../retro.json
+```
+
+To skip retro generation, pass `--no-retro`:
+
+```bash
+arc run start workflow.dot --no-retro
+```
+
+### API
+
+Retrieve the retro for a specific run:
+
+```
+GET /runs/{id}/retro
+```
+
+Returns the full retro JSON, or `null` if no retro is available yet.
+
+List retros across all runs (paginated):
+
+```
+GET /retros
+```
+
+Returns a summary for each retro including `run_id`, `workflow_name`, `goal`, `timestamp`, `smoothness`, aggregate stats, and a count of friction points.
+
+## Storage
+
+Retros are stored as `retro.json` in the run's logs directory alongside `checkpoint.json` and `progress.jsonl`. They are plain JSON files — easy to parse, query, or pipe into other tools.
+
+```json
+{
+  "run_id": "01JKXYZ...",
+  "workflow_name": "PlanImplement",
+  "goal": "Fix the authentication bug",
+  "timestamp": "2026-03-05T14:30:00Z",
+  "smoothness": "smooth",
+  "stages": [
+    {
+      "stage_id": "plan",
+      "stage_label": "Plan",
+      "status": "success",
+      "duration_ms": 5000,
+      "retries": 0,
+      "cost": 0.05,
+      "files_touched": ["plan.md"]
+    },
+    {
+      "stage_id": "implement",
+      "stage_label": "Implement",
+      "status": "success",
+      "duration_ms": 15000,
+      "retries": 1,
+      "cost": 0.10,
+      "files_touched": ["src/auth.rs", "src/auth_test.rs"]
+    }
+  ],
+  "stats": {
+    "total_duration_ms": 20000,
+    "total_cost": 0.15,
+    "total_retries": 1,
+    "files_touched": ["plan.md", "src/auth.rs", "src/auth_test.rs"],
+    "stages_completed": 2,
+    "stages_failed": 0
+  },
+  "intent": "Fix the authentication bug causing login failures",
+  "outcome": "Successfully fixed the token refresh logic",
+  "learnings": [
+    { "category": "code", "text": "Token refresh was in the wrong module" }
+  ],
+  "friction_points": [
+    { "kind": "retry", "description": "First implementation attempt had an incorrect import", "stage_id": "implement" }
+  ],
+  "open_items": [
+    { "kind": "test_gap", "description": "No integration test for token refresh flow" }
+  ]
+}
+```

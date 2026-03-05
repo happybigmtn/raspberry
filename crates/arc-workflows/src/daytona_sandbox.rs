@@ -8,6 +8,7 @@ use arc_agent::sandbox::{
 };
 use async_trait::async_trait;
 use rand::Rng;
+use serde::de::{self, MapAccess, Visitor};
 use serde::Deserialize;
 
 const WORKING_DIRECTORY: &str = "/home/daytona/workspace";
@@ -21,6 +22,84 @@ pub struct DaytonaConfig {
     pub auto_stop_interval: Option<i32>,
     pub labels: Option<HashMap<String, String>>,
     pub snapshot: Option<DaytonaSnapshotConfig>,
+    pub network: Option<DaytonaNetwork>,
+}
+
+/// Network access mode for a Daytona sandbox.
+///
+/// TOML syntax:
+/// ```toml
+/// network = "block"                                  # no egress
+/// network = "allow_all"                              # full access (default)
+/// network = { allow_list = ["208.80.154.232/32"] }   # CIDR allowlist
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub enum DaytonaNetwork {
+    Block,
+    AllowAll,
+    AllowList(Vec<String>),
+}
+
+impl<'de> Deserialize<'de> for DaytonaNetwork {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DaytonaNetworkVisitor;
+
+        impl<'de> Visitor<'de> for DaytonaNetworkVisitor {
+            type Value = DaytonaNetwork;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    r#""block", "allow_all", or {{ allow_list = [...] }}"#
+                )
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<DaytonaNetwork, E> {
+                match value {
+                    "block" => Ok(DaytonaNetwork::Block),
+                    "allow_all" => Ok(DaytonaNetwork::AllowAll),
+                    other => Err(de::Error::custom(format!(
+                        "unknown network mode \"{other}\": expected \"block\" or \"allow_all\""
+                    ))),
+                }
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<DaytonaNetwork, M::Error> {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Err(de::Error::custom(
+                        "empty table: expected { allow_list = [...] }",
+                    ));
+                };
+
+                if key != "allow_list" {
+                    return Err(de::Error::custom(format!(
+                        "unknown key \"{key}\": expected \"allow_list\""
+                    )));
+                }
+
+                let cidrs: Vec<String> = map.next_value()?;
+
+                if cidrs.is_empty() {
+                    return Err(de::Error::custom(
+                        "allow_list must not be empty",
+                    ));
+                }
+
+                if let Some(extra) = map.next_key::<String>()? {
+                    return Err(de::Error::custom(format!(
+                        "unexpected key \"{extra}\": allow_list table must have exactly one key"
+                    )));
+                }
+
+                Ok(DaytonaNetwork::AllowList(cidrs))
+            }
+        }
+
+        deserializer.deserialize_any(DaytonaNetworkVisitor)
+    }
 }
 
 /// Snapshot configuration: when present, the sandbox is created from a snapshot
@@ -99,11 +178,19 @@ impl DaytonaSandbox {
             chrono::Utc::now().format("%Y%m%d-%H%M%S"),
             rand::thread_rng().gen_range(0..0x10000u32),
         );
+        let (network_block_all, network_allow_list) = match &self.config.network {
+            Some(DaytonaNetwork::Block) => (Some(true), None),
+            Some(DaytonaNetwork::AllowAll) => (Some(false), None),
+            Some(DaytonaNetwork::AllowList(cidrs)) => (None, Some(cidrs.clone())),
+            None => (None, None),
+        };
         daytona_sdk::SandboxBaseParams {
             name: Some(name),
             auto_stop_interval: self.config.auto_stop_interval,
             labels: self.config.labels.clone(),
             ephemeral: Some(true),
+            network_block_all,
+            network_allow_list,
             ..Default::default()
         }
     }
@@ -931,5 +1018,96 @@ mod tests {
     fn gh_auth_token_returns_nonempty_string() {
         let token = get_gh_token().unwrap();
         assert!(!token.is_empty());
+    }
+
+    #[test]
+    fn network_block_from_string() {
+        let config: DaytonaConfig = toml::from_str(r#"network = "block""#).unwrap();
+        assert_eq!(config.network, Some(DaytonaNetwork::Block));
+    }
+
+    #[test]
+    fn network_allow_all_from_string() {
+        let config: DaytonaConfig = toml::from_str(r#"network = "allow_all""#).unwrap();
+        assert_eq!(config.network, Some(DaytonaNetwork::AllowAll));
+    }
+
+    #[test]
+    fn network_allow_list_from_table() {
+        let config: DaytonaConfig =
+            toml::from_str(r#"network = { allow_list = ["10.0.0.0/8", "172.16.0.0/12"] }"#)
+                .unwrap();
+        assert_eq!(
+            config.network,
+            Some(DaytonaNetwork::AllowList(vec![
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+            ]))
+        );
+    }
+
+    #[test]
+    fn network_typo_string_error() {
+        let err = toml::from_str::<DaytonaConfig>(r#"network = "blck""#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(r#"unknown network mode "blck""#),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn network_wrong_type_error() {
+        let err = toml::from_str::<DaytonaConfig>("network = 42").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expected") && msg.contains("allow_list"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn network_unknown_key_error() {
+        let err =
+            toml::from_str::<DaytonaConfig>(r#"network = { mode = "block" }"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(r#"unknown key "mode""#),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn network_empty_table_error() {
+        let err = toml::from_str::<DaytonaConfig>("network = {}").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty table"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn network_empty_allow_list_error() {
+        let err =
+            toml::from_str::<DaytonaConfig>("network = { allow_list = [] }").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("allow_list must not be empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn network_extra_key_error() {
+        let err = toml::from_str::<DaytonaConfig>(
+            r#"network = { allow_list = ["10.0.0.0/8"], extra = true }"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(r#"unexpected key "extra""#),
+            "unexpected error: {msg}"
+        );
     }
 }

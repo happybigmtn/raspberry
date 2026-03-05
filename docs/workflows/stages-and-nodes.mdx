@@ -50,7 +50,7 @@ Key attributes:
 | `prompt` | The task instructions for the agent |
 | `reasoning_effort` | `low`, `medium`, or `high` (default: `high`) |
 | `max_tokens` | Maximum tokens for LLM responses |
-| `fidelity` | How much prior context is passed to this node (see table below) |
+| `fidelity` | How much prior context is passed to this node (see [Context](/execution/context#fidelity-controlling-agent-context)) |
 | `thread_id` | Groups nodes into a shared conversation thread (advanced — see below) |
 | `timeout` | Execution timeout (e.g. `"900s"`) |
 
@@ -65,7 +65,7 @@ Key attributes:
 | `summary:low` | Brief summary with just outcomes per stage |
 | `truncate` | Minimal — only the goal and run ID |
 
-Fidelity can also be set at the graph level (`default_fidelity`) or on individual edges to control the transition between stages.
+Fidelity can also be set at the graph level (`default_fidelity`) or on individual edges to control the transition between stages. See [Context](/execution/context#fidelity-controlling-agent-context) for the full reference on fidelity precedence, preamble construction, and thread integration.
 
 **Thread ID:**
 

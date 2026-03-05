@@ -126,7 +126,6 @@ async fn daytona_snapshot_sandbox() {
 
     let config = DaytonaConfig {
         auto_stop_interval: Some(60),
-        labels: None,
         snapshot: Some(DaytonaSnapshotConfig {
             name: "arc-test-snapshot".to_string(),
             cpu: Some(2),
@@ -136,6 +135,7 @@ async fn daytona_snapshot_sandbox() {
                 "FROM ubuntu:22.04\nRUN apt-get update && apt-get install -y ripgrep".to_string(),
             ),
         }),
+        ..DaytonaConfig::default()
     };
 
     let env = DaytonaSandbox::new(client, config);

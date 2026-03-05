@@ -115,6 +115,9 @@ impl WorkflowRunConfig {
                             }
                             task_d.labels = Some(merged);
                         }
+                        if task_d.network.is_none() {
+                            task_d.network = default_d.network.clone();
+                        }
                     }
                     (None, Some(_)) => task.daytona = default.daytona.clone(),
                     _ => {}
@@ -778,8 +781,7 @@ provider = "daytona"
                 preserve: None,
                 daytona: Some(DaytonaConfig {
                     auto_stop_interval: Some(30),
-                    labels: None,
-                    snapshot: None,
+                    ..DaytonaConfig::default()
                 }),
             }),
             ..RunDefaults::default()
@@ -814,7 +816,7 @@ auto_stop_interval = 60
                 daytona: Some(DaytonaConfig {
                     auto_stop_interval: Some(30),
                     labels: Some(HashMap::from([("env".into(), "prod".into())])),
-                    snapshot: None,
+                    ..DaytonaConfig::default()
                 }),
             }),
             ..RunDefaults::default()
@@ -844,12 +846,11 @@ env = "from_task"
                 provider: None,
                 preserve: None,
                 daytona: Some(DaytonaConfig {
-                    auto_stop_interval: None,
                     labels: Some(HashMap::from([
                         ("env".into(), "from_default".into()),
                         ("team".into(), "platform".into()),
                     ])),
-                    snapshot: None,
+                    ..DaytonaConfig::default()
                 }),
             }),
             ..RunDefaults::default()
@@ -880,8 +881,6 @@ cpu = 2
                 provider: None,
                 preserve: None,
                 daytona: Some(DaytonaConfig {
-                    auto_stop_interval: None,
-                    labels: None,
                     snapshot: Some(DaytonaSnapshotConfig {
                         name: "default-snap".into(),
                         cpu: Some(8),
@@ -889,6 +888,7 @@ cpu = 2
                         disk: Some(100),
                         dockerfile: Some("FROM ubuntu".into()),
                     }),
+                    ..DaytonaConfig::default()
                 }),
             }),
             ..RunDefaults::default()
@@ -918,8 +918,6 @@ auto_stop_interval = 60
                 provider: None,
                 preserve: None,
                 daytona: Some(DaytonaConfig {
-                    auto_stop_interval: None,
-                    labels: None,
                     snapshot: Some(DaytonaSnapshotConfig {
                         name: "default-snap".into(),
                         cpu: Some(4),
@@ -927,6 +925,7 @@ auto_stop_interval = 60
                         disk: None,
                         dockerfile: None,
                     }),
+                    ..DaytonaConfig::default()
                 }),
             }),
             ..RunDefaults::default()
@@ -1119,5 +1118,89 @@ graph = "test.dot"
 "#;
         let cfg: WorkflowRunConfig = toml::from_str(toml).unwrap();
         assert!(cfg.hooks.is_empty());
+    }
+
+    #[test]
+    fn parse_toml_with_daytona_network_block() {
+        let toml = r#"
+version = 1
+goal = "test"
+graph = "w.dot"
+
+[sandbox.daytona]
+network = "block"
+"#;
+        let config = parse_run_config(toml).unwrap();
+        let daytona = config.sandbox.unwrap().daytona.unwrap();
+        assert_eq!(
+            daytona.network,
+            Some(crate::daytona_sandbox::DaytonaNetwork::Block)
+        );
+    }
+
+    #[test]
+    fn apply_defaults_network_task_wins() {
+        let mut cfg = parse_run_config(
+            r#"
+version = 1
+goal = "test"
+graph = "w.dot"
+
+[sandbox.daytona]
+network = "block"
+"#,
+        )
+        .unwrap();
+        let defaults = RunDefaults {
+            sandbox: Some(SandboxConfig {
+                provider: None,
+                preserve: None,
+                daytona: Some(DaytonaConfig {
+                    network: Some(crate::daytona_sandbox::DaytonaNetwork::AllowAll),
+                    ..DaytonaConfig::default()
+                }),
+            }),
+            ..RunDefaults::default()
+        };
+        cfg.apply_defaults(&defaults);
+        assert_eq!(
+            cfg.sandbox.unwrap().daytona.unwrap().network,
+            Some(crate::daytona_sandbox::DaytonaNetwork::Block)
+        );
+    }
+
+    #[test]
+    fn apply_defaults_network_inherited() {
+        let mut cfg = parse_run_config(
+            r#"
+version = 1
+goal = "test"
+graph = "w.dot"
+
+[sandbox.daytona]
+auto_stop_interval = 60
+"#,
+        )
+        .unwrap();
+        let defaults = RunDefaults {
+            sandbox: Some(SandboxConfig {
+                provider: None,
+                preserve: None,
+                daytona: Some(DaytonaConfig {
+                    network: Some(crate::daytona_sandbox::DaytonaNetwork::AllowList(vec![
+                        "10.0.0.0/8".into(),
+                    ])),
+                    ..DaytonaConfig::default()
+                }),
+            }),
+            ..RunDefaults::default()
+        };
+        cfg.apply_defaults(&defaults);
+        assert_eq!(
+            cfg.sandbox.unwrap().daytona.unwrap().network,
+            Some(crate::daytona_sandbox::DaytonaNetwork::AllowList(vec![
+                "10.0.0.0/8".into(),
+            ]))
+        );
     }
 }

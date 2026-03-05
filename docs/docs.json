@@ -53,8 +53,8 @@
               "execution/checkpoints",
               "execution/interviews",
               "execution/failures",
-              "execution/insights",
-              "execution/compounding"
+              "execution/retros",
+              "execution/observability"
             ]
           },
           {
@@ -68,7 +68,8 @@
               "agents/hooks",
               "agents/subagents",
               "agents/permissions",
-              "agents/outputs"
+              "agents/outputs",
+              "agents/artifacts"
             ]
           },
           {
