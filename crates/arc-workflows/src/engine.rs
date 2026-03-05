@@ -22,6 +22,7 @@ use crate::error::{ArcError, FailureClass, FailureSignature, Result};
 use crate::event::{EventEmitter, WorkflowRunEvent};
 use crate::graph::{Edge, Graph, Node};
 use crate::handler::{EngineServices, HandlerRegistry};
+use crate::hook::{HookContext, HookDecision, HookEvent, HookRunner};
 use crate::interviewer::Interviewer;
 use crate::outcome::{Outcome, StageStatus};
 use crate::preamble::build_preamble;
@@ -788,7 +789,7 @@ impl WorkflowRunEngine {
     }
 
     /// Set the hook runner for lifecycle hooks.
-    pub fn set_hook_runner(&mut self, runner: Arc<crate::hook::HookRunner>) {
+    pub fn set_hook_runner(&mut self, runner: Arc<HookRunner>) {
         self.services.hook_runner = Some(runner);
     }
 
@@ -796,15 +797,32 @@ impl WorkflowRunEngine {
     /// Returns `Proceed` if no hook runner is configured.
     async fn run_hooks(
         &self,
-        hook_context: &crate::hook::HookContext,
+        hook_context: &HookContext,
         work_dir: Option<&Path>,
-    ) -> crate::hook::HookDecision {
+    ) -> HookDecision {
         let Some(ref runner) = self.services.hook_runner else {
-            return crate::hook::HookDecision::Proceed;
+            return HookDecision::Proceed;
         };
         runner
             .run(hook_context, self.services.sandbox.as_ref(), work_dir)
             .await
+    }
+
+    /// Fire a non-blocking RunFailed hook.
+    async fn run_failed_hook(
+        &self,
+        run_id: &str,
+        workflow_name: &str,
+        error: &ArcError,
+        work_dir: Option<&Path>,
+    ) {
+        let mut hook_ctx = HookContext::new(
+            HookEvent::RunFailed,
+            run_id.to_string(),
+            workflow_name.to_string(),
+        );
+        hook_ctx.failure_reason = Some(error.to_string());
+        let _ = self.run_hooks(&hook_ctx, work_dir).await;
     }
 
     /// Mirror graph-level attributes into the context.
@@ -1111,13 +1129,13 @@ impl WorkflowRunEngine {
 
         // RunStart hook (blocking — can prevent run)
         {
-            let hook_ctx = crate::hook::HookContext::new(
-                crate::hook::HookEvent::RunStart,
+            let hook_ctx = HookContext::new(
+                HookEvent::RunStart,
                 run_id.clone(),
                 graph.name.clone(),
             );
             let decision = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
-            if let crate::hook::HookDecision::Block { reason } = decision {
+            if let HookDecision::Block { reason } = decision {
                 let msg = reason.unwrap_or_else(|| "blocked by RunStart hook".into());
                 return Err(ArcError::engine(msg));
             }
@@ -1346,16 +1364,7 @@ impl WorkflowRunEngine {
                                 git_commit_sha: last_git_sha.clone(),
                             });
 
-                        // RunFailed hook (non-blocking)
-                        {
-                            let mut hook_ctx = crate::hook::HookContext::new(
-                                crate::hook::HookEvent::RunFailed,
-                                run_id.clone(),
-                                graph.name.clone(),
-                            );
-                            hook_ctx.failure_reason = Some(error.to_string());
-                            let _ = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
-                        }
+                        self.run_failed_hook(&run_id, &graph.name, &error, hook_work_dir.as_deref()).await;
 
                         return Ok((error.to_fail_outcome(), context));
                     }
@@ -1412,8 +1421,8 @@ impl WorkflowRunEngine {
 
             // StageStart hook (blocking — can skip node)
             {
-                let mut hook_ctx = crate::hook::HookContext::new(
-                    crate::hook::HookEvent::StageStart,
+                let mut hook_ctx = HookContext::new(
+                    HookEvent::StageStart,
                     run_id.clone(),
                     graph.name.clone(),
                 );
@@ -1429,7 +1438,7 @@ impl WorkflowRunEngine {
                     .run_hooks(&hook_ctx, hook_work_dir.as_deref())
                     .await;
                 match decision {
-                    crate::hook::HookDecision::Skip { reason } => {
+                    HookDecision::Skip { reason } => {
                         let mut outcome = Outcome::skipped();
                         outcome.notes = Some(
                             reason.unwrap_or_else(|| "skipped by StageStart hook".into()),
@@ -1448,7 +1457,7 @@ impl WorkflowRunEngine {
                         }
                         continue;
                     }
-                    crate::hook::HookDecision::Block { reason } => {
+                    HookDecision::Block { reason } => {
                         let msg = reason.unwrap_or_else(|| "blocked by StageStart hook".into());
                         return Err(ArcError::engine(msg));
                     }
@@ -1548,8 +1557,8 @@ impl WorkflowRunEngine {
 
                 // StageFailed hook (non-blocking)
                 {
-                    let mut hook_ctx = crate::hook::HookContext::new(
-                        crate::hook::HookEvent::StageFailed,
+                    let mut hook_ctx = HookContext::new(
+                        HookEvent::StageFailed,
                         run_id.clone(),
                         graph.name.clone(),
                     );
@@ -1584,8 +1593,8 @@ impl WorkflowRunEngine {
 
                 // StageComplete hook (non-blocking)
                 {
-                    let mut hook_ctx = crate::hook::HookContext::new(
-                        crate::hook::HookEvent::StageComplete,
+                    let mut hook_ctx = HookContext::new(
+                        HookEvent::StageComplete,
                         run_id.clone(),
                         graph.name.clone(),
                     );
@@ -1668,8 +1677,8 @@ impl WorkflowRunEngine {
                     .cloned()
                     .or_else(|| next_edge.as_ref().map(|e| e.to.clone()));
                 if let Some(ref to) = edge_to {
-                    let mut hook_ctx = crate::hook::HookContext::new(
-                        crate::hook::HookEvent::EdgeSelected,
+                    let mut hook_ctx = HookContext::new(
+                        HookEvent::EdgeSelected,
                         run_id.clone(),
                         graph.name.clone(),
                     );
@@ -1680,11 +1689,11 @@ impl WorkflowRunEngine {
                         .run_hooks(&hook_ctx, hook_work_dir.as_deref())
                         .await;
                     match decision {
-                        crate::hook::HookDecision::Override { edge_to: new_target } => {
+                        HookDecision::Override { edge_to: new_target } => {
                             // Redirect routing to the hook-specified target
                             (None, Some(new_target))
                         }
-                        crate::hook::HookDecision::Block { reason } => {
+                        HookDecision::Block { reason } => {
                             let msg = reason.unwrap_or_else(|| "blocked by EdgeSelected hook".into());
                             return Err(ArcError::engine(msg));
                         }
@@ -1723,8 +1732,8 @@ impl WorkflowRunEngine {
 
                 // CheckpointSaved hook (non-blocking)
                 {
-                    let mut hook_ctx = crate::hook::HookContext::new(
-                        crate::hook::HookEvent::CheckpointSaved,
+                    let mut hook_ctx = HookContext::new(
+                        HookEvent::CheckpointSaved,
                         run_id.clone(),
                         graph.name.clone(),
                     );
@@ -1874,16 +1883,7 @@ impl WorkflowRunEngine {
                                 git_commit_sha: last_git_sha.clone(),
                             });
 
-                        // RunFailed hook (non-blocking)
-                        {
-                            let mut hook_ctx = crate::hook::HookContext::new(
-                                crate::hook::HookEvent::RunFailed,
-                                run_id.clone(),
-                                graph.name.clone(),
-                            );
-                            hook_ctx.failure_reason = Some(error.to_string());
-                            let _ = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
-                        }
+                        self.run_failed_hook(&run_id, &graph.name, &error, hook_work_dir.as_deref()).await;
 
                         return Err(error);
                     }
@@ -1965,8 +1965,8 @@ impl WorkflowRunEngine {
 
         // RunComplete hook (non-blocking)
         {
-            let hook_ctx = crate::hook::HookContext::new(
-                crate::hook::HookEvent::RunComplete,
+            let hook_ctx = HookContext::new(
+                HookEvent::RunComplete,
                 run_id.clone(),
                 graph.name.clone(),
             );

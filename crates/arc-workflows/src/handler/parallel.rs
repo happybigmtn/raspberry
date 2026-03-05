@@ -392,6 +392,7 @@ impl Handler for ParallelHandler {
         for setup in branch_setups {
             let registry = Arc::clone(&services.registry);
             let emitter = Arc::clone(&services.emitter);
+            let hook_runner = services.hook_runner.clone();
             let graph = graph.clone();
             let logs_root = logs_root.to_path_buf();
             let sem = Arc::clone(&semaphore);
@@ -434,7 +435,7 @@ impl Handler for ParallelHandler {
                     emitter: Arc::clone(&emitter),
                     sandbox: Arc::clone(&setup.sandbox),
                     git_state: std::sync::RwLock::new(None),
-                    hook_runner: None,
+                    hook_runner: hook_runner.clone(),
                 };
                 let handler = registry.resolve(target_node);
                 let outcome = handler

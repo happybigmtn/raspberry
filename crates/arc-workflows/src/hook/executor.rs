@@ -84,10 +84,16 @@ impl HookExecutor for CommandHookExecutor {
         }
 
         let decision = if definition.runs_in_sandbox() {
-            // Write context to temp file, pass path as env var
-            let ctx_path = "/tmp/arc-hook-context.json";
-            if sandbox.write_file(ctx_path, &context_json).await.is_ok() {
-                env_vars.insert("ARC_HOOK_CONTEXT".to_string(), ctx_path.to_string());
+            // Write context to a unique temp file, pass path as env var
+            let ctx_path = format!(
+                "/tmp/arc-hook-context-{}.json",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            if sandbox.write_file(&ctx_path, &context_json).await.is_ok() {
+                env_vars.insert("ARC_HOOK_CONTEXT".to_string(), ctx_path.clone());
             }
             match sandbox
                 .exec_command(&command, timeout_ms, None, Some(&env_vars), None)

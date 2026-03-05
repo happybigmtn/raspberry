@@ -29,11 +29,21 @@ impl HookEvent {
 
 impl std::fmt::Display for HookEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| format!("{self:?}"));
-        f.write_str(&s)
+        f.write_str(match self {
+            Self::RunStart => "run_start",
+            Self::RunComplete => "run_complete",
+            Self::RunFailed => "run_failed",
+            Self::StageStart => "stage_start",
+            Self::StageComplete => "stage_complete",
+            Self::StageFailed => "stage_failed",
+            Self::StageRetrying => "stage_retrying",
+            Self::EdgeSelected => "edge_selected",
+            Self::ParallelStart => "parallel_start",
+            Self::ParallelComplete => "parallel_complete",
+            Self::SandboxReady => "sandbox_ready",
+            Self::SandboxCleanup => "sandbox_cleanup",
+            Self::CheckpointSaved => "checkpoint_saved",
+        })
     }
 }
 

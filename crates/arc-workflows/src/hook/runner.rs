@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,24 +12,44 @@ use super::types::{HookContext, HookDecision};
 pub struct HookRunner {
     config: HookConfig,
     command_executor: Arc<dyn HookExecutor>,
+    /// Pre-compiled regexes keyed by matcher pattern string.
+    compiled_matchers: HashMap<String, regex::Regex>,
 }
 
 impl HookRunner {
     #[must_use]
     pub fn new(config: HookConfig) -> Self {
+        let compiled_matchers = Self::compile_matchers(&config);
         Self {
             config,
             command_executor: Arc::new(CommandHookExecutor),
+            compiled_matchers,
         }
     }
 
     /// Create a HookRunner with a custom executor (for testing).
     #[cfg(test)]
     pub fn with_executor(config: HookConfig, executor: Arc<dyn HookExecutor>) -> Self {
+        let compiled_matchers = Self::compile_matchers(&config);
         Self {
             config,
             command_executor: executor,
+            compiled_matchers,
         }
+    }
+
+    fn compile_matchers(config: &HookConfig) -> HashMap<String, regex::Regex> {
+        let mut map = HashMap::new();
+        for hook in &config.hooks {
+            if let Some(ref pattern) = hook.matcher {
+                if !map.contains_key(pattern) {
+                    if let Ok(re) = regex::Regex::new(pattern) {
+                        map.insert(pattern.clone(), re);
+                    }
+                }
+            }
+        }
+        map
     }
 
     /// Run all matching hooks for the given event and return the merged decision.
@@ -57,8 +78,8 @@ impl HookRunner {
             self.run_sequential(&matching, context, sandbox, work_dir)
                 .await
         } else {
-            // Parallel execution for non-blocking hooks
-            self.run_parallel(&matching, context, sandbox, work_dir)
+            // Non-blocking: run all, ignore decisions
+            self.run_non_blocking(&matching, context, sandbox, work_dir)
                 .await
         };
 
@@ -86,36 +107,18 @@ impl HookRunner {
         let Some(ref pattern) = hook.matcher else {
             return true;
         };
-        let Ok(re) = regex::Regex::new(pattern) else {
-            tracing::warn!(
-                hook = %hook.effective_name(),
-                pattern,
-                "Invalid hook matcher regex"
-            );
+        let Some(re) = self.compiled_matchers.get(pattern) else {
+            // Pattern failed to compile during construction — already warned
             return false;
         };
-        // Match against node_id, handler_type, edge_to, edge_from
-        if let Some(ref node_id) = context.node_id {
-            if re.is_match(node_id) {
-                return true;
-            }
-        }
-        if let Some(ref handler_type) = context.handler_type {
-            if re.is_match(handler_type) {
-                return true;
-            }
-        }
-        if let Some(ref edge_to) = context.edge_to {
-            if re.is_match(edge_to) {
-                return true;
-            }
-        }
-        if let Some(ref edge_from) = context.edge_from {
-            if re.is_match(edge_from) {
-                return true;
-            }
-        }
-        false
+        [
+            context.node_id.as_deref(),
+            context.handler_type.as_deref(),
+            context.edge_to.as_deref(),
+            context.edge_from.as_deref(),
+        ]
+        .iter()
+        .any(|field| field.is_some_and(|v| re.is_match(v)))
     }
 
     async fn run_sequential(
@@ -167,55 +170,37 @@ impl HookRunner {
         merged
     }
 
-    async fn run_parallel(
+    async fn run_non_blocking(
         &self,
         hooks: &[&HookDefinition],
         context: &HookContext,
         sandbox: &dyn Sandbox,
         work_dir: Option<&Path>,
     ) -> HookDecision {
-        let futures: Vec<_> = hooks
-            .iter()
-            .map(|hook| {
-                let executor = Arc::clone(&self.command_executor);
-                let hook_clone = (*hook).clone();
-                let ctx_clone = context.clone();
-                let wd = work_dir.map(|p| p.to_path_buf());
-                async move {
-                    tracing::debug!(
-                        hook = %hook_clone.effective_name(),
-                        event = %ctx_clone.event,
-                        "Executing hook"
-                    );
-                    let result = executor
-                        .execute(&hook_clone, &ctx_clone, sandbox, wd.as_deref())
-                        .await;
-                    tracing::debug!(
-                        hook = %hook_clone.effective_name(),
-                        duration_ms = result.duration_ms,
-                        decision = ?result.decision,
-                        "Hook complete"
-                    );
-                    if !result.decision.is_proceed() {
-                        tracing::warn!(
-                            hook = %hook_clone.effective_name(),
-                            event = %ctx_clone.event,
-                            decision = ?result.decision,
-                            "Non-blocking hook failed, continuing"
-                        );
-                    }
-                    result
-                }
-            })
-            .collect();
-
-        // We can't easily use join_all with a reference to sandbox since Sandbox
-        // is not necessarily Send-safe for concurrent borrows. Run sequentially
-        // but log as non-blocking (don't short-circuit).
-        for future in futures {
-            let result = future.await;
-            // Non-blocking hooks: log but don't merge decisions
-            let _ = result;
+        for hook in hooks {
+            tracing::debug!(
+                hook = %hook.effective_name(),
+                event = %context.event,
+                "Executing hook"
+            );
+            let result = self
+                .command_executor
+                .execute(hook, context, sandbox, work_dir)
+                .await;
+            tracing::debug!(
+                hook = %hook.effective_name(),
+                duration_ms = result.duration_ms,
+                decision = ?result.decision,
+                "Hook complete"
+            );
+            if !result.decision.is_proceed() {
+                tracing::warn!(
+                    hook = %hook.effective_name(),
+                    event = %context.event,
+                    decision = ?result.decision,
+                    "Non-blocking hook failed, continuing"
+                );
+            }
         }
         HookDecision::Proceed
     }

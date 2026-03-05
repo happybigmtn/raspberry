@@ -68,17 +68,10 @@ impl HookDefinition {
         if let Some(ref n) = self.name {
             return n.clone();
         }
-        let event_str = serde_json::to_value(&self.event)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| format!("{:?}", self.event));
+        let event_str = self.event.to_string();
         match self.resolved_hook_type() {
             Some(HookType::Command { ref command }) => {
-                let short = if command.len() > 20 {
-                    &command[..20]
-                } else {
-                    command
-                };
+                let short = &command[..arc_agent::floor_char_boundary(command, 20)];
                 format!("{event_str}:{short}")
             }
             Some(HookType::Http { ref url, .. }) => format!("{event_str}:{url}"),
