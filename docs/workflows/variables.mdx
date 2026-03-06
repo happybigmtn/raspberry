@@ -22,7 +22,7 @@ language = "rust"
 
 These variables are expanded into the DOT source **before** the graph is parsed. You can use `$variable` anywhere in the DOT file — goals, prompts, labels, scripts, or any other attribute:
 
-```graphviz title="check.dot"
+```dot title="check.dot"
 digraph Check {
     graph [goal="Run tests for $repo_name"]
 
@@ -48,7 +48,7 @@ A bare `$` not followed by an identifier character (e.g. `costs $5`) is left as-
 
 Inside agent and prompt node prompts, Arc automatically expands `$goal` to the workflow's `goal` attribute. This happens at runtime, after graph parsing:
 
-```graphviz title="example.dot"
+```dot title="example.dot"
 digraph Example {
     graph [goal="Implement the login feature"]
 

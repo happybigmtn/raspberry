@@ -80,7 +80,7 @@ The engine sets several keys automatically. These are prefixed with `internal.` 
 
 Edge [conditions](/workflows/transitions#conditions) can read context values to route execution:
 
-```graphviz
+```dot
 gate -> deploy [condition="outcome=success && context.tests_passed=true"]
 gate -> fix    [condition="outcome=fail"]
 ```
@@ -105,17 +105,17 @@ When a new agent or prompt node starts, Arc assembles a **preamble** — a summa
 Fidelity can be set at three levels. The first match wins:
 
 1. **Edge attribute** — Set `fidelity` on an edge to control the transition into a specific node:
-   ```graphviz
+   ```dot
    plan -> implement [fidelity="full"]
    ```
 
 2. **Node attribute** — Set `fidelity` on a node to control all transitions into it:
-   ```graphviz
+   ```dot
    implement [fidelity="full"]
    ```
 
 3. **Graph default** — Set `default_fidelity` on the graph for a run-wide default:
-   ```graphviz
+   ```dot
    digraph Example {
        graph [default_fidelity="summary:medium"]
    }
@@ -127,7 +127,7 @@ If none of these are set, fidelity defaults to `compact`.
 
 `full` fidelity is typically used with `thread_id` to create a shared conversation across multiple nodes. Nodes with the same `thread_id` share a single LLM session, preserving full context continuity:
 
-```graphviz
+```dot
 subgraph cluster_impl {
     node [fidelity="full", thread_id="impl"]
     plan      [label="Plan"]

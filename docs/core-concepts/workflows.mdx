@@ -13,7 +13,7 @@ Every workflow is a `digraph` with a `goal`, a `start` node, an `exit` node, and
   <img src="/images/anatomy-workflow.svg" alt="Simple workflow: Start → Scan Files → Analyze → Exit" />
 </Frame>
 
-```graphviz title="my-workflow.dot"
+```dot title="my-workflow.dot"
 digraph MyWorkflow {
     graph [goal="Describe the project"]
     rankdir=LR
@@ -36,19 +36,19 @@ Each node's Graphviz **shape** determines how it executes. The three most import
 
 **Agents** (default `box` shape) run an LLM with access to tools — bash, file editing, sub-agents — looping autonomously until the task is complete:
 
-```graphviz
+```dot
 implement [label="Implement", prompt="Read plan.md and implement every step."]
 ```
 
 **Commands** (`parallelogram`) run shell scripts and capture output for downstream nodes:
 
-```graphviz
+```dot
 validate [label="Run Tests", shape=parallelogram, script="cargo test 2>&1 || true"]
 ```
 
 **Human gates** (`hexagon`) pause the workflow and wait for a person to choose a path. Edge labels define the options:
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve Plan"]
 
 approve -> implement [label="[A] Approve"]
@@ -65,7 +65,7 @@ Arc supports additional node types for one-shot prompts, conditional branching, 
 
 Edges can have **conditions** that route execution based on outcomes:
 
-```graphviz
+```dot
 gate [shape=diamond, label="Tests passing?"]
 
 gate -> exit      [label="Pass", condition="outcome=success"]
@@ -74,7 +74,7 @@ gate -> implement [label="Fix"]
 
 Loops are natural — just point an edge back to an earlier node. Use `max_visits` on a node to prevent infinite loops:
 
-```graphviz
+```dot
 fix [label="Fix Failures", prompt="Fix the failing tests.", max_visits=3]
 ```
 
@@ -86,7 +86,7 @@ fix [label="Fix Failures", prompt="Fix the failing tests.", max_visits=3]
 
 Fan out to run branches concurrently, then merge the results:
 
-```graphviz
+```dot
 fork [label="Fan Out", shape=component]
 merge [label="Merge", shape=tripleoctagon]
 
@@ -103,7 +103,7 @@ merge -> report -> exit
 
 Mark critical nodes with `goal_gate=true`. The workflow fails if any goal gate doesn't succeed — even if execution reaches the exit node:
 
-```graphviz
+```dot
 validate [label="Validate", prompt="Run the test suite and verify all tests pass.", goal_gate=true]
 ```
 

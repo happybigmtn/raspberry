@@ -28,7 +28,7 @@ If no edge matches at all, the workflow halts with an error.
 
 Edge conditions are boolean expressions evaluated against the stage outcome and run context. Conditions go in the `condition` attribute on an edge:
 
-```graphviz
+```dot
 gate -> exit      [label="Pass", condition="outcome=success"]
 gate -> implement [label="Fix", condition="outcome=fail"]
 ```
@@ -57,7 +57,7 @@ gate -> implement [label="Fix", condition="outcome=fail"]
 
 A bare key with no operator is a **truthiness check** — it passes if the value is non-empty, not `"false"`, and not `"0"`:
 
-```graphviz
+```dot
 gate -> next [condition="my_flag"]
 ```
 
@@ -65,7 +65,7 @@ gate -> next [condition="my_flag"]
 
 Use `&&` (AND), `||` (OR), and `!` (NOT) to build compound expressions. `&&` binds tighter than `||`:
 
-```graphviz
+```dot
 // Both must be true
 gate -> deploy [condition="outcome=success && context.tests_passed=true"]
 
@@ -99,7 +99,7 @@ Agent and prompt nodes can influence which edge is taken by including a JSON obj
 
 Arc automatically scans LLM output for these JSON objects — no special configuration is needed. However, you do need to instruct the LLM to emit the JSON in your prompt. For example:
 
-```graphviz
+```dot
 review [
     label="Review",
     shape=tab,
@@ -120,7 +120,7 @@ The LLM's natural language response can contain other text — Arc finds the las
 
 Human gates use edge labels to present options to the user. The selected label becomes the `preferred_label` in the outcome, and Arc matches it to the corresponding edge:
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve Plan"]
 
 approve -> implement [label="[A] Approve"]
@@ -134,13 +134,13 @@ The `[A]`, `[R]`, `[S]` prefixes are keyboard accelerators — Arc strips them w
 
 An edge without a `condition` attribute always matches. When a node has a single outgoing edge, it doesn't need a condition:
 
-```graphviz
+```dot
 start -> plan -> implement -> exit
 ```
 
 When mixing conditional and unconditional edges, conditional matches take priority. An unconditional edge acts as the default fallback:
 
-```graphviz
+```dot
 gate -> fast_path [condition="outcome=success"]
 gate -> slow_path
 ```
@@ -149,7 +149,7 @@ gate -> slow_path
 
 When multiple edges match (e.g. two unconditional edges), `weight` determines the winner. Higher weight wins:
 
-```graphviz
+```dot
 node -> preferred [weight=10]
 node -> fallback  [weight=1]
 ```

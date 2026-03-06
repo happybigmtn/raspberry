@@ -19,7 +19,7 @@ Every node's Graphviz `shape` attribute determines its execution behavior. If no
 
 The entry point of the workflow. Every workflow must have exactly one start node.
 
-```graphviz
+```dot
 start [shape=Mdiamond, label="Start"]
 ```
 
@@ -29,7 +29,7 @@ start [shape=Mdiamond, label="Start"]
 
 The terminal node. When execution reaches exit, the workflow completes. Every workflow must have exactly one exit node.
 
-```graphviz
+```dot
 exit [shape=Msquare, label="Exit"]
 ```
 
@@ -39,7 +39,7 @@ exit [shape=Msquare, label="Exit"]
 
 Runs an LLM with access to tools — bash, file editing, sub-agents — in an agentic loop. The agent works autonomously, calling tools as needed, until it decides the task is complete.
 
-```graphviz
+```dot
 implement [label="Implement", prompt="Read plan.md and implement every step."]
 ```
 
@@ -71,7 +71,7 @@ Fidelity can also be set at the graph level (`default_fidelity`) or on individua
 
 Setting `thread_id` on multiple nodes (e.g. `thread_id="impl"`) groups them into a shared conversation thread, preserving context continuity across nodes as if they were part of the same session. This is an advanced feature typically used within subgraph clusters:
 
-```graphviz
+```dot
 subgraph cluster_impl {
     node [fidelity="full", thread_id="impl"]
     plan      [label="Plan"]
@@ -86,7 +86,7 @@ subgraph cluster_impl {
 
 Makes a single LLM call with no tool use. Useful for analysis, summarization, generation, and lightweight reasoning where tools aren't needed.
 
-```graphviz
+```dot
 spec [label="Write Spec", shape=tab, prompt="Write a brief spec for a string utility module."]
 ```
 
@@ -98,7 +98,7 @@ Prompt nodes accept the same attributes as agent nodes (`prompt`, `reasoning_eff
 
 Runs a shell script and captures its output. The output is available to downstream nodes as context.
 
-```graphviz
+```dot
 test [label="Run Tests", shape=parallelogram, script="cargo test 2>&1 || true"]
 ```
 
@@ -113,7 +113,7 @@ test [label="Run Tests", shape=parallelogram, script="cargo test 2>&1 || true"]
 
 Pauses the workflow and waits for a person to choose a path. The outgoing edge labels define the available options:
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve Plan"]
 
 approve -> implement [label="[A] Approve"]
@@ -128,7 +128,7 @@ In the web UI, human gates appear as interactive prompts. From the CLI, they app
 
 Pauses the workflow for a configured duration before proceeding. Useful for rate limiting between API calls or waiting for external processes to complete.
 
-```graphviz
+```dot
 cooldown [label="Wait 30s", shape=insulator, duration="30s"]
 ```
 
@@ -142,7 +142,7 @@ cooldown [label="Wait 30s", shape=insulator, duration="30s"]
 
 Routes execution to different edges based on conditions evaluated against the current run context:
 
-```graphviz
+```dot
 gate [shape=diamond, label="Tests passing?"]
 
 gate -> exit      [label="Pass", condition="outcome=success"]
@@ -157,7 +157,7 @@ Conditions support `=`, `!=`, `&&`, and context variable lookups (e.g. `context.
 
 Fans out to execute multiple branches concurrently. Each branch gets its own isolated context.
 
-```graphviz
+```dot
 fork [label="Fan Out", shape=component, join_policy="wait_all", error_policy="continue"]
 
 fork -> security
@@ -194,7 +194,7 @@ fork -> quality
 
 Collects results from parallel branches into a single context. Typically paired with a parallel fan-out node:
 
-```graphviz
+```dot
 merge [label="Merge Results", shape=tripleoctagon]
 
 security     -> merge

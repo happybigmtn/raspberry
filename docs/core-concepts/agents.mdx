@@ -43,7 +43,7 @@ The CLI is selected automatically based on the node's provider:
 
 Set the CLI backend on a node with `backend="cli"` or via a [model stylesheet](/workflows/stylesheets):
 
-```graphviz
+```dot
 implement [label="Implement", backend="cli", llm_provider="anthropic"]
 ```
 
@@ -91,7 +91,7 @@ See [Tools](/agents/tools) for the full reference.
 
 The agent's behavior is shaped by its prompt — the task instructions set in the `prompt` attribute of the workflow node. Prompts can be inline strings or references to external Markdown files:
 
-```graphviz
+```dot
 // Inline prompt
 plan [label="Plan", prompt="Analyze the codebase and write a step-by-step plan."]
 

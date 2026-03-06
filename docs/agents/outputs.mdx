@@ -21,7 +21,7 @@ Every agent and prompt node sets three context keys from its response:
 
 These keys are available to downstream nodes via the [context](/execution/context). The `last_response` key provides a quick preview, while `response.{node_id}` preserves the complete output for nodes that need it.
 
-```graphviz
+```dot
 plan -> implement -> review -> exit
 
 // In the review node's prompt, you can reference prior outputs:
@@ -64,7 +64,7 @@ JSON objects without recognized fields are ignored. If no routing directive is f
 
 Arc does not automatically instruct agents to emit routing JSON. You must include instructions in your prompt:
 
-```graphviz
+```dot
 review [
     label="Review",
     shape=tab,

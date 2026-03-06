@@ -9,7 +9,7 @@ Arc workflows are written in a subset of the [Graphviz DOT language](https://gra
 
 Every workflow is a `digraph` (directed graph) with a name and a body of statements:
 
-```graphviz title="my-workflow.dot"
+```dot title="my-workflow.dot"
 digraph MyWorkflow {
     graph [goal="Describe the project"]
     rankdir=LR
@@ -28,7 +28,7 @@ Only `digraph` is supported — `graph` (undirected) and `strict` are not. The g
 
 ## Comments
 
-```graphviz
+```dot
 // Line comment — everything to end of line
 
 /* Block comment
@@ -63,7 +63,7 @@ The body of a digraph can contain these statement types:
 
 Set workflow-level configuration:
 
-```graphviz
+```dot
 // Block syntax
 graph [goal="Build a feature", model_stylesheet="* { llm_model: claude-haiku-4-5; }"]
 
@@ -88,7 +88,7 @@ rankdir=LR
 
 Apply default attributes to all subsequently declared nodes:
 
-```graphviz
+```dot
 node [shape=box, timeout="900s"]
 ```
 
@@ -98,7 +98,7 @@ Defaults are scoped to their enclosing subgraph. Explicit attributes on individu
 
 Apply default attributes to all subsequently declared edges:
 
-```graphviz
+```dot
 edge [weight=5]
 ```
 
@@ -106,7 +106,7 @@ edge [weight=5]
 
 Declare a node with optional attributes:
 
-```graphviz
+```dot
 plan [label="Plan", prompt="Create an implementation plan."]
 ```
 
@@ -118,7 +118,7 @@ Nodes referenced in edges are auto-created if not explicitly declared.
 
 Connect nodes with directed edges:
 
-```graphviz
+```dot
 start -> plan -> implement -> exit
 ```
 
@@ -126,7 +126,7 @@ Chained edges like `A -> B -> C` expand to individual edges `A -> B` and `B -> C
 
 Edges can have attributes:
 
-```graphviz
+```dot
 gate -> exit      [label="Pass", condition="outcome=success"]
 gate -> implement [label="Fix"]
 ```
@@ -135,7 +135,7 @@ gate -> implement [label="Fix"]
 
 Group nodes visually and apply scoped defaults:
 
-```graphviz
+```dot
 subgraph cluster_impl {
     label = "Implementation"
     node [thread_id="impl", fidelity="full"]
@@ -280,7 +280,7 @@ A bare key with no operator is a **truthiness check** — it passes if the value
 
 ### Examples
 
-```graphviz
+```dot
 // Simple outcome check
 gate -> exit [condition="outcome=success"]
 
@@ -310,7 +310,7 @@ gate -> slow_path
 
 Instead of inlining long prompts, reference an external file:
 
-```graphviz
+```dot
 simplify [label="Simplify", prompt="@docs-internal/prompts/simplify.md"]
 ```
 
@@ -334,7 +334,7 @@ Arc validates workflows at parse time and reports diagnostics. Key rules:
 
 ## Complete example
 
-```graphviz title="implement-feature.dot"
+```dot title="implement-feature.dot"
 digraph ImplementFeature {
     graph [
         goal="Implement a feature with tests and code review",

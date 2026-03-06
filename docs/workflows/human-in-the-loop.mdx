@@ -9,7 +9,7 @@ Not every decision should be made by an LLM. Arc provides several mechanisms for
 
 A human gate is a node with shape `hexagon` that pauses the workflow and presents the user with a choice. The options are derived from the outgoing edge labels:
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve Plan"]
 
 approve -> implement [label="[A] Approve"]
@@ -35,7 +35,7 @@ When matching the user's selection to an edge, Arc strips the accelerator prefix
 
 In addition to fixed choices, a human gate can accept freeform text input. Add an edge with `freeform=true`:
 
-```graphviz
+```dot
 review [shape=hexagon, label="Review Changes"]
 
 review -> implement [label="[A] Approve"]
@@ -49,7 +49,7 @@ If the user types something that doesn't match any fixed option, their input rou
 
 If a human gate has a timeout configured, you can specify a default choice using the `human.default_choice` attribute:
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve?", human.default_choice="approve"]
 ```
 

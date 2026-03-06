@@ -27,7 +27,7 @@ Transition conditions in DOT workflows now support `||` (or), `!` (not), numeric
 
 Previously, conditions were limited to `&&`-joined equality checks. Now you can write expressive guards like:
 
-```graphviz
+```dot
 stage_a -> stage_b [condition="score > 80 || result contains 'approved'"];
 ```
 
@@ -98,7 +98,7 @@ verbose = true
 
 Handler types have been renamed for clarity: `agent_loop` is now `agent`, and `one_shot` is now `prompt`. The old names still work as aliases, so existing workflows won't break.
 
-```graphviz
+```dot
 stage_a [type="agent"];
 stage_b [type="prompt"];
 ```

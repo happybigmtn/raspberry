@@ -286,6 +286,13 @@
      "vscode"
    ]
   },
+  "styling": {
+    "codeblocks": {
+      "languages": {
+        "custom": ["/languages/dot.json"]
+      }
+    }
+  },
   "footer": {
     "socials": {
       "x": "https://x.com/mintlify",

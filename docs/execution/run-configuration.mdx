@@ -181,7 +181,7 @@ language = "rust"
 
 Variables can be used anywhere in the DOT file with `$name` syntax:
 
-```graphviz title="c-i.dot"
+```dot title="c-i.dot"
 digraph CI {
     graph [goal="Run tests for $repo_name"]
     clone [shape=parallelogram, script="git clone $repo_url repo"]

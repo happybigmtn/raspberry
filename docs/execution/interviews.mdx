@@ -110,7 +110,7 @@ Questions can have a `timeout_seconds` field. When set, Arc wraps the interviewe
 
 The human handler then checks the node's `human.default_choice` attribute. If set, execution continues to the default target. Otherwise, the stage retries.
 
-```graphviz
+```dot
 approve [shape=hexagon, label="Approve?", human.default_choice="deploy"]
 ```
 

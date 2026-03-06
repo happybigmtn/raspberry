@@ -9,7 +9,7 @@ Model stylesheets let you assign LLM models, providers, and settings to workflow
 
 Stylesheets are set in the `model_stylesheet` graph attribute:
 
-```graphviz title="example.dot"
+```dot title="example.dot"
 digraph Example {
     graph [
         goal="Build and review a utility function",
@@ -52,7 +52,7 @@ Each rule starts with a selector that determines which nodes it applies to:
 
 Set the `class` attribute on a node to target it with class selectors. Multiple classes are space-separated:
 
-```graphviz
+```dot
 implement [label="Implement", class="coding critical"]
 ```
 
@@ -95,7 +95,7 @@ If two rules have the same specificity, the **last one** in the stylesheet wins.
 
 A model set directly on a node attribute always takes precedence over stylesheets, regardless of specificity:
 
-```graphviz
+```dot
 implement [label="Implement", class="coding", llm_model="claude-opus-4-6"]
 ```
 

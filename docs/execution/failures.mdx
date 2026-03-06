@@ -20,7 +20,7 @@ When a node fails, Arc classifies the failure into one of six categories. These 
 
 Classification happens automatically. Arc inspects SDK error types, HTTP status codes, and error message patterns to assign the right class. The `failure_class` is written to [context](/execution/context) after each stage, so you can route on it in edge conditions:
 
-```graphviz
+```dot
 implement -> fix       [condition="failure_class=transient_infra"]
 implement -> escalate  [condition="failure_class=deterministic"]
 ```
@@ -53,7 +53,7 @@ When a node handler fails (after LLM retries are exhausted), the engine can retr
 
 Set a retry policy on a node with the `retry_policy` attribute:
 
-```graphviz
+```dot
 implement [retry_policy="standard"]
 ```
 
@@ -71,7 +71,7 @@ All policies apply random jitter (0.5x–1.5x) and cap individual delays at 60 s
 
 You can also set just the retry count using `max_retries`:
 
-```graphviz
+```dot
 implement [max_retries="5"]
 ```
 
@@ -132,7 +132,7 @@ Arc has two independent mechanisms for detecting stuck loops: **node visit limit
 
 The `max_node_visits` graph attribute sets the maximum number of times any single node can execute before the run is terminated:
 
-```graphviz title="example.dot"
+```dot title="example.dot"
 digraph Example {
     graph [max_node_visits="20"]
     // ...
@@ -203,7 +203,7 @@ Loop restart edges also have their own separate circuit breaker (`restart_failur
 
 Goal gates are quality checkpoints that are enforced when the workflow reaches an exit node. A node marked with `goal_gate=true` must have completed with `success` or `partial_success` — otherwise the run cannot finish.
 
-```graphviz
+```dot
 verify [shape=box, goal_gate="true"]
 ```
 
@@ -214,7 +214,7 @@ When a goal gate is unsatisfied at the exit node, Arc looks for a **retry target
 3. Graph-level `retry_target` attribute
 4. Graph-level `fallback_retry_target` attribute
 
-```graphviz title="example.dot"
+```dot title="example.dot"
 digraph Example {
     graph [retry_target="plan"]
     verify [shape=box, goal_gate="true", retry_target="implement"]
@@ -238,7 +238,7 @@ Arc runs a background watchdog that monitors event activity. If no events are em
 | `stall_timeout` | 600 seconds (10 minutes) |
 | Set to `0` | Disables the watchdog |
 
-```graphviz title="example.dot"
+```dot title="example.dot"
 digraph Example {
     graph [stall_timeout="300"]  // 5 minutes
 }
