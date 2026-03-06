@@ -12,7 +12,7 @@ import type { Route } from "./+types/run-graph";
 
 export const handle = { wide: true };
 
-type StageStatus = "completed" | "running" | "pending" | "failed";
+type StageStatus = "completed" | "running" | "pending" | "failed" | "cancelled";
 
 interface Stage {
   id: string;
@@ -43,6 +43,7 @@ const statusConfig: Record<StageStatus, { icon: typeof CheckCircleIcon; color: s
   running: { icon: ArrowPathIcon, color: "text-teal-500" },
   pending: { icon: PauseCircleIcon, color: "text-fg-muted" },
   failed: { icon: XCircleIcon, color: "text-coral" },
+  cancelled: { icon: XCircleIcon, color: "text-fg-muted" },
 };
 
 type Direction = "LR" | "TB";

@@ -30,6 +30,8 @@ import type { PaginatedWorkflowList } from '../models';
 // @ts-ignore
 import type { RunStatusResponse } from '../models';
 // @ts-ignore
+import type { StartWorkflowRunRequest } from '../models';
+// @ts-ignore
 import type { WorkflowDetail } from '../models';
 /**
  * WorkflowsApi - axios parameter creator
@@ -179,10 +181,11 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
          * Queues a new run of the specified workflow using its stored DOT graph.
          * @summary Start Workflow Run
          * @param {string} name URL-safe slug identifying a workflow definition.
+         * @param {StartWorkflowRunRequest} [startWorkflowRunRequest] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        startWorkflowRun: async (name: string, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
+        startWorkflowRun: async (name: string, startWorkflowRunRequest?: StartWorkflowRunRequest, options: RawAxiosRequestConfig = {}): Promise<RequestArgs> => {
             // verify required parameter 'name' is not null or undefined
             assertParamExists('startWorkflowRun', 'name', name)
             const localVarPath = `/workflows/{name}/runs`
@@ -205,11 +208,13 @@ export const WorkflowsApiAxiosParamCreator = function (configuration?: Configura
             // http bearer authentication required
             await setBearerAuthToObject(localVarHeaderParameter, configuration)
 
+            localVarHeaderParameter['Content-Type'] = 'application/json';
             localVarHeaderParameter['Accept'] = 'application/json';
 
             setSearchParams(localVarUrlObj, localVarQueryParameter);
             let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
             localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+            localVarRequestOptions.data = serializeDataIfNeeded(startWorkflowRunRequest, localVarRequestOptions, configuration)
 
             return {
                 url: toPathString(localVarUrlObj),
@@ -271,11 +276,12 @@ export const WorkflowsApiFp = function(configuration?: Configuration) {
          * Queues a new run of the specified workflow using its stored DOT graph.
          * @summary Start Workflow Run
          * @param {string} name URL-safe slug identifying a workflow definition.
+         * @param {StartWorkflowRunRequest} [startWorkflowRunRequest] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async startWorkflowRun(name: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<RunStatusResponse>> {
-            const localVarAxiosArgs = await localVarAxiosParamCreator.startWorkflowRun(name, options);
+        async startWorkflowRun(name: string, startWorkflowRunRequest?: StartWorkflowRunRequest, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<RunStatusResponse>> {
+            const localVarAxiosArgs = await localVarAxiosParamCreator.startWorkflowRun(name, startWorkflowRunRequest, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['WorkflowsApi.startWorkflowRun']?.[localVarOperationServerIndex]?.url;
             return (axios, basePath) => createRequestFunction(localVarAxiosArgs, globalAxios, BASE_PATH, configuration)(axios, localVarOperationServerBasePath || basePath);
@@ -326,11 +332,12 @@ export const WorkflowsApiFactory = function (configuration?: Configuration, base
          * Queues a new run of the specified workflow using its stored DOT graph.
          * @summary Start Workflow Run
          * @param {string} name URL-safe slug identifying a workflow definition.
+         * @param {StartWorkflowRunRequest} [startWorkflowRunRequest] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        startWorkflowRun(name: string, options?: RawAxiosRequestConfig): AxiosPromise<RunStatusResponse> {
-            return localVarFp.startWorkflowRun(name, options).then((request) => request(axios, basePath));
+        startWorkflowRun(name: string, startWorkflowRunRequest?: StartWorkflowRunRequest, options?: RawAxiosRequestConfig): AxiosPromise<RunStatusResponse> {
+            return localVarFp.startWorkflowRun(name, startWorkflowRunRequest, options).then((request) => request(axios, basePath));
         },
     };
 };
@@ -379,11 +386,12 @@ export class WorkflowsApi extends BaseAPI {
      * Queues a new run of the specified workflow using its stored DOT graph.
      * @summary Start Workflow Run
      * @param {string} name URL-safe slug identifying a workflow definition.
+     * @param {StartWorkflowRunRequest} [startWorkflowRunRequest] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      */
-    public startWorkflowRun(name: string, options?: RawAxiosRequestConfig) {
-        return WorkflowsApiFp(this.configuration).startWorkflowRun(name, options).then((request) => request(this.axios, this.basePath));
+    public startWorkflowRun(name: string, startWorkflowRunRequest?: StartWorkflowRunRequest, options?: RawAxiosRequestConfig) {
+        return WorkflowsApiFp(this.configuration).startWorkflowRun(name, startWorkflowRunRequest, options).then((request) => request(this.axios, this.basePath));
     }
 }
 

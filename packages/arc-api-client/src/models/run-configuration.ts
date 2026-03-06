@@ -37,7 +37,7 @@ export interface RunConfiguration {
     /**
      * Goal description for the run.
      */
-    'goal': string;
+    'goal'?: string;
     /**
      * DOT graph filename.
      */

@@ -28,6 +28,8 @@ import type { PaginatedRunStageList } from '../models';
 // @ts-ignore
 import type { PaginatedStageTurnList } from '../models';
 // @ts-ignore
+import type { RunCheckpoint } from '../models';
+// @ts-ignore
 import type { RunConfiguration } from '../models';
 /**
  * RunInternalsApi - axios parameter creator
@@ -35,7 +37,7 @@ import type { RunConfiguration } from '../models';
 export const RunInternalsApiAxiosParamCreator = function (configuration?: Configuration) {
     return {
         /**
-         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing.
+         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing. Stages are bounded by the workflow graph size, typically fewer than 20.
          * @summary List Run Stages
          * @param {string} id Unique run identifier (ULID).
          * @param {number} [pageLimit] Maximum number of items to return per page.
@@ -273,7 +275,7 @@ export const RunInternalsApiFp = function(configuration?: Configuration) {
     const localVarAxiosParamCreator = RunInternalsApiAxiosParamCreator(configuration)
     return {
         /**
-         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing.
+         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing. Stages are bounded by the workflow graph size, typically fewer than 20.
          * @summary List Run Stages
          * @param {string} id Unique run identifier (ULID).
          * @param {number} [pageLimit] Maximum number of items to return per page.
@@ -310,7 +312,7 @@ export const RunInternalsApiFp = function(configuration?: Configuration) {
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async retrieveRunCheckpoint(id: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<{ [key: string]: any; }>> {
+        async retrieveRunCheckpoint(id: string, options?: RawAxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => AxiosPromise<RunCheckpoint>> {
             const localVarAxiosArgs = await localVarAxiosParamCreator.retrieveRunCheckpoint(id, options);
             const localVarOperationServerIndex = configuration?.serverIndex ?? 0;
             const localVarOperationServerBasePath = operationServerMap['RunInternalsApi.retrieveRunCheckpoint']?.[localVarOperationServerIndex]?.url;
@@ -352,7 +354,7 @@ export const RunInternalsApiFactory = function (configuration?: Configuration, b
     const localVarFp = RunInternalsApiFp(configuration)
     return {
         /**
-         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing.
+         * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing. Stages are bounded by the workflow graph size, typically fewer than 20.
          * @summary List Run Stages
          * @param {string} id Unique run identifier (ULID).
          * @param {number} [pageLimit] Maximum number of items to return per page.
@@ -383,7 +385,7 @@ export const RunInternalsApiFactory = function (configuration?: Configuration, b
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        retrieveRunCheckpoint(id: string, options?: RawAxiosRequestConfig): AxiosPromise<{ [key: string]: any; }> {
+        retrieveRunCheckpoint(id: string, options?: RawAxiosRequestConfig): AxiosPromise<RunCheckpoint> {
             return localVarFp.retrieveRunCheckpoint(id, options).then((request) => request(axios, basePath));
         },
         /**
@@ -414,7 +416,7 @@ export const RunInternalsApiFactory = function (configuration?: Configuration, b
  */
 export class RunInternalsApi extends BaseAPI {
     /**
-     * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing.
+     * Returns the ordered list of stages in a run\'s workflow graph with their current status and timing. Stages are bounded by the workflow graph size, typically fewer than 20.
      * @summary List Run Stages
      * @param {string} id Unique run identifier (ULID).
      * @param {number} [pageLimit] Maximum number of items to return per page.

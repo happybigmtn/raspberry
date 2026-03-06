@@ -221,6 +221,7 @@ function StageStatusBadge({ status }: { status: string }) {
     running: "text-teal-500",
     pending: "text-fg-muted",
     failed: "text-coral",
+    cancelled: "text-fg-muted",
   };
   const colorClass = styles[status] ?? "text-fg-3";
   return (

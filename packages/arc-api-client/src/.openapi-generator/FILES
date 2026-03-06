@@ -35,6 +35,8 @@ models/control-info.ts
 models/control-performance.ts
 models/create-session-request.ts
 models/create-session-response.ts
+models/daytona-configuration-network-one-of.ts
+models/daytona-configuration-network.ts
 models/daytona-configuration.ts
 models/daytona-snapshot-configuration.ts
 models/diff-file.ts
@@ -78,6 +80,7 @@ models/retro-list-item.ts
 models/retro-stats.ts
 models/root-response-urls.ts
 models/root-response.ts
+models/run-checkpoint.ts
 models/run-compare.ts
 models/run-configuration.ts
 models/run-error.ts
@@ -109,6 +112,7 @@ models/smoothness-rating.ts
 models/stage-status.ts
 models/stage-turn.ts
 models/start-run-request.ts
+models/start-workflow-run-request.ts
 models/steer-request.ts
 models/submit-answer-request.ts
 models/system-stage-turn.ts

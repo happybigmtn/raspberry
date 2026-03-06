@@ -14,19 +14,10 @@
 
 
 
-/**
- * Execution status of a workflow stage.
- */
-
-export const StageStatus = {
-    COMPLETED: 'completed',
-    RUNNING: 'running',
-    PENDING: 'pending',
-    FAILED: 'failed',
-    CANCELLED: 'cancelled'
-} as const;
-
-export type StageStatus = typeof StageStatus[keyof typeof StageStatus];
-
-
+export interface DaytonaConfigurationNetworkOneOf {
+    /**
+     * CIDR allowlist for network access.
+     */
+    'allow_list': Array<string>;
+}
 

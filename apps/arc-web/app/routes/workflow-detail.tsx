@@ -5,7 +5,7 @@ import type { WorkflowDetail as ApiWorkflowDetail, RunConfiguration } from "@qlt
 import type { Route } from "./+types/workflow-detail";
 
 export interface WorkflowEntry {
-  title: string;
+  name: string;
   slug: string;
   description: string;
   filename: string;
@@ -17,7 +17,7 @@ export interface WorkflowEntry {
 // It will be populated by the loader, but the static version is kept as fallback.
 export const workflowData: Record<string, WorkflowEntry> = {
   fix_build: {
-    title: "Fix Build",
+    name: "Fix Build",
     slug: "fix_build",
     filename: "fix_build.dot",
     description: "Automatically diagnoses and fixes CI build failures by analyzing error logs, identifying root causes, and applying targeted code changes.",
@@ -58,7 +58,7 @@ export const workflowData: Record<string, WorkflowEntry> = {
 `,
   },
   implement: {
-    title: "Implement Feature",
+    name: "Implement Feature",
     slug: "implement",
     filename: "implement.dot",
     description: "Generates production-ready code from a technical blueprint, including tests, documentation, and a pull request ready for review.",
@@ -114,7 +114,7 @@ export const workflowData: Record<string, WorkflowEntry> = {
 `,
   },
   sync_drift: {
-    title: "Sync Drift",
+    name: "Sync Drift",
     slug: "sync_drift",
     filename: "sync_drift.dot",
     description: "Detects configuration and code drift between environments, then generates reconciliation patches to bring everything back in sync.",
@@ -159,7 +159,7 @@ export const workflowData: Record<string, WorkflowEntry> = {
 `,
   },
   expand: {
-    title: "Expand Product",
+    name: "Expand Product",
     slug: "expand",
     filename: "expand.dot",
     description: "Evolves the product by analyzing usage patterns and specifications to propose and implement incremental improvements.",
@@ -212,7 +212,7 @@ export const handle = { hideHeader: true };
 export async function loader({ request, params }: Route.LoaderArgs) {
   const apiWorkflow = await apiJson<ApiWorkflowDetail>(`/workflows/${params.name}`, { request });
   const workflow: WorkflowEntry = {
-    title: apiWorkflow.title,
+    name: apiWorkflow.name,
     slug: apiWorkflow.slug,
     description: apiWorkflow.description,
     filename: apiWorkflow.filename,
@@ -223,7 +223,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
 }
 
 export function meta({ data }: Route.MetaArgs) {
-  const title = data?.workflow?.title ?? "Workflow";
+  const title = data?.workflow?.name ?? "Workflow";
   return [{ title: `${title} — Arc` }];
 }
 
@@ -238,13 +238,13 @@ export default function WorkflowDetail({ loaderData }: Route.ComponentProps) {
       <nav className="mb-4 flex items-center gap-1 text-sm text-fg-muted">
         <Link to="/workflows" className="text-fg-3 hover:text-fg">Workflows</Link>
         <ChevronRightIcon className="size-3" />
-        <span>{workflow.title}</span>
+        <span>{workflow.name}</span>
       </nav>
 
       <div className="mb-6 flex items-center gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
-            <h2 className="text-xl font-semibold text-fg">{workflow.title}</h2>
+            <h2 className="text-xl font-semibold text-fg">{workflow.name}</h2>
             <span className="font-mono text-xs text-fg-muted">{workflow.filename}</span>
           </div>
           <p className="mt-2 max-w-prose text-sm leading-relaxed text-fg-3">{workflow.description}</p>

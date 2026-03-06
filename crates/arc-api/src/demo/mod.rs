@@ -930,8 +930,8 @@ mod runs {
 
     pub fn turns() -> Vec<StageTurn> {
         vec![
-            StageTurn::SystemStageTurn(SystemStageTurn { kind: SystemStageTurnKind::System, content: "You are a drift detection agent. Compare the production and staging environments and identify any configuration or code drift.".into(), tools: vec![] }),
-            StageTurn::AssistantStageTurn(AssistantStageTurn { kind: AssistantStageTurnKind::Assistant, content: "I'll start by loading the environment configurations for both production and staging to compare them.".into(), tools: vec![] }),
+            StageTurn::SystemStageTurn(SystemStageTurn { kind: SystemStageTurnKind::System, content: "You are a drift detection agent. Compare the production and staging environments and identify any configuration or code drift.".into() }),
+            StageTurn::AssistantStageTurn(AssistantStageTurn { kind: AssistantStageTurnKind::Assistant, content: "I'll start by loading the environment configurations for both production and staging to compare them.".into() }),
             StageTurn::ToolStageTurn(ToolStageTurn {
                 kind: ToolStageTurnKind::Tool, content: None,
                 tools: vec![
@@ -939,7 +939,7 @@ mod runs {
                     ToolUse { id: "toolu_02".into(), tool_name: "read_file".into(), input: r#"{ "path": "environments/staging/config.toml" }"#.into(), result: "[redis]\nhost = \"redis-staging.internal\"\nport = 6379".into(), is_error: false, duration_ms: Some(38) },
                 ],
             }),
-            StageTurn::AssistantStageTurn(AssistantStageTurn { kind: AssistantStageTurnKind::Assistant, content: "I've detected drift in 3 resources between production and staging:\n\n1. **redis.max_connections** — production has 200, staging has 100\n2. **redis.tls** — enabled in production, disabled in staging\n3. **iam.session_duration** — production uses 3600s, staging uses 1800s".into(), tools: vec![] }),
+            StageTurn::AssistantStageTurn(AssistantStageTurn { kind: AssistantStageTurnKind::Assistant, content: "I've detected drift in 3 resources between production and staging:\n\n1. **redis.max_connections** — production has 200, staging has 100\n2. **redis.tls** — enabled in production, disabled in staging\n3. **iam.session_duration** — production uses 3600s, staging uses 1800s".into() }),
         ]
     }
 
@@ -1172,7 +1172,7 @@ mod workflows {
     pub fn detail(name: &str) -> Option<WorkflowDetail> {
         let items = [
             WorkflowDetail {
-                title: "Fix Build".into(), slug: "fix_build".into(), filename: "fix_build.dot".into(),
+                name: "Fix Build".into(), slug: "fix_build".into(), filename: "fix_build.dot".into(),
                 description: "Automatically diagnoses and fixes CI build failures by analyzing error logs, identifying root causes, and applying targeted code changes.".into(),
                 config: run_config_to_api(arc_workflows::cli::run_config::WorkflowRunConfig {
                     version: 1,
@@ -1231,7 +1231,7 @@ mod workflows {
 "#.into(),
             },
             WorkflowDetail {
-                title: "Implement Feature".into(), slug: "implement".into(), filename: "implement.dot".into(),
+                name: "Implement Feature".into(), slug: "implement".into(), filename: "implement.dot".into(),
                 description: "Generates production-ready code from a technical blueprint, including tests, documentation, and a pull request ready for review.".into(),
                 config: run_config_to_api(arc_workflows::cli::run_config::WorkflowRunConfig {
                     version: 1,
@@ -1308,7 +1308,7 @@ mod workflows {
 "#.into(),
             },
             WorkflowDetail {
-                title: "Sync Drift".into(), slug: "sync_drift".into(), filename: "sync_drift.dot".into(),
+                name: "Sync Drift".into(), slug: "sync_drift".into(), filename: "sync_drift.dot".into(),
                 description: "Detects configuration and code drift between environments, then generates reconciliation patches to bring everything back in sync.".into(),
                 config: run_config_to_api(arc_workflows::cli::run_config::WorkflowRunConfig {
                     version: 1,
@@ -1373,7 +1373,7 @@ mod workflows {
 "#.into(),
             },
             WorkflowDetail {
-                title: "Expand Product".into(), slug: "expand".into(), filename: "expand.dot".into(),
+                name: "Expand Product".into(), slug: "expand".into(), filename: "expand.dot".into(),
                 description: "Evolves the product by analyzing usage patterns and specifications to propose and implement incremental improvements.".into(),
                 config: run_config_to_api(arc_workflows::cli::run_config::WorkflowRunConfig {
                     version: 1,

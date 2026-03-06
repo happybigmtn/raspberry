@@ -15,6 +15,9 @@
 
 // May contain unused imports in some cases
 // @ts-ignore
+import type { DaytonaConfigurationNetwork } from './daytona-configuration-network';
+// May contain unused imports in some cases
+// @ts-ignore
 import type { DaytonaSnapshotConfiguration } from './daytona-snapshot-configuration';
 
 /**
@@ -30,6 +33,6 @@ export interface DaytonaConfiguration {
      */
     'labels'?: { [key: string]: string; };
     'snapshot'?: DaytonaSnapshotConfiguration;
-    'network'?: any;
+    'network'?: DaytonaConfigurationNetwork;
 }
 

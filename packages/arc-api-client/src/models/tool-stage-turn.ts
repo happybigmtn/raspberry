@@ -23,7 +23,7 @@ import type { ToolUse } from './tool-use';
 export interface ToolStageTurn {
     'kind': ToolStageTurnKindEnum;
     /**
-     * Optional text content (usually null for tool turns).
+     * Text accompanying the tool invocations, or null when the turn contains only tool calls.
      */
     'content'?: string;
     /**

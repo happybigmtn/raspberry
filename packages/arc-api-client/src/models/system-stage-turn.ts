@@ -13,9 +13,6 @@
  */
 
 
-// May contain unused imports in some cases
-// @ts-ignore
-import type { ToolUse } from './tool-use';
 
 /**
  * A system prompt turn that sets the stage\'s instructions.
@@ -26,10 +23,6 @@ export interface SystemStageTurn {
      * System prompt text.
      */
     'content': string;
-    /**
-     * Tool invocations (always empty for system turns).
-     */
-    'tools'?: Array<ToolUse>;
 }
 
 export const SystemStageTurnKindEnum = {

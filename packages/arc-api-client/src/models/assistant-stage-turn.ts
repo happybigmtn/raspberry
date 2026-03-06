@@ -13,9 +13,6 @@
  */
 
 
-// May contain unused imports in some cases
-// @ts-ignore
-import type { ToolUse } from './tool-use';
 
 /**
  * An assistant response turn within a stage.
@@ -26,10 +23,6 @@ export interface AssistantStageTurn {
      * Assistant response text.
      */
     'content': string;
-    /**
-     * Tool invocations (always empty for assistant turns).
-     */
-    'tools'?: Array<ToolUse>;
 }
 
 export const AssistantStageTurnKindEnum = {

@@ -15,7 +15,7 @@
 
 
 /**
- * A single hook definition. The type discriminator and variant fields are flattened into this object.
+ * A single hook definition. The type discriminator and variant fields are flattened into this object.  Field-to-type mapping: - `command`: requires `command` - `http`: requires `url`; optional `headers`, `allowed_env_vars`, `tls` - `prompt`: requires `prompt`; optional `model` - `agent`: requires `prompt`; optional `model`, `max_tool_rounds`  Top-level `command` without `type` is shorthand for type=command. 
  */
 export interface HookDefinition {
     /**

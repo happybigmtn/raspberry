@@ -240,8 +240,7 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - type: object
-                    additionalProperties: true
+                  - $ref: "#/components/schemas/RunCheckpoint"
                   - type: "null"
         "404":
           description: Run not found
@@ -392,7 +391,7 @@ paths:
       operationId: listRunStages
       tags: [Run Internals]
       summary: List Run Stages
-      description: Returns the ordered list of stages in a run's workflow graph with their current status and timing.
+      description: Returns the ordered list of stages in a run's workflow graph with their current status and timing. Stages are bounded by the workflow graph size, typically fewer than 20.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/PageLimit"
@@ -662,6 +661,12 @@ paths:
       description: Queues a new run of the specified workflow using its stored DOT graph.
       parameters:
         - $ref: "#/components/parameters/WorkflowName"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartWorkflowRunRequest"
       responses:
         "201":
           description: Run created
@@ -1423,6 +1428,21 @@ components:
         - failed
         - cancelled
 
+    StartWorkflowRunRequest:
+      description: Optional request body for starting a workflow run with overrides.
+      type: object
+      properties:
+        goal:
+          type: string
+          description: Goal description override for this run.
+        vars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Variable map overrides for template expansion.
+        llm:
+          $ref: "#/components/schemas/LlmConfiguration"
+
     StartRunRequest:
       description: Request body for starting a new run from a DOT graph source.
       type: object
@@ -1917,6 +1937,62 @@ components:
           description: Timestamp when the run was created.
           example: "2026-03-06T14:30:00Z"
 
+    RunCheckpoint:
+      description: Serializable snapshot of execution state for crash recovery and resume.
+      type: object
+      required:
+        - timestamp
+        - current_node
+        - completed_nodes
+        - node_retries
+        - context_values
+        - logs
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the checkpoint was created.
+        current_node:
+          type: string
+          description: Identifier of the node being executed at checkpoint time.
+        completed_nodes:
+          type: array
+          items:
+            type: string
+          description: Identifiers of nodes that have completed execution.
+        node_retries:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of node identifier to retry count.
+        context_values:
+          type: object
+          additionalProperties: true
+          description: Key-value context map accumulated during execution.
+        logs:
+          type: array
+          items:
+            type: string
+          description: Log entries recorded during execution.
+        node_outcomes:
+          type: object
+          additionalProperties: true
+          description: Map of node identifier to outcome data for goal gate checks after resume.
+        next_node_id:
+          type: string
+          description: The node to resume execution at after this checkpoint.
+        git_commit_sha:
+          type: string
+          description: SHA of the git commit created at this checkpoint.
+        loop_failure_signatures:
+          type: object
+          additionalProperties: true
+          description: Failure signature counts within the main loop.
+        restart_failure_signatures:
+          type: object
+          additionalProperties: true
+          description: Failure signature counts across loop_restart edges.
+
     # ── Stage / Turn Schemas ─────────────────────────────────────────────
 
     StageStatus:
@@ -1927,6 +2003,7 @@ components:
         - running
         - pending
         - failed
+        - cancelled
 
     RunStage:
       description: A single stage in a run's workflow graph.
@@ -2017,11 +2094,6 @@ components:
           type: string
           description: System prompt text.
           example: You are a drift detection agent. Compare the production and staging environments.
-        tools:
-          type: array
-          description: Tool invocations (always empty for system turns).
-          items:
-            $ref: "#/components/schemas/ToolUse"
 
     AssistantStageTurn:
       description: An assistant response turn within a stage.
@@ -2037,11 +2109,6 @@ components:
           type: string
           description: Assistant response text.
           example: I'll start by loading the environment configurations for both production and staging.
-        tools:
-          type: array
-          description: Tool invocations (always empty for assistant turns).
-          items:
-            $ref: "#/components/schemas/ToolUse"
 
     ToolStageTurn:
       description: A tool invocation turn containing one or more tool calls.
@@ -2055,7 +2122,7 @@ components:
           enum: [tool]
         content:
           type: string
-          description: Optional text content (usually null for tool turns).
+          description: Text accompanying the tool invocations, or null when the turn contains only tool calls.
         tools:
           type: array
           description: Tool invocations executed in this turn.
@@ -2394,16 +2461,16 @@ components:
       description: Full detail of a workflow definition including graph and configuration.
       type: object
       required:
-        - title
+        - name
         - slug
         - filename
         - description
         - config
         - graph
       properties:
-        title:
+        name:
           type: string
-          description: Human-readable workflow title.
+          description: Human-readable workflow name.
           example: Fix Build
         slug:
           type: string
@@ -3077,7 +3144,6 @@ components:
       type: object
       required:
         - version
-        - goal
         - graph
       properties:
         version:
@@ -3176,6 +3242,20 @@ components:
           $ref: "#/components/schemas/DaytonaSnapshotConfiguration"
         network:
           description: "Network access mode: \"block\", \"allow_all\", or {\"allow_list\": [...]}."
+          oneOf:
+            - type: string
+              enum:
+                - block
+                - allow_all
+            - type: object
+              required:
+                - allow_list
+              properties:
+                allow_list:
+                  type: array
+                  items:
+                    type: string
+                  description: CIDR allowlist for network access.
 
     DaytonaSnapshotConfiguration:
       description: Snapshot configuration for Daytona sandboxes.
@@ -3200,7 +3280,16 @@ components:
           description: Dockerfile content for snapshot creation.
 
     HookDefinition:
-      description: A single hook definition. The type discriminator and variant fields are flattened into this object.
+      description: |
+        A single hook definition. The type discriminator and variant fields are flattened into this object.
+
+        Field-to-type mapping:
+        - `command`: requires `command`
+        - `http`: requires `url`; optional `headers`, `allowed_env_vars`, `tls`
+        - `prompt`: requires `prompt`; optional `model`
+        - `agent`: requires `prompt`; optional `model`, `max_tool_rounds`
+
+        Top-level `command` without `type` is shorthand for type=command.
       type: object
       required:
         - event

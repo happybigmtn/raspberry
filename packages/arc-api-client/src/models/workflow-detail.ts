@@ -22,9 +22,9 @@ import type { RunConfiguration } from './run-configuration';
  */
 export interface WorkflowDetail {
     /**
-     * Human-readable workflow title.
+     * Human-readable workflow name.
      */
-    'title': string;
+    'name': string;
     /**
      * URL-safe slug used in API paths.
      */
