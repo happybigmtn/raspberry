@@ -10,9 +10,7 @@ title: "Benefit-oriented title of what shipped"
 date: "YYYY-MM-DD"
 ---
 
-## Feature name
-
-**Date or context line if needed**
+## Hero feature name
 
 One paragraph explaining what this enables and why it matters. Start with the user pain or limitation that existed before, then explain what's now possible. Give the feature room to breathe — 2-3 sentences minimum.
 
@@ -29,17 +27,9 @@ Or a config example:
 environment = "daytona"
 ```
 
-## Another feature name
+## Another hero feature
 
-Another narrative section. Each major feature gets its own H2 heading. Don't bury features inside bullet lists — let them stand on their own.
-
----
-
-Smaller improvements and fixes go at the bottom as a flat list, separated by a horizontal rule. No category headers needed.
-
-- Improvements and minor enhancements as bullets
-- Fixes an issue where [specific symptom] when [specific trigger]
-- Another fix or minor improvement
+Another narrative section. Only 2-3 features should get H2 hero treatment — reserve it for changes that fundamentally alter what users can do.
 
 <Warning>
 **Breaking change description.** Previous behavior X now behaves as Y.
@@ -48,61 +38,112 @@ To migrate:
 1. Step one
 2. Step two
 </Warning>
+
+## More
+
+<Accordion title="API">
+- New `GET /models` endpoint exposes the full LLM model catalog with pagination
+- Verification API reorganized: `/verifications` split into `/verification/criteria` and `/verification/controls`
+</Accordion>
+
+<Accordion title="CLI">
+- Added `arc parse` command for printing the raw AST of a DOT workflow as JSON
+- Persistent CLI defaults in `~/.arc/cli.toml`
+</Accordion>
+
+<Accordion title="Workflows">
+- Stage logs now stream in real-time while CLI agents are working
+- Per-node `max_visits` attribute overrides the graph-level `max_node_visits` setting
+</Accordion>
+
+<Accordion title="Improvements">
+- MODEL column in CLI tables widened from 24 to 30 characters
+- Gemini 3.1 Flash Lite added to the model catalog
+</Accordion>
+
+<Accordion title="Fixes">
+- Fixed HTTP 529 responses from LLM providers being misclassified as non-retryable
+- Fixed progress display panic when tool calls contain long whitespace sequences
+</Accordion>
 ```
 
 ## Style guide
 
-- **Each major feature gets its own H2** — don't collapse features into bullet lists
-- **Narrative over bullets for features** — 2-4 sentences explaining what, why, and how
+- **2-3 hero features as H2 headings** — only for changes that fundamentally alter what users can do (new capabilities, major UX shifts, new integrations)
+- **Narrative over bullets for hero features** — 2-4 sentences explaining what, why, and how
 - **Include code examples** — CLI commands, config snippets, or API calls that show how to use the feature
 - **Explain the "before"** — what was painful or impossible before this change
-- **Fixes and minor improvements go at the bottom** as a flat bullet list after a `---` separator
-- **No rigid category headers** — skip "Features", "Improvements", "Fixes" headers. Let the H2 feature names be the structure
-- **Breaking changes** always in a `<Warning>` callout with migration steps
+- **Everything else in `## More` with `<Accordion>` components** — categorized as API, CLI, Workflows, Improvements, Fixes
+- **Breaking changes** in `<Warning>` callouts with migration steps, placed after hero sections
+- **Accordion items are single bullet points** — concise but specific enough for users to know if it affects them
+
+## What goes in More, not as a hero H2
+
+- New API endpoints — unless the endpoint represents an entirely new product capability
+- API schema restructuring, renamed routes, pagination additions
+- Incremental improvements to existing features (e.g. streaming logs, better filtering)
+- New models added to the catalog or default model changes
+- Minor workflow engine improvements
+- All bug fixes
+- CLI output or formatting changes
 
 ## Good vs. bad examples
 
-Bad (bulleted feature dump):
+Bad (too many hero sections — API changes and incremental improvements promoted to H2):
 
 ```mdx
-## Features
+## Models API endpoint
 
-- **Lifecycle hooks**: Attach hooks to workflow events that execute before or after stages
-- **HTTP hooks**: Call external HTTP endpoints from hooks with env var interpolation
-- **Model failover**: Configure fallback models at the provider level
+A new `GET /models` endpoint exposes the full LLM catalog...
+
+## Structured API schemas
+
+The REST API now organizes related fields into typed sub-objects...
+
+## exe.dev sandbox provider (beta)
+
+Arc can now run agent stages inside ephemeral exe.dev VMs...
+
+## Streaming stage logs for CLI agents
+
+Stage logs now update in real-time...
+
+## Verification API restructured
+
+The verification API has been reorganized...
 ```
 
-Good (each feature gets its own section with narrative and code):
+Good (2 hero features, everything else in More):
 
 ```mdx
-## Lifecycle hooks
+## exe.dev sandbox provider (beta)
 
-Workflows can now trigger actions at key moments — before a stage starts, after it completes, or when a run fails. Use hooks to notify external systems, enforce policies, or gate execution on custom conditions.
-
-Hooks are defined in your workflow config and support three executor types: shell commands, HTTP endpoints, and LLM-based evaluation.
-
-## HTTP hooks
-
-Hook executors can call external HTTP endpoints with full environment variable interpolation in request bodies. TLS mode is configurable per-hook, supporting strict validation for production and permissive mode for development.
+Arc can now run agent stages inside ephemeral exe.dev VMs as an alternative to Daytona sandboxes. The new provider manages VM lifecycle through SSH...
 
 ```toml
-[[hooks]]
-event = "stage.before"
-executor = "http"
-url = "https://api.example.com/webhook"
-tls_mode = "strict"
+[execution]
+environment = "exe"
 ```
 
-## Model failover
+## Auto-install agent CLIs in sandboxes
 
-If your primary model is unavailable or rate-limited, runs now automatically switch to a backup. Configure fallback models at the provider level in your server config:
+Agent CLI tools are now automatically detected and installed inside sandboxes at runtime when they're missing. Previously, you had to build custom Dockerfiles...
 
-```toml
-[providers.anthropic]
-failover = ["openai", "gemini"]
-```
+## More
 
-Previously, a provider outage would fail the entire run. Now it retries with the next provider in the list.
+<Accordion title="API">
+- New `GET /models` endpoint exposes the full LLM model catalog with pagination
+- API responses now nest related fields into typed sub-objects (e.g. `model_id` becomes `model.id`)
+- Verification API reorganized: `/verifications` split into `/verification/criteria` and `/verification/controls`
+</Accordion>
+
+<Accordion title="Workflows">
+- Stage logs now stream in real-time while CLI agents are working
+</Accordion>
+
+<Accordion title="Fixes">
+- Fixed turn and tool-call counts always showing 0 in non-TTY mode
+</Accordion>
 ```
 
 ## Rules
@@ -112,3 +153,4 @@ Previously, a provider outage would fail the entire run. Now it retries with the
 - Filename must match the date: `YYYY-MM-DD.mdx`
 - If multiple entries share a date, append a slug: `YYYY-MM-DD-feature-name.mdx`
 - Breaking changes always go in a `<Warning>` callout with migration steps
+- Only include accordion categories that have content — omit empty ones
