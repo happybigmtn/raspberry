@@ -1,6 +1,192 @@
 ---
 title: "Daytona"
-description: "Run Arc workflows in sandboxed Daytona development environments"
+description: "Run Arc workflows in sandboxed Daytona cloud environments"
 ---
 
-Coming soon.
+[Daytona](https://daytona.io) provides cloud-hosted sandbox VMs for Arc workflows. Each run gets an ephemeral, isolated environment with its own filesystem, network, and compute resources — keeping your host machine clean and giving agents a reproducible workspace.
+
+## What the Daytona integration enables
+
+| Feature | How it's used |
+|---|---|
+| **Sandboxed execution** | Agent tool calls (shell commands, file edits, grep, glob) run inside a cloud VM instead of on the host |
+| **Snapshots** | Pre-built environment images so each run starts with dependencies already installed |
+| **SSH access** | Connect to a running sandbox for live debugging |
+| **Network controls** | Restrict agent egress with block-all or CIDR-based allow lists |
+
+## Prerequisites
+
+- A `DAYTONA_API_KEY` environment variable (get one from [app.daytona.io](https://app.daytona.io))
+- A [GitHub App](/integrations/github) configured via the web UI (required for private repository cloning and checkpoint pushing)
+
+## Configuration
+
+Set the sandbox provider in your run config TOML or via CLI flag:
+
+```bash
+arc run start workflow.dot --sandbox daytona
+```
+
+```toml
+[sandbox]
+provider = "daytona"
+```
+
+A full configuration example with all Daytona-specific options:
+
+```toml
+[sandbox]
+provider = "daytona"
+preserve = false
+
+[sandbox.daytona]
+auto_stop_interval = 60
+
+[sandbox.daytona.labels]
+project = "arc"
+env = "staging"
+team = "platform"
+
+[sandbox.daytona.snapshot]
+name = "rust-dev"
+cpu = 4
+memory = 8
+disk = 20
+dockerfile = "FROM rust:1.85-slim-bookworm\nRUN apt-get update && apt-get install -y git ripgrep"
+```
+
+See [Server Configuration](/administration/server-configuration) for the full reference on all sandbox fields and server defaults.
+
+### Network access control
+
+Control outbound network access with the `network` field. Three modes are available:
+
+```toml
+# Full access (default)
+[sandbox.daytona]
+network = "allow_all"
+
+# Block all egress
+[sandbox.daytona]
+network = "block"
+
+# CIDR-based allow list
+[sandbox.daytona]
+network = { allow_list = ["208.80.154.232/32", "10.0.0.0/8"] }
+```
+
+Use `"block"` or a CIDR allow list when running untrusted or generated code to prevent agents from making arbitrary network requests.
+
+## Snapshots
+
+Snapshots let you pre-build an environment image so each run starts with dependencies already installed rather than installing them in setup commands every time.
+
+```toml
+[sandbox.daytona.snapshot]
+name = "my-snapshot"
+cpu = 4
+memory = 8
+disk = 20
+dockerfile = "FROM node:20-slim\nRUN apt-get update && apt-get install -y git"
+```
+
+When a run starts with a snapshot configured, Arc looks up the snapshot by name. If it doesn't exist and a `dockerfile` is provided, Arc creates it automatically and polls until it reaches `Active` state (up to 10 minutes). If the snapshot already exists, it's reused immediately.
+
+<Note>
+If the snapshot doesn't exist and no `dockerfile` is provided, the run fails immediately. Without a snapshot, sandboxes are created from the default `ubuntu:22.04` image.
+</Note>
+
+## Private repositories
+
+Arc automatically clones the current repository into the sandbox at `/home/daytona/workspace`. Public repositories work without extra configuration. Private repositories require a [GitHub App](/integrations/github) — Arc uses short-lived Installation Access Tokens scoped to the specific repository.
+
+If the clone fails without a GitHub App configured, Arc suggests running the setup flow:
+
+```
+Git clone failed: ... If this is a private repository,
+configure a GitHub App with `arc setup` and install it
+for your organization.
+```
+
+## SSH access
+
+Connect to a running Daytona sandbox via SSH for live debugging:
+
+```bash
+arc run start workflow.dot --sandbox daytona --ssh
+```
+
+This creates temporary SSH credentials (valid for 60 minutes) and prints the connection command:
+
+```
+SSH access ready: ssh daytona@arc-20260307-143022-a3f2.ssh.daytona.io
+```
+
+<Note>
+SSH credentials cannot be refreshed during a run. To keep the sandbox alive after the run completes, combine `--ssh` with `--preserve-sandbox`.
+</Note>
+
+## Sandbox lifecycle
+
+Each sandbox gets a unique timestamped name (e.g. `arc-20260307-143022-a3f2`) and is created as ephemeral. By default, sandboxes are destroyed when the run finishes.
+
+### Preservation
+
+To keep a sandbox alive for debugging:
+
+```bash
+arc run start workflow.dot --sandbox daytona --preserve-sandbox
+```
+
+Or in the run config:
+
+```toml
+[sandbox]
+provider = "daytona"
+preserve = true
+```
+
+When preserved, Arc prints the sandbox name so you can find it in the [Daytona dashboard](https://app.daytona.io/dashboard/sandboxes).
+
+### Auto-stop
+
+The `auto_stop_interval` setting tells Daytona to stop the sandbox after a period of inactivity, saving costs for preserved or long-running sandboxes:
+
+```toml
+[sandbox.daytona]
+auto_stop_interval = 30
+```
+
+## Server defaults
+
+When running via `arc serve`, the server config at `~/.arc/server.toml` can set default Daytona settings for all runs. Run config TOML values override server defaults. Labels are **merged** — run config labels win on key collisions. The `network` setting uses simple override (run config replaces the server default entirely).
+
+See [Server Configuration](/administration/server-configuration) for details.
+
+## Troubleshooting
+
+### "Failed to create Daytona sandbox"
+
+The `DAYTONA_API_KEY` environment variable is missing or invalid. Verify it's set in your `.env` file and check that it's a valid key from [app.daytona.io](https://app.daytona.io).
+
+### "Snapshot does not exist and no dockerfile provided"
+
+The run config references a snapshot name that doesn't exist on Daytona, and no `dockerfile` is provided to create it. Either create the snapshot manually in the Daytona dashboard or add a `dockerfile` field to `[sandbox.daytona.snapshot]`.
+
+### "Timed out waiting for snapshot to become active"
+
+Snapshot creation took longer than 10 minutes. This can happen with large Dockerfiles. Check the snapshot status in the Daytona dashboard — it may still be building. Subsequent runs will reuse the snapshot once it's active.
+
+### Git clone fails for private repositories
+
+See [Private repositories](#private-repositories) above. You need a GitHub App configured and installed on the repository's organization or account.
+
+### Stall watchdog kills the run
+
+Long-running commands in Daytona sandboxes may trigger the 600-second stall watchdog if they don't produce events. For workflows with long-running operations, increase the `stall_timeout` in the workflow graph:
+
+```dot
+digraph Example {
+    graph [stall_timeout="1200"]
+}
+```
