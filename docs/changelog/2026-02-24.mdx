@@ -18,9 +18,12 @@ Every run now writes `progress.ndjson` and `live.json` to the logs directory, gi
 tail -f ~/.arc/logs/<run-id>/progress.ndjson
 ```
 
----
+## More
+
+<Accordion title="CLI">
+- Run `arc models sync` to download the latest model metadata from OpenRouter
+</Accordion>
 
 <Accordion title="Improvements">
 - Each run now tracks cumulative input/output tokens and estimated cost, displayed at completion
-- Run `arc models sync` to download the latest model metadata from OpenRouter
 </Accordion>

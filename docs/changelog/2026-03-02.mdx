@@ -1,5 +1,5 @@
 ---
-title: "Workflows and runs, devcontainer support, and sessions"
+title: "Devcontainer support and sessions"
 date: "2026-03-02"
 ---
 
@@ -22,30 +22,19 @@ If your project already has a `.devcontainer/devcontainer.json`, Arc can use it 
 
 Persistent chat sessions with SQLite storage. Start a conversation with an agent, close the terminal, and pick up where you left off. Sessions track messages, model, and conversation state.
 
-## GitHub OAuth login
-
-Authenticate to the Arc web app using your GitHub account. Session management is automatic, and user identity flows through to API authorization via JWT claims.
-
-## LLM chat
-
-Interactive multi-turn conversations with any configured model via the CLI. Useful for quick experiments and prompt testing outside of a workflow.
-
-```bash
-arc llm chat
-arc llm chat --model gemini-3.1-pro
-```
-
-## Mintlify docs site
-
-Full documentation site with getting started guides, core concepts, workflow reference, API docs, and this changelog.
-
----
+## More
 
 <Accordion title="API">
 - New `POST /runs/{id}/preview` endpoint generates a live preview URL for any running sandbox
 </Accordion>
 
+<Accordion title="CLI">
+- `arc llm chat` command for interactive multi-turn conversations with any configured model
+</Accordion>
+
 <Accordion title="Improvements">
+- GitHub OAuth login for the web app with automatic session management and JWT-based API authorization
+- Full documentation site with getting started guides, core concepts, workflow reference, and API docs
 - Asset snapshots capture files produced by workflow nodes for review
 - Styled 404 and 500 error pages matching the Arc design system
 - `--debug` flag switches log level from INFO to DEBUG for troubleshooting

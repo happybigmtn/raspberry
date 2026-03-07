@@ -241,7 +241,7 @@
         "icon": "clock-rotate-left",
         "groups": [
           {
-            "group": "Changelog",
+            "group": "March 2026",
             "icon": "clock-rotate-left",
             "pages": [
               "changelog/2026-03-06",
@@ -249,7 +249,13 @@
               "changelog/2026-03-04",
               "changelog/2026-03-03",
               "changelog/2026-03-02",
-              "changelog/2026-03-01",
+              "changelog/2026-03-01"
+            ]
+          },
+          {
+            "group": "February 2026",
+            "icon": "clock-rotate-left",
+            "pages": [
               "changelog/2026-02-28",
               "changelog/2026-02-27",
               "changelog/2026-02-26",

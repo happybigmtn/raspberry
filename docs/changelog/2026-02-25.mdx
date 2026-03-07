@@ -21,10 +21,13 @@ This lets you build a library of domain-specific capabilities — a code review 
 
 API keys, tokens, and other secrets detected in NDJSON logs, `live.json`, and SSE events are now automatically redacted before being written. Previously, progress logs could contain sensitive values if the agent encountered them during tool execution. Now they're safe to share, store, and ship to external observability systems.
 
----
+## More
+
+<Accordion title="Workflows">
+- Nodes now track visit counts and stop after a configurable maximum, preventing infinite loops in dry-run mode
+- Set `codergen_mode = "one_shot"` to use a single LLM call instead of an agent loop, useful for classification and summarization nodes
+</Accordion>
 
 <Accordion title="Improvements">
 - Added Claude Haiku 4.5 to the model catalog for fast, cost-effective tasks within workflows
-- Nodes now track visit counts and stop after a configurable maximum, preventing infinite loops in dry-run mode
-- Set `codergen_mode = "one_shot"` to use a single LLM call instead of an agent loop, useful for classification and summarization nodes
 </Accordion>

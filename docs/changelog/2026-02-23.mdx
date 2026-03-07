@@ -29,11 +29,14 @@ The container is shared across all stages in a run, so tools have access to the 
 
 A pipeline kanban board shows all active runs with their status, progress, and any pending human-in-the-loop prompts. Watch workflows execute in real time from the browser.
 
----
+## More
+
+<Accordion title="CLI">
+- Color-coded terminal output with ANSI styling makes it easier to follow agent activity
+- Use `--output-format json` for NDJSON event streaming into CI/CD pipelines or custom dashboards
+</Accordion>
 
 <Accordion title="Improvements">
 - Ships with Claude Opus 4.6 (1M context window) as the default Anthropic model and Gemini 3.1 Pro Preview as the default Gemini model
 - Anthropic models use adaptive thinking by default for deeper reasoning on complex tasks
-- Color-coded terminal output with ANSI styling makes it easier to follow agent activity
-- Use `--output-format json` for NDJSON event streaming into CI/CD pipelines or custom dashboards
 </Accordion>

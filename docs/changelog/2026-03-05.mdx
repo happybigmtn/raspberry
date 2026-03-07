@@ -1,5 +1,5 @@
 ---
-title: "Slack interviews, GPT-5.4, per-node loop limits, and richer conditions"
+title: "Slack interviews, hooks, model failover, and GPT-5.4"
 date: "2026-03-05"
 ---
 
@@ -21,31 +21,11 @@ Arc can now conduct human-in-the-loop interviews directly in Slack. The new Slac
 
 Previously, interviews required the CLI or web UI. Now teams can answer Arc's questions without leaving Slack.
 
-## Richer condition expressions
-
-Transition conditions in DOT workflows now support `||` (or), `!` (not), numeric comparisons (`>`, `<`, `>=`, `<=`), `contains` (substring and array membership), and `matches` (regex, validated at parse time). The parser uses full operator precedence — `&&` binds tighter than `||`, and `!` is prefix.
-
-Previously, conditions were limited to `&&`-joined equality checks. Now you can write expressive guards like:
-
-```dot
-stage_a -> stage_b [condition="score > 80 || result contains 'approved'"];
-```
-
-## `arc parse` command
-
-A new `arc parse FILE.dot` subcommand prints the raw AST of a DOT workflow file as pretty-printed JSON. Useful for debugging workflow definitions or building tooling on top of Arc's parser.
-
-```bash
-arc parse my-workflow.dot
-```
-
-## Lifecycle hooks
+## Hooks
 
 Workflows can now trigger actions at key moments — before a stage starts, after it completes, or when a run fails. Use hooks to notify external systems, enforce policies, or gate execution on custom conditions.
 
-## HTTP hooks
-
-Hook executors can call external HTTP endpoints with full environment variable interpolation in request bodies. TLS mode is configurable per-hook, supporting strict validation for production and permissive mode for development.
+Three executor types are available: `http` for calling external endpoints (with TLS mode configurable per-hook), `prompt` for natural-language conditions evaluated by an LLM, and `agent` for autonomous decision-making.
 
 ```toml
 [[hooks]]
@@ -53,17 +33,6 @@ event = "stage.before"
 executor = "http"
 url = "https://api.example.com/webhook"
 tls_mode = "strict"
-```
-
-## Prompt and agent hooks
-
-Define hook conditions in natural language instead of rigid pattern matching. The hook evaluates whether to proceed by asking an LLM, so workflows can adapt to nuanced situations like "skip this stage if the code change is cosmetic."
-
-```toml
-[[hooks]]
-event = "stage.before"
-executor = "prompt"
-prompt = "Should this stage run given the changes so far?"
 ```
 
 ## Model failover
@@ -85,51 +54,19 @@ OpenAI's GPT-5.4 and GPT-5.4 Pro are now available in the model catalog. Use the
 stage_a [model="gpt54-pro"];
 ```
 
-## Per-node loop limits
+## More
 
-Individual nodes can now override the graph-level `max_node_visits` setting with a `max_visits` attribute. This gives tighter control over specific loops — for example, allowing a fix-and-verify cycle to iterate more than the default while keeping the rest of the graph constrained.
+<Accordion title="CLI">
+- Added `arc parse` command for printing the raw AST of a DOT workflow as JSON
+- Persistent CLI defaults in `~/.arc/cli.toml` — set output format, default workflow, or any flag once
+</Accordion>
 
-Previously, the only option was the graph-wide `max_node_visits` setting (or the dry-run default of 10), which applied uniformly to every node.
-
-```dot
-verify [type="agent" max_visits=20];
-```
-
-## `$$` escape for variable expansion
-
-Prompts that need a literal `$` character can now use `$$` to escape it. Previously, `$goal` in a prompt would always be expanded as a variable, with no way to output a literal dollar sign. This also fixes a subtle bug where `$goal` could match as a substring of other `$`-prefixed text.
-
-```dot
-stage_a [prompt="The cost is $$50 and the goal is $goal"];
-```
-
-## Docker Compose demo
-
-Get a complete Arc demo environment running locally with a single command — API server, web app, and docs site, all pre-configured.
-
-```bash
-docker compose -f docker-compose.demo.yaml up
-```
-
-## CLI config file
-
-Persistent CLI defaults in `~/.arc/cli.toml`. Set your preferred output format, default workflow, or any other CLI option once instead of passing flags every time.
-
-```toml
-output_format = "json"
-verbose = true
-```
-
-## Simplified handler type names
-
-Handler types have been renamed for clarity: `agent_loop` is now `agent`, and `one_shot` is now `prompt`. The old names still work as aliases, so existing workflows won't break.
-
-```dot
-stage_a [type="agent"];
-stage_b [type="prompt"];
-```
-
----
+<Accordion title="Workflows">
+- Richer condition expressions: `||`, `!`, numeric comparisons, `contains`, and `matches` (regex)
+- Per-node `max_visits` attribute overrides the graph-level `max_node_visits` setting
+- `$$` escapes literal dollar signs in prompts, fixing a bug where `$goal` could match as a substring
+- Simplified handler type names: `agent_loop` is now `agent`, `one_shot` is now `prompt` (old names still work)
+</Accordion>
 
 <Accordion title="Fixes">
 - Fixed a server-side error message that could leak to the browser in production

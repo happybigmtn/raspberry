@@ -1,25 +1,13 @@
 ---
-title: "Pagination, concurrency limits, usage tracking, and SSH access"
+title: "Concurrency limits, SSH access, and timer nodes"
 date: "2026-03-04"
 ---
-
-## Pagination
-
-All list API endpoints now support offset-based pagination with `offset` and `limit` parameters. Previously, endpoints returned all results at once, which became slow as run history grew.
-
-```bash
-curl "http://localhost:3000/runs?offset=0&limit=20"
-```
 
 ## Concurrency limiter
 
 Set `max_concurrent_runs` in server config to control how many runs execute simultaneously. Additional runs queue automatically with `queued` and `starting` states visible in the UI and API.
 
 Previously, starting too many runs at once could overwhelm the machine. Now excess runs wait in a queue and start as capacity frees up.
-
-## Usage API
-
-`GET /usage` returns aggregate token counts and estimated costs across all runs, broken down by model. Use it for budgeting, monitoring spend, or building cost dashboards.
 
 ## SSH access to running sandboxes
 
@@ -31,17 +19,16 @@ arc run start --ssh my-workflow.dot
 
 Use `--preserve-sandbox` to keep sandboxes alive after a run completes for post-mortem inspection.
 
-## Hot config reload
-
-Changes to `server.toml` are automatically detected and applied without restarting the server. Model defaults from the catalog are also refreshed. No more restart-to-reconfigure cycles during development.
-
 ## Timer nodes
 
 Add `wait.timer` nodes to workflows that pause for a configured duration. Useful for rate limiting between API calls or waiting for external processes to complete.
 
----
+## More
 
 <Accordion title="API">
+- All list endpoints now support offset-based pagination with `offset` and `limit` parameters
+- New `GET /usage` endpoint returns aggregate token counts and estimated costs broken down by model
+- Hot config reload — changes to `server.toml` are detected and applied without restarting the server
 - All error responses now use a consistent JSON structure with error codes and messages
 </Accordion>
 

@@ -1,5 +1,5 @@
 ---
-title: "Arc web app, new LLM providers, and git checkpointing"
+title: "Arc web app and git checkpointing"
 date: "2026-02-28"
 ---
 
@@ -15,15 +15,18 @@ Arc now automatically creates git commits at each workflow node, so you can see 
 
 Previously, you could only see the final output of a run. Now you can trace exactly what changed at each step and when.
 
-## Kimi, Z.AI, and Minimax providers
+## More
 
-Three new LLM providers expand model selection in workflow stylesheets. Configure API keys in your `.env` file and reference their models in DOT `model` attributes.
+<Accordion title="CLI">
+- Tag runs with custom labels and filter them with `arc run list`
+</Accordion>
 
----
+<Accordion title="Workflows">
+- DOT parser now supports unquoted bare string values (e.g., `model = gpt-5.2`) for cleaner workflow definitions
+</Accordion>
 
 <Accordion title="Improvements">
-- DOT parser now supports unquoted bare string values (e.g., `model = gpt-5.2`) for cleaner workflow definitions
+- Kimi, Z.AI, and Minimax LLM providers added to model catalog
 - Runs use time-sortable ULIDs instead of UUIDs, making it easier to find recent runs in logs and the API
-- Tag runs with custom labels and filter them with `arc run list`
 - Asymmetric JWT authentication between arc-web and the API server, with GitHub identity in the token
 </Accordion>

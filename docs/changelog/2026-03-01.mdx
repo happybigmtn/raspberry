@@ -32,15 +32,7 @@ Workflow branches now execute in isolated git worktrees, so parallel stages can 
 
 Previously, parallel stages sharing a single worktree would overwrite each other's changes. Worktree isolation makes parallel execution reliable.
 
-## SQLite persistence
-
-Run data, sessions, and verifications are stored in a local SQLite database. This replaces the previous file-only approach, enabling fast querying and the new Insights feature.
-
-## Light mode
-
-Full light mode support with a theme toggle in the web app.
-
----
+## More
 
 <Accordion title="Fixes">
 - Fixed non-transient infrastructure failures (like invalid API keys) triggering retries instead of failing immediately
@@ -51,5 +43,7 @@ Full light mode support with a theme toggle in the web app.
 - Interactive SVG graph rendering with animated nodes showing which stage is currently executing
 - Failure signatures and circuit breakers detect deterministic failure cycles (like the same syntax error on every retry) and short-circuit them, saving tokens and time
 - Stall watchdog detects hung pipeline handlers and reports them instead of silently blocking
+- Run data, sessions, and verifications stored in SQLite for fast querying and the Insights feature
+- Full light mode support with a theme toggle in the web app
 - File-based structured tracing across all crates controlled by `ARC_LOG`
 </Accordion>

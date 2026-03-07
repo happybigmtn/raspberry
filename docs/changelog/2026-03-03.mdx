@@ -1,11 +1,11 @@
 ---
-title: "mTLS auth, setup wizard, and arc doctor"
+title: "Authentication, setup wizard, and arc doctor"
 date: "2026-03-03"
 ---
 
-## mTLS authentication
+## Authentication
 
-The API server now supports mutual TLS — both client and server present certificates, providing strong identity verification for production deployments. This is the recommended auth method for environments where network-level trust isn't sufficient.
+Two new authentication methods for the API server. Mutual TLS provides strong identity verification for production deployments — both client and server present certificates. For teams on a Tailscale network, API requests can authenticate using Tailscale identity with no tokens or certificates required.
 
 ## Setup wizard
 
@@ -28,26 +28,11 @@ arc doctor --live  # includes real-time API probes to each configured provider
 
 If something is misconfigured, `arc doctor` tells you exactly what's wrong and how to fix it.
 
-## Tailscale authentication
+## More
 
-For teams on a Tailscale network, API requests can authenticate using Tailscale identity — no tokens, no certificates, just the identity your machine already has.
-
-## TOML configuration
-
-All configuration moves to `~/.arc/arc.toml` — API keys, auth settings, GitHub App config, and server options in one file. Environment variables still work but the TOML file is the recommended approach.
-
-```toml
-[auth]
-provider = "github"
-
-[providers.anthropic]
-api_key = "sk-ant-..."
-
-[web]
-url = "http://localhost:5173"
-```
-
----
+<Accordion title="CLI">
+- All configuration consolidated into `~/.arc/arc.toml` — API keys, auth settings, GitHub App config, and server options in one file
+</Accordion>
 
 <Accordion title="Fixes">
 - Fixed JWT `sub` claim using the GitHub API URL instead of the profile URL, causing identity mismatches
