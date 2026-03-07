@@ -82,13 +82,19 @@ pub fn parse_v4a_patch(text: &str) -> Result<Vec<PatchOperation>, String> {
                 if l.starts_with("*** ") && !l.starts_with("@@ ") {
                     break;
                 }
-                if l.starts_with("@@ ") && l.ends_with(" @@") {
-                    let context_line = l[3..l.len() - 3].to_string();
+                if l == "@@" || (l.starts_with("@@ ") && l.ends_with(" @@")) {
+                    let context_line = if l == "@@" {
+                        String::new()
+                    } else {
+                        l[3..l.len() - 3].to_string()
+                    };
                     i += 1;
                     let mut changes = Vec::new();
                     while i < lines.len() {
                         let cl = lines[i];
-                        if cl.starts_with("*** ") || (cl.starts_with("@@ ") && cl.ends_with(" @@"))
+                        if cl.starts_with("*** ")
+                            || cl == "@@"
+                            || (cl.starts_with("@@ ") && cl.ends_with(" @@"))
                         {
                             break;
                         }
@@ -161,23 +167,45 @@ fn apply_hunks(content: &str, hunks: &[Hunk]) -> Result<String, String> {
 
     // Apply hunks in reverse order to preserve line indices
     for hunk in hunks.iter().rev() {
-        let context_pos = lines
-            .iter()
-            .position(|l| l.trim() == hunk.context_line.trim())
-            .ok_or_else(|| {
-                format!(
-                    "Could not find context line in file: '{}'",
-                    hunk.context_line
-                )
-            })?;
+        let has_explicit_context = !hunk.context_line.is_empty();
+
+        let context_pos = if has_explicit_context {
+            lines
+                .iter()
+                .position(|l| l.trim() == hunk.context_line.trim())
+                .ok_or_else(|| {
+                    format!(
+                        "Could not find context line in file: '{}'",
+                        hunk.context_line
+                    )
+                })?
+        } else {
+            // Bare @@ — locate position from the first remove or context line
+            let first_match_text = hunk
+                .changes
+                .iter()
+                .find_map(|c| match c {
+                    Change::Remove(t) | Change::Context(t) => Some(t.as_str()),
+                    Change::Add(_) => None,
+                })
+                .ok_or("Hunk with bare @@ has no remove or context lines to locate position")?;
+            lines
+                .iter()
+                .position(|l| l.trim() == first_match_text.trim())
+                .ok_or_else(|| {
+                    format!("Could not find line in file: '{first_match_text}'")
+                })?
+        };
 
         // Build what we expect to find and what to replace with
         let mut new_lines: Vec<String> = Vec::new();
 
-        // The context line itself is part of the hunk context
-        // We start replacing at context_pos
-        new_lines.push(lines[context_pos].clone());
-        let mut file_idx = context_pos + 1;
+        let mut file_idx = context_pos;
+        if has_explicit_context {
+            // The context line itself is preserved
+            new_lines.push(lines[context_pos].clone());
+            file_idx = context_pos + 1;
+        }
 
         for change in &hunk.changes {
             match change {
@@ -196,12 +224,14 @@ fn apply_hunks(content: &str, hunks: &[Hunk]) -> Result<String, String> {
             }
         }
 
-        // Calculate total lines consumed from original (context_line + removes + context changes)
-        let total_original_lines = 1 + hunk
-            .changes
-            .iter()
-            .filter(|c| matches!(c, Change::Remove(_) | Change::Context(_)))
-            .count();
+        // Calculate total lines consumed from original
+        let explicit_context_count = if has_explicit_context { 1 } else { 0 };
+        let total_original_lines = explicit_context_count
+            + hunk
+                .changes
+                .iter()
+                .filter(|c| matches!(c, Change::Remove(_) | Change::Context(_)))
+                .count();
 
         // Replace the range
         let end = (context_pos + total_original_lines).min(lines.len());
@@ -334,6 +364,245 @@ mod tests {
         assert!(matches!(&ops[0], PatchOperation::Add { .. }));
         assert!(matches!(&ops[1], PatchOperation::Delete { .. }));
         assert!(matches!(&ops[2], PatchOperation::Update { .. }));
+    }
+
+    #[test]
+    fn parse_v4a_bare_at_at_hunk() {
+        let patch = "\
+*** Begin Patch
+*** Update File: src/game.py
+@@
+-from src.cards import Suit
++from src.cards import Card, Suit
+*** End Patch";
+
+        let ops = parse_v4a_patch(patch).unwrap();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            PatchOperation::Update { path, hunks } => {
+                assert_eq!(path, "src/game.py");
+                assert_eq!(hunks.len(), 1);
+                assert_eq!(hunks[0].context_line, "");
+                assert_eq!(hunks[0].changes.len(), 2);
+            }
+            _ => panic!("Expected Update operation"),
+        }
+    }
+
+    #[test]
+    fn parse_v4a_multiple_bare_at_at_hunks() {
+        let patch = "\
+*** Begin Patch
+*** Update File: src/game.py
+@@
+-from src.cards import Suit
++from src.cards import Card, Suit
+@@
+-    stock: list = field(default_factory=list)
++    stock: list[Card] = field(default_factory=list)
+*** End Patch";
+
+        let ops = parse_v4a_patch(patch).unwrap();
+        match &ops[0] {
+            PatchOperation::Update { hunks, .. } => {
+                assert_eq!(hunks.len(), 2);
+                assert_eq!(hunks[0].context_line, "");
+                assert_eq!(hunks[1].context_line, "");
+            }
+            _ => panic!("Expected Update operation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_bare_at_at_update() {
+        let mut files = HashMap::new();
+        files.insert(
+            "src/game.py".to_string(),
+            "from src.cards import Suit\nfrom src.piles import Pile\n\nclass GameState:\n    stock: list = field(default_factory=list)\n    waste: list = field(default_factory=list)".to_string(),
+        );
+        let env = MutableMockSandbox::new(files);
+
+        let ops = vec![PatchOperation::Update {
+            path: "src/game.py".into(),
+            hunks: vec![
+                Hunk {
+                    context_line: String::new(),
+                    changes: vec![
+                        Change::Remove("from src.cards import Suit".into()),
+                        Change::Add("from src.cards import Card, Suit".into()),
+                    ],
+                },
+                Hunk {
+                    context_line: String::new(),
+                    changes: vec![
+                        Change::Remove("    stock: list = field(default_factory=list)".into()),
+                        Change::Remove("    waste: list = field(default_factory=list)".into()),
+                        Change::Add("    stock: list[Card] = field(default_factory=list)".into()),
+                        Change::Add("    waste: list[Card] = field(default_factory=list)".into()),
+                    ],
+                },
+            ],
+        }];
+
+        let result = apply_patch_operations(&ops, &env).await.unwrap();
+        assert!(result.contains("Updated file: src/game.py"));
+
+        let content = env.read_file("src/game.py", None, None).await.unwrap();
+        assert!(content.contains("from src.cards import Card, Suit"));
+        assert!(!content.contains("from src.cards import Suit\n"));
+        assert!(content.contains("stock: list[Card]"));
+        assert!(content.contains("waste: list[Card]"));
+        assert!(content.contains("from src.piles import Pile"));
+    }
+
+    #[test]
+    fn parse_v4a_mixed_bare_and_contextual_hunks() {
+        let patch = "\
+*** Begin Patch
+*** Update File: src/lib.rs
+@@ fn setup() @@
+-    old_setup();
++    new_setup();
+@@
+-    old_teardown();
++    new_teardown();
+*** End Patch";
+
+        let ops = parse_v4a_patch(patch).unwrap();
+        match &ops[0] {
+            PatchOperation::Update { hunks, .. } => {
+                assert_eq!(hunks.len(), 2);
+                assert_eq!(hunks[0].context_line, "fn setup()");
+                assert_eq!(hunks[1].context_line, "");
+            }
+            _ => panic!("Expected Update operation"),
+        }
+    }
+
+    #[test]
+    fn parse_v4a_bare_at_at_with_context_lines() {
+        let patch = "\
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
+ fn unchanged() {
+-    old_line();
++    new_line();
+ }
+*** End Patch";
+
+        let ops = parse_v4a_patch(patch).unwrap();
+        match &ops[0] {
+            PatchOperation::Update { hunks, .. } => {
+                assert_eq!(hunks.len(), 1);
+                assert_eq!(hunks[0].context_line, "");
+                assert_eq!(hunks[0].changes.len(), 4);
+                assert_eq!(hunks[0].changes[0], Change::Context("fn unchanged() {".into()));
+                assert_eq!(hunks[0].changes[1], Change::Remove("    old_line();".into()));
+                assert_eq!(hunks[0].changes[2], Change::Add("    new_line();".into()));
+                assert_eq!(hunks[0].changes[3], Change::Context("}".into()));
+            }
+            _ => panic!("Expected Update operation"),
+        }
+    }
+
+    #[test]
+    fn parse_v4a_bare_at_at_add_only_errors_on_apply() {
+        let patch = "\
+*** Begin Patch
+*** Update File: src/lib.rs
+@@
++new_line();
+*** End Patch";
+
+        // Parsing succeeds — the hunk is structurally valid
+        let ops = parse_v4a_patch(patch).unwrap();
+        match &ops[0] {
+            PatchOperation::Update { hunks, .. } => {
+                assert_eq!(hunks[0].context_line, "");
+                assert_eq!(hunks[0].changes.len(), 1);
+                assert_eq!(hunks[0].changes[0], Change::Add("new_line();".into()));
+            }
+            _ => panic!("Expected Update operation"),
+        }
+
+        // Applying fails — no remove/context line to locate position
+        match &ops[0] {
+            PatchOperation::Update { hunks, .. } => {
+                let result = apply_hunks("fn main() {}\n", hunks);
+                assert!(result.is_err());
+                assert!(result.unwrap_err().contains("no remove or context lines"));
+            }
+            _ => panic!("Expected Update operation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_bare_at_at_with_context_lines() {
+        let mut files = HashMap::new();
+        files.insert(
+            "src/lib.rs".to_string(),
+            "fn unchanged() {\n    old_line();\n}".to_string(),
+        );
+        let env = MutableMockSandbox::new(files);
+
+        let ops = vec![PatchOperation::Update {
+            path: "src/lib.rs".into(),
+            hunks: vec![Hunk {
+                context_line: String::new(),
+                changes: vec![
+                    Change::Context("fn unchanged() {".into()),
+                    Change::Remove("    old_line();".into()),
+                    Change::Add("    new_line();".into()),
+                    Change::Context("}".into()),
+                ],
+            }],
+        }];
+
+        let result = apply_patch_operations(&ops, &env).await.unwrap();
+        assert!(result.contains("Updated file: src/lib.rs"));
+
+        let content = env.read_file("src/lib.rs", None, None).await.unwrap();
+        assert_eq!(content, "fn unchanged() {\n    new_line();\n}");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_mixed_bare_and_contextual_hunks() {
+        let mut files = HashMap::new();
+        files.insert(
+            "src/lib.rs".to_string(),
+            "import foo\nimport bar\n\ndef setup():\n    old_setup()\n\ndef teardown():\n    old_teardown()\n".to_string(),
+        );
+        let env = MutableMockSandbox::new(files);
+
+        let ops = vec![PatchOperation::Update {
+            path: "src/lib.rs".into(),
+            hunks: vec![
+                Hunk {
+                    context_line: "def setup():".into(),
+                    changes: vec![
+                        Change::Remove("    old_setup()".into()),
+                        Change::Add("    new_setup()".into()),
+                    ],
+                },
+                Hunk {
+                    context_line: String::new(),
+                    changes: vec![
+                        Change::Remove("    old_teardown()".into()),
+                        Change::Add("    new_teardown()".into()),
+                    ],
+                },
+            ],
+        }];
+
+        let result = apply_patch_operations(&ops, &env).await.unwrap();
+        assert!(result.contains("Updated file: src/lib.rs"));
+
+        let content = env.read_file("src/lib.rs", None, None).await.unwrap();
+        assert!(content.contains("new_setup()"));
+        assert!(content.contains("new_teardown()"));
+        assert!(!content.contains("old_setup()"));
+        assert!(!content.contains("old_teardown()"));
     }
 
     #[tokio::test]

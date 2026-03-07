@@ -139,8 +139,20 @@ Read files to understand code before modifying. Use offset/limit for large files
 ## apply_patch
 Use the v4a patch format for all file modifications. The format uses `*** Begin Patch` / \
 `*** End Patch` delimiters with `*** Add File:`, `*** Delete File:`, `*** Update File:` \
-operations. Update operations use `@@` context hints and +/- prefixes for changes. Show 3 \
-lines of context around each change. NEVER use `applypatch` or `apply-patch`, only `apply_patch`.
+operations. Update hunks MUST use `@@ context line text @@` headers — place a line of \
+existing code between the `@@ ` and ` @@` markers to anchor each hunk. Use `-` for \
+removals, `+` for additions, and space-prefix for unchanged context lines. Show 3 lines \
+of context around each change. NEVER use `applypatch` or `apply-patch`, only `apply_patch`.
+
+Example:
+```
+*** Begin Patch
+*** Update File: src/main.py
+@@ def hello(): @@
+-    print(\"old\")
++    print(\"new\")
+*** End Patch
+```
 
 ## write_file
 Use for creating new files. For modifications, prefer apply_patch.
