@@ -43,6 +43,9 @@ fn spawn_event_forwarder(
     let mut rx = session.subscribe();
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
+            // Reset watchdog on every event, including streaming deltas
+            emitter.touch();
+
             // Track file changes from tool calls
             match &event.event {
                 AgentEvent::ToolCallStarted {
