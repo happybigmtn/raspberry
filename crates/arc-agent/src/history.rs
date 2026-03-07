@@ -30,15 +30,16 @@ impl History {
         self.strip_opaque_reasoning();
     }
 
-    /// Remove provider-specific reasoning items that are no longer valid after compaction.
-    /// OpenAI reasoning items are opaque round-trip data tied to specific API responses;
-    /// after compaction replaces their surrounding context with a summary, they serve no
-    /// purpose and can violate API constraints (reasoning must be followed by its output).
+    /// Remove provider-specific opaque items that are no longer valid after compaction.
+    /// OpenAI reasoning and message items are opaque round-trip data tied to specific API
+    /// responses; after compaction replaces their surrounding context with a summary, they
+    /// serve no purpose and can violate API constraints (reasoning must be followed by its
+    /// output, identified by the message item's `id`).
     fn strip_opaque_reasoning(&mut self) {
         for turn in &mut self.turns {
             if let Turn::Assistant { provider_parts, .. } = turn {
                 provider_parts.retain(|p| {
-                    !matches!(p, ContentPart::Other { kind, .. } if kind == "openai_reasoning")
+                    !matches!(p, ContentPart::Other { kind, .. } if kind == "openai_reasoning" || kind == "openai_message")
                 });
             }
         }

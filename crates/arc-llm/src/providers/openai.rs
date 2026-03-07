@@ -219,14 +219,24 @@ fn translate_input(messages: &[Message]) -> (Option<String>, Vec<serde_json::Val
                 }
             }
             Role::Assistant => {
+                // If we have a preserved opaque message item (with id/status), use
+                // it instead of constructing a new message from Text parts.  This is
+                // required so that reasoning items can find their "required following
+                // item" during Responses API round-tripping.
+                let has_opaque_message = msg.content.iter().any(|p| {
+                    matches!(p, ContentPart::Other { kind, .. } if kind == "openai_message")
+                });
                 for part in &msg.content {
                     match part {
-                        ContentPart::Text(text) => {
+                        ContentPart::Text(text) if !has_opaque_message => {
                             input.push(serde_json::json!({
                                 "type": "message",
                                 "role": "assistant",
                                 "content": [{"type": "output_text", "text": text}],
                             }));
+                        }
+                        ContentPart::Text(_) => {
+                            // Skip — using preserved opaque message item instead
                         }
                         ContentPart::ToolCall(tc) if !tc.name.is_empty() => {
                             let args = tc
@@ -249,8 +259,10 @@ fn translate_input(messages: &[Message]) -> (Option<String>, Vec<serde_json::Val
                                 "arguments": args,
                             }));
                         }
-                        // Round-trip opaque items (e.g. reasoning) back to the API
-                        ContentPart::Other { kind, data } if kind == "openai_reasoning" => {
+                        // Round-trip opaque items back to the API
+                        ContentPart::Other { kind, data }
+                            if kind == "openai_reasoning" || kind == "openai_message" =>
+                        {
                             input.push(data.clone());
                         }
                         _ => {}
@@ -398,6 +410,13 @@ fn parse_output(output: &[serde_json::Value]) -> (Vec<ContentPart>, bool) {
         let item_type = item.get("type").and_then(serde_json::Value::as_str);
         match item_type {
             Some("message") => {
+                // Preserve the full message item for Responses API round-tripping.
+                // The item's `id` and `status` fields are required so that reasoning
+                // items preceding it can find their "required following item."
+                parts.push(ContentPart::Other {
+                    kind: "openai_message".to_string(),
+                    data: item.clone(),
+                });
                 if let Some(content) = item.get("content").and_then(|c| c.as_array()) {
                     for block in content {
                         if block.get("type").and_then(serde_json::Value::as_str)
@@ -471,6 +490,8 @@ struct SseStreamState {
     tool_calls: Vec<ToolCall>,
     /// Raw reasoning output items to preserve for round-tripping.
     reasoning_items: Vec<serde_json::Value>,
+    /// Raw message output items to preserve for round-tripping.
+    message_items: Vec<serde_json::Value>,
     usage: Usage,
     finish_reason: FinishReason,
     emitted_start: bool,
@@ -709,6 +730,8 @@ fn handle_output_item_done(
                 events.push(StreamEvent::TextEnd { text_id: None });
                 state.emitted_text_start = false;
             }
+            let item = json.get("item").unwrap_or(json);
+            state.message_items.push(item.clone());
         }
         Some("function_call") => {
             let item = json.get("item").unwrap_or(json);
@@ -805,6 +828,13 @@ fn handle_response_completed(
     for item in &state.reasoning_items {
         content_parts.push(ContentPart::Other {
             kind: "openai_reasoning".to_string(),
+            data: item.clone(),
+        });
+    }
+    // Preserve full message output items for Responses API round-tripping
+    for item in &state.message_items {
+        content_parts.push(ContentPart::Other {
+            kind: "openai_message".to_string(),
             data: item.clone(),
         });
     }
@@ -956,6 +986,7 @@ impl ProviderAdapter for Adapter {
             accumulated_text: String::new(),
             tool_calls: Vec::new(),
             reasoning_items: Vec::new(),
+            message_items: Vec::new(),
             usage: Usage::default(),
             finish_reason: FinishReason::Stop,
             emitted_start: false,
@@ -1310,6 +1341,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_output_preserves_message_items() {
+        let output = vec![
+            serde_json::json!({
+                "type": "reasoning",
+                "id": "rs_abc",
+                "summary": []
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "msg_xyz",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello"}]
+            }),
+            serde_json::json!({
+                "type": "function_call",
+                "id": "fc_123",
+                "call_id": "call_456",
+                "name": "search",
+                "arguments": "{}"
+            }),
+        ];
+        let (parts, has_tool_calls) = parse_output(&output);
+        assert!(has_tool_calls);
+        // reasoning + openai_message + text + function_call
+        assert_eq!(parts.len(), 4);
+        assert!(matches!(&parts[0], ContentPart::Other { kind, .. } if kind == "openai_reasoning"));
+        assert!(matches!(&parts[1], ContentPart::Other { kind, data } if kind == "openai_message" && data["id"] == "msg_xyz"));
+        assert!(matches!(&parts[2], ContentPart::Text(t) if t == "Hello"));
+        assert!(matches!(&parts[3], ContentPart::ToolCall(_)));
+    }
+
+    #[test]
     fn reasoning_items_round_trip_through_translate_input() {
         let reasoning = serde_json::json!({
             "type": "reasoning",
@@ -1340,6 +1404,76 @@ mod tests {
         assert_eq!(input[1]["type"], "function_call");
         assert_eq!(input[1]["id"], "fc_def456");
         assert_eq!(input[1]["call_id"], "call_789");
+    }
+
+    #[test]
+    fn reasoning_message_function_call_round_trip() {
+        // Simulates an assistant turn with reasoning + text + tool call.
+        // The opaque message item (with id/status) must be used instead of
+        // constructing a new one from Text, so the reasoning item can find
+        // its "required following item."
+        let reasoning = serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_xyz789",
+            "summary": [{"type": "summary_text", "text": "Let me check..."}]
+        });
+        let opaque_message = serde_json::json!({
+            "type": "message",
+            "id": "msg_abc123",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Checking now."}]
+        });
+        let mut tc = ToolCall::new("call_001", "shell", serde_json::json!({"cmd": "ls"}));
+        tc.provider_metadata = Some(serde_json::json!({"id": "fc_def456"}));
+
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentPart::Other {
+                    kind: "openai_reasoning".to_string(),
+                    data: reasoning,
+                },
+                ContentPart::Other {
+                    kind: "openai_message".to_string(),
+                    data: opaque_message,
+                },
+                ContentPart::text("Checking now."),
+                ContentPart::ToolCall(tc),
+            ],
+            name: None,
+            tool_call_id: None,
+        };
+        let (_, input) = translate_input(&[msg]);
+        assert_eq!(input.len(), 3);
+        // Reasoning first
+        assert_eq!(input[0]["type"], "reasoning");
+        assert_eq!(input[0]["id"], "rs_xyz789");
+        // Opaque message with id/status (not a reconstructed one)
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["id"], "msg_abc123");
+        assert_eq!(input[1]["status"], "completed");
+        // Function call last
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["id"], "fc_def456");
+    }
+
+    #[test]
+    fn text_without_opaque_message_still_constructs_message() {
+        // For non-OpenAI turns or turns without preserved message items,
+        // Text parts should still produce a constructed message.
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::text("Hello")],
+            name: None,
+            tool_call_id: None,
+        };
+        let (_, input) = translate_input(&[msg]);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "assistant");
+        // No id field on constructed messages
+        assert!(input[0].get("id").is_none());
     }
 
     #[test]
@@ -1403,6 +1537,7 @@ mod tests {
             accumulated_text: String::new(),
             tool_calls: Vec::new(),
             reasoning_items: Vec::new(),
+            message_items: Vec::new(),
             usage: Usage::default(),
             finish_reason: FinishReason::Stop,
             emitted_start: true,
