@@ -1044,11 +1044,13 @@ fn build_api_request(
 
     let auto_cache = is_auto_cache_enabled(request.provider_options.as_ref());
 
-    let mut system_value = system.map(|s| {
-        if auto_cache {
-            system_with_cache_control(&s)
+    let mut system_value = system.and_then(|s| {
+        if s.trim().is_empty() {
+            None
+        } else if auto_cache {
+            Some(system_with_cache_control(&s))
         } else {
-            serde_json::Value::String(s)
+            Some(serde_json::Value::String(s))
         }
     });
 
@@ -1579,6 +1581,32 @@ mod tests {
         let arr = system.as_array().expect("system should be an array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn build_api_request_omits_whitespace_only_system_prompt() {
+        let adapter = Adapter::new("test-key");
+        let request = Request {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![Message::system("   \n\t"), Message::user("Hello")],
+            provider: Some("anthropic".to_string()),
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(128),
+            stop_sequences: None,
+            reasoning_effort: None,
+            metadata: None,
+            provider_options: None,
+        };
+
+        let (api_request, _req_builder) = build_api_request(&adapter, &request, false);
+        assert!(
+            api_request.system.is_none(),
+            "whitespace-only system prompts should be omitted"
+        );
     }
 
     fn make_request_with_format(format: crate::types::ResponseFormat) -> Request {

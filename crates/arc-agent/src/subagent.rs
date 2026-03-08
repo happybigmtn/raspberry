@@ -100,6 +100,7 @@ impl SubAgentManager {
 
         let task_prompt_for_spawn = task_prompt.clone();
         let task = tokio::spawn(async move {
+            session.initialize().await;
             session.process_input(&task_prompt_for_spawn).await?;
             let turns = session.history().turns();
             let last_text = turns.iter().rev().find_map(|t| match t {
@@ -369,7 +370,10 @@ pub fn make_close_agent_tool(manager: Arc<tokio::sync::Mutex<SubAgentManager>>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SessionConfig;
     use crate::test_support::*;
+    use arc_llm::provider::ProviderAdapter;
+    use arc_llm::types::Role;
 
     // --- Tests ---
 
@@ -389,6 +393,36 @@ mod tests {
         let agent_id = result.unwrap();
         assert!(!agent_id.is_empty());
         assert!(manager.get(&agent_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn spawn_initializes_session_before_processing_input() {
+        let mut manager = SubAgentManager::new(3);
+
+        let provider = Arc::new(CapturingLlmProvider::new());
+        let provider_ref = provider.clone();
+        let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
+        let profile = Arc::new(TestProfile::new());
+        let env = Arc::new(MockSandbox::default());
+        let session = Session::new(client, profile, env, SessionConfig::default());
+
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        let _ = manager.wait(&agent_id).await.unwrap();
+
+        let captured = provider_ref.captured_request.lock().unwrap();
+        let request = captured
+            .as_ref()
+            .expect("request should have been captured");
+        let system_message = request
+            .messages
+            .iter()
+            .find(|message| message.role == Role::System)
+            .expect("subagent request should include system message");
+
+        assert!(
+            !system_message.text().trim().is_empty(),
+            "subagent system prompt should not be empty"
+        );
     }
 
     #[tokio::test]

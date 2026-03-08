@@ -42,7 +42,10 @@ pub fn extract_system_prompt(messages: &[Message]) -> (Option<String>, Vec<&Mess
     let mut other = Vec::new();
     for msg in messages {
         if msg.role == Role::System || msg.role == Role::Developer {
-            system_parts.push(msg.text());
+            let text = msg.text();
+            if !text.trim().is_empty() {
+                system_parts.push(text);
+            }
         } else {
             other.push(msg);
         }
@@ -469,6 +472,21 @@ mod tests {
         let (sys, other) = extract_system_prompt(&msgs);
         assert_eq!(sys.as_deref(), Some("dev instructions"));
         assert_eq!(other.len(), 1);
+    }
+
+    #[test]
+    fn extract_system_prompt_ignores_whitespace_system_and_developer() {
+        let dev = Message {
+            role: Role::Developer,
+            content: vec![ContentPart::text(" \n\t ")],
+            name: None,
+            tool_call_id: None,
+        };
+        let msgs = vec![Message::system("   "), dev, Message::user("hi")];
+        let (sys, other) = extract_system_prompt(&msgs);
+        assert_eq!(sys, None);
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].role, Role::User);
     }
 
     #[test]

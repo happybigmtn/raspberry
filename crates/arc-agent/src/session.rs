@@ -677,7 +677,10 @@ impl Session {
     }
 
     fn build_request(&self) -> Request {
-        let mut messages = vec![Message::system(self.system_prompt.clone())];
+        let mut messages = Vec::new();
+        if !self.system_prompt.trim().is_empty() {
+            messages.push(Message::system(self.system_prompt.clone()));
+        }
         messages.extend(self.history.convert_to_messages());
 
         let tools = self.provider_profile.tools();
@@ -722,7 +725,7 @@ mod tests {
     use crate::tool_registry::{RegisteredTool, ToolRegistry};
     use arc_llm::error::ProviderErrorDetail;
     use arc_llm::provider::{ProviderAdapter, StreamEventStream};
-    use arc_llm::types::{Response, ToolDefinition};
+    use arc_llm::types::{Response, Role, ToolDefinition};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // --- Tests ---
@@ -1443,6 +1446,35 @@ mod tests {
         assert!(
             system_text.contains("Always use TDD"),
             "System prompt should contain user instructions"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_omits_system_message_when_prompt_empty() {
+        let provider = Arc::new(CapturingLlmProvider::new());
+        let provider_ref = provider.clone();
+        let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
+        let profile = Arc::new(TestProfile::new());
+        let env = Arc::new(MockSandbox::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default());
+
+        // Intentionally skip initialize(): system prompt remains empty.
+        session.process_input("test").await.unwrap();
+
+        let captured = provider_ref.captured_request.lock().unwrap();
+        let request = captured
+            .as_ref()
+            .expect("request should have been captured");
+        assert!(
+            request
+                .messages
+                .iter()
+                .all(|message| message.role != Role::System),
+            "request should not contain an empty system message"
+        );
+        assert!(
+            matches!(request.messages.first(), Some(message) if message.role == Role::User),
+            "first request message should be user input"
         );
     }
 
