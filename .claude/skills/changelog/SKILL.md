@@ -12,17 +12,17 @@ Generate user-facing changelog entries from git history and write them as Mintli
 
 ## Workflow
 
-### 1. Determine date range
+### 1. Read watermark
 
-Read filenames in `docs/changelog/` to find the most recent entry date. If no entries exist, the changelog starts from 2025-02-19 (first commit).
+Read `.claude/skills/changelog/watermark` for the last processed commit SHA. If the file is missing (first run), use the commit from 30 days ago as the starting point: `git log --before="30 days ago" --format=%H -1 main`.
 
 ### 2. Gather changes
 
-Run `git log --oneline --no-merges main` for commits **on or after** the last entry date (inclusive). This ensures re-running the skill on the same day picks up commits that landed after the previous run. Read commit messages and changed files to understand the actual user-facing impact — don't just reword commit messages.
+Run `git log --oneline --no-merges <watermark>..HEAD` to get commits since the watermark. Read commit messages and changed files to understand the actual user-facing impact — don't just reword commit messages.
 
 ### 3. Filter and group by date
 
-Group commits by their commit date. Each date that has user-facing changes gets its own entry file. Dates with only internal changes get no entry.
+Group commits by their commit date (`git log --format="%h %ad %s" --date=short`). Each date that has user-facing changes gets its own entry file. Dates with only internal changes get no entry.
 
 Include only changes visible to end users:
 - New features and capabilities
@@ -51,6 +51,10 @@ Create one file per date at `docs/changelog/YYYY-MM-DD.mdx`, using the commit da
 
 Add all new pages to the Changelog tab's pages array in `docs/docs.json`. List entries most recent first. The page path is `changelog/YYYY-MM-DD` (no `.mdx` extension).
 
-### 6. Clean up legacy single-file changelog
+### 6. Write watermark
+
+Write the output of `git rev-parse HEAD` to `.claude/skills/changelog/watermark`.
+
+### 7. Clean up legacy single-file changelog
 
 If `docs/changelog.mdx` still exists as the old single-file changelog, delete it and remove its reference from `docs/docs.json`.
