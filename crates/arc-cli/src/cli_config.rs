@@ -163,11 +163,11 @@ output_format = "text"
 model = "claude-sonnet-4-5"
 "#;
         let config: CliConfig = toml::from_str(toml).unwrap();
-        let agent = config.exec.unwrap();
-        assert_eq!(agent.provider.as_deref(), Some("anthropic"));
-        assert_eq!(agent.model.as_deref(), Some("claude-opus-4-6"));
-        assert_eq!(agent.permissions, Some(PermissionLevel::ReadWrite));
-        assert_eq!(agent.output_format, Some(OutputFormat::Text));
+        let exec = config.exec.unwrap();
+        assert_eq!(exec.provider.as_deref(), Some("anthropic"));
+        assert_eq!(exec.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(exec.permissions, Some(PermissionLevel::ReadWrite));
+        assert_eq!(exec.output_format, Some(OutputFormat::Text));
         let llm = config.llm.unwrap();
         assert_eq!(llm.model.as_deref(), Some("claude-sonnet-4-5"));
     }
@@ -179,11 +179,11 @@ model = "claude-sonnet-4-5"
 provider = "openai"
 "#;
         let config: CliConfig = toml::from_str(toml).unwrap();
-        let agent = config.exec.unwrap();
-        assert_eq!(agent.provider.as_deref(), Some("openai"));
-        assert_eq!(agent.model, None);
-        assert_eq!(agent.permissions, None);
-        assert_eq!(agent.output_format, None);
+        let exec = config.exec.unwrap();
+        assert_eq!(exec.provider.as_deref(), Some("openai"));
+        assert_eq!(exec.model, None);
+        assert_eq!(exec.permissions, None);
+        assert_eq!(exec.output_format, None);
         assert_eq!(config.llm, None);
     }
 
@@ -201,9 +201,9 @@ model = "gemini-pro"
         )
         .unwrap();
         let config = load_cli_config(Some(&path)).unwrap();
-        let agent = config.exec.unwrap();
-        assert_eq!(agent.provider.as_deref(), Some("gemini"));
-        assert_eq!(agent.model.as_deref(), Some("gemini-pro"));
+        let exec = config.exec.unwrap();
+        assert_eq!(exec.provider.as_deref(), Some("gemini"));
+        assert_eq!(exec.model.as_deref(), Some("gemini-pro"));
     }
 
     #[test]
