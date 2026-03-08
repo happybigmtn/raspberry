@@ -123,10 +123,22 @@ pub fn resolve_file_ref(value: &str, base_dir: &Path) -> String {
         None => return value.to_string(),
     };
 
-    let file_path = base_dir.join(path_str);
-    if !file_path.is_file() {
-        return value.to_string();
-    }
+    // Build the raw path: expand ~ then resolve relative to base_dir
+    let raw = Path::new(path_str);
+    let expanded = if raw.starts_with("~") {
+        match dirs::home_dir() {
+            Some(home) => home.join(raw.strip_prefix("~").unwrap()),
+            None => base_dir.join(path_str),
+        }
+    } else {
+        base_dir.join(path_str)
+    };
+
+    // Canonicalize resolves `.`, `..`, symlinks, and checks existence
+    let file_path = match expanded.canonicalize() {
+        Ok(p) if p.is_file() => p,
+        _ => return value.to_string(),
+    };
 
     // Discover repo root from base_dir
     let repo_root = std::process::Command::new("git")
@@ -723,6 +735,66 @@ mod tests {
         assert_eq!(
             graph.attrs.get("goal").and_then(AttrValue::as_str),
             Some("Ship feature")
+        );
+    }
+
+    #[test]
+    fn resolve_file_ref_expands_tilde() {
+        let home = dirs::home_dir().expect("home dir must exist");
+        let test_file = home.join(".arc_test_tilde_tmp");
+        std::fs::write(&test_file, "tilde content").unwrap();
+        let _cleanup = scopeguard::guard((), |()| {
+            let _ = std::fs::remove_file(&test_file);
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        // Init repo so the git-tracking check doesn't block inlining
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c", "user.name=test",
+                "-c", "user.email=test@test",
+                "commit", "--allow-empty", "-m", "init",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            resolve_file_ref("@~/.arc_test_tilde_tmp", dir.path()),
+            "tilde content"
+        );
+    }
+
+    #[test]
+    fn resolve_file_ref_resolves_dotdot() {
+        let dir = tempfile::tempdir().unwrap();
+        // Init repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c", "user.name=test",
+                "-c", "user.email=test@test",
+                "commit", "--allow-empty", "-m", "init",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        std::fs::write(dir.path().join("file.md"), "dotdot content").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        assert_eq!(
+            resolve_file_ref("@subdir/../file.md", dir.path()),
+            "dotdot content"
         );
     }
 
