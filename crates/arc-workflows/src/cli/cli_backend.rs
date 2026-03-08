@@ -161,7 +161,7 @@ pub fn is_cli_only_model(model: &str) -> bool {
 /// Build the CLI command string for a given provider.
 ///
 /// The `prompt_file` is the path to a file containing the prompt text, which
-/// will be shell-redirected into the command's stdin.
+/// is piped into the command's stdin via `cat`.
 #[must_use]
 pub fn cli_command_for_provider(provider: Provider, model: &str, prompt_file: &str) -> String {
     let model_flag = if model.is_empty() {
@@ -179,16 +179,19 @@ pub fn cli_command_for_provider(provider: Provider, model: &str, prompt_file: &s
             Provider::Anthropic => format!(" --model {model}"),
         }
     };
+    // Use `cat | command` instead of `command < file` because the background
+    // launch wrapper (`setsid sh -c '...' </dev/null`) can clobber stdin
+    // redirects in nested shells. A pipe creates an explicit new stdin.
     match provider {
         // --full-auto: sandboxed auto-execution, escalates on request
         Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
-            format!("codex exec --json --full-auto{model_flag} < {prompt_file}")
+            format!("cat {prompt_file} | codex exec --json --full-auto{model_flag}")
         }
         // --yolo: auto-approve all tool calls
-        Provider::Gemini => format!("gemini -o json --yolo{model_flag} < {prompt_file}"),
+        Provider::Gemini => format!("cat {prompt_file} | gemini -o json --yolo{model_flag}"),
         // --dangerously-skip-permissions: bypass all permission checks (required for non-interactive use).
         // CLAUDECODE= unset to allow running inside a Claude Code session.
-        Provider::Anthropic => format!("CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag} < {prompt_file}"),
+        Provider::Anthropic => format!("cat {prompt_file} | CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag}"),
     }
 }
 
@@ -598,32 +601,22 @@ impl CodergenBackend for AgentCliBackend {
             let _ = tokio::fs::write(stage_dir.join("cli_stdout.log"), &result.stdout).await;
             let _ = tokio::fs::write(stage_dir.join("cli_stderr.log"), &result.stderr).await;
 
-            let stderr: String = result
-                .stderr
-                .chars()
-                .rev()
-                .take(500)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else {
-                let stdout: String = result
-                    .stdout
-                    .chars()
+            let tail = |s: &str, n: usize| -> String {
+                s.chars()
                     .rev()
-                    .take(500)
+                    .take(n)
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                    .collect();
-                if !stdout.is_empty() {
-                    format!("stdout: {stdout}")
-                } else {
-                    format!("command: {command}")
-                }
+                    .collect()
+            };
+            let stderr_tail = tail(&result.stderr, 500);
+            let stdout_tail = tail(&result.stdout, 500);
+            let detail = match (stderr_tail.is_empty(), stdout_tail.is_empty()) {
+                (false, false) => format!("{stderr_tail}\nstdout: {stdout_tail}"),
+                (false, true) => stderr_tail,
+                (true, false) => format!("stdout: {stdout_tail}"),
+                (true, true) => format!("command: {command}"),
             };
             return Err(ArcError::handler(format!(
                 "CLI command exited with code {}: {detail}",
@@ -944,15 +937,15 @@ mod tests {
     #[test]
     fn cli_command_for_codex() {
         let cmd = cli_command_for_provider(Provider::OpenAi, "gpt-5.3-codex", "/tmp/prompt.txt");
-        assert!(cmd.starts_with("codex exec --json --full-auto"));
+        assert!(cmd.starts_with("cat /tmp/prompt.txt | codex exec --json --full-auto"));
         assert!(cmd.contains("-m gpt-5.3-codex"));
-        assert!(cmd.ends_with("< /tmp/prompt.txt"));
     }
 
     #[test]
     fn cli_command_for_claude() {
         let cmd =
             cli_command_for_provider(Provider::Anthropic, "claude-opus-4-6", "/tmp/prompt.txt");
+        assert!(cmd.starts_with("cat /tmp/prompt.txt |"));
         assert!(cmd.contains("claude -p"));
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--output-format stream-json"));
@@ -962,14 +955,14 @@ mod tests {
     #[test]
     fn cli_command_for_gemini() {
         let cmd = cli_command_for_provider(Provider::Gemini, "gemini-3.1-pro", "/tmp/prompt.txt");
-        assert!(cmd.starts_with("gemini -o json --yolo"));
+        assert!(cmd.starts_with("cat /tmp/prompt.txt | gemini -o json --yolo"));
         assert!(cmd.contains("-m gemini-3.1-pro"));
     }
 
     #[test]
     fn cli_command_omits_model_when_empty() {
         let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt");
-        assert!(cmd.starts_with("codex exec --json --full-auto"));
+        assert!(cmd.contains("codex exec --json --full-auto"));
         assert!(!cmd.contains("-m "));
         let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt");
         assert!(cmd.contains("--dangerously-skip-permissions"));
