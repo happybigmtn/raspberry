@@ -71,7 +71,7 @@ pub struct BackoffConfig {
 impl Default for BackoffConfig {
     fn default() -> Self {
         Self {
-            initial_delay_ms: 200,
+            initial_delay_ms: 5_000,
             backoff_factor: 2.0,
             max_delay_ms: 60_000,
             jitter: true,
@@ -125,13 +125,13 @@ impl RetryPolicy {
         }
     }
 
-    /// Standard retry policy: 5 attempts, 200ms initial, 2x factor.
+    /// Standard retry policy: 5 attempts, 5s initial, 2x factor.
     #[must_use]
     pub const fn standard() -> Self {
         Self {
             max_attempts: 5,
             backoff: BackoffConfig {
-                initial_delay_ms: 200,
+                initial_delay_ms: 5_000,
                 backoff_factor: 2.0,
                 max_delay_ms: 60_000,
                 jitter: true,
@@ -2322,7 +2322,7 @@ mod tests {
     fn retry_policy_standard() {
         let policy = RetryPolicy::standard();
         assert_eq!(policy.max_attempts, 5);
-        assert_eq!(policy.backoff.initial_delay_ms, 200);
+        assert_eq!(policy.backoff.initial_delay_ms, 5_000);
     }
 
     #[test]
@@ -2399,7 +2399,7 @@ mod tests {
         let policy = build_retry_policy(&node, &graph);
         assert_eq!(policy.max_attempts, 4); // 3 retries + 1 initial
                                             // Should use default backoff, not a preset's backoff
-        assert_eq!(policy.backoff.initial_delay_ms, 200);
+        assert_eq!(policy.backoff.initial_delay_ms, 5_000);
     }
 
     #[test]

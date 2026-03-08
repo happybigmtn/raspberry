@@ -703,7 +703,7 @@ impl Default for AdapterTimeout {
         Self {
             connect: 30.0,
             request: None,
-            stream_read: None,
+            stream_read: Some(300.0),
         }
     }
 }
@@ -1194,7 +1194,7 @@ mod tests {
         let timeout = AdapterTimeout::default();
         assert!((timeout.connect - 30.0).abs() < f64::EPSILON);
         assert!(timeout.request.is_none());
-        assert!(timeout.stream_read.is_none());
+        assert!((timeout.stream_read.unwrap() - 300.0).abs() < f64::EPSILON);
     }
 
     #[test]
