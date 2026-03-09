@@ -1010,6 +1010,59 @@ pub async fn run_command(
                     &github_app,
                     &origin_url,
                 ) {
+                    // For local worktree runs, push the run branch to origin
+                    // before creating the PR. Remote sandbox runs already push
+                    // during checkpoint; skip for non-git modes.
+                    if let Some(GitCheckpointMode::Host(_)) = &config.git_checkpoint {
+                        let https_url = arc_github::ssh_url_to_https(origin);
+                        match arc_github::resolve_authenticated_url(creds, &https_url).await {
+                            Ok(push_url) => {
+                                let refspec = format!("refs/heads/{run_branch}");
+                                let repo_path = original_cwd.clone();
+                                let result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(60),
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::git::push_ref(&repo_path, &push_url, &refspec)
+                                    }),
+                                )
+                                .await;
+                                match result {
+                                    Ok(Ok(Ok(()))) => {
+                                        tracing::info!(run_branch, "Pushed run branch to origin");
+                                    }
+                                    Ok(Ok(Err(e))) => {
+                                        tracing::warn!(error = %e, "Failed to push run branch");
+                                        eprintln!(
+                                            "{} Failed to push run branch: {e}",
+                                            styles.yellow.apply_to("Warning:")
+                                        );
+                                    }
+                                    Ok(Err(e)) => {
+                                        tracing::warn!(error = %e, "Run branch push task panicked");
+                                        eprintln!(
+                                            "{} Run branch push task panicked",
+                                            styles.yellow.apply_to("Warning:")
+                                        );
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!("Run branch push timed out after 60s");
+                                        eprintln!(
+                                            "{} Run branch push timed out",
+                                            styles.yellow.apply_to("Warning:")
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to get token for run branch push");
+                                eprintln!(
+                                    "{} Failed to push run branch: {e}",
+                                    styles.yellow.apply_to("Warning:")
+                                );
+                            }
+                        }
+                    }
+
                     match crate::pull_request::maybe_open_pull_request(
                         creds,
                         origin,
