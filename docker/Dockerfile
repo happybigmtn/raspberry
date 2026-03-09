@@ -1,7 +1,7 @@
 FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-COPY crates crates
+COPY lib/crates lib/crates
 COPY openapi openapi
 RUN cargo build --release --bin arc
 

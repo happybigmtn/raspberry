@@ -28,7 +28,7 @@ The OpenAPI spec at `docs/api-reference/arc-api.yaml` is the source of truth for
 
 1. Edit `docs/api-reference/arc-api.yaml`
 2. `cargo build -p arc-types` — build.rs regenerates Rust types via typify
-3. Write/update handler in `crates/arc-api/src/server.rs`, add route to `build_router()`
+3. Write/update handler in `lib/crates/arc-api/src/server.rs`, add route to `build_router()`
 4. `cargo test -p arc-api` — conformance test catches spec/router drift
 5. `cd packages/arc-api-client && bun run generate` — regenerates TypeScript Axios client
 
@@ -36,7 +36,7 @@ The OpenAPI spec at `docs/api-reference/arc-api.yaml` is the source of truth for
 
 Arc is an AI-powered workflow orchestration platform. Workflows are defined as DOT graphs, where each node is a stage (agent, prompt, command, conditional, human, parallel, etc.) executed by the workflow engine.
 
-### Rust crates (`crates/`)
+### Rust crates (`lib/crates/`)
 - **arc-cli** — CLI entry point. Commands: `run`, `exec`, `serve`, `validate`, `parse`, `cp`, `model`, `doctor`, `setup`, `ps`, `system prune`, `llm`
 - **arc-workflows** — Core workflow engine. Parses DOT graphs, runs stages, manages checkpoints/resume, hooks, retros, and human-in-the-loop interactions
 - **arc-agent** — AI coding agent with tool use (Bash, Read, Write, Edit, Glob, Grep, WebFetch). `Sandbox` trait abstracts execution environments

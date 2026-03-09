@@ -43,7 +43,7 @@ The `arc-types` crate generates Rust structs and enums from the OpenAPI componen
 A `build.rs` script reads `docs/api-reference/arc-api.yaml`, extracts `components/schemas`, and feeds them to typify. The generated code is written to `OUT_DIR` and included via:
 
 ```rust
-// crates/arc-types/src/lib.rs
+// lib/crates/arc-types/src/lib.rs
 include!(concat!(env!("OUT_DIR"), "/openapi_types.rs"));
 ```
 
