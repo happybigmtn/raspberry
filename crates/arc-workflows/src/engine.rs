@@ -639,10 +639,7 @@ pub async fn git_checkpoint_remote(
     let message = trailerlink::format_message(&subject, "", &trailers);
 
     // Write message to temp file in sandbox to avoid shell escaping issues
-    if let Err(e) = sandbox
-        .write_file("/tmp/arc-commit-msg", &message)
-        .await
-    {
+    if let Err(e) = sandbox.write_file("/tmp/arc-commit-msg", &message).await {
         return Err(format!("failed to write commit message file: {e}"));
     }
 
@@ -1992,9 +1989,8 @@ impl WorkflowRunEngine {
                         Ok(sha) => {
                             checkpoint.git_commit_sha = Some(sha.clone());
                             if let Err(e) = checkpoint.save(&checkpoint_path) {
-                                context.append_log(format!(
-                                    "checkpoint re-save with SHA failed: {e}"
-                                ));
+                                context
+                                    .append_log(format!("checkpoint re-save with SHA failed: {e}"));
                             }
                             self.services
                                 .emitter

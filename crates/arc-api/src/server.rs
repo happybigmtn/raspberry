@@ -1265,7 +1265,7 @@ async fn create_completion(
     // Get or create LLM client (cached in AppState)
     let client = match state
         .llm_client
-        .get_or_try_init(|| arc_llm::client::Client::from_env())
+        .get_or_try_init(arc_llm::client::Client::from_env)
         .await
     {
         Ok(c) => c,
