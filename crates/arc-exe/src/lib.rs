@@ -246,7 +246,7 @@ impl Sandbox for ExeSandbox {
         timeout_ms: u64,
         working_dir: Option<&str>,
         env_vars: Option<&HashMap<String, String>>,
-        _cancel_token: Option<CancellationToken>,
+        cancel_token: Option<CancellationToken>,
     ) -> Result<ExecResult, String> {
         let ssh = self.data_ssh()?;
         let start = Instant::now();
@@ -273,7 +273,20 @@ impl Sandbox for ExeSandbox {
         let full_cmd = parts.join(" ");
 
         let timeout = std::time::Duration::from_millis(timeout_ms);
-        let output = ssh.run_command_with_timeout(&full_cmd, timeout).await;
+        let token = cancel_token.unwrap_or_default();
+        let output = tokio::select! {
+            res = ssh.run_command_with_timeout(&full_cmd, timeout) => res,
+            () = token.cancelled() => {
+                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return Ok(ExecResult {
+                    stdout: String::new(),
+                    stderr: "Command cancelled".to_string(),
+                    exit_code: -1,
+                    timed_out: true,
+                    duration_ms,
+                });
+            }
+        };
 
         let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -684,7 +697,7 @@ mod tests {
     }
 
     /// Helper: create an ExeSandbox with mock data SSH already initialized (skipping lifecycle).
-    fn sandbox_with_mock_data(data_ssh: MockSshRunner) -> ExeSandbox {
+    fn sandbox_with_mock_data(data_ssh: impl SshRunner + 'static) -> ExeSandbox {
         let mgmt = MockSshRunner::new();
         let sandbox = ExeSandbox::new(Box::new(mgmt));
         let _ = sandbox.vm_name.set("test-vm".to_string());
@@ -794,6 +807,53 @@ mod tests {
 
         assert!(result.timed_out);
         assert_eq!(result.exit_code, -1);
+    }
+
+    /// SSH runner that never completes — blocks forever on a Notify.
+    struct HangingSshRunner;
+
+    #[async_trait]
+    impl SshRunner for HangingSshRunner {
+        async fn run_command(&self, _command: &str) -> Result<SshOutput, String> {
+            std::future::pending().await
+        }
+
+        async fn run_command_with_timeout(
+            &self,
+            _command: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<SshOutput, String> {
+            std::future::pending().await
+        }
+
+        async fn upload_file(&self, _path: &str, _content: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn download_file(&self, _path: &str) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_command_cancelled() {
+        let sandbox = sandbox_with_mock_data(HangingSshRunner);
+
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        // Cancel immediately so the select! picks it up
+        token_clone.cancel();
+
+        let result = sandbox
+            .exec_command("sleep 999", 60_000, None, None, Some(token))
+            .await
+            .unwrap();
+
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code, -1);
+        assert_eq!(result.stderr, "Command cancelled");
+        assert!(result.stdout.is_empty());
     }
 
     // ---- Step 3: read_file ----

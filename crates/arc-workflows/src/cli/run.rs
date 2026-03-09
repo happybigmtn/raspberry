@@ -526,7 +526,7 @@ pub async fn run_command(
             env.set_event_callback(Arc::new(move |event| {
                 emitter_cb.emit(&crate::event::WorkflowRunEvent::Sandbox { event });
             }));
-            Arc::new(env)
+            Arc::new(env) as Arc<dyn Sandbox>
         }
         SandboxProvider::Local => {
             let mut env = LocalSandbox::new(cwd);
@@ -538,14 +538,32 @@ pub async fn run_command(
         }
     };
 
-    // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
-    let sandbox: Arc<dyn Sandbox> = Arc::new(arc_agent::ReadBeforeWriteSandbox::new(sandbox));
-
     // Initialize sandbox (creates sandbox/container once for the whole run)
     sandbox
         .initialize()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to initialize sandbox: {e}"))?;
+
+    // Clone repo into exe.dev VM after initialization
+    let exe_origin_url = if sandbox_provider == SandboxProvider::Exe {
+        clone_repo_into_exe(&*sandbox, &emitter, &original_cwd, &github_app).await?
+    } else {
+        None
+    };
+
+    // Wrap exe.dev sandbox with GitCredentialSandbox for push credential refresh
+    let sandbox: Arc<dyn Sandbox> = if sandbox_provider == SandboxProvider::Exe {
+        Arc::new(crate::git_credential_sandbox::GitCredentialSandbox::new(
+            sandbox,
+            exe_origin_url,
+            github_app.clone(),
+        ))
+    } else {
+        sandbox
+    };
+
+    // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
+    let sandbox: Arc<dyn Sandbox> = Arc::new(arc_agent::ReadBeforeWriteSandbox::new(sandbox));
 
     // Safety net: if we panic or return early, best-effort cleanup via spawn.
     let sandbox_for_cleanup = Arc::clone(&sandbox);
@@ -561,22 +579,24 @@ pub async fn run_command(
         }
     });
 
-    // Set up git inside Daytona sandbox (if applicable)
-    let (daytona_base_sha, daytona_branch, daytona_base_branch) =
-        if sandbox_provider == SandboxProvider::Daytona {
-            match setup_daytona_git(&*sandbox, &run_id).await {
-                Ok((base, branch, base_br)) => (Some(base), Some(branch), base_br),
-                Err(e) => {
-                    eprintln!(
-                        "{} Daytona git setup failed ({e}), running without git checkpoints.",
-                        styles.yellow.apply_to("Warning:"),
-                    );
-                    (None, None, None)
-                }
+    // Set up git inside remote sandbox (Daytona or exe.dev) for checkpoint commits
+    let (remote_base_sha, remote_branch, remote_base_branch) = if matches!(
+        sandbox_provider,
+        SandboxProvider::Daytona | SandboxProvider::Exe
+    ) {
+        match setup_remote_git(&*sandbox, &run_id).await {
+            Ok((base, branch, base_br)) => (Some(base), Some(branch), base_br),
+            Err(e) => {
+                eprintln!(
+                    "{} Remote git setup failed ({e}), running without git checkpoints.",
+                    styles.yellow.apply_to("Warning:"),
+                );
+                (None, None, None)
             }
-        } else {
-            (None, None, None)
-        };
+        }
+    } else {
+        (None, None, None)
+    };
 
     // Create SSH access if requested
     if args.ssh {
@@ -730,7 +750,7 @@ pub async fn run_command(
 
     // 7. Execute
     // Set up metadata branch for git checkpointing (host or remote)
-    let meta_branch = if worktree_work_dir.is_some() || daytona_base_sha.is_some() {
+    let meta_branch = if worktree_work_dir.is_some() || remote_base_sha.is_some() {
         Some(crate::git::MetadataStore::branch_name(&run_id))
     } else {
         None
@@ -748,13 +768,12 @@ pub async fn run_command(
             SandboxProvider::Local | SandboxProvider::Docker => {
                 worktree_work_dir.map(GitCheckpointMode::Host)
             }
-            SandboxProvider::Daytona => daytona_base_sha
+            SandboxProvider::Daytona | SandboxProvider::Exe => remote_base_sha
                 .as_ref()
                 .map(|_| GitCheckpointMode::Remote(original_cwd.clone())),
-            SandboxProvider::Exe => None,
         },
-        base_sha: worktree_base_sha.or(daytona_base_sha),
-        run_branch: worktree_branch.or(daytona_branch),
+        base_sha: worktree_base_sha.or(remote_base_sha),
+        run_branch: worktree_branch.or(remote_branch),
         meta_branch,
         labels: args
             .label
@@ -765,7 +784,7 @@ pub async fn run_command(
         checkpoint_exclude_globs,
         github_app: github_app.clone(),
         git_author,
-        base_branch: detected_base_branch.or(daytona_base_branch),
+        base_branch: detected_base_branch.or(remote_base_branch),
         pull_request_enabled: run_cfg
             .as_ref()
             .and_then(|c| c.pull_request.as_ref())
@@ -1003,9 +1022,150 @@ fn setup_worktree(
     Ok((worktree_path.clone(), worktree_path, branch_name, base_sha))
 }
 
-/// Set up git inside a Daytona sandbox for checkpoint commits.
+/// Clone the local git repo into an exe.dev VM.
+/// Returns the HTTPS origin URL on success, or None if no git repo was detected.
+async fn clone_repo_into_exe(
+    sandbox: &dyn arc_agent::Sandbox,
+    emitter: &std::sync::Arc<crate::event::EventEmitter>,
+    cwd: &std::path::Path,
+    github_app: &Option<crate::github_app::GitHubAppCredentials>,
+) -> anyhow::Result<Option<String>> {
+    use arc_agent::sandbox::SandboxEvent;
+
+    let (detected_url, branch) = match crate::daytona_sandbox::detect_repo_info(cwd) {
+        Ok(info) => info,
+        Err(_) => return Ok(None), // no git repo — continue without cloning
+    };
+
+    let url = crate::github_app::ssh_url_to_https(&detected_url);
+    emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+        event: SandboxEvent::GitCloneStarted {
+            url: url.clone(),
+            branch: branch.clone(),
+        },
+    });
+    let clone_start = std::time::Instant::now();
+
+    // Resolve clone credentials via GitHub App or fall back to no auth
+    let token = match github_app {
+        Some(creds) => {
+            let (owner, repo) = crate::github_app::parse_github_owner_repo(&url).map_err(|e| {
+                emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+                    event: SandboxEvent::GitCloneFailed {
+                        url: url.clone(),
+                        error: e.clone(),
+                    },
+                });
+                anyhow::anyhow!("Failed to parse GitHub URL for clone: {e}")
+            })?;
+            let (_username, password) =
+                crate::github_app::resolve_clone_credentials(creds, &owner, &repo)
+                    .await
+                    .map_err(|e| {
+                        emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+                            event: SandboxEvent::GitCloneFailed {
+                                url: url.clone(),
+                                error: e.clone(),
+                            },
+                        });
+                        anyhow::anyhow!("Failed to get GitHub App credentials for clone: {e}")
+                    })?;
+            password
+        }
+        None => None,
+    };
+
+    let auth_url = match &token {
+        Some(t) => url.replacen("https://", &format!("https://x-access-token:{t}@"), 1),
+        None => url.clone(),
+    };
+
+    let working_dir = sandbox.working_directory();
+    let branch_flag = branch
+        .as_deref()
+        .map(|b| format!(" --branch '{}'", b.replace('\'', "'\\''")))
+        .unwrap_or_default();
+
+    // Try cloning directly into the working directory
+    let clone_cmd = format!(
+        "git clone{branch_flag} '{}' '{working_dir}'",
+        auth_url.replace('\'', "'\\''"),
+    );
+    let clone_result = sandbox
+        .exec_command(&clone_cmd, 300_000, Some("/tmp"), None, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("git clone failed: {e}"))?;
+
+    if clone_result.exit_code != 0 {
+        // Fall back to init + fetch + checkout if directory is not empty
+        if clone_result.stderr.contains("not an empty directory")
+            || clone_result
+                .stderr
+                .contains("already exists and is not an empty")
+        {
+            let init_cmds = [
+                "git init",
+                &format!(
+                    "git remote add origin '{}'",
+                    auth_url.replace('\'', "'\\''")
+                ),
+                "git fetch origin",
+                &format!("git checkout {}", branch.as_deref().unwrap_or("main")),
+            ];
+            for cmd in &init_cmds {
+                let r = sandbox
+                    .exec_command(cmd, 300_000, None, None, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("git fallback command failed: {e}"))?;
+                if r.exit_code != 0 {
+                    let err = format!("git fallback failed on '{cmd}': {}", r.stderr);
+                    emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+                        event: SandboxEvent::GitCloneFailed {
+                            url: url.clone(),
+                            error: err.clone(),
+                        },
+                    });
+                    anyhow::bail!("{err}");
+                }
+            }
+        } else {
+            let err = format!(
+                "git clone failed (exit {}): {}",
+                clone_result.exit_code, clone_result.stderr
+            );
+            emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+                event: SandboxEvent::GitCloneFailed {
+                    url: url.clone(),
+                    error: err.clone(),
+                },
+            });
+            anyhow::bail!("{err}");
+        }
+    }
+
+    // Set clean push credentials on the remote
+    let set_url_cmd = format!(
+        "git remote set-url origin '{}'",
+        auth_url.replace('\'', "'\\''"),
+    );
+    let _ = sandbox
+        .exec_command(&set_url_cmd, 10_000, None, None, None)
+        .await;
+
+    let duration_ms = u64::try_from(clone_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    emitter.emit(&crate::event::WorkflowRunEvent::Sandbox {
+        event: SandboxEvent::GitCloneCompleted {
+            url: url.clone(),
+            duration_ms,
+        },
+    });
+
+    Ok(Some(url))
+}
+
+/// Set up git inside a remote sandbox (Daytona or exe.dev) for checkpoint commits.
 /// Returns (base_sha, branch_name, base_branch) on success.
-async fn setup_daytona_git(
+async fn setup_remote_git(
     sandbox: &dyn arc_agent::Sandbox,
     run_id: &str,
 ) -> anyhow::Result<(String, String, Option<String>)> {
