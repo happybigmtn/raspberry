@@ -221,11 +221,7 @@ async fn resolve_exe_clone_params(
         None => None,
     };
     let clone_url = match &token {
-        Some(t) => display_url.replacen(
-            "https://",
-            &format!("https://x-access-token:{t}@"),
-            1,
-        ),
+        Some(t) => display_url.replacen("https://", &format!("https://x-access-token:{t}@"), 1),
         None => display_url.clone(),
     };
     Some(arc_exe::GitCloneParams {
@@ -280,8 +276,7 @@ pub async fn run_command(
 ) -> anyhow::Result<()> {
     // Handle --run-branch resume: read everything from git metadata
     if let Some(branch) = args.run_branch.clone() {
-        return run_from_branch(args, &branch, styles, git_author, run_defaults, github_app)
-            .await;
+        return run_from_branch(args, &branch, styles, git_author, run_defaults, github_app).await;
     }
 
     let workflow_path = args
@@ -582,8 +577,7 @@ pub async fn run_command(
             daytona_arc
         }
         SandboxProvider::Exe => {
-            let clone_params =
-                resolve_exe_clone_params(&original_cwd, github_app.as_ref()).await;
+            let clone_params = resolve_exe_clone_params(&original_cwd, github_app.as_ref()).await;
 
             let mgmt_ssh = arc_exe::OpensshRunner::connect_raw("exe.dev")
                 .await
@@ -1266,8 +1260,7 @@ async fn run_from_branch(
         }
         SandboxProvider::Exe => {
             let exe_config = resolve_exe_config(None, &run_defaults);
-            let clone_params =
-                resolve_exe_clone_params(&original_cwd, github_app.as_ref()).await;
+            let clone_params = resolve_exe_clone_params(&original_cwd, github_app.as_ref()).await;
             let mgmt_ssh = arc_exe::OpensshRunner::connect_raw("exe.dev")
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to connect to exe.dev: {e}"))?;
@@ -1299,9 +1292,7 @@ async fn run_from_branch(
             .map_err(|e| anyhow::anyhow!("Failed to initialize exe.dev sandbox: {e}"))?;
 
         // Fetch and checkout the run branch inside the sandbox
-        let fetch_cmd = format!(
-            "git fetch origin {run_branch} && git checkout {run_branch}"
-        );
+        let fetch_cmd = format!("git fetch origin {run_branch} && git checkout {run_branch}");
         let result = sandbox
             .exec_command(&fetch_cmd, 60_000, None, None, None)
             .await
@@ -1382,9 +1373,9 @@ async fn run_from_branch(
         dry_run: dry_run_mode,
         run_id,
         git_checkpoint: match sandbox_provider {
-            SandboxProvider::Local | SandboxProvider::Docker => {
-                worktree_path.as_ref().map(|wt| GitCheckpointMode::Host(wt.clone()))
-            }
+            SandboxProvider::Local | SandboxProvider::Docker => worktree_path
+                .as_ref()
+                .map(|wt| GitCheckpointMode::Host(wt.clone())),
             SandboxProvider::Daytona | SandboxProvider::Exe => {
                 Some(GitCheckpointMode::Remote(original_cwd.clone()))
             }
@@ -1590,8 +1581,7 @@ async fn run_preflight(
                 let config = exe_config.unwrap_or_default();
                 let clone_params =
                     resolve_exe_clone_params(&original_cwd, github_app.as_ref()).await;
-                let env =
-                    arc_exe::ExeSandbox::new(Box::new(mgmt_ssh), config, clone_params, None);
+                let env = arc_exe::ExeSandbox::new(Box::new(mgmt_ssh), config, clone_params, None);
                 Ok(Arc::new(env) as Arc<dyn Sandbox>)
             }
             Err(e) => Err(format!("exe.dev SSH connection failed: {e}")),
