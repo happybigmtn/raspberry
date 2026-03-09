@@ -193,22 +193,21 @@ auto_stop_interval = 30
 
 ## Exe
 
-<Warning>
-The exe.dev sandbox provider is in **beta**. Its configuration surface and behavior may change in future releases.
-</Warning>
-
 The Exe sandbox runs all tool operations inside a cloud VM managed by [exe.dev](https://exe.dev). It provides full machine-level isolation with fast VM startup via SSH.
 
 ### Prerequisites
 
 - SSH keys configured for `exe.dev` (added via the exe.dev dashboard)
+- A GitHub App configured via `arc setup` (for private repository cloning)
 
 ### How it works
 
-- **VM lifecycle** — On `initialize()`, Arc connects to the exe.dev management plane via SSH and runs `new --json` to create a VM. The response contains the VM name and an SSH destination (e.g. `my-vm.exe.xyz`). On `cleanup()`, Arc runs `rm <vm_name>` to destroy the VM.
+- **VM lifecycle** — On `initialize()`, Arc connects to the exe.dev management plane via SSH and runs `new --json` to create a VM. The response contains the VM name and an SSH destination (e.g. `my-vm.exe.xyz`). On `cleanup()`, Arc runs `rm <vm_name>` to destroy the VM. Cancelling a run cleanly tears down the VM.
 - **Working directory** — Fixed at `/home/exedev`. Relative paths resolve against this directory.
-- **Commands** — Executed via SSH on the data plane (`<vmname>.exe.xyz`). Environment variables and working directory overrides are supported.
+- **Git clone** — Arc detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the VM. For private repositories, Arc uses a GitHub App Installation Access Token. Public repositories are cloned without credentials. If no git repo is detected, the working directory is created empty.
+- **Commands** — Executed via SSH on the data plane (`<vmname>.exe.xyz`). Commands are base64-encoded and piped through `sh` to handle pipes, environment variables, and other shell features. Environment variables and working directory overrides are supported.
 - **File I/O** — Reads use `cat` over SSH. Writes use SCP upload. Parent directories are created automatically.
+- **Git checkpointing** — Between stages, Arc commits agent changes and pushes them to a remote branch, the same mechanism used by Daytona sandboxes.
 - **Ephemeral** — Each run gets a fresh VM that is destroyed on cleanup.
 
 ### Configuration
@@ -216,9 +215,24 @@ The Exe sandbox runs all tool operations inside a cloud VM managed by [exe.dev](
 ```toml title="run.toml"
 [sandbox]
 provider = "exe"
+
+[sandbox.exe]
+image = "my-custom-image:latest"
 ```
 
-The exe.dev provider does not currently have additional configuration options.
+| Field | Description |
+|---|---|
+| `image` | Custom container image for the VM. Optional — uses the exe.dev default when omitted. |
+
+### SSH access
+
+Connect to a running exe.dev sandbox via SSH for live debugging:
+
+```bash
+arc run workflow.dot --sandbox exe --ssh
+```
+
+This prints the SSH connection command so you can connect to the VM while the workflow runs.
 
 ## Sandboxing
 
@@ -233,7 +247,7 @@ Each provider offers a different level of filesystem isolation:
 | `local` | None | The entire host filesystem. Agents can read and modify any file. |
 | `docker` | Container-level | Only the bind-mounted working directory (`/workspace` by default) and whatever is in the container image. Host files outside the mount are inaccessible. |
 | `daytona` | Full machine | A cloud VM with the repository cloned into `/home/daytona/workspace`. The host filesystem is completely inaccessible. |
-| `exe` | Full machine | A cloud VM with an empty working directory at `/home/exedev`. The host filesystem is completely inaccessible. |
+| `exe` | Full machine | A cloud VM with the repository cloned into `/home/exedev`. The host filesystem is completely inaccessible. |
 
 For `local`, Arc filters sensitive environment variables (those ending in `_API_KEY`, `_SECRET`, `_TOKEN`, `_PASSWORD`, or `_CREDENTIAL`) but does not restrict file access. Use `docker`, `daytona`, or `exe` when running untrusted workflows.
 

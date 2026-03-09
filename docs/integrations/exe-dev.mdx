@@ -3,17 +3,15 @@ title: "exe.dev"
 description: "Run Arc workflows in fast ephemeral VMs from exe.dev"
 ---
 
-<Warning>
-The exe.dev sandbox provider is **in progress** and not yet available for use. This page describes the planned integration. We'll update it when exe.dev support ships.
-</Warning>
-
 [exe.dev](https://exe.dev) provides fast ephemeral cloud VMs for Arc workflows. Each run gets a fresh VM with full machine-level isolation, connected via SSH.
 
 ## How it works
 
-- Each run creates a new VM via the exe.dev management plane
+- Each run creates a new VM via the exe.dev management plane over SSH
+- Arc clones the current git repository into the VM automatically (using GitHub App credentials for private repos)
 - Agent tool calls (shell commands, file edits, grep, glob) execute over SSH inside the VM
-- The working directory is `/home/exedev`
+- Git checkpointing commits agent changes to a remote branch between stages
+- Cancelling a run cleanly tears down the VM
 - VMs are destroyed automatically when the run finishes
 
 ## Configuration
@@ -25,10 +23,28 @@ arc run workflow.dot --sandbox exe
 ```toml title="run.toml"
 [sandbox]
 provider = "exe"
+
+[sandbox.exe]
+image = "my-custom-image:latest"
 ```
+
+| Field | Description |
+|---|---|
+| `image` | Custom container image for the VM. Optional — uses the exe.dev default when omitted. |
+
+## SSH access
+
+Connect to a running exe.dev sandbox via SSH for live debugging:
+
+```bash
+arc run workflow.dot --sandbox exe --ssh
+```
+
+This prints the SSH connection command so you can connect to the VM while the workflow runs.
 
 ## Prerequisites
 
 - SSH keys configured for exe.dev (added via the [exe.dev dashboard](https://exe.dev))
+- A [GitHub App](/integrations/github) configured via `arc setup` (for private repository cloning)
 
 See [Environments](/execution/environments#exe) for additional details on how the exe.dev sandbox operates.

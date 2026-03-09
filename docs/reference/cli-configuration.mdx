@@ -47,6 +47,9 @@ level = "info"
 name = "arc-bot"
 email = "arc-bot@company.com"
 
+[pull_request]
+enabled = true
+
 [mcp_servers.filesystem]
 type = "stdio"
 command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
@@ -179,6 +182,21 @@ cert = "~/.arc/tls/client.crt"
 key = "~/.arc/tls/client.key"
 ca = "~/.arc/tls/ca.crt"
 ```
+
+## `[pull_request]`
+
+Enable auto-PR globally so workflows open a GitHub pull request on successful completion — even when running with a `.dot` file instead of a `run.toml`.
+
+```toml title="cli.toml"
+[pull_request]
+enabled = true
+```
+
+| Key | Description | Default |
+|---|---|---|
+| `enabled` | Automatically create a PR after successful runs | `false` |
+
+Precedence: `run.toml` > `cli.toml` > `server.toml` > built-in default (`false`).
 
 ## `[mcp_servers]` section
 

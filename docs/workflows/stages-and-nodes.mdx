@@ -96,7 +96,7 @@ Prompt nodes accept the same attributes as agent nodes (`prompt`, `reasoning_eff
 
 **Shape:** `parallelogram`
 
-Runs a shell script and captures its output. The output is available to downstream nodes as context.
+Runs a shell script inside the configured sandbox and captures its output. The output is available to downstream nodes as context. This ensures command nodes execute in the same environment as agent nodes.
 
 ```dot
 test [label="Run Tests", shape=parallelogram, script="cargo test 2>&1 || true"]

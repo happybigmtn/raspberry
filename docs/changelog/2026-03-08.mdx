@@ -58,7 +58,6 @@ To migrate, update any scripts or aliases:
 - Workflow runs now fail immediately on git checkpoint commit failure instead of silently continuing
 - GitHub webhook listener via Tailscale funnel — auto-configures webhook URL on startup
 - `[sandbox.env]` support passes environment variables through to sandbox tool execution
-- `project_memory` attribute on prompt nodes for persistent context across stages
 - Dockerfile path syntax (`dockerfile = { path = "..." }`) in snapshot config
 - `arc validate` and the workflow validator now catch unresolved `@file` references before execution
 - Fixed `@file` references with `~` home directory and `..` parent directory paths
@@ -79,7 +78,7 @@ To migrate, update any scripts or aliases:
 
 <Accordion title="Fixes">
 - Fixed SSE streaming format mismatch in `/completions` endpoint
-- Exempt `/tmp/` paths from sandbox read-before-write guard
+- Exempted `/tmp/` paths from sandbox read-before-write guard
 - Fixed sandbox file-write validation incorrectly blocking valid operations
 - Fixed stall watchdog killing agent during long LLM reasoning turns
 - Added 5-minute stream read timeout with 5-second retry backoff for sandbox connections

@@ -76,6 +76,9 @@ exclude_globs = ["**/node_modules/**", "**/.cache/**"]
 repo_name = "arc"
 repo_url = "https://github.com/qltysh/arc"
 
+[assets]
+include = ["test-results/**", "playwright-report/**"]
+
 [pull_request]
 enabled = true
 
@@ -146,7 +149,7 @@ preserve = true
 
 | Field | Description |
 |---|---|
-| `provider` | Sandbox mode: `local` (default), `docker`, or `daytona`. |
+| `provider` | Sandbox mode: `local` (default), `docker`, `daytona`, or `exe`. |
 | `preserve` | When `true`, keep the sandbox alive after the run finishes. Useful for debugging. |
 
 #### `[sandbox.daytona]`
@@ -181,6 +184,22 @@ dockerfile = "FROM rust:1.85-slim-bookworm\nRUN apt-get update"
 | `snapshot.disk` | Disk in GB for the snapshot. |
 | `snapshot.dockerfile` | Dockerfile content (inline string) or path (`{ path = "..." }`) for building the snapshot image. Paths are resolved relative to the TOML file's directory. |
 | `network` | Network access mode: `"allow_all"` (default), `"block"`, or `{ allow_list = ["..."] }`. See [Sandboxing](/administration/sandboxing#network-access-control). |
+
+#### `[sandbox.exe]`
+
+Additional settings when using the [exe.dev](/integrations/exe-dev) cloud sandbox:
+
+```toml title="run.toml"
+[sandbox]
+provider = "exe"
+
+[sandbox.exe]
+image = "my-custom-image:latest"
+```
+
+| Field | Description |
+|---|---|
+| `image` | Custom container image for the exe.dev VM. Optional — uses the exe.dev default when omitted. |
 
 #### `[sandbox.env]`
 
@@ -236,6 +255,21 @@ digraph CI {
 ```
 
 If a `$variable` in the DOT file has no matching entry in `[vars]`, Arc raises an error immediately. A bare `$` not followed by an identifier (e.g. `costs $5`) is left as-is.
+
+### `[assets]`
+
+Configure automatic collection of test artifacts (Playwright reports, JUnit XML, screenshots, etc.) from the execution environment after each stage.
+
+```toml title="run.toml"
+[assets]
+include = ["test-results/**", "playwright-report/**", "*.trace.zip"]
+```
+
+| Field | Description |
+|---|---|
+| `include` | Glob patterns for files to collect as assets. Matched against the working directory after each stage completes. |
+
+Asset collection is opt-in — when no `[assets]` section is present, no file scanning occurs. This avoids the overhead of scanning large working directories when assets aren't needed.
 
 ### `[pull_request]`
 
