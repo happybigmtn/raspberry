@@ -1,5 +1,6 @@
 use crate::sandbox::Sandbox;
 use arc_llm::provider::Provider;
+use tracing::{debug, info, warn};
 
 const BUDGET_BYTES: usize = 32768;
 
@@ -31,19 +32,32 @@ pub async fn discover_project_docs(
             let path = format!("{dir}/{filename}");
             if let Ok(content) = env.read_file(&path, None, None).await {
                 if content.is_empty() {
+                    warn!(path = %path, "Project doc file empty, skipping");
                     continue;
                 }
                 if content.len() <= budget_remaining {
+                    debug!(path = %path, size_bytes = content.len(), "Project doc loaded");
                     budget_remaining -= content.len();
                     results.push(content);
                 } else if budget_remaining > 0 {
+                    warn!(
+                        path = %path,
+                        size_bytes = content.len(),
+                        budget_remaining,
+                        "Project doc truncated to fit budget"
+                    );
                     let truncated = truncate_to_budget(&content, budget_remaining);
                     budget_remaining = 0;
                     results.push(truncated);
+                } else {
+                    warn!(path = %path, size_bytes = content.len(), "Project doc skipped, budget exhausted");
                 }
             }
         }
     }
+
+    let total_bytes: usize = results.iter().map(|d| d.len()).sum();
+    info!(files = results.len(), total_bytes, "Project docs loaded");
 
     results
 }

@@ -94,7 +94,6 @@ impl Session {
             self.provider_profile.provider(),
         )
         .await;
-        debug!(doc_count = self.project_docs.len(), doc_root = %doc_root, "Project docs discovered");
 
         // Discover skills
         let skill_dirs = match &self.config.skill_dirs {

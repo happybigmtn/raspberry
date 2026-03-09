@@ -64,7 +64,7 @@ impl Handler for PromptHandler {
                 provider,
             )
             .await;
-            tracing::debug!(node = %node.id, doc_count = docs.len(), "Project docs discovered for prompt node");
+
             if docs.is_empty() {
                 None
             } else {
