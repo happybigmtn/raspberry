@@ -32,7 +32,7 @@ Goal precedence: CLI `--goal` > TOML `goal` > DOT graph attribute.
 ```toml title="run.toml"
 version = 1
 goal = "Run the CI pipeline for $repo_name"
-graph = "pipelines/ci.dot"
+graph = "arc/workflows/ci.dot"
 directory = "/tmp/workdir"
 
 [llm]
