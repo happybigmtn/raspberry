@@ -196,7 +196,6 @@ dependencies = [
  "assert_cmd",
  "axum",
  "base64",
- "bollard",
  "chrono",
  "clap",
  "console 0.15.11",

@@ -24,7 +24,6 @@ arc-mcp = { path = "../arc-mcp" }
 arc-workflows = { path = "../arc-workflows" }
 arc-api = { path = "../arc-api", optional = true }
 arc-util = { path = "../arc-util" }
-bollard.workspace = true
 clap.workspace = true
 console.workspace = true
 daytona-sdk.workspace = true

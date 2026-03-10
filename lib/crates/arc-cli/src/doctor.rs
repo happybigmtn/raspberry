@@ -311,36 +311,47 @@ pub fn check_brave_search(
 pub struct SandboxStatus {
     pub daytona_configured: bool,
     pub daytona_probe: Option<Result<(), String>>,
-    pub docker_probe: Option<Result<(), String>>,
 }
 
 pub fn check_sandbox(status: &SandboxStatus) -> CheckResult {
-    let mut configured = Vec::new();
-    let mut available = Vec::new();
     let mut details = Vec::new();
-    let mut errors = Vec::new();
-
-    if status.daytona_configured {
-        configured.push("Daytona");
-    }
 
     match &status.daytona_probe {
         Some(Ok(())) => {
-            available.push("Daytona");
             details.push(CheckDetail::new(
                 "Daytona (DAYTONA_API_KEY): available".to_string(),
             ));
+            return CheckResult {
+                name: "Cloud sandbox".to_string(),
+                status: CheckStatus::Pass,
+                summary: "Daytona available".to_string(),
+                details,
+                remediation: None,
+            };
         }
         Some(Err(e)) => {
-            errors.push(format!("Daytona: {e}"));
             details.push(CheckDetail::new(format!(
                 "Daytona (DAYTONA_API_KEY): error — {e}",
             )));
+            return CheckResult {
+                name: "Cloud sandbox".to_string(),
+                status: CheckStatus::Error,
+                summary: format!("Daytona: {e}"),
+                details,
+                remediation: Some("Fix sandbox configuration errors".to_string()),
+            };
         }
         None if status.daytona_configured => {
             details.push(CheckDetail::new(
                 "Daytona (DAYTONA_API_KEY): configured".to_string(),
             ));
+            return CheckResult {
+                name: "Cloud sandbox".to_string(),
+                status: CheckStatus::Pass,
+                summary: "Daytona configured".to_string(),
+                details,
+                remediation: None,
+            };
         }
         None => {
             details.push(CheckDetail::new(
@@ -349,51 +360,12 @@ pub fn check_sandbox(status: &SandboxStatus) -> CheckResult {
         }
     }
 
-    match &status.docker_probe {
-        Some(Ok(())) => {
-            available.push("Docker");
-            details.push(CheckDetail::new("Docker: available".to_string()));
-        }
-        Some(Err(e)) => {
-            errors.push(format!("Docker: {e}"));
-            details.push(CheckDetail::new(format!("Docker: error — {e}")));
-        }
-        None => {
-            details.push(CheckDetail::new("Docker: not probed".to_string()));
-        }
-    }
-
-    if !errors.is_empty() {
-        CheckResult {
-            name: "Sandbox".to_string(),
-            status: CheckStatus::Error,
-            summary: errors.join("; "),
-            details,
-            remediation: Some("Fix sandbox configuration errors".to_string()),
-        }
-    } else if configured.is_empty() && available.is_empty() {
-        CheckResult {
-            name: "Sandbox".to_string(),
-            status: CheckStatus::Warning,
-            summary: "no sandbox configured".to_string(),
-            details,
-            remediation: Some(
-                "Install Docker or set DAYTONA_API_KEY to enable sandboxed execution".to_string(),
-            ),
-        }
-    } else {
-        let summary = if available.is_empty() {
-            format!("{} configured", configured.join(" + "))
-        } else {
-            format!("{} available", available.join(" + "))
-        };
-        CheckResult {
-            name: "Sandbox".to_string(),
-            status: CheckStatus::Pass,
-            summary,
-            details,
-            remediation: None,
-        }
+    CheckResult {
+        name: "Cloud sandbox".to_string(),
+        status: CheckStatus::Warning,
+        summary: "no sandbox configured".to_string(),
+        details,
+        remediation: Some("Set DAYTONA_API_KEY to enable cloud sandbox execution".to_string()),
     }
 }
 
@@ -881,13 +853,6 @@ async fn probe_daytona() -> Option<Result<(), String>> {
     )
 }
 
-async fn probe_docker() -> Option<Result<(), String>> {
-    let docker = bollard::Docker::connect_with_local_defaults()
-        .map_err(|e| e.to_string())
-        .ok()?;
-    Some(docker.ping().await.map(|_| ()).map_err(|e| e.to_string()))
-}
-
 pub(crate) fn cheapest_model(provider: Provider) -> String {
     let models = arc_llm::catalog::list_models(Some(provider.as_str()));
     models
@@ -1094,11 +1059,10 @@ pub async fn run_doctor(verbose: bool, live: bool) -> i32 {
         };
 
         let sandbox_fut = async {
-            let (daytona_probe, docker_probe) = tokio::join!(probe_daytona(), probe_docker());
+            let daytona_probe = probe_daytona().await;
             SandboxStatus {
                 daytona_configured,
                 daytona_probe,
-                docker_probe,
             }
         };
         let brave_fut = probe_brave_search(&http);
@@ -1131,7 +1095,6 @@ pub async fn run_doctor(verbose: bool, live: bool) -> i32 {
         sandbox_status = SandboxStatus {
             daytona_configured,
             daytona_probe: None,
-            docker_probe: None,
         };
         llm_live_results = None;
         brave_live_result = None;
@@ -1298,7 +1261,6 @@ mod tests {
         let status = SandboxStatus {
             daytona_configured: true,
             daytona_probe: Some(Ok(())),
-            docker_probe: None,
         };
         let result = check_sandbox(&status);
         assert_eq!(result.status, CheckStatus::Pass);
@@ -1306,35 +1268,10 @@ mod tests {
     }
 
     #[test]
-    fn check_sandbox_docker_probed_ok() {
-        let status = SandboxStatus {
-            daytona_configured: false,
-            daytona_probe: None,
-            docker_probe: Some(Ok(())),
-        };
-        let result = check_sandbox(&status);
-        assert_eq!(result.status, CheckStatus::Pass);
-        assert!(result.summary.contains("Docker available"));
-    }
-
-    #[test]
-    fn check_sandbox_both_probed_ok() {
-        let status = SandboxStatus {
-            daytona_configured: true,
-            daytona_probe: Some(Ok(())),
-            docker_probe: Some(Ok(())),
-        };
-        let result = check_sandbox(&status);
-        assert_eq!(result.status, CheckStatus::Pass);
-        assert!(result.summary.contains("Daytona + Docker available"));
-    }
-
-    #[test]
     fn check_sandbox_nothing_configured() {
         let status = SandboxStatus {
             daytona_configured: false,
             daytona_probe: None,
-            docker_probe: None,
         };
         let result = check_sandbox(&status);
         assert_eq!(result.status, CheckStatus::Warning);
@@ -1346,7 +1283,6 @@ mod tests {
         let status = SandboxStatus {
             daytona_configured: true,
             daytona_probe: None,
-            docker_probe: None,
         };
         let result = check_sandbox(&status);
         assert_eq!(result.status, CheckStatus::Pass);
@@ -1359,7 +1295,6 @@ mod tests {
         let status = SandboxStatus {
             daytona_configured: true,
             daytona_probe: Some(Err("connection refused".to_string())),
-            docker_probe: None,
         };
         let result = check_sandbox(&status);
         assert_eq!(result.status, CheckStatus::Error);
