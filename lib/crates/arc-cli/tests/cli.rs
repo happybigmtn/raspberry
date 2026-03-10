@@ -679,9 +679,9 @@ fn doctor_no_color_when_no_color_set() {
 }
 
 #[test]
-fn doctor_live_flag_accepted() {
+fn doctor_dry_run_flag_accepted() {
     arc()
-        .args(["--no-dotenv", "doctor", "--live"])
+        .args(["--no-dotenv", "doctor", "--dry-run"])
         .env_clear()
         .assert()
         .stdout(predicate::str::contains("Arc Doctor"));

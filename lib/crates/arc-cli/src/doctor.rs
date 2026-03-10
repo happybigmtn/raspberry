@@ -1196,12 +1196,7 @@ pub async fn run_doctor(verbose: bool, live: bool) -> i32 {
         checks,
     };
 
-    let footer = if !live {
-        Some("Run with --live to probe service connectivity.")
-    } else {
-        None
-    };
-    print!("{}", report.render(&styles, verbose, footer));
+    print!("{}", report.render(&styles, verbose, None));
 
     if report.has_errors() {
         1

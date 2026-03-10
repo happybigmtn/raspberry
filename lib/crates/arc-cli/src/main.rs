@@ -82,9 +82,9 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
 
-        /// Probe live services (LLM, sandbox, API, web, Brave Search)
-        #[arg(short, long)]
-        live: bool,
+        /// Skip live service probes (LLM, sandbox, API, web, Brave Search)
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Initialize a new arc project
     Init,
@@ -381,10 +381,10 @@ async fn main_inner() -> Result<()> {
                 Box::leak(Box::new(arc_util::terminal::Styles::detect_stderr()));
             arc_api::serve::serve_command(args, styles).await?;
         }
-        Command::Doctor { verbose, live } => {
+        Command::Doctor { verbose, dry_run } => {
             let cli_config = cli_config::load_cli_config(None)?;
             let verbose = verbose || cli_config.verbose;
-            let exit_code = doctor::run_doctor(verbose, live).await;
+            let exit_code = doctor::run_doctor(verbose, !dry_run).await;
             std::process::exit(exit_code);
         }
         Command::Init => {

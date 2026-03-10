@@ -451,7 +451,7 @@ pub async fn run_install() -> Result<()> {
 
     if run_doctor {
         eprintln!();
-        doctor::run_doctor(true, false).await;
+        doctor::run_doctor(true, true).await;
     }
 
     eprintln!();
