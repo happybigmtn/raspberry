@@ -26,8 +26,22 @@ pub async fn run_init() -> Result<()> {
     }
 
     // Create arc.toml
-    std::fs::write(&arc_toml, "version = 1\n\n[arc]\nroot = \"arc/\"\n")
-        .with_context(|| format!("failed to write {}", arc_toml.display()))?;
+    std::fs::write(
+        &arc_toml,
+        "\
+# Arc project configuration
+# https://docs.arc.computer/getting-started/quick-start
+
+version = 1
+
+[arc]
+root = \"arc/\"
+
+# Disable retrospective analysis after workflow runs:
+# retro = false
+",
+    )
+    .with_context(|| format!("failed to write {}", arc_toml.display()))?;
     eprintln!("Created {}", arc_toml.display());
 
     // Create hello workflow directory
