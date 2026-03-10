@@ -22,7 +22,7 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-15
           - target: x86_64-unknown-linux-gnu
-            runner: self-hosted
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -55,7 +55,7 @@ jobs:
   release:
     name: Release
     needs: compile
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
