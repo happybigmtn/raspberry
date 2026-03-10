@@ -1,0 +1,21 @@
+version = 1
+goal = "Verify the develop-web-game skill is properly set up with its asset files"
+graph = "workflow.dot"
+
+[llm]
+model = "claude-sonnet-4-6"
+
+[sandbox]
+provider = "daytona"
+
+[sandbox.daytona]
+auto_stop_interval = 30
+
+[sandbox.daytona.labels]
+project = "web-game-demo"
+
+[sandbox.daytona.snapshot]
+name = "daytona-medium"
+
+[assets]
+include = ["output/**"]
