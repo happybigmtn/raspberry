@@ -1,5 +1,6 @@
 [workspace]
 members = ["lib/crates/*"]
+default-members = ["lib/crates/arc-cli"]
 resolver = "2"
 
 [workspace.package]
