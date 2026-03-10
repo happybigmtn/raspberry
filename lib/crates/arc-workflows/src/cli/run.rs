@@ -262,7 +262,7 @@ struct CostAccumulator {
 /// Returns an error if the workflow cannot be read, parsed, validated, or executed.
 pub async fn run_command(
     args: RunArgs,
-    run_defaults: RunDefaults,
+    mut run_defaults: RunDefaults,
     styles: &'static Styles,
     github_app: Option<arc_github::GitHubAppCredentials>,
     git_author: crate::git::GitAuthor,
@@ -277,6 +277,20 @@ pub async fn run_command(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--workflow is required unless --run-branch is provided"))?;
     let workflow_path = &super::project_config::resolve_workflow_arg(workflow_path)?;
+
+    // Apply project-level config overrides (arc.toml) on top of CLI defaults.
+    // Workflow-level config (workflow.toml) still wins via apply_defaults below.
+    if let Ok(Some((_config_path, project_config))) =
+        super::project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())
+    {
+        if project_config.pull_request.is_some() {
+            tracing::debug!(
+                pull_request = ?project_config.pull_request,
+                "Applying pull_request config from arc.toml"
+            );
+            run_defaults.pull_request = project_config.pull_request;
+        }
+    }
 
     // 0. Load run config if TOML, resolve DOT path, apply defaults
     let (dot_path, run_cfg) = if workflow_path.extension().is_some_and(|ext| ext == "toml") {

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context};
 use serde::Deserialize;
 
+use super::run_config::PullRequestConfig;
+
 const CONFIG_FILENAME: &str = "arc.toml";
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -11,6 +13,7 @@ pub struct ProjectConfig {
     pub version: u32,
     #[serde(default)]
     pub arc: ProjectArcConfig,
+    pub pull_request: Option<PullRequestConfig>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -199,6 +202,7 @@ mod tests {
                     root: ".".to_string(),
                     retro: true,
                 },
+                pull_request: None,
             }
         );
     }
@@ -221,6 +225,20 @@ mod tests {
         assert!(
             err.to_string().contains("Unsupported"),
             "Expected 'Unsupported' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_pull_request_config() {
+        let config =
+            parse_project_config("version = 1\n\n[pull_request]\nenabled = true\ndraft = false\n")
+                .unwrap();
+        assert_eq!(
+            config.pull_request,
+            Some(PullRequestConfig {
+                enabled: true,
+                draft: false,
+            })
         );
     }
 
@@ -269,6 +287,7 @@ mod tests {
                 root: "arc/".to_string(),
                 ..Default::default()
             },
+            pull_request: None,
         };
         assert_eq!(
             resolve_arc_root(config_path, &config),
@@ -285,6 +304,7 @@ mod tests {
                 root: ".".to_string(),
                 ..Default::default()
             },
+            pull_request: None,
         };
         assert_eq!(resolve_arc_root(config_path, &config), Path::new("/repo/."));
     }
