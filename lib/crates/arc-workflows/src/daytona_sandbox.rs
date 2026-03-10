@@ -204,6 +204,17 @@ impl DaytonaSandbox {
         self.event_callback = Some(cb);
     }
 
+    /// Get the `ComputerUseService` for this sandbox.
+    ///
+    /// Requires the sandbox to be initialized first.
+    pub async fn computer_use(&self) -> Result<daytona_sdk::ComputerUseService, String> {
+        let sandbox = self.sandbox()?;
+        sandbox
+            .computer_use()
+            .await
+            .map_err(|e| format!("Failed to get computer use service: {e}"))
+    }
+
     /// Create SSH access and return the connection command string.
     pub async fn create_ssh_access(&self) -> Result<String, String> {
         let sandbox = self.sandbox()?;

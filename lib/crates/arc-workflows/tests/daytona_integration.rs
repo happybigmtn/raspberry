@@ -31,6 +31,9 @@ async fn create_env_with_github_app(
     github_app: Option<arc_github::GitHubAppCredentials>,
 ) -> DaytonaSandbox {
     dotenvy::dotenv().ok();
+    if let Some(home) = dirs::home_dir() {
+        dotenvy::from_path(home.join(".arc/.env")).ok();
+    }
     let client = daytona_sdk::Client::new()
         .await
         .expect("Failed to create Daytona client — is DAYTONA_API_KEY set?");
@@ -1846,5 +1849,166 @@ async fn daytona_cp_upload_download_round_trip() {
     );
 
     // 9. Cleanup
+    env.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn daytona_computer_use_browser_screenshot() {
+    use base64::Engine;
+
+    // Run from a temp dir so detect_repo_info() finds no git repo and skips cloning.
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    dotenvy::dotenv().ok();
+    if let Some(home) = dirs::home_dir() {
+        dotenvy::from_path(home.join(".arc/.env")).ok();
+    }
+    let client = daytona_sdk::Client::new()
+        .await
+        .expect("DAYTONA_API_KEY must be set");
+    let config = DaytonaConfig {
+        snapshot: Some(DaytonaSnapshotConfig {
+            name: "daytona-medium".into(),
+            cpu: None,
+            memory: None,
+            disk: None,
+            dockerfile: None,
+        }),
+        ..DaytonaConfig::default()
+    };
+    let env = DaytonaSandbox::new(client, config, None, None);
+    env.initialize().await.unwrap();
+
+    // 1. Start the computer use desktop environment (Xvfb, xfce4, etc.)
+    let cu = env.computer_use().await.unwrap();
+    let start_resp = cu.start().await.expect("computer_use.start() failed");
+    eprintln!("Computer use started: {:?}", start_resp.message);
+
+    // 2. Find or install a browser
+    let check = env
+        .exec_command(
+            "which chromium || which chromium-browser || which google-chrome || echo NONE",
+            30_000,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    eprintln!("Browser check: {}", check.stdout.trim());
+
+    if check.stdout.trim() == "NONE" {
+        let install_result = env
+            .exec_command(
+                "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium 2>&1",
+                180_000, None, None, None,
+            )
+            .await
+            .unwrap();
+        eprintln!(
+            "Browser install exit_code={}, last_line={}",
+            install_result.exit_code,
+            install_result.stdout.lines().last().unwrap_or("")
+        );
+        assert_eq!(install_result.exit_code, 0, "Chromium install failed");
+    }
+
+    let browser_bin = env
+        .exec_command(
+            "which chromium || which chromium-browser || which google-chrome",
+            10_000,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let browser = browser_bin.stdout.trim().to_string();
+    eprintln!("Using browser: {browser}");
+
+    // 3. Detect the DISPLAY that computer use started
+    let display_check = env
+        .exec_command(
+            "ps aux | grep Xvfb | grep -v grep | head -1",
+            10_000,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    eprintln!("Xvfb process: {}", display_check.stdout.trim());
+
+    // 4. Launch browser with setsid to fully detach, and log stderr
+    let launch_cmd = format!(
+        "DISPLAY=:0 setsid {browser} --no-sandbox --disable-gpu \
+         --window-size=1024,768 --window-position=0,0 \
+         https://example.com > /tmp/chrome_stdout.log 2>/tmp/chrome_stderr.log &\n\
+         sleep 2 && echo launched"
+    );
+    let launch_result = env
+        .exec_command(&launch_cmd, 30_000, None, None, None)
+        .await
+        .unwrap();
+    eprintln!("Browser launch exit_code={}", launch_result.exit_code);
+
+    // 5. Wait for the page to load, then check if browser is running
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+
+    let ps_check = env
+        .exec_command(
+            "ps aux | grep -i chrom | grep -v grep",
+            10_000,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    eprintln!("Chrome processes:\n{}", ps_check.stdout);
+
+    let stderr_check = env
+        .exec_command(
+            "cat /tmp/chrome_stderr.log 2>/dev/null | tail -20",
+            10_000,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    eprintln!("Chrome stderr:\n{}", stderr_check.stdout);
+
+    // 5. Take a screenshot via the Computer Use API
+    let screenshot = cu
+        .screenshot()
+        .take_full_screen()
+        .await
+        .expect("screenshot failed");
+
+    let b64_data = screenshot
+        .screenshot
+        .expect("screenshot response had no data");
+    eprintln!(
+        "Screenshot captured: {} bytes base64 ({} bytes decoded approx)",
+        b64_data.len(),
+        b64_data.len() * 3 / 4
+    );
+    assert!(!b64_data.is_empty(), "screenshot should not be empty");
+
+    // 6. Decode and save to /tmp for manual inspection
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&b64_data)
+        .expect("base64 decode failed");
+    let output_path = "/tmp/daytona_browser_screenshot.png";
+    std::fs::write(output_path, &png_bytes).expect("failed to write screenshot");
+    eprintln!(
+        "Screenshot saved to {output_path} ({} bytes)",
+        png_bytes.len()
+    );
+
+    // 7. Cleanup
+    cu.stop().await.ok();
     env.cleanup().await.unwrap();
 }
