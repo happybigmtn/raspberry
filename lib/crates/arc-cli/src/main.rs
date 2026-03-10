@@ -20,10 +20,12 @@ struct Cli {
     debug: bool,
 
     /// Execution mode: standalone (in-process) or server (delegate to API)
+    #[cfg(feature = "server")]
     #[arg(long, global = true, value_parser = parse_execution_mode)]
     mode: Option<cli_config::ExecutionMode>,
 
     /// Server URL (overrides server.base_url from cli.toml)
+    #[cfg(feature = "server")]
     #[arg(long, global = true)]
     server_url: Option<String>,
 
@@ -31,6 +33,7 @@ struct Cli {
     command: Command,
 }
 
+#[cfg(feature = "server")]
 fn parse_execution_mode(s: &str) -> Result<cli_config::ExecutionMode, String> {
     match s {
         "standalone" => Ok(cli_config::ExecutionMode::Standalone),
@@ -237,40 +240,62 @@ async fn main_inner() -> Result<()> {
                     if args.model.is_none() {
                         args.model = llm_defaults.and_then(|l| l.model.clone());
                     }
-                    let resolved =
-                        cli_config::resolve_mode(cli.mode, cli.server_url.as_deref(), &cli_config);
-                    match resolved.mode {
-                        cli_config::ExecutionMode::Server => {
-                            let client = cli_config::build_server_client(resolved.tls.as_ref())?;
-                            let server = arc_llm::cli::ServerConnection {
-                                client,
-                                base_url: resolved.server_base_url,
-                            };
-                            arc_llm::cli::run_prompt_via_server(args, &server).await?
+                    #[cfg(feature = "server")]
+                    {
+                        let resolved = cli_config::resolve_mode(
+                            cli.mode,
+                            cli.server_url.as_deref(),
+                            &cli_config,
+                        );
+                        match resolved.mode {
+                            cli_config::ExecutionMode::Server => {
+                                let client =
+                                    cli_config::build_server_client(resolved.tls.as_ref())?;
+                                let server = arc_llm::cli::ServerConnection {
+                                    client,
+                                    base_url: resolved.server_base_url,
+                                };
+                                arc_llm::cli::run_prompt_via_server(args, &server).await?
+                            }
+                            cli_config::ExecutionMode::Standalone => {
+                                arc_llm::cli::run_prompt(args).await?
+                            }
                         }
-                        cli_config::ExecutionMode::Standalone => {
-                            arc_llm::cli::run_prompt(args).await?
-                        }
+                    }
+                    #[cfg(not(feature = "server"))]
+                    {
+                        arc_llm::cli::run_prompt(args).await?
                     }
                 }
                 LlmCommand::Chat(mut args) => {
                     if args.model.is_none() {
                         args.model = llm_defaults.and_then(|l| l.model.clone());
                     }
-                    let resolved =
-                        cli_config::resolve_mode(cli.mode, cli.server_url.as_deref(), &cli_config);
-                    match resolved.mode {
-                        cli_config::ExecutionMode::Server => {
-                            let client = cli_config::build_server_client(resolved.tls.as_ref())?;
-                            let server = arc_llm::cli::ServerConnection {
-                                client,
-                                base_url: resolved.server_base_url,
-                            };
-                            arc_llm::cli::run_chat_via_server(args, &server).await?
+                    #[cfg(feature = "server")]
+                    {
+                        let resolved = cli_config::resolve_mode(
+                            cli.mode,
+                            cli.server_url.as_deref(),
+                            &cli_config,
+                        );
+                        match resolved.mode {
+                            cli_config::ExecutionMode::Server => {
+                                let client =
+                                    cli_config::build_server_client(resolved.tls.as_ref())?;
+                                let server = arc_llm::cli::ServerConnection {
+                                    client,
+                                    base_url: resolved.server_base_url,
+                                };
+                                arc_llm::cli::run_chat_via_server(args, &server).await?
+                            }
+                            cli_config::ExecutionMode::Standalone => {
+                                arc_llm::cli::run_chat(args).await?
+                            }
                         }
-                        cli_config::ExecutionMode::Standalone => {
-                            arc_llm::cli::run_chat(args).await?
-                        }
+                    }
+                    #[cfg(not(feature = "server"))]
+                    {
+                        arc_llm::cli::run_chat(args).await?
                     }
                 }
             }
@@ -284,6 +309,7 @@ async fn main_inner() -> Result<()> {
                 exec_defaults.and_then(|a| a.permissions),
                 exec_defaults.and_then(|a| a.output_format),
             );
+            #[cfg(feature = "server")]
             let resolved =
                 cli_config::resolve_mode(cli.mode, cli.server_url.as_deref(), &cli_config);
             let mcp_servers: Vec<arc_mcp::config::McpServerConfig> = cli_config
@@ -291,34 +317,43 @@ async fn main_inner() -> Result<()> {
                 .into_iter()
                 .map(|(name, entry)| entry.into_config(name))
                 .collect();
-            match resolved.mode {
-                cli_config::ExecutionMode::Server => {
-                    tracing::info!(mode = "server", "Agent session starting");
-                    let http_client = cli_config::build_server_client(resolved.tls.as_ref())?;
-                    let provider_name = args
-                        .provider
-                        .clone()
-                        .unwrap_or_else(|| "anthropic".to_string());
-                    let adapter = std::sync::Arc::new(arc_llm::providers::ArcServerAdapter::new(
-                        http_client,
-                        &resolved.server_base_url,
-                        &provider_name,
-                    ));
-                    let mut client = arc_llm::client::Client::new(
-                        std::collections::HashMap::new(),
-                        None,
-                        vec![],
-                    );
-                    client.register_provider(adapter).await.map_err(|e| {
-                        anyhow::anyhow!("Failed to register arc server adapter: {e}")
-                    })?;
-                    arc_agent::cli::run_with_args_and_client(args, Some(client), mcp_servers)
-                        .await?
+            #[cfg(feature = "server")]
+            {
+                match resolved.mode {
+                    cli_config::ExecutionMode::Server => {
+                        tracing::info!(mode = "server", "Agent session starting");
+                        let http_client = cli_config::build_server_client(resolved.tls.as_ref())?;
+                        let provider_name = args
+                            .provider
+                            .clone()
+                            .unwrap_or_else(|| "anthropic".to_string());
+                        let adapter =
+                            std::sync::Arc::new(arc_llm::providers::ArcServerAdapter::new(
+                                http_client,
+                                &resolved.server_base_url,
+                                &provider_name,
+                            ));
+                        let mut client = arc_llm::client::Client::new(
+                            std::collections::HashMap::new(),
+                            None,
+                            vec![],
+                        );
+                        client.register_provider(adapter).await.map_err(|e| {
+                            anyhow::anyhow!("Failed to register arc server adapter: {e}")
+                        })?;
+                        arc_agent::cli::run_with_args_and_client(args, Some(client), mcp_servers)
+                            .await?
+                    }
+                    cli_config::ExecutionMode::Standalone => {
+                        tracing::info!(mode = "standalone", "Agent session starting");
+                        arc_agent::cli::run_with_args(args, mcp_servers).await?
+                    }
                 }
-                cli_config::ExecutionMode::Standalone => {
-                    tracing::info!(mode = "standalone", "Agent session starting");
-                    arc_agent::cli::run_with_args(args, mcp_servers).await?
-                }
+            }
+            #[cfg(not(feature = "server"))]
+            {
+                tracing::info!(mode = "standalone", "Agent session starting");
+                arc_agent::cli::run_with_args(args, mcp_servers).await?
             }
         }
         Command::Run(mut args) => {
@@ -362,18 +397,27 @@ async fn main_inner() -> Result<()> {
             arc_workflows::cli::diff::diff_command(args).await?;
         }
         Command::Model { command } => {
-            let cli_config = cli_config::load_cli_config(None)?;
-            let resolved =
-                cli_config::resolve_mode(cli.mode, cli.server_url.as_deref(), &cli_config);
-            let server = match resolved.mode {
-                cli_config::ExecutionMode::Server => {
-                    let client = cli_config::build_server_client(resolved.tls.as_ref())?;
-                    Some(arc_llm::cli::ServerConnection {
-                        client,
-                        base_url: resolved.server_base_url,
-                    })
+            let server = {
+                #[cfg(feature = "server")]
+                {
+                    let cli_config = cli_config::load_cli_config(None)?;
+                    let resolved =
+                        cli_config::resolve_mode(cli.mode, cli.server_url.as_deref(), &cli_config);
+                    match resolved.mode {
+                        cli_config::ExecutionMode::Server => {
+                            let client = cli_config::build_server_client(resolved.tls.as_ref())?;
+                            Some(arc_llm::cli::ServerConnection {
+                                client,
+                                base_url: resolved.server_base_url,
+                            })
+                        }
+                        cli_config::ExecutionMode::Standalone => None,
+                    }
                 }
-                cli_config::ExecutionMode::Standalone => None,
+                #[cfg(not(feature = "server"))]
+                {
+                    None
+                }
             };
             arc_llm::cli::run_models(command, server).await?
         }

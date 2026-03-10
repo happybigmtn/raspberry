@@ -1,7 +1,9 @@
 pub use arc_config::cli::*;
 
+#[cfg(feature = "server")]
 use tracing::debug;
 
+#[cfg(feature = "server")]
 #[derive(Debug, PartialEq)]
 pub struct ResolvedMode {
     pub mode: ExecutionMode,
@@ -9,8 +11,10 @@ pub struct ResolvedMode {
     pub tls: Option<ClientTlsConfig>,
 }
 
+#[cfg(feature = "server")]
 const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
 
+#[cfg(feature = "server")]
 pub fn resolve_mode(
     cli_mode: Option<ExecutionMode>,
     cli_server_url: Option<&str>,
@@ -36,6 +40,7 @@ pub fn resolve_mode(
     }
 }
 
+#[cfg(feature = "server")]
 pub fn build_server_client(tls: Option<&ClientTlsConfig>) -> anyhow::Result<reqwest::Client> {
     let Some(tls) = tls else {
         return Ok(reqwest::Client::new());
@@ -65,7 +70,7 @@ pub fn build_server_client(tls: Option<&ClientTlsConfig>) -> anyhow::Result<reqw
     Ok(client)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use std::path::PathBuf;
 
