@@ -47,7 +47,11 @@ root = \"arc/\"
 ",
     )
     .with_context(|| format!("failed to write {}", arc_toml.display()))?;
-    eprintln!("Created {}", arc_toml.display());
+
+    let green = console::Style::new().green();
+    let bold = console::Style::new().bold();
+    let dim = console::Style::new().dim();
+    eprintln!("  {} {}", green.apply_to("✔"), dim.apply_to("arc.toml"));
 
     // Create hello workflow directory
     let workflow_dir = repo_root.join("arc/workflows/hello");
@@ -72,7 +76,11 @@ root = \"arc/\"
 "#,
     )
     .with_context(|| format!("failed to write {}", dot_path.display()))?;
-    eprintln!("Created {}", dot_path.display());
+    eprintln!(
+        "  {} {}",
+        green.apply_to("✔"),
+        dim.apply_to("arc/workflows/hello/workflow.dot")
+    );
 
     // Create workflow.toml
     let toml_path = workflow_dir.join("workflow.toml");
@@ -81,9 +89,20 @@ root = \"arc/\"
         "version = 1\ngraph = \"workflow.dot\"\n\n[sandbox]\nprovider = \"local\"\n",
     )
     .with_context(|| format!("failed to write {}", toml_path.display()))?;
-    eprintln!("Created {}", toml_path.display());
+    eprintln!(
+        "  {} {}",
+        green.apply_to("✔"),
+        dim.apply_to("arc/workflows/hello/workflow.toml")
+    );
 
-    eprintln!("\nProject initialized! Run a workflow with:\n  arc run arc/workflows/hello/workflow.toml --no-retro");
+    eprintln!(
+        "\n{} Run a workflow with:\n\n  {}",
+        bold.apply_to("Project initialized!"),
+        console::Style::new()
+            .cyan()
+            .bold()
+            .apply_to("arc run hello")
+    );
 
     Ok(())
 }
