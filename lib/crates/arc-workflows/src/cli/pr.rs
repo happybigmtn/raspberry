@@ -95,47 +95,66 @@ async fn pr_list_from(
         return Ok(());
     }
 
-    // Fetch live state for each PR
-    let mut rows: Vec<(String, u64, String, String, String)> = Vec::new();
-    for (run_id, record) in &entries {
-        match arc_github::get_pull_request(
-            &creds,
-            &record.owner,
-            &record.repo,
-            record.number,
-            "https://api.github.com",
-        )
-        .await
-        {
-            Ok(detail) => {
-                let state = if detail.draft {
-                    "draft".to_string()
-                } else {
-                    detail.state.clone()
-                };
-                if !args.all && detail.state != "open" {
-                    continue;
-                }
-                rows.push((
-                    run_id.clone(),
-                    detail.number,
-                    state,
-                    detail.title.clone(),
-                    detail.html_url.clone(),
-                ));
-            }
-            Err(e) => {
-                tracing::warn!(run_id, error = %e, "Failed to fetch PR state");
-                rows.push((
-                    run_id.clone(),
-                    record.number,
-                    "unknown".to_string(),
-                    record.title.clone(),
-                    record.html_url.clone(),
-                ));
-            }
-        }
+    struct PrRow {
+        run_id: String,
+        number: u64,
+        state: String,
+        title: String,
+        url: String,
     }
+
+    // Fetch live state for all PRs concurrently
+    let futures: Vec<_> = entries
+        .iter()
+        .map(|(run_id, record)| {
+            let creds = creds.clone();
+            let run_id = run_id.clone();
+            let record = record.clone();
+            async move {
+                match arc_github::get_pull_request(
+                    &creds,
+                    &record.owner,
+                    &record.repo,
+                    record.number,
+                    arc_github::GITHUB_API_BASE_URL,
+                )
+                .await
+                {
+                    Ok(detail) => PrRow {
+                        run_id,
+                        number: detail.number,
+                        state: if detail.draft {
+                            "draft".to_string()
+                        } else {
+                            detail.state
+                        },
+                        title: detail.title,
+                        url: detail.html_url,
+                    },
+                    Err(e) => {
+                        tracing::warn!(run_id, error = %e, "Failed to fetch PR state");
+                        PrRow {
+                            run_id,
+                            number: record.number,
+                            state: "unknown".to_string(),
+                            title: record.title,
+                            url: record.html_url,
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let all_rows = futures::future::join_all(futures).await;
+    let rows: Vec<_> = if args.all {
+        all_rows
+    } else {
+        all_rows
+            .into_iter()
+            .filter(|r| r.state == "open" || r.state == "draft" || r.state == "unknown")
+            .collect()
+    };
 
     if rows.is_empty() {
         println!("No open pull requests found. Use --all to include closed/merged.");
@@ -147,20 +166,20 @@ async fn pr_list_from(
         "{:<12} {:<6} {:<8} {:<50} URL",
         "RUN", "#", "STATE", "TITLE"
     );
-    for (run_id, number, state, title, url) in &rows {
-        let short_id = if run_id.len() > 12 {
-            &run_id[..12]
+    for row in &rows {
+        let short_id = if row.run_id.len() > 12 {
+            &row.run_id[..12]
         } else {
-            run_id
+            &row.run_id
         };
-        let short_title = if title.len() > 50 {
-            format!("{}…", &title[..title.floor_char_boundary(49)])
+        let short_title = if row.title.len() > 50 {
+            format!("{}…", &row.title[..row.title.floor_char_boundary(49)])
         } else {
-            title.clone()
+            row.title.clone()
         };
         println!(
             "{:<12} {:<6} {:<8} {:<50} {}",
-            short_id, number, state, short_title, url
+            short_id, row.number, row.state, short_title, row.url
         );
     }
 
@@ -192,7 +211,7 @@ async fn pr_view_from(
         &record.owner,
         &record.repo,
         record.number,
-        "https://api.github.com",
+        arc_github::GITHUB_API_BASE_URL,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -205,9 +224,9 @@ async fn pr_view_from(
     println!("URL:     {}", detail.html_url);
     println!(
         "Branch:  {} → {}",
-        detail.head_wrapper.ref_name, detail.base_wrapper.ref_name
+        detail.head.ref_name, detail.base.ref_name
     );
-    println!("Author:  {}", detail.user_wrapper.login);
+    println!("Author:  {}", detail.user.login);
     println!(
         "Changes: +{} -{} ({} files)",
         detail.additions, detail.deletions, detail.changed_files
@@ -247,7 +266,7 @@ async fn pr_merge_from(
         &record.repo,
         record.number,
         &args.method,
-        "https://api.github.com",
+        arc_github::GITHUB_API_BASE_URL,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -282,7 +301,7 @@ async fn pr_close_from(
         &record.owner,
         &record.repo,
         record.number,
-        "https://api.github.com",
+        arc_github::GITHUB_API_BASE_URL,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -348,10 +367,15 @@ async fn pr_create_from(
         "GitHub App credentials required — set GITHUB_APP_PRIVATE_KEY and configure app_id",
     )?;
 
-    let branch_found =
-        arc_github::branch_exists(&creds, &owner, &repo, run_branch, "https://api.github.com")
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let branch_found = arc_github::branch_exists(
+        &creds,
+        &owner,
+        &repo,
+        run_branch,
+        arc_github::GITHUB_API_BASE_URL,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if !branch_found {
         bail!(

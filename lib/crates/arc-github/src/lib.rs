@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Detailed information about a pull request from the GitHub API.
 #[derive(Debug, Clone, Deserialize)]
@@ -15,12 +15,9 @@ pub struct PullRequestDetail {
     pub deletions: u64,
     pub changed_files: u64,
     pub html_url: String,
-    #[serde(rename = "user")]
-    pub user_wrapper: PullRequestUser,
-    #[serde(rename = "head")]
-    pub head_wrapper: PullRequestRef,
-    #[serde(rename = "base")]
-    pub base_wrapper: PullRequestRef,
+    pub user: PullRequestUser,
+    pub head: PullRequestRef,
+    pub base: PullRequestRef,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1131,9 +1128,9 @@ mod tests {
         assert_eq!(detail.additions, 10);
         assert_eq!(detail.deletions, 3);
         assert_eq!(detail.changed_files, 2);
-        assert_eq!(detail.user_wrapper.login, "testuser");
-        assert_eq!(detail.head_wrapper.ref_name, "feature-branch");
-        assert_eq!(detail.base_wrapper.ref_name, "main");
+        assert_eq!(detail.user.login, "testuser");
+        assert_eq!(detail.head.ref_name, "feature-branch");
+        assert_eq!(detail.base.ref_name, "main");
     }
 
     #[tokio::test]
