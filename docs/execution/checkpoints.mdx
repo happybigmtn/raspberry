@@ -50,6 +50,7 @@ After each node, the metadata branch is updated with:
 
 - **`checkpoint.json`** — Full execution state (see below)
 - **`artifacts/*.json`** — Any offloaded artifact data (large context values over 100KB)
+- **`nodes/{node_id}/`** — Per-node execution trace files (prompts, responses, status, diffs — files under 512KB from an allowlist)
 
 ## What's in a checkpoint
 

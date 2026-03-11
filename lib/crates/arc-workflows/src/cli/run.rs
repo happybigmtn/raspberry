@@ -1911,11 +1911,6 @@ async fn run_preflight(
             CheckDetail::new(format!("Nodes: {}", graph.nodes.len())),
             CheckDetail::new(format!("Edges: {}", graph.edges.len())),
             CheckDetail::new(format!("Goal: {}", graph.goal())),
-            CheckDetail::new(format!("Model: {model}")),
-            CheckDetail::new(format!(
-                "Provider: {}",
-                provider.as_deref().unwrap_or("anthropic")
-            )),
         ],
         remediation: None,
     });
@@ -2006,62 +2001,85 @@ async fn run_preflight(
         });
     }
 
-    // 4. LLM check (merged providers + provider parse)
-    let resolved_provider = provider.as_deref().unwrap_or("anthropic");
+    // 4. Per-model LLM checks
+    let default_provider = provider.as_deref().unwrap_or("anthropic");
     let llm_ok = match arc_llm::client::Client::from_env().await {
         Ok(c) => {
-            let names: Vec<String> = c.provider_names().iter().map(|s| s.to_string()).collect();
-            if names.is_empty() {
-                checks.push(CheckResult {
-                    name: "LLM".into(),
-                    status: CheckStatus::Error,
-                    summary: "no API keys".into(),
-                    details: vec![],
-                    remediation: Some("Set at least one LLM provider API key".into()),
-                });
-                false
-            } else {
-                match resolved_provider.parse::<Provider>() {
+            let configured: Vec<String> =
+                c.provider_names().iter().map(|s| s.to_string()).collect();
+
+            // Collect all distinct (model, provider) pairs from LLM nodes
+            let mut model_providers = std::collections::BTreeSet::new();
+            for node in graph.nodes.values() {
+                if !crate::graph::types::is_llm_handler_type(node.handler_type()) {
+                    continue;
+                }
+                let node_model = node.llm_model().unwrap_or(&model);
+                let node_provider = node.llm_provider().unwrap_or(default_provider);
+
+                // Resolve through catalog to get canonical model ID and provider
+                let (resolved_model, resolved_provider) =
+                    if let Some(info) = arc_llm::catalog::get_model_info(node_model) {
+                        (info.id, info.provider)
+                    } else {
+                        (node_model.to_string(), node_provider.to_string())
+                    };
+
+                // Use node-level provider override if explicitly set, otherwise catalog provider
+                let final_provider = if node.llm_provider().is_some() {
+                    node_provider.to_string()
+                } else {
+                    resolved_provider
+                };
+
+                model_providers.insert((resolved_model, final_provider));
+            }
+
+            // If no LLM nodes found, fall back to the default model/provider
+            if model_providers.is_empty() {
+                let (resolved_model, resolved_provider) =
+                    if let Some(info) = arc_llm::catalog::get_model_info(&model) {
+                        (info.id, info.provider)
+                    } else {
+                        (model.clone(), default_provider.to_string())
+                    };
+                model_providers.insert((resolved_model, resolved_provider));
+            }
+
+            let mut all_ok = true;
+            for (model_id, provider_name) in &model_providers {
+                match provider_name.parse::<Provider>() {
                     Ok(_) => {
                         let mut status = CheckStatus::Pass;
-                        if !names.iter().any(|n| n == resolved_provider) {
+                        if !configured.iter().any(|n| n == provider_name) {
                             status = CheckStatus::Warning;
+                            all_ok = false;
                         }
                         checks.push(CheckResult {
                             name: "LLM".into(),
                             status,
-                            summary: resolved_provider.to_string(),
-                            details: vec![CheckDetail::new(format!(
-                                "Configured: {}",
-                                names.join(", ")
-                            ))],
+                            summary: model_id.clone(),
+                            details: vec![CheckDetail::new(format!("Provider: {provider_name}"))],
                             remediation: if status == CheckStatus::Warning {
-                                Some(format!(
-                                    "Provider \"{resolved_provider}\" not in configured providers"
-                                ))
+                                Some(format!("Provider \"{provider_name}\" is not configured"))
                             } else {
                                 None
                             },
                         });
-                        status == CheckStatus::Pass
                     }
                     Err(e) => {
                         checks.push(CheckResult {
                             name: "LLM".into(),
                             status: CheckStatus::Error,
-                            summary: resolved_provider.to_string(),
-                            details: vec![CheckDetail::new(format!(
-                                "Configured: {}",
-                                names.join(", ")
-                            ))],
-                            remediation: Some(format!(
-                                "Invalid provider \"{resolved_provider}\": {e}"
-                            )),
+                            summary: model_id.clone(),
+                            details: vec![CheckDetail::new(format!("Provider: {provider_name}"))],
+                            remediation: Some(format!("Invalid provider \"{provider_name}\": {e}")),
                         });
-                        false
+                        all_ok = false;
                     }
                 }
             }
+            all_ok
         }
         Err(e) => {
             checks.push(CheckResult {

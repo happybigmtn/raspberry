@@ -3,6 +3,41 @@ title: "Devcontainers"
 description: "Run Arc workflows inside development containers"
 ---
 
-<Warning>
-Devcontainer support is **under development** and not yet available for use. This page will be updated when the feature ships.
-</Warning>
+Arc can use your project's [devcontainer](https://containers.dev/) configuration to set up sandbox environments. When enabled, Arc resolves `devcontainer.json` from the repository, uses its Dockerfile to build the Daytona sandbox snapshot, runs lifecycle hooks inside the sandbox, and merges devcontainer environment variables into the sandbox environment.
+
+## Enabling devcontainer support
+
+Set `devcontainer = true` in the `[sandbox]` section of your run config:
+
+```toml title="run.toml"
+version = 1
+graph = "workflow.dot"
+
+[sandbox]
+provider = "daytona"
+devcontainer = true
+```
+
+Arc looks for `.devcontainer/devcontainer.json` in the repository root. If found, it extracts the Dockerfile, lifecycle commands, and environment variables from the configuration.
+
+## What Arc uses from devcontainer.json
+
+| Field | How Arc uses it |
+|---|---|
+| `build.dockerfile` | Used as the Dockerfile for the Daytona sandbox snapshot. A deterministic snapshot name is generated from a hash of the Dockerfile content. |
+| `onCreateCommand` | Runs inside the sandbox after it's created |
+| `postCreateCommand` | Runs after `onCreateCommand` completes |
+| `postStartCommand` | Runs after the sandbox starts |
+| `containerEnv` | Merged into sandbox environment variables (TOML `[sandbox.env]` values take precedence on key collisions) |
+
+Lifecycle commands (`onCreateCommand`, `postCreateCommand`, `postStartCommand`) execute sequentially inside the sandbox. If any command fails, the run aborts before the workflow starts.
+
+## Dockerfile limitations
+
+Arc detects and reports unsupported `COPY` and `ADD` instructions in devcontainer base Dockerfiles. These instructions reference files from the build context, which isn't available when building Daytona snapshots. If your Dockerfile uses `COPY` or `ADD`, you'll need to restructure it to use `RUN` commands that fetch files at build time (e.g., via `curl` or `wget`).
+
+## Interaction with other sandbox settings
+
+When `devcontainer = true`, the devcontainer Dockerfile overrides any `snapshot.dockerfile` setting in `[sandbox.daytona]`. Other Daytona settings (`cpu`, `memory`, `disk`, `auto_stop_interval`, `labels`) still apply.
+
+Environment variables from `containerEnv` in the devcontainer config are merged with `[sandbox.env]` from the TOML config. On key collisions, the TOML config wins.

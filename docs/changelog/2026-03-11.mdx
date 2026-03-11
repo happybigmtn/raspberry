@@ -1,0 +1,27 @@
+---
+title: "Shadow branch run records and arc diff improvements"
+date: "2026-03-11"
+---
+
+## Shadow branch as a complete run record
+
+The shadow branch now stores the full execution trace for each workflow run — prompts, responses, status files, diffs, and retro data per node — alongside the existing checkpoint and manifest data. This makes the shadow branch a self-contained, git-native record of everything that happened during a run, browsable with standard git tools.
+
+## More
+
+<Accordion title="API">
+- Added `devcontainer` field to `SandboxConfiguration` OpenAPI schema
+</Accordion>
+
+<Accordion title="CLI">
+- Added `--shortstat` flag to `arc diff` for compact summary output
+- `arc diff` now includes uncommitted changes for in-progress runs, not just committed ones
+</Accordion>
+
+<Accordion title="Improvements">
+- Added `gemini-3.1-pro-preview-customtools` to model catalog
+- Parallel fan-out branches now render like subagent info lines in the progress UI
+- Tool call paths now display relative to the sandbox working directory
+- Remote sandbox runs skip unnecessary local worktree creation
+- Added `last_file_touched` as a third fallback for status extraction
+</Accordion>
