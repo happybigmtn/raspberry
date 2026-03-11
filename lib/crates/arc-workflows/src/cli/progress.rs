@@ -122,13 +122,8 @@ fn last_line_truncated(s: &str, max: usize) -> String {
 
 fn shorten_path(path: &str, working_directory: Option<&str>) -> String {
     if let Some(wd) = working_directory {
-        let wd_prefix = if wd.ends_with('/') {
-            wd.to_string()
-        } else {
-            format!("{wd}/")
-        };
-        if let Some(rel) = path.strip_prefix(&wd_prefix) {
-            return rel.to_string();
+        if let Ok(rel) = std::path::Path::new(path).strip_prefix(wd) {
+            return rel.display().to_string();
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -1122,7 +1117,7 @@ impl ProgressUI {
                     .insert_after(stage.last_bar(), ProgressBar::new_spinner());
                 bar.set_style(style_subagent_info());
                 let dim = Style::new().dim();
-                bar.set_message(format!("{}", dim.apply_to(format!("\u{25b8} {branch}"))));
+                bar.set_message(dim.apply_to(format!("\u{25b8} {branch}")).to_string());
                 stage.tool_calls.push_back(ToolCallEntry {
                     display_name: branch.to_string(),
                     tool_call_id: branch.to_string(),
