@@ -1,5 +1,5 @@
 use crate::config::SessionConfig;
-use crate::error::AgentError;
+use crate::error::{AbortReason, AgentError};
 use crate::event::EventEmitter;
 use crate::file_tracker::FileTracker;
 use crate::history::History;
@@ -36,6 +36,7 @@ pub struct Session {
     steering_queue: Arc<Mutex<VecDeque<String>>>,
     followup_queue: Arc<Mutex<VecDeque<String>>>,
     cancel_token: CancellationToken,
+    abort_reason: Arc<Mutex<Option<AbortReason>>>,
     project_docs: Vec<String>,
     env_context: EnvContext,
     skills: Vec<Skill>,
@@ -64,6 +65,7 @@ impl Session {
             steering_queue: Arc::new(Mutex::new(VecDeque::new())),
             followup_queue: Arc::new(Mutex::new(VecDeque::new())),
             cancel_token: CancellationToken::new(),
+            abort_reason: Arc::new(Mutex::new(None)),
             project_docs: Vec::new(),
             env_context: EnvContext::default(),
             skills: Vec::new(),
@@ -360,7 +362,31 @@ impl Session {
     }
 
     pub fn abort(&self) {
+        self.set_abort_reason(AbortReason::Cancelled);
         self.cancel_token.cancel();
+    }
+
+    /// Returns a handle that can set the abort reason from another task.
+    #[must_use]
+    pub fn abort_reason_handle(&self) -> Arc<Mutex<Option<AbortReason>>> {
+        self.abort_reason.clone()
+    }
+
+    fn set_abort_reason(&self, reason: AbortReason) {
+        let mut guard = self.abort_reason.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(reason);
+        }
+    }
+
+    fn aborted_error(&self) -> AgentError {
+        let reason = self
+            .abort_reason
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or(AbortReason::Cancelled);
+        AgentError::Aborted(reason)
     }
 
     #[must_use]
@@ -422,8 +448,15 @@ impl Session {
         // Spawn wall-clock timeout task if configured
         let timer_handle = self.config.wall_clock_timeout.map(|duration| {
             let token = self.cancel_token.clone();
+            let reason_handle = self.abort_reason.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
+                {
+                    let mut guard = reason_handle.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.is_none() {
+                        *guard = Some(AbortReason::WallClockTimeout);
+                    }
+                }
                 token.cancel();
             })
         });
@@ -528,7 +561,7 @@ impl Session {
             // Check cancellation
             if self.cancel_token.is_cancelled() {
                 self.close();
-                return Err(AgentError::Aborted);
+                return Err(self.aborted_error());
             }
 
             // Build request
@@ -630,7 +663,7 @@ impl Session {
             if self.cancel_token.is_cancelled() {
                 drop(event_stream);
                 self.close();
-                return Err(AgentError::Aborted);
+                return Err(self.aborted_error());
             }
 
             let response = accumulator.response().cloned().ok_or_else(|| {
@@ -743,7 +776,7 @@ impl Session {
                     timestamp: SystemTime::now(),
                 });
                 self.close();
-                return Err(AgentError::Aborted);
+                return Err(self.aborted_error());
             }
 
             // Record tool results turn
@@ -1156,7 +1189,7 @@ mod tests {
         let result = session.process_input("Do something").await;
 
         // Should return Aborted error and transition to Closed
-        assert!(matches!(result, Err(AgentError::Aborted)));
+        assert!(matches!(result, Err(AgentError::Aborted(_))));
         assert_eq!(session.state(), SessionState::Closed);
 
         // Should have stopped immediately: User turn only, no LLM call
@@ -1210,7 +1243,7 @@ mod tests {
         let result = session.process_input("Do something").await;
 
         // Should return Aborted error and transition to Closed
-        assert!(matches!(result, Err(AgentError::Aborted)));
+        assert!(matches!(result, Err(AgentError::Aborted(_))));
         assert_eq!(session.state(), SessionState::Closed);
 
         // Should have processed: User + Assistant(tool_call) + ToolResults = 3 turns
@@ -2272,8 +2305,11 @@ mod tests {
         let result = session.process_input("Do something slow").await;
 
         assert!(
-            matches!(result, Err(AgentError::Aborted)),
-            "expected Aborted, got {result:?}"
+            matches!(
+                result,
+                Err(AgentError::Aborted(AbortReason::WallClockTimeout))
+            ),
+            "expected Aborted(WallClockTimeout), got {result:?}"
         );
         assert_eq!(session.state(), SessionState::Closed);
     }

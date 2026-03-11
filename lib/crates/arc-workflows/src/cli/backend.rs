@@ -529,7 +529,7 @@ impl CodergenBackend for AgentApiBackend {
                             last_err = ArcError::Llm(err);
                         }
                         Err(arc_agent::AgentError::Llm(err)) => return Err(ArcError::Llm(err)),
-                        Err(arc_agent::AgentError::Aborted) => return Err(ArcError::Cancelled),
+                        Err(arc_agent::AgentError::Aborted(_)) => return Err(ArcError::Cancelled),
                         Err(other) => {
                             return Err(ArcError::handler(format!(
                                 "Agent session failed: {other}"
@@ -545,7 +545,7 @@ impl CodergenBackend for AgentApiBackend {
                 }
             }
             Err(arc_agent::AgentError::Llm(sdk_err)) => Err(ArcError::Llm(sdk_err)),
-            Err(arc_agent::AgentError::Aborted) => Err(ArcError::Cancelled),
+            Err(arc_agent::AgentError::Aborted(_)) => Err(ArcError::Cancelled),
             Err(other) => Err(ArcError::handler(format!("Agent session failed: {other}"))),
         };
 

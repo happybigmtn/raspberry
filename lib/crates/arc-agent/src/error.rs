@@ -1,5 +1,22 @@
 use arc_llm::error::SdkError;
 
+/// Why a session was aborted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbortReason {
+    WallClockTimeout,
+    Cancelled,
+}
+
+impl std::fmt::Display for AbortReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WallClockTimeout => write!(f, "wall clock timeout"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, thiserror::Error)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentError {
@@ -15,8 +32,8 @@ pub enum AgentError {
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
 
-    #[error("Aborted")]
-    Aborted,
+    #[error("Aborted: {0}")]
+    Aborted(AbortReason),
 }
 
 #[cfg(test)]
@@ -54,8 +71,14 @@ mod tests {
 
     #[test]
     fn aborted_display() {
-        let err = AgentError::Aborted;
-        assert_eq!(err.to_string(), "Aborted");
+        let err = AgentError::Aborted(AbortReason::Cancelled);
+        assert_eq!(err.to_string(), "Aborted: cancelled");
+    }
+
+    #[test]
+    fn aborted_wall_clock_timeout_display() {
+        let err = AgentError::Aborted(AbortReason::WallClockTimeout);
+        assert_eq!(err.to_string(), "Aborted: wall clock timeout");
     }
 
     // --- Serde roundtrip tests ---
@@ -114,7 +137,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_aborted() {
-        let err = AgentError::Aborted;
+        let err = AgentError::Aborted(AbortReason::Cancelled);
         let json = serde_json::to_string(&err).unwrap();
         let deserialized: AgentError = serde_json::from_str(&json).unwrap();
         assert_eq!(err.to_string(), deserialized.to_string());
@@ -131,7 +154,7 @@ mod tests {
             AgentError::SessionClosed,
             AgentError::InvalidState("reason".into()),
             AgentError::ToolExecution("reason".into()),
-            AgentError::Aborted,
+            AgentError::Aborted(AbortReason::Cancelled),
         ];
         for err in &errors {
             assert_eq!(err.to_string(), err.clone().to_string());
@@ -176,9 +199,10 @@ mod tests {
 
     #[test]
     fn serde_tag_format_aborted() {
-        let err = AgentError::Aborted;
+        let err = AgentError::Aborted(AbortReason::WallClockTimeout);
         let json = serde_json::to_string(&err).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "aborted");
+        assert_eq!(v["data"], "wall_clock_timeout");
     }
 }

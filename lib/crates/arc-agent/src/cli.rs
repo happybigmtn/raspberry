@@ -479,8 +479,15 @@ pub async fn run_with_args_and_client(
 
     // SIGINT handler
     let cancel_token = session.cancel_token();
+    let abort_reason = session.abort_reason_handle();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
+        {
+            let mut guard = abort_reason.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                *guard = Some(crate::error::AbortReason::Cancelled);
+            }
+        }
         cancel_token.cancel();
     });
 

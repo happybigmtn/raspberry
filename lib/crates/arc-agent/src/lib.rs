@@ -30,7 +30,7 @@ pub use arc_mcp::config::McpServerConfig;
 pub use config::{SessionConfig, ToolApprovalAdapter, ToolHookCallback, ToolHookDecision};
 #[cfg(feature = "docker")]
 pub use docker_sandbox::{DockerSandbox, DockerSandboxConfig};
-pub use error::AgentError;
+pub use error::{AbortReason, AgentError};
 pub use event::EventEmitter;
 pub use history::History;
 pub use local_sandbox::LocalSandbox;
