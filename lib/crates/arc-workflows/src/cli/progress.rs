@@ -888,8 +888,8 @@ impl ProgressUI {
                         bar.finish_and_clear();
                     }
                     for entry in &stage.tool_calls {
-                        if entry.is_branch {
-                            // Keep visible: branches always stay
+                        if entry.is_branch || self.verbose {
+                            // Keep visible: branches always, all entries in verbose mode
                             entry.bar.abandon();
                         } else {
                             entry.bar.finish_and_clear();
@@ -1211,40 +1211,25 @@ impl ProgressUI {
     }
 
     fn on_tool_call_completed(&mut self, stage_node_id: &str, tool_call_id: &str, is_error: bool) {
-        if let ProgressRenderer::Tty(tty) = &self.renderer {
+        if let ProgressRenderer::Tty(_) = &self.renderer {
             if let Some(stage) = self.active_stages.get_mut(stage_node_id) {
-                if let Some(pos) = stage
+                if let Some(entry) = stage
                     .tool_calls
-                    .iter()
-                    .position(|e| e.tool_call_id == tool_call_id)
+                    .iter_mut()
+                    .find(|e| e.tool_call_id == tool_call_id)
                 {
                     let glyph = if is_error { red_cross() } else { green_check() };
-                    let elapsed = format_duration_short(stage.tool_calls[pos].bar.elapsed());
-
-                    if self.verbose {
-                        // Print as permanent output above the MultiProgress region,
-                        // then remove the bar so MultiProgress stays small.
-                        let dim = Style::new().dim();
-                        let _ = tty.multi.println(format!(
-                            "      {glyph} {} {}",
-                            stage.tool_calls[pos].display_name,
-                            dim.apply_to(&elapsed)
-                        ));
-                        stage.tool_calls[pos].bar.finish_and_clear();
-                        stage.tool_calls.remove(pos);
+                    entry.status = if is_error {
+                        ToolCallStatus::Failed
                     } else {
-                        let entry = &mut stage.tool_calls[pos];
-                        entry.status = if is_error {
-                            ToolCallStatus::Failed
-                        } else {
-                            ToolCallStatus::Succeeded
-                        };
-                        entry.bar.set_style(style_tool_done());
-                        entry.bar.set_prefix(elapsed);
-                        entry
-                            .bar
-                            .finish_with_message(format!("{glyph} {}", entry.display_name));
-                    }
+                        ToolCallStatus::Succeeded
+                    };
+                    let elapsed = format_duration_short(entry.bar.elapsed());
+                    entry.bar.set_style(style_tool_done());
+                    entry.bar.set_prefix(elapsed);
+                    entry
+                        .bar
+                        .finish_with_message(format!("{glyph} {}", entry.display_name));
                 }
             }
         }
