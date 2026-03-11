@@ -116,7 +116,21 @@ async fn check_github_app_installation() {
         .output()
     {
         Ok(o) if o.status.success() => o,
-        _ => return, // No origin remote — skip silently
+        _ => {
+            let yellow = console::Style::new().yellow();
+            let dim = console::Style::new().dim();
+            eprintln!(
+                "\n  {} No git remote found — skipping GitHub App check",
+                yellow.apply_to("!")
+            );
+            eprintln!(
+                "  {}",
+                dim.apply_to(
+                    "Run `git remote add origin <url>` then `arc install` to set up the GitHub App"
+                )
+            );
+            return;
+        }
     };
 
     let remote_url = match String::from_utf8(output.stdout) {
