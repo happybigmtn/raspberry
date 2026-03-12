@@ -161,16 +161,6 @@
         ]
       },
       {
-        "tab": "Web",
-        "icon": "browser",
-        "groups": [
-          {
-            "group": "Web",
-            "pages": []
-          }
-        ]
-      },
-      {
         "tab": "API Reference",
         "icon": "code",
         "openapi": "api-reference/arc-api.yaml",
