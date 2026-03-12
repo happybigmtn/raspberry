@@ -1,26 +1,9 @@
 ---
-title: "Logs & Runs Directories"
-description: "Structure of Fabro's local logs and runs directories"
+title: "Run Directory"
+description: "Structure of Fabro's per-run directory"
 ---
 
-Fabro stores data in two directories under `~/.fabro/`:
-
-- **`~/.fabro/runs/`** — Per-run data. Each workflow run gets its own subdirectory containing event streams, checkpoints, artifacts, and worktrees.
-- **`~/.fabro/logs/`** — Daily CLI log files. One `.log` file per day with aggregated tracing output.
-
-## Daily log files
-
-The CLI appends tracing output to a daily log file:
-
-```
-~/.fabro/logs/2026-03-07.log
-```
-
-The log level defaults to `info`. Set `FABRO_LOG=debug` or pass `--debug` for verbose output including HTTP connection pool diagnostics.
-
-## Run directories
-
-Each `fabro run` invocation creates a timestamped directory:
+Each `fabro run` invocation creates a timestamped directory under `~/.fabro/runs/`:
 
 ```
 ~/.fabro/runs/20260307-01JQXYZ123ABC456DEF789/
@@ -28,7 +11,7 @@ Each `fabro run` invocation creates a timestamped directory:
 
 The naming format is `YYYYMMDD-{run_id}`, where `run_id` is the ULID assigned to the run. You can override the location with `--run-dir`.
 
-### Root-level files
+## Root-level files
 
 | File | Format | When written | Description |
 |---|---|---|---|
@@ -44,7 +27,7 @@ The naming format is `YYYYMMDD-{run_id}`, where `run_id` is the ULID assigned to
 | `retro.json` | JSON | Run end | Post-run retrospective analysis — `smoothness_rating`, `learnings`, `friction_points`, `stages`. Omitted if `--no-retro` is passed. See [Retros](/execution/retros). |
 | `cli.log` | Text | Continuous | Per-run tracing log. Contains the same tracing output as the daily log file, scoped to this run. |
 
-### `nodes/` subdirectory
+## `nodes/` subdirectory
 
 Each node execution writes artifacts into `nodes/{node_id}/`. When a node is retried, subsequent visits use `nodes/{node_id}-visit_{N}/` (where N starts at 2).
 
@@ -77,7 +60,7 @@ Every node gets a `status.json` after completion containing `status`, `notes`, `
 
 Manager nodes that run sub-workflows write a nested `child/` directory containing a full run structure (manifest, checkpoint, nodes, etc.).
 
-### Other directories
+## Other directories
 
 **`worktree/`** — When running in git checkpoint mode, Fabro creates a Git worktree here as the working directory for agents and commands.
 
@@ -96,9 +79,6 @@ fabro ps --filter workflow=my-workflow
 ## Full directory tree
 
 ```
-~/.fabro/logs/
-├── 2026-03-07.log                    # Daily CLI log
-
 ~/.fabro/runs/
 ├── 20260307-01JQXYZ123ABC456DEF789/  # One directory per run
 │   ├── manifest.json
