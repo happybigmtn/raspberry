@@ -5,7 +5,7 @@ date: "2026-03-11"
 
 ## SSH sandbox provider
 
-Previously, running workflows on a remote machine meant provisioning a cloud VM through Daytona or exe.dev. Now you can point Arc at any host you can already SSH into — a dev server, a home lab machine, or a NAS box — and run workflows there without any additional setup. The SSH sandbox connects using your existing SSH credentials, optionally clones the current repository, and runs all agent operations directly on the host.
+Previously, running workflows on a remote machine meant provisioning a cloud VM through Daytona or exe.dev. Now you can point Fabro at any host you can already SSH into — a dev server, a home lab machine, or a NAS box — and run workflows there without any additional setup. The SSH sandbox connects using your existing SSH credentials, optionally clones the current repository, and runs all agent operations directly on the host.
 
 ```toml title="run.toml"
 [sandbox]
@@ -18,29 +18,29 @@ working_directory = "/home/user/workspace"
 
 Custom SSH config files and ProxyJump hosts are supported via the `config_file` field.
 
-## arc skill install
+## fabro skill install
 
-Arc now ships with a built-in `arc-create-workflow` skill for AI assistants (Claude Code, Codex) that knows Arc's DOT syntax, workflow attributes, node types, and run configuration. Run `arc skill install` to extract it to your filesystem:
+Fabro now ships with a built-in `fabro-create-workflow` skill for AI assistants (Claude Code, Codex) that knows Fabro's DOT syntax, workflow attributes, node types, and run configuration. Run `fabro skill install` to extract it to your filesystem:
 
 ```bash
 # Install for the current project
-arc skill install --for project
+fabro skill install --for project
 
 # Install for all projects (user-level)
-arc skill install --for user
+fabro skill install --for user
 ```
 
-After installation, AI assistants in your editor can use the skill when generating or editing Arc workflows.
+After installation, AI assistants in your editor can use the skill when generating or editing Fabro workflows.
 
 ## More
 
 <Accordion title="CLI">
-- Added `arc graph` subcommand to render workflow DOT graphs as SVG or PNG (requires Graphviz `dot`)
-- `arc run` and `arc validate` now print the resolved workflow path before execution
-- `arc doctor` now groups checks into **Required**, **Optional**, and **Server** sections and shows a spinner while checks run
-- Added warning during `arc init` when no git remote is configured
-- Added `--shortstat` flag to `arc diff` for compact one-line summary output
-- `arc diff` now includes uncommitted changes for in-progress runs
+- Added `fabro graph` subcommand to render workflow DOT graphs as SVG or PNG (requires Graphviz `dot`)
+- `fabro run` and `fabro validate` now print the resolved workflow path before execution
+- `fabro doctor` now groups checks into **Required**, **Optional**, and **Server** sections and shows a spinner while checks run
+- Added warning during `fabro init` when no git remote is configured
+- Added `--shortstat` flag to `fabro diff` for compact one-line summary output
+- `fabro diff` now includes uncommitted changes for in-progress runs
 - Retro step now shows tool call progress while the retro agent works
 </Accordion>
 

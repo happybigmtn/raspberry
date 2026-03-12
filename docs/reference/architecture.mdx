@@ -1,9 +1,9 @@
 ---
 title: "Architecture"
-description: "How Arc's CLI and API modes work under the hood"
+description: "How Fabro's CLI and API modes work under the hood"
 ---
 
-Arc provides two interfaces — a CLI for local development and an HTTP API for production use. Both share a common workflow engine.
+Fabro provides two interfaces — a CLI for local development and an HTTP API for production use. Both share a common workflow engine.
 
 ## Shared engine
 
@@ -12,7 +12,7 @@ At the core of both modes is the `WorkflowRunEngine`. It parses the DOT graph, w
 ## CLI mode
 
 ```bash
-arc run workflow.dot --goal "Implement the login feature"
+fabro run workflow.dot --goal "Implement the login feature"
 ```
 
 The CLI parses the workflow, creates the engine with a `ConsoleInterviewer`, and executes synchronously. Events are printed to stderr, progress is shown with terminal indicators, and human-in-the-loop questions are answered via interactive terminal prompts. When the run finishes, the process exits.
@@ -25,10 +25,10 @@ CLI mode is ideal for:
 ## API mode
 
 ```bash
-arc serve
+fabro serve
 ```
 
-`arc serve` starts an HTTP server (default `127.0.0.1:3000`) backed by SQLite for run persistence. Runs are submitted via the REST API and executed asynchronously.
+`fabro serve` starts an HTTP server (default `127.0.0.1:3000`) backed by SQLite for run persistence. Runs are submitted via the REST API and executed asynchronously.
 
 ### Configuration
 
@@ -68,14 +68,14 @@ API mode supports two authentication strategies, configurable in `server.toml`:
 
 ### Demo mode
 
-Demo mode is per-request: send the `X-Arc-Demo: 1` HTTP header to get static mock data with authentication disabled. The web UI sends this header automatically when configured with `ARC_DEMO=1`. This lets you explore the UI without API keys or real workflow execution.
+Demo mode is per-request: send the `X-Fabro-Demo: 1` HTTP header to get static mock data with authentication disabled. The web UI sends this header automatically when configured with `FABRO_DEMO=1`. This lets you explore the UI without API keys or real workflow execution.
 
 ## Web UI
 
-The web UI is a React app (`apps/arc-web`) that connects to the API server. Start it alongside `arc serve`:
+The web UI is a React app (`apps/arc-web`) that connects to the API server. Start it alongside `fabro serve`:
 
 ```bash
-arc serve                        # API on port 3000
+fabro serve                        # API on port 3000
 cd apps/arc-web && bun run dev   # Web UI on port 5173
 ```
 

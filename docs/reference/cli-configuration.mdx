@@ -1,13 +1,13 @@
 ---
 title: "CLI Configuration"
-description: "Configure default settings for the Arc CLI with cli.toml"
+description: "Configure default settings for the Fabro CLI with cli.toml"
 ---
 
-Arc loads CLI defaults from `~/.arc/cli.toml` so you don't have to pass common flags every time. The file is optional — if it doesn't exist, built-in defaults are used.
+Fabro loads CLI defaults from `~/.arc/cli.toml` so you don't have to pass common flags every time. The file is optional — if it doesn't exist, built-in defaults are used.
 
 ## File location
 
-The default path is `~/.arc/cli.toml`. Arc silently skips loading if the file is missing.
+The default path is `~/.arc/cli.toml`. Fabro silently skips loading if the file is missing.
 
 ## Precedence
 
@@ -24,7 +24,7 @@ verbose = true
 mode = "server"
 
 [server]
-base_url = "https://arc.example.com:3000"
+base_url = "https://fabro.example.com:3000"
 
 [server.tls]
 cert = "~/.arc/tls/client.crt"
@@ -71,7 +71,7 @@ All fields are optional. You can include just the sections and keys you want to 
 
 ## `verbose`
 
-Enable verbose output by default for `arc run start` and `arc doctor`, without passing `-v` every time.
+Enable verbose output by default for `fabro run start` and `fabro doctor`, without passing `-v` every time.
 
 | Value | Description |
 |---|---|
@@ -82,12 +82,12 @@ The `-v` / `--verbose` CLI flag always takes effect regardless of this setting.
 
 ## `[exec]` section
 
-Defaults for `arc exec` sessions.
+Defaults for `fabro exec` sessions.
 
 | Key | Description | Values | Default |
 |---|---|---|---|
 | `provider` | LLM provider | `"anthropic"`, `"openai"`, `"gemini"`, etc. | `"anthropic"` |
-| `model` | Model name | Any model ID from `arc model list` | Per provider |
+| `model` | Model name | Any model ID from `fabro model list` | Per provider |
 | `permissions` | Tool permission level | `"read-only"`, `"read-write"`, `"full"` | `"read-write"` |
 | `output_format` | Output format | `"text"`, `"json"` | `"text"` |
 
@@ -106,19 +106,19 @@ Tools outside the permission level are interactively prompted (if a TTY is prese
 
 ## `[llm]` section
 
-Defaults for `arc llm prompt` and `arc llm chat`.
+Defaults for `fabro llm prompt` and `fabro llm chat`.
 
 | Key | Description | Values | Default |
 |---|---|---|---|
-| `model` | Model name | Any model ID from `arc model list` | Per provider |
+| `model` | Model name | Any model ID from `fabro model list` | Per provider |
 
 <Note>
-The `[llm]` section only sets the default model. Use `[exec]` to configure provider, permissions, and output format for `arc exec`.
+The `[llm]` section only sets the default model. Use `[exec]` to configure provider, permissions, and output format for `fabro exec`.
 </Note>
 
 ## `[log]` section
 
-Configure the default log level. Precedence: `ARC_LOG` env var > `--debug` flag > `[log]` level > `"info"`.
+Configure the default log level. Precedence: `FABRO_LOG` env var > `--debug` flag > `[log]` level > `"info"`.
 
 | Key | Description | Values | Default |
 |---|---|---|---|
@@ -137,17 +137,17 @@ Customize the git author identity used for checkpoint commits. Overrides the ser
 
 ## `mode`
 
-Controls whether commands run in-process or delegate to a running Arc API server.
+Controls whether commands run in-process or delegate to a running Fabro API server.
 
 | Value | Description |
 |---|---|
 | `"standalone"` | Execute locally (default) |
-| `"server"` | Delegate to an Arc API server |
+| `"server"` | Delegate to an Fabro API server |
 
 Override with the `--mode` CLI flag:
 
 ```bash
-arc --mode server models list
+fabro --mode server models list
 ```
 
 ## `[server]` section
@@ -161,7 +161,7 @@ Configuration for server mode.
 Override the URL with the `--server-url` CLI flag:
 
 ```bash
-arc --mode server --server-url https://arc.example.com:3000 models list
+fabro --mode server --server-url https://fabro.example.com:3000 models list
 ```
 
 ### `[server.tls]` section
@@ -196,11 +196,11 @@ enabled = true
 |---|---|---|
 | `enabled` | Automatically create a PR after successful runs | `false` |
 
-Precedence: `run.toml` > `arc.toml` (project config) > `cli.toml` > `server.toml` > built-in default (`false`).
+Precedence: `run.toml` > `fabro.toml` (project config) > `cli.toml` > `server.toml` > built-in default (`false`).
 
 ## `[mcp_servers]` section
 
-Configure [MCP servers](/agents/mcp) to connect to during `arc exec` sessions. Each server is a named TOML table under `[mcp_servers]`. MCP servers can also be configured per-workflow in [run config TOML](/execution/run-configuration#mcp_servers).
+Configure [MCP servers](/agents/mcp) to connect to during `fabro exec` sessions. Each server is a named TOML table under `[mcp_servers]`. MCP servers can also be configured per-workflow in [run config TOML](/execution/run-configuration#mcp_servers).
 
 ### Stdio transport
 
@@ -268,4 +268,4 @@ tool_timeout_secs = 120
 | `startup_timeout_secs` | Max seconds for startup + MCP handshake | `10` |
 | `tool_timeout_secs` | Max seconds for a single tool call | `60` |
 
-See [MCP — Sandbox transport](/agents/mcp#sandbox) for how Arc launches and connects to sandbox MCP servers.
+See [MCP — Sandbox transport](/agents/mcp#sandbox) for how Fabro launches and connects to sandbox MCP servers.

@@ -1,13 +1,13 @@
 ---
 title: "Failures"
-description: "How Arc classifies, retries, and recovers from failures during workflow execution"
+description: "How Fabro classifies, retries, and recovers from failures during workflow execution"
 ---
 
-Failures are inevitable when orchestrating LLM-powered workflows — models hit rate limits, agents produce bad output, commands fail, and providers go down. Arc handles this with multiple layers of defense: automatic retries with backoff, provider failover, failure classification for intelligent routing, circuit breakers to prevent infinite loops, and goal gates to catch quality problems before a run completes.
+Failures are inevitable when orchestrating LLM-powered workflows — models hit rate limits, agents produce bad output, commands fail, and providers go down. Fabro handles this with multiple layers of defense: automatic retries with backoff, provider failover, failure classification for intelligent routing, circuit breakers to prevent infinite loops, and goal gates to catch quality problems before a run completes.
 
 ## Failure classification
 
-When a node fails, Arc classifies the failure into one of six categories. These classes drive retry decisions, circuit breaker logic, and edge routing.
+When a node fails, Fabro classifies the failure into one of six categories. These classes drive retry decisions, circuit breaker logic, and edge routing.
 
 | Class | Description | Examples |
 |---|---|---|
@@ -18,7 +18,7 @@ When a node fails, Arc classifies the failure into one of six categories. These 
 | `canceled` | User or system cancellation | Cancel signal, abort |
 | `structural` | Reserved for scope enforcement | Write scope violations |
 
-Classification happens automatically. Arc inspects SDK error types, HTTP status codes, and error message patterns to assign the right class. The `failure_class` is written to [context](/execution/context) after each stage, so you can route on it in edge conditions:
+Classification happens automatically. Fabro inspects SDK error types, HTTP status codes, and error message patterns to assign the right class. The `failure_class` is written to [context](/execution/context) after each stage, so you can route on it in edge conditions:
 
 ```dot
 implement -> fix       [condition="failure_class=transient_infra"]
@@ -27,7 +27,7 @@ implement -> escalate  [condition="failure_class=deterministic"]
 
 ## Retry layers
 
-Arc retries failures at two levels: **LLM retries** handle transient API errors inside a single model call, and **node retries** re-execute the entire node handler when the first level isn't enough. These layers are independent — a node retry re-runs the full handler, which gets its own fresh set of LLM retries.
+Fabro retries failures at two levels: **LLM retries** handle transient API errors inside a single model call, and **node retries** re-execute the entire node handler when the first level isn't enough. These layers are independent — a node retry re-runs the full handler, which gets its own fresh set of LLM retries.
 
 ### LLM retries
 
@@ -43,7 +43,7 @@ Every LLM call (within an agent session or a one-shot prompt node) has a built-i
 
 Only transient errors are retried: rate limits, server errors (5xx), timeouts, network failures, and stream interruptions. Permanent errors like authentication failures or invalid requests fail immediately.
 
-If the provider returns a `Retry-After` header, Arc respects it — unless the delay exceeds 60 seconds, in which case the call fails rather than blocking the run.
+If the provider returns a `Retry-After` header, Fabro respects it — unless the delay exceeds 60 seconds, in which case the call fails rather than blocking the run.
 
 ### Node retries
 
@@ -93,7 +93,7 @@ When a handler returns a `Retry` status instead of `Fail`, retries always procee
 
 ## Model fallbacks
 
-When a model provider fails with a transient error or quota exhaustion, Arc can automatically switch to a different provider. Configure fallback chains in your [run configuration](/execution/run-configuration):
+When a model provider fails with a transient error or quota exhaustion, Fabro can automatically switch to a different provider. Configure fallback chains in your [run configuration](/execution/run-configuration):
 
 ```toml title="run.toml"
 [llm]
@@ -105,7 +105,7 @@ anthropic = ["gemini", "openai"]
 gemini = ["anthropic", "openai"]
 ```
 
-When Anthropic is unavailable, Arc tries Gemini first, then OpenAI. For each fallback provider, Arc selects the closest model by matching required capabilities (tool use, vision, reasoning) and minimizing cost difference.
+When Anthropic is unavailable, Fabro tries Gemini first, then OpenAI. For each fallback provider, Fabro selects the closest model by matching required capabilities (tool use, vision, reasoning) and minimizing cost difference.
 
 ### What triggers failover
 
@@ -126,7 +126,7 @@ Quota errors are the key distinction — they aren't retried against the same pr
 
 ## Loop detection
 
-Arc has two independent mechanisms for detecting stuck loops: **node visit limits** that catch workflow-level cycles, and **tool call pattern detection** that catches agent-level repetition.
+Fabro has two independent mechanisms for detecting stuck loops: **node visit limits** that catch workflow-level cycles, and **tool call pattern detection** that catches agent-level repetition.
 
 ### Node visit limits
 
@@ -170,9 +170,9 @@ node "fix" visited 3 times (node limit 3); run is stuck in a cycle
 
 ### Tool call loop detection
 
-Inside an agent session, Arc monitors the last 10 assistant turns for repeating tool call patterns. It detects patterns of length 1 (same call repeated), 2 (A-B-A-B), or 3 (A-B-C-A-B-C). Every complete group in the window must match for detection to trigger.
+Inside an agent session, Fabro monitors the last 10 assistant turns for repeating tool call patterns. It detects patterns of length 1 (same call repeated), 2 (A-B-A-B), or 3 (A-B-C-A-B-C). Every complete group in the window must match for detection to trigger.
 
-When a loop is detected, Arc injects a steering message into the conversation:
+When a loop is detected, Fabro injects a steering message into the conversation:
 
 > WARNING: Loop detected. You appear to be repeating the same tool calls. Please try a different approach or ask for clarification.
 
@@ -184,7 +184,7 @@ Failure signatures are a deduplication mechanism that prevents the same failure 
 
 ### How signatures work
 
-After each failed node, Arc constructs a **failure signature** — a normalized fingerprint combining the node ID, failure class, and error message:
+After each failed node, Fabro constructs a **failure signature** — a normalized fingerprint combining the node ID, failure class, and error message:
 
 ```
 implement|deterministic|handler panicked: index out of bounds
@@ -194,7 +194,7 @@ The error message is normalized by lowercasing, replacing hex strings with `<hex
 
 ### Circuit breaker
 
-Arc tracks signature counts across the run. When the same signature repeats **3 times** (configurable via `loop_restart_signature_limit`), the run is terminated:
+Fabro tracks signature counts across the run. When the same signature repeats **3 times** (configurable via `loop_restart_signature_limit`), the run is terminated:
 
 ```
 deterministic failure cycle detected: signature ... repeated 3 times (limit 3)
@@ -224,7 +224,7 @@ Goal gates are quality checkpoints that are enforced when the workflow reaches a
 verify [shape=box, goal_gate="true"]
 ```
 
-When a goal gate is unsatisfied at the exit node, Arc looks for a **retry target** — a node to jump back to for another attempt:
+When a goal gate is unsatisfied at the exit node, Fabro looks for a **retry target** — a node to jump back to for another attempt:
 
 1. Failed node's `retry_target` attribute
 2. Failed node's `fallback_retry_target` attribute
@@ -248,7 +248,7 @@ goal gate unsatisfied for node verify and no retry target
 
 ## Stall watchdog
 
-Arc runs a background watchdog that monitors event activity. If no events are emitted for longer than the **stall timeout**, the run is canceled. This catches cases where a handler hangs indefinitely without producing errors.
+Fabro runs a background watchdog that monitors event activity. If no events are emitted for longer than the **stall timeout**, the run is canceled. This catches cases where a handler hangs indefinitely without producing errors.
 
 | Setting | Default |
 |---|---|
@@ -263,7 +263,7 @@ digraph Example {
 
 ## When failures become fatal
 
-A node failure does **not** automatically terminate the run. Arc follows this escalation path:
+A node failure does **not** automatically terminate the run. Fabro follows this escalation path:
 
 1. **LLM retries** — transient API errors are retried inside the model call (up to 3 retries)
 2. **Provider failover** — if configured, switch to a fallback provider

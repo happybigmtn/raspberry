@@ -211,7 +211,7 @@ graph [
 ]
 ```
 
-If a node fails and has no local retry target, Arc jumps back to `impl_setup` to re-attempt from project setup. If that target itself can't recover, Arc falls back further to `impl_logic`. This creates a cascading recovery strategy without cluttering every node with retry configuration.
+If a node fails and has no local retry target, Fabro jumps back to `impl_setup` to re-attempt from project setup. If that target itself can't recover, Fabro falls back further to `impl_logic`. This creates a cascading recovery strategy without cluttering every node with retry configuration.
 
 ### Three-tier model routing
 
@@ -237,7 +237,7 @@ The `review` node has `goal_gate=true`:
 review [label="Final Review", class="hard", goal_gate=true, ...]
 ```
 
-This means the workflow **cannot succeed** unless the review passes. Even if execution reaches the exit node through some edge routing path, Arc checks all goal gates and fails the run if any are unsatisfied. The review is the quality bar — it reads the original spec and verifies the implementation against it.
+This means the workflow **cannot succeed** unless the review passes. Even if execution reaches the exit node through some edge routing path, Fabro checks all goal gates and fails the run if any are unsatisfied. The review is the quality bar — it reads the original spec and verifies the implementation against it.
 
 If the review fails, execution routes back to `impl_ui` rather than to the beginning. The assumption is that by the time you reach review, the foundation (data structures, game logic) is solid and only the UI or integration needs fixing.
 
@@ -281,7 +281,7 @@ dockerfile = "FROM python:3.12-slim\nRUN apt-get update && apt-get install -y gi
 ```
 
 ```bash
-arc run build-solitaire.toml
+fabro run build-solitaire.toml
 ```
 
 ## Adapting this pattern

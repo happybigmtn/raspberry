@@ -1,16 +1,16 @@
 ---
 title: "Demo Mode"
-description: "Explore the Arc API with realistic static data and no external dependencies"
+description: "Explore the Fabro API with realistic static data and no external dependencies"
 ---
 
-Demo mode lets you explore every Arc API endpoint without configuring authentication, running real workflows, or connecting external services. Every response returns realistic static data so you can build and test integrations against a predictable dataset.
+Demo mode lets you explore every Fabro API endpoint without configuring authentication, running real workflows, or connecting external services. Every response returns realistic static data so you can build and test integrations against a predictable dataset.
 
 ## How It Works
 
 Demo mode is activated **per-request** by sending a header:
 
 ```
-X-Arc-Demo: 1
+X-Fabro-Demo: 1
 ```
 
 When the server receives this header, it routes the request to a parallel set of demo handlers that return static JSON instead of hitting the real backend. Authentication is bypassed — no JWT or mTLS credentials are needed.
@@ -22,15 +22,15 @@ Requests **without** the header are routed to the real API as usual, so demo and
 ### With curl
 
 ```bash
-curl http://localhost:3000/runs -H "X-Arc-Demo: 1"
+curl http://localhost:3000/runs -H "X-Fabro-Demo: 1"
 ```
 
 ### With the Web UI
 
-Set the `ARC_DEMO=1` environment variable when starting the web app. This configures the frontend to send the `X-Arc-Demo: 1` header on every API request and disables authentication in the UI:
+Set the `FABRO_DEMO=1` environment variable when starting the web app. This configures the frontend to send the `X-Fabro-Demo: 1` header on every API request and disables authentication in the UI:
 
 ```bash
-ARC_DEMO=1 bun run dev
+FABRO_DEMO=1 bun run dev
 ```
 
 ## What Demo Mode Covers

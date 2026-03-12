@@ -5,7 +5,7 @@ description: "Sandbox providers for workflow execution"
 
 When an agent runs a shell command, edits a file, or searches code, it does so inside a **sandbox**. The sandbox is the execution environment for all tool operations — it controls where commands run, which files are visible, and how much isolation exists between the agent and the host.
 
-Arc supports six sandbox providers. Each one implements the same interface (file I/O, command execution, grep, glob), so workflows run identically regardless of which provider you choose. The difference is in where and how the tools execute.
+Fabro supports six sandbox providers. Each one implements the same interface (file I/O, command execution, grep, glob), so workflows run identically regardless of which provider you choose. The difference is in where and how the tools execute.
 
 | Provider | Runs on | Use case | Status |
 |---|---|---|---|
@@ -22,11 +22,11 @@ Set the sandbox provider via CLI flag, [run config TOML](/execution/run-configur
 
 ```bash
 # CLI flag
-arc run workflow.dot --sandbox local
-arc run workflow.dot --sandbox docker
-arc run workflow.dot --sandbox daytona
-arc run workflow.dot --sandbox ssh
-arc run workflow.dot --sandbox exe
+fabro run workflow.dot --sandbox local
+fabro run workflow.dot --sandbox docker
+fabro run workflow.dot --sandbox daytona
+fabro run workflow.dot --sandbox ssh
+fabro run workflow.dot --sandbox exe
 ```
 
 ```toml title="run.toml"
@@ -39,11 +39,11 @@ The precedence order is: CLI flag > run config TOML > server defaults > built-in
 
 ## Local
 
-The local sandbox runs all tool operations directly on the host machine. It's the default and the simplest option — no setup required beyond the Arc binary itself.
+The local sandbox runs all tool operations directly on the host machine. It's the default and the simplest option — no setup required beyond the Fabro binary itself.
 
 ### How it works
 
-- **Working directory** — Set to the current directory (or `directory` from the run config). Arc creates it if it doesn't exist.
+- **Working directory** — Set to the current directory (or `directory` from the run config). Fabro creates it if it doesn't exist.
 - **Commands** — Executed via `/bin/bash -c` in the working directory.
 - **File operations** — Read and write directly to the host filesystem. Relative paths resolve against the working directory.
 - **Cleanup** — No-op. Local sandbox doesn't create or destroy anything on cleanup.
@@ -67,7 +67,7 @@ The Docker sandbox runs all tool operations inside a Docker container. The host 
 
 ### How it works
 
-- **Container lifecycle** — On `initialize()`, Arc pulls the image (if needed), creates a container with `sleep infinity`, and starts it. On `cleanup()`, Arc stops and removes the container.
+- **Container lifecycle** — On `initialize()`, Fabro pulls the image (if needed), creates a container with `sleep infinity`, and starts it. On `cleanup()`, Fabro stops and removes the container.
 - **Working directory** — The host working directory is bind-mounted at `/workspace` inside the container. All relative paths resolve against this mount point.
 - **Commands** — Executed via `docker exec` with `/bin/bash -c` inside the container. Timeout and cancellation are supported.
 - **File writes** — Use the Docker API's tar upload to avoid shell escaping issues with special characters.
@@ -79,7 +79,7 @@ The Docker sandbox is configured through the `DockerSandboxConfig`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `image` | `arc-agent:latest` | Docker image to use |
+| `image` | `fabro-agent:latest` | Docker image to use |
 | `container_mount_point` | `/workspace` | Mount point inside the container |
 | `network_mode` | `bridge` | Docker network mode |
 | `extra_mounts` | `[]` | Additional `host:container` bind mounts |
@@ -93,7 +93,7 @@ The Docker sandbox is configured through the `DockerSandboxConfig`:
 By default, the container is destroyed when the run finishes. To keep it alive for debugging:
 
 ```bash
-arc run workflow.dot --sandbox docker --preserve-sandbox
+fabro run workflow.dot --sandbox docker --preserve-sandbox
 ```
 
 Or in the run config:
@@ -104,7 +104,7 @@ provider = "docker"
 preserve = true
 ```
 
-When preserved, Arc prints the container ID so you can reconnect with `docker exec -it <id> bash`.
+When preserved, Fabro prints the container ID so you can reconnect with `docker exec -it <id> bash`.
 
 ## Daytona
 
@@ -113,19 +113,19 @@ The Daytona sandbox runs all tool operations inside a cloud-hosted VM managed by
 ### Prerequisites
 
 - A `DAYTONA_API_KEY` environment variable
-- A GitHub App configured via `arc install` (for private repository cloning)
+- A GitHub App configured via `fabro install` (for private repository cloning)
 
 ### How it works
 
-- **Sandbox lifecycle** — On `initialize()`, Arc creates a Daytona sandbox (from an image or a snapshot), clones the current git repository into it, and waits until it's ready. On `cleanup()`, the sandbox is deleted.
+- **Sandbox lifecycle** — On `initialize()`, Fabro creates a Daytona sandbox (from an image or a snapshot), clones the current git repository into it, and waits until it's ready. On `cleanup()`, the sandbox is deleted.
 - **Working directory** — Fixed at `/home/daytona/workspace`. The current repository is cloned there automatically.
-- **Git clone** — Arc detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the sandbox. For private repositories, Arc uses a GitHub App Installation Access Token scoped to `contents: read` on the specific repository. Public repositories are cloned without credentials. If no git repo is detected, the working directory is created empty.
+- **Git clone** — Fabro detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the sandbox. For private repositories, Fabro uses a GitHub App Installation Access Token scoped to `contents: read` on the specific repository. Public repositories are cloned without credentials. If no git repo is detected, the working directory is created empty.
 - **Commands** — Executed via the Daytona process API. Commands are base64-encoded and piped through `sh` to support pipes, environment variables, and other shell features.
-- **Ephemeral** — Sandboxes are created with `ephemeral: true` and a unique timestamped name (e.g. `arc-20260305-142301-a3f2`).
+- **Ephemeral** — Sandboxes are created with `ephemeral: true` and a unique timestamped name (e.g. `fabro-20260305-142301-a3f2`).
 
 ### Snapshots
 
-Snapshots let you pre-build an environment image so each run starts with dependencies already installed. If the named snapshot doesn't exist and a `dockerfile` is provided, Arc creates it automatically and polls until it's ready (up to 10 minutes).
+Snapshots let you pre-build an environment image so each run starts with dependencies already installed. If the named snapshot doesn't exist and a `dockerfile` is provided, Fabro creates it automatically and polls until it's ready (up to 10 minutes).
 
 ```toml title="run.toml"
 [sandbox]
@@ -150,7 +150,7 @@ dockerfile = "FROM rust:1.85-slim-bookworm\nRUN apt-get update && apt-get instal
 | `disk` | Disk in GB. |
 | `dockerfile` | Dockerfile content for building the snapshot. Required when creating a new snapshot. |
 
-If the snapshot already exists and is in `Active` state, Arc uses it directly. If it's in `Building` or `Pending` state, Arc polls with exponential backoff until it's ready.
+If the snapshot already exists and is in `Active` state, Fabro uses it directly. If it's in `Building` or `Pending` state, Fabro polls with exponential backoff until it's ready.
 
 ### Labels
 
@@ -170,7 +170,7 @@ When using server defaults, labels are merged — run config labels override def
 Connect to a running Daytona sandbox via SSH for live debugging:
 
 ```bash
-arc run workflow.dot --sandbox daytona --ssh
+fabro run workflow.dot --sandbox daytona --ssh
 ```
 
 This creates temporary SSH credentials (valid for 60 minutes) and prints the connection command.
@@ -180,10 +180,10 @@ This creates temporary SSH credentials (valid for 60 minutes) and prints the con
 Like Docker, Daytona sandboxes are destroyed on cleanup by default. Use `--preserve-sandbox` to keep them alive:
 
 ```bash
-arc run workflow.dot --sandbox daytona --preserve-sandbox
+fabro run workflow.dot --sandbox daytona --preserve-sandbox
 ```
 
-Arc prints the sandbox name so you can find it in the [Daytona dashboard](https://app.daytona.io/dashboard/sandboxes).
+Fabro prints the sandbox name so you can find it in the [Daytona dashboard](https://app.daytona.io/dashboard/sandboxes).
 
 ### Auto-stop
 
@@ -202,13 +202,13 @@ The SSH sandbox runs all tool operations on an existing remote machine over SSH.
 
 - SSH access to the target machine (key-based auth recommended)
 - The remote working directory must exist, or the agent must be able to create it
-- A GitHub App configured via `arc install` (for private repository cloning)
+- A GitHub App configured via `fabro install` (for private repository cloning)
 
 ### How it works
 
-- **No lifecycle management** — Arc does not create or destroy the remote host. It connects, runs operations, and disconnects. `cleanup()` is a no-op.
+- **No lifecycle management** — Fabro does not create or destroy the remote host. It connects, runs operations, and disconnects. `cleanup()` is a no-op.
 - **Working directory** — Set explicitly in the run config. Relative paths for all file operations resolve against this directory.
-- **Git clone** — Arc detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the working directory. For private repositories, Arc uses a GitHub App Installation Access Token. Public repositories are cloned without credentials. If no git repo is detected, the working directory is used as-is.
+- **Git clone** — Fabro detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the working directory. For private repositories, Fabro uses a GitHub App Installation Access Token. Public repositories are cloned without credentials. If no git repo is detected, the working directory is used as-is.
 - **Commands** — Executed via SSH. Commands are base64-encoded and piped through `sh` to support pipes, environment variables, and other shell features.
 - **File I/O** — Reads use `cat` over SSH. Writes upload content via SCP. Parent directories are created automatically.
 
@@ -232,7 +232,7 @@ working_directory = "/home/user/workspace"
 
 ### SSH config file
 
-Use `config_file` to point Arc at a non-default SSH config — useful when the remote host requires a specific key, ProxyJump, or port:
+Use `config_file` to point Fabro at a non-default SSH config — useful when the remote host requires a specific key, ProxyJump, or port:
 
 ```toml title="run.toml"
 [sandbox.ssh]
@@ -251,7 +251,7 @@ Host devbox
 
 ### Port previews
 
-When a workflow stage starts a local server on a port, Arc calls `get_preview_url(port)` to produce a clickable URL. For SSH sandboxes, this requires knowing the host's reachable address — Arc can't infer it automatically.
+When a workflow stage starts a local server on a port, Fabro calls `get_preview_url(port)` to produce a clickable URL. For SSH sandboxes, this requires knowing the host's reachable address — Fabro can't infer it automatically.
 
 Set `preview_url_base` to enable preview URLs:
 
@@ -267,7 +267,7 @@ With this config, port 3000 on the remote host yields `http://devbox:3000`.
 ## Exe
 
 <Warning>
-The exe.dev sandbox provider is **under development** and requires building Arc with the `exedev` feature flag. The API and configuration may change.
+The exe.dev sandbox provider is **under development** and requires building Fabro with the `exedev` feature flag. The API and configuration may change.
 </Warning>
 
 The Exe sandbox runs all tool operations inside a cloud VM managed by [exe.dev](https://exe.dev). It provides full machine-level isolation with fast VM startup via SSH.
@@ -275,16 +275,16 @@ The Exe sandbox runs all tool operations inside a cloud VM managed by [exe.dev](
 ### Prerequisites
 
 - SSH keys configured for `exe.dev` (added via the exe.dev dashboard)
-- A GitHub App configured via `arc install` (for private repository cloning)
+- A GitHub App configured via `fabro install` (for private repository cloning)
 
 ### How it works
 
-- **VM lifecycle** — On `initialize()`, Arc connects to the exe.dev management plane via SSH and runs `new --json` to create a VM. The response contains the VM name and an SSH destination (e.g. `my-vm.exe.xyz`). On `cleanup()`, Arc runs `rm <vm_name>` to destroy the VM. Cancelling a run cleanly tears down the VM.
+- **VM lifecycle** — On `initialize()`, Fabro connects to the exe.dev management plane via SSH and runs `new --json` to create a VM. The response contains the VM name and an SSH destination (e.g. `my-vm.exe.xyz`). On `cleanup()`, Fabro runs `rm <vm_name>` to destroy the VM. Cancelling a run cleanly tears down the VM.
 - **Working directory** — Fixed at `/home/exedev`. Relative paths resolve against this directory.
-- **Git clone** — Arc detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the VM. For private repositories, Arc uses a GitHub App Installation Access Token. Public repositories are cloned without credentials. If no git repo is detected, the working directory is created empty.
+- **Git clone** — Fabro detects the local `origin` remote URL and current branch, converts SSH URLs to HTTPS, and clones into the VM. For private repositories, Fabro uses a GitHub App Installation Access Token. Public repositories are cloned without credentials. If no git repo is detected, the working directory is created empty.
 - **Commands** — Executed via SSH on the data plane (`<vmname>.exe.xyz`). Commands are base64-encoded and piped through `sh` to handle pipes, environment variables, and other shell features. Environment variables and working directory overrides are supported.
 - **File I/O** — Reads use `cat` over SSH. Writes use SCP upload. Parent directories are created automatically.
-- **Git checkpointing** — Between stages, Arc commits agent changes and pushes them to a remote branch, the same mechanism used by Daytona sandboxes.
+- **Git checkpointing** — Between stages, Fabro commits agent changes and pushes them to a remote branch, the same mechanism used by Daytona sandboxes.
 - **Ephemeral** — Each run gets a fresh VM that is destroyed on cleanup.
 
 ### Configuration
@@ -306,7 +306,7 @@ image = "my-custom-image:latest"
 Connect to a running exe.dev sandbox via SSH for live debugging:
 
 ```bash
-arc run workflow.dot --sandbox exe --ssh
+fabro run workflow.dot --sandbox exe --ssh
 ```
 
 This prints the SSH connection command so you can connect to the VM while the workflow runs.
@@ -327,7 +327,7 @@ Each provider offers a different level of filesystem isolation:
 | `ssh` | Remote host | The remote machine's filesystem, rooted at the configured working directory. No isolation from other users or processes on that host. |
 | `exe` | Full machine | A cloud VM with the repository cloned into `/home/exedev`. The host filesystem is completely inaccessible. |
 
-For `local`, Arc filters sensitive environment variables (those ending in `_API_KEY`, `_SECRET`, `_TOKEN`, `_PASSWORD`, or `_CREDENTIAL`) but does not restrict file access. Use `docker`, `daytona`, or `exe` when running untrusted workflows.
+For `local`, Fabro filters sensitive environment variables (those ending in `_API_KEY`, `_SECRET`, `_TOKEN`, `_PASSWORD`, or `_CREDENTIAL`) but does not restrict file access. Use `docker`, `daytona`, or `exe` when running untrusted workflows.
 
 ### Network
 
@@ -357,4 +357,4 @@ When using server defaults, the run config `network` overrides the server defaul
 
 ## Safety guardrails
 
-Regardless of which provider you use, Arc applies a **read-before-write** guardrail. Agents must read a file (via `read_file` or `grep`) before they can modify it with `write_file` or `delete_file`. Writing to new files that don't yet exist is always allowed. This prevents agents from blindly overwriting files they haven't inspected.
+Regardless of which provider you use, Fabro applies a **read-before-write** guardrail. Agents must read a file (via `read_file` or `grep`) before they can modify it with `write_file` or `delete_file`. Writing to new files that don't yet exist is always allowed. This prevents agents from blindly overwriting files they haven't inspected.

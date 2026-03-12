@@ -3,10 +3,10 @@ title: "Tools"
 description: "Built-in tools for file I/O, shell commands, search, and web access"
 ---
 
-Every agent in Arc has access to a set of built-in tools for interacting with the codebase and environment. Tools execute inside the agent's [sandbox](/execution/environments) — whether that's the local machine, a Docker container, or a Daytona VM — so the same tool calls work identically regardless of provider.
+Every agent in Fabro has access to a set of built-in tools for interacting with the codebase and environment. Tools execute inside the agent's [sandbox](/execution/environments) — whether that's the local machine, a Docker container, or a Daytona VM — so the same tool calls work identically regardless of provider.
 
 <Note>
-The tools described on this page apply to the **API backend** (the default). When using the [CLI backend](/core-concepts/agents#cli-backend), the external CLI tool (`claude`, `codex`, or `gemini`) provides its own tools — Arc's built-in tools are not used.
+The tools described on this page apply to the **API backend** (the default). When using the [CLI backend](/core-concepts/agents#cli-backend), the external CLI tool (`claude`, `codex`, or `gemini`) provides its own tools — Fabro's built-in tools are not used.
 </Note>
 
 ## Core tools
@@ -46,7 +46,7 @@ Executes a shell command via `/bin/bash -c` in the sandbox's working directory.
 | `timeout_ms` | integer | no | Timeout in milliseconds |
 | `description` | string | no | Description of what the command does |
 
-The timeout defaults to the provider's configured value (10s for most providers, 120s for Anthropic) and is capped at the maximum (600s / 10 minutes). If the command exceeds the timeout, Arc kills the process and returns a "Command timed out" message along with any output captured so far.
+The timeout defaults to the provider's configured value (10s for most providers, 120s for Anthropic) and is capped at the maximum (600s / 10 minutes). If the command exceeds the timeout, Fabro kills the process and returns a "Command timed out" message along with any output captured so far.
 
 The output includes the exit code, stdout, and stderr.
 
@@ -175,7 +175,7 @@ Directories are suffixed with `/` in the output.
 
 ## Read-before-write guardrail
 
-Arc wraps every sandbox in a `ReadBeforeWriteSandbox` decorator that tracks which files the agent has seen. The rules are:
+Fabro wraps every sandbox in a `ReadBeforeWriteSandbox` decorator that tracks which files the agent has seen. The rules are:
 
 1. **Writing to a new file** (one that doesn't exist yet) is always allowed
 2. **Writing to an existing file** requires that the agent has previously read it via `read_file` or seen it in `grep` results
@@ -194,11 +194,11 @@ This prevents agents from blindly overwriting files they haven't inspected. The 
 
 ### Parallel execution
 
-When an LLM returns multiple tool calls in a single response, Arc can execute them in parallel. Independent tool calls run concurrently, while the results are collected in order. If the agent session is cancelled, pending tool calls return a "Cancelled" error.
+When an LLM returns multiple tool calls in a single response, Fabro can execute them in parallel. Independent tool calls run concurrently, while the results are collected in order. If the agent session is cancelled, pending tool calls return a "Cancelled" error.
 
 ### Argument validation
 
-Before executing a tool, Arc validates the arguments against the tool's JSON Schema. Invalid arguments are rejected with a descriptive error before the tool executor runs.
+Before executing a tool, Fabro validates the arguments against the tool's JSON Schema. Invalid arguments are rejected with a descriptive error before the tool executor runs.
 
 ### Output truncation
 

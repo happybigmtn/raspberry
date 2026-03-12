@@ -1,9 +1,9 @@
 ---
 title: "DOT Language"
-description: "Complete reference for Arc's DOT workflow language"
+description: "Complete reference for Fabro's DOT workflow language"
 ---
 
-Arc workflows are written in a subset of the [Graphviz DOT language](https://graphviz.org/doc/info/lang.html) with extensions for agent orchestration. This page is the complete syntax reference. For conceptual introductions, see [Workflows](/core-concepts/workflows) and [Nodes & Stages](/workflows/stages-and-nodes).
+Fabro workflows are written in a subset of the [Graphviz DOT language](https://graphviz.org/doc/info/lang.html) with extensions for agent orchestration. This page is the complete syntax reference. For conceptual introductions, see [Workflows](/core-concepts/workflows) and [Nodes & Stages](/workflows/stages-and-nodes).
 
 ## File structure
 
@@ -202,7 +202,7 @@ Start nodes can also be identified by ID (`start` or `Start`). Exit nodes can be
 | `llm_model` | String | Explicit model ID (overrides stylesheet) |
 | `llm_provider` | String | Explicit provider name (overrides stylesheet) |
 | `project_memory` | Boolean | When `true` (default), prompt nodes discover and include project docs (`AGENTS.md`, `CLAUDE.md`, etc.) as a system prompt. Set to `false` to disable. |
-| `backend` | String | Agent execution backend. `api` (default): Arc calls the LLM API directly and runs its own tool loop. `cli`: Arc delegates to an external CLI tool (`claude`, `codex`, or `gemini` based on provider). See [Agents — Backends](/core-concepts/agents#backends). |
+| `backend` | String | Agent execution backend. `api` (default): Fabro calls the LLM API directly and runs its own tool loop. `cli`: Fabro delegates to an external CLI tool (`claude`, `codex`, or `gemini` based on provider). See [Agents — Backends](/core-concepts/agents#backends). |
 
 ### Command nodes
 
@@ -315,7 +315,7 @@ Instead of inlining long prompts, reference an external file:
 simplify [label="Simplify", prompt="@docs-internal/prompts/simplify.md"]
 ```
 
-The `@` prefix tells Arc to load the prompt from a file path relative to the workflow file. Paths support `~` (home directory) and `..` (parent directory):
+The `@` prefix tells Fabro to load the prompt from a file path relative to the workflow file. Paths support `~` (home directory) and `..` (parent directory):
 
 ```dot
 shared [prompt="@~/shared-prompts/review.md"]
@@ -324,11 +324,11 @@ parent [prompt="@../common/plan.md"]
 
 Untracked `@file` references (files not committed to git) are inlined into the DOT source at prepare time, so they work even inside sandboxes that only see the git tree.
 
-Arc validates `@file` references at parse time — if the referenced file does not exist, validation fails with a clear error pointing to the bad reference.
+Fabro validates `@file` references at parse time — if the referenced file does not exist, validation fails with a clear error pointing to the bad reference.
 
 ## Validation
 
-Arc validates workflows at parse time and reports diagnostics. Key rules:
+Fabro validates workflows at parse time and reports diagnostics. Key rules:
 
 - Exactly one start node and one exit node
 - All nodes reachable from start

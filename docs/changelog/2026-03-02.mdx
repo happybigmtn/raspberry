@@ -5,9 +5,9 @@ date: "2026-03-02"
 
 ## Devcontainer support
 
-Sandbox environments can now be defined using standard `devcontainer.json` files. Arc parses and resolves the full devcontainer spec — features, lifecycle hooks (`onCreateCommand`, `postStartCommand`), build args, `containerEnv`, feature dependencies, and Compose-based configurations.
+Sandbox environments can now be defined using standard `devcontainer.json` files. Fabro parses and resolves the full devcontainer spec — features, lifecycle hooks (`onCreateCommand`, `postStartCommand`), build args, `containerEnv`, feature dependencies, and Compose-based configurations.
 
-If your project already has a `.devcontainer/devcontainer.json`, Arc can use it directly instead of requiring a separate sandbox configuration.
+If your project already has a `.devcontainer/devcontainer.json`, Fabro can use it directly instead of requiring a separate sandbox configuration.
 
 ## Sessions
 
@@ -20,14 +20,14 @@ Persistent chat sessions with SQLite storage. Start a conversation with an agent
 </Accordion>
 
 <Accordion title="CLI">
-- `arc llm chat` command for interactive multi-turn conversations with any configured model
+- `fabro llm chat` command for interactive multi-turn conversations with any configured model
 </Accordion>
 
 <Accordion title="Improvements">
 - GitHub OAuth login for the web app with automatic session management and JWT-based API authorization
 - Full documentation site with getting started guides, core concepts, workflow reference, and API docs
 - Asset snapshots capture files produced by workflow nodes for review
-- Styled 404 and 500 error pages matching the Arc design system
+- Styled 404 and 500 error pages matching the Fabro design system
 - `--debug` flag switches log level from INFO to DEBUG for troubleshooting
 </Accordion>
 

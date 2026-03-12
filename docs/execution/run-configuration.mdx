@@ -6,7 +6,7 @@ description: "Configure workflow runs with TOML files"
 A run config is a TOML file that bundles a workflow graph with all the settings needed to execute it — the goal, model, sandbox, setup commands, variables, and hooks. Instead of passing a dozen CLI flags, you check a `.toml` file into version control and launch with a single command:
 
 ```bash
-arc run run.toml
+fabro run run.toml
 ```
 
 ## Minimal example
@@ -118,7 +118,7 @@ provider = "anthropic"
 
 #### `[llm.fallbacks]`
 
-Map each provider to an ordered list of fallback providers. When the primary provider is unavailable, Arc tries the fallbacks in order:
+Map each provider to an ordered list of fallback providers. When the primary provider is unavailable, Fabro tries the fallbacks in order:
 
 ```toml title="run.toml"
 [llm.fallbacks]
@@ -296,7 +296,7 @@ digraph CI {
 }
 ```
 
-If a `$variable` in the DOT file has no matching entry in `[vars]`, Arc raises an error immediately. A bare `$` not followed by an identifier (e.g. `costs $5`) is left as-is.
+If a `$variable` in the DOT file has no matching entry in `[vars]`, Fabro raises an error immediately. A bare `$` not followed by an identifier (e.g. `costs $5`) is left as-is.
 
 ### `[assets]`
 
@@ -351,7 +351,7 @@ draft = true
 
 | Field | Description |
 |---|---|
-| `enabled` | When `true`, Arc creates a PR from the agent's working branch after a successful run. Default: `false`. |
+| `enabled` | When `true`, Fabro creates a PR from the agent's working branch after a successful run. Default: `false`. |
 | `draft` | When `true`, the PR is created as a draft pull request. Default: `true`. |
 
 ### `[[hooks]]`
@@ -404,7 +404,7 @@ Absolute paths are used as-is.
 
 ## Precedence
 
-Settings can come from multiple sources. Arc resolves them in this order (first match wins):
+Settings can come from multiple sources. Fabro resolves them in this order (first match wins):
 
 | Source | Priority |
 |---|---|
@@ -421,7 +421,7 @@ For model and provider specifically, the precedence is: CLI flags > TOML config 
 
 ### Server defaults
 
-When running via `arc serve`, the server config at `~/.arc/server.toml` can set default values for `[llm]`, `[setup]`, `[sandbox]`, and `[vars]`. These defaults are applied to every run unless the run config overrides them.
+When running via `fabro serve`, the server config at `~/.arc/server.toml` can set default values for `[llm]`, `[setup]`, `[sandbox]`, and `[vars]`. These defaults are applied to every run unless the run config overrides them.
 
 For variables, defaults and run config are **merged** — the run config wins on key collisions:
 
@@ -441,7 +441,7 @@ The same merge behavior applies to Daytona labels. All other fields use simple "
 
 ## Validation
 
-Arc validates the run config when it loads:
+Fabro validates the run config when it loads:
 
 - **Version check** — Only `version = 1` is accepted. Other versions are rejected immediately.
 - **Required fields** — `version` and `graph` are required. `goal` is optional (can be provided via `--goal` or DOT graph attribute).
@@ -451,5 +451,5 @@ Arc validates the run config when it loads:
 Use `--preflight` to validate a run config without executing it:
 
 ```bash
-arc run run.toml --preflight
+fabro run run.toml --preflight
 ```

@@ -3,7 +3,7 @@ title: "Decisions"
 description: "Adding human review and intervention to workflows"
 ---
 
-Not every decision should be made by an LLM. Arc provides several mechanisms for humans to participate in workflows — approving plans, choosing between options, providing free-form input, and steering agents while they run.
+Not every decision should be made by an LLM. Fabro provides several mechanisms for humans to participate in workflows — approving plans, choosing between options, providing free-form input, and steering agents while they run.
 
 ## Human gates
 
@@ -21,7 +21,7 @@ When execution reaches the gate, the user sees the node's label ("Approve Plan")
 
 ### Keyboard accelerators
 
-The prefixes `[A]`, `[R]`, `[S]` in edge labels serve as keyboard accelerators. Arc supports three formats:
+The prefixes `[A]`, `[R]`, `[S]` in edge labels serve as keyboard accelerators. Fabro supports three formats:
 
 | Format | Example |
 |---|---|
@@ -29,7 +29,7 @@ The prefixes `[A]`, `[R]`, `[S]` in edge labels serve as keyboard accelerators. 
 | `K) Label` | `A) Approve` |
 | `K - Label` | `A - Approve` |
 
-When matching the user's selection to an edge, Arc strips the accelerator prefix so typing `A` matches `[A] Approve`.
+When matching the user's selection to an edge, Fabro strips the accelerator prefix so typing `A` matches `[A] Approve`.
 
 ### Freeform input
 
@@ -60,7 +60,7 @@ If the timeout elapses without a response, the workflow continues to the default
 For testing or fully automated runs, pass `--auto-approve` to skip all human gates:
 
 ```bash
-arc run workflow.dot --auto-approve
+fabro run workflow.dot --auto-approve
 ```
 
 Auto-approve selects `Yes` for yes/no gates and the first option for multiple-choice gates.

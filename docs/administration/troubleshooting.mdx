@@ -1,16 +1,16 @@
 ---
 title: "Troubleshooting"
-description: "Diagnosing and resolving common issues with Arc"
+description: "Diagnosing and resolving common issues with Fabro"
 ---
 
-## `arc doctor`
+## `fabro doctor`
 
-The `arc doctor` command validates your installation:
+The `fabro doctor` command validates your installation:
 
 ```bash
-arc doctor           # Check local configuration
-arc doctor --live    # Also probe live services (LLM APIs, sandbox, Brave Search)
-arc doctor --verbose # Show detailed output for each check
+fabro doctor           # Check local configuration
+fabro doctor --live    # Also probe live services (LLM APIs, sandbox, Brave Search)
+fabro doctor --verbose # Show detailed output for each check
 ```
 
 It checks:
@@ -22,18 +22,18 @@ It checks:
 
 ## Common issues
 
-**"No API key configured"** — Set at least one provider key in `.env` or your shell environment. Run `arc doctor --live` to verify connectivity.
+**"No API key configured"** — Set at least one provider key in `.env` or your shell environment. Run `fabro doctor --live` to verify connectivity.
 
-**Stall watchdog timeouts** — If runs are cancelled unexpectedly, the agent may be stuck or the LLM provider may be slow. Check `ARC_LOG=debug` output for `Agent.LlmRetry` events. Increase `stall_timeout` in the graph if needed, or add [fallback providers](/core-concepts/models) to handle outages.
+**Stall watchdog timeouts** — If runs are cancelled unexpectedly, the agent may be stuck or the LLM provider may be slow. Check `FABRO_LOG=debug` output for `Agent.LlmRetry` events. Increase `stall_timeout` in the graph if needed, or add [fallback providers](/core-concepts/models) to handle outages.
 
 **Sandbox creation failures** — For Docker: ensure the Docker daemon is running and the configured image exists. For Daytona: verify `DAYTONA_API_KEY` is set and the `gh` CLI is authenticated. For Exe: verify your SSH keys are configured for `exe.dev` and that `ssh exe.dev` connects successfully.
 
-**Port already in use** — Change the port with `arc serve --port 3001` or stop the conflicting process.
+**Port already in use** — Change the port with `fabro serve --port 3001` or stop the conflicting process.
 
 **SSE streams disconnecting** — If using a reverse proxy, ensure buffering is disabled and the connection timeout is long enough for workflow runs. See the [reverse proxy example](/administration/deployment#binding-and-tls).
 
 **Run config validation errors** — Use `--preflight` to validate without executing:
 
 ```bash
-arc run run.toml --preflight
+fabro run run.toml --preflight
 ```

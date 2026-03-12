@@ -1,5 +1,5 @@
 ---
-title: "Authentication, setup wizard, and arc doctor"
+title: "Authentication, setup wizard, and fabro doctor"
 date: "2026-03-03"
 ---
 
@@ -9,24 +9,24 @@ Two new authentication methods for the API server. Mutual TLS provides strong id
 
 ## Setup wizard
 
-Previously, getting Arc running meant manually editing config files and setting environment variables. Now run `arc install` for an interactive walkthrough that configures API keys, server settings, and authentication.
+Previously, getting Fabro running meant manually editing config files and setting environment variables. Now run `fabro install` for an interactive walkthrough that configures API keys, server settings, and authentication.
 
 ```bash
-arc install
+fabro install
 ```
 
 The wizard detects your current configuration, prompts for missing values, and writes everything to `~/.arc/arc.toml`.
 
-## Arc doctor
+## Fabro doctor
 
 A single command to check your entire installation: system dependencies, cryptographic key validation, LLM provider connectivity, and web server configuration.
 
 ```bash
-arc doctor         # quick local checks
-arc doctor --live  # includes real-time API probes to each configured provider
+fabro doctor         # quick local checks
+fabro doctor --live  # includes real-time API probes to each configured provider
 ```
 
-If something is misconfigured, `arc doctor` tells you exactly what's wrong and how to fix it.
+If something is misconfigured, `fabro doctor` tells you exactly what's wrong and how to fix it.
 
 ## More
 
@@ -36,12 +36,12 @@ If something is misconfigured, `arc doctor` tells you exactly what's wrong and h
 
 <Accordion title="Fixes">
 - Fixed JWT `sub` claim using the GitHub API URL instead of the profile URL, causing identity mismatches
-- Fixed stale configuration persisting after `arc install` until a manual restart
+- Fixed stale configuration persisting after `fabro install` until a manual restart
 </Accordion>
 
 <Accordion title="Improvements">
-- New indicatif-based progress display for `arc run start` shows real-time stage progress, tool calls, model names, and timing
-- Mercury provider updated to `mercury-2`; estimated output speed (tok/s) added to `arc model list`
+- New indicatif-based progress display for `fabro run start` shows real-time stage progress, tool calls, model names, and timing
+- Mercury provider updated to `mercury-2`; estimated output speed (tok/s) added to `fabro model list`
 - Run defaults in `server.toml` are inherited by all workflow runs, so you don't have to repeat sandbox, model, or concurrency settings
-- `ARC_JWT_PUBLIC_KEY` and `ARC_JWT_PRIVATE_KEY` accept base64-encoded PEM strings for containerized deployments
+- `FABRO_JWT_PUBLIC_KEY` and `FABRO_JWT_PRIVATE_KEY` accept base64-encoded PEM strings for containerized deployments
 </Accordion>

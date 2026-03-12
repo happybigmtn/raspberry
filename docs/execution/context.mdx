@@ -23,7 +23,7 @@ Context is thread-safe and shared across the entire run. Parallel branches recei
 
 Agents do not have a tool to query the context store directly. Instead, context is made available through two mechanisms:
 
-- **Preamble injection** — When a node starts, Arc assembles a preamble from the current context and prepends it to the node's prompt. The [fidelity setting](#fidelity-controlling-agent-context) controls how detailed this preamble is.
+- **Preamble injection** — When a node starts, Fabro assembles a preamble from the current context and prepends it to the node's prompt. The [fidelity setting](#fidelity-controlling-agent-context) controls how detailed this preamble is.
 - **Context updates** — Agents can write to the context by including a `context_updates` object in a JSON response. See [Transitions](/workflows/transitions#agent-transitions) for the response format.
 
 ## Keys set by handlers
@@ -103,7 +103,7 @@ gate -> improve
 
 ## Fidelity: Controlling agent context
 
-When a new agent or prompt node starts, Arc assembles a **preamble** — a summary of what happened in prior stages. The **fidelity** setting controls how detailed this preamble is.
+When a new agent or prompt node starts, Fabro assembles a **preamble** — a summary of what happened in prior stages. The **fidelity** setting controls how detailed this preamble is.
 
 | Fidelity | Behavior |
 |---|---|
@@ -158,7 +158,7 @@ When a run is resumed from a checkpoint, the first node after resume degrades `f
 
 ## Preamble construction
 
-For non-`full` fidelity modes, Arc builds a preamble from runtime data and prepends it to the node's prompt.
+For non-`full` fidelity modes, Fabro builds a preamble from runtime data and prepends it to the node's prompt.
 
 <Accordion title="Example compact preamble">
 Given a plan-test-implement workflow where the plan and test stages have completed, the `implement` node would receive a preamble like this prepended to its prompt:
@@ -196,13 +196,13 @@ Internal keys (prefixed with `internal.`, `current`, `graph.`, `thread.`, `respo
 
 ## Artifact offloading
 
-When a stage produces a large output (over 100KB of serialized JSON), Arc automatically offloads it to the **artifact store** on disk rather than keeping it in the in-memory context. The context value is replaced with a `file://` pointer:
+When a stage produces a large output (over 100KB of serialized JSON), Fabro automatically offloads it to the **artifact store** on disk rather than keeping it in the in-memory context. The context value is replaced with a `file://` pointer:
 
 ```
 response.plan → file:///tmp/logs/artifacts/values/response.plan.json
 ```
 
-The preamble renderer resolves these pointers and displays a reference to the file path. For remote sandboxes (Docker, Daytona), Arc syncs artifact files to the sandbox at `{working_directory}/.arc/artifacts/` so agents can read them.
+The preamble renderer resolves these pointers and displays a reference to the file path. For remote sandboxes (Docker, Daytona), Fabro syncs artifact files to the sandbox at `{working_directory}/.arc/artifacts/` so agents can read them.
 
 This keeps the context lean — large LLM responses, test output, and file listings don't bloat checkpoint files or overwhelm preamble summaries.
 
@@ -214,13 +214,13 @@ Compaction is always enabled and runs with hardcoded defaults — there are no u
 
 ### When it triggers
 
-After every assistant turn, Arc estimates the total token usage of the system prompt and conversation history (using a rough heuristic of 1 token per 4 characters). If the estimate exceeds **80%** of the model's context window, compaction runs.
+After every assistant turn, Fabro estimates the total token usage of the system prompt and conversation history (using a rough heuristic of 1 token per 4 characters). If the estimate exceeds **80%** of the model's context window, compaction runs.
 
 ### How it works
 
 1. **Split history** — The conversation is divided into older turns (to be summarized) and the most recent **6 turns** (preserved verbatim).
 2. **Render old turns** — Older turns are serialized to a human-readable text format. Tool call arguments and tool results are truncated to 500 characters each.
-3. **Summarize via LLM** — Arc makes a non-streaming LLM call (using the same model and provider as the agent session) with a structured summarization prompt. The summary uses these sections:
+3. **Summarize via LLM** — Fabro makes a non-streaming LLM call (using the same model and provider as the agent session) with a structured summarization prompt. The summary uses these sections:
    - **Goal** — what the user asked for
    - **Progress** — what was accomplished, with file paths and key decisions
    - **Key Decisions** — important choices and their rationale
@@ -232,7 +232,7 @@ After every assistant turn, Arc estimates the total token usage of the system pr
 
 ### Failure behavior
 
-Compaction failures are **non-fatal**. If the summarization LLM call fails, Arc emits an `Agent.Error` event and the session continues with the original uncompacted history. The next assistant turn will trigger another compaction attempt.
+Compaction failures are **non-fatal**. If the summarization LLM call fails, Fabro emits an `Agent.Error` event and the session continues with the original uncompacted history. The next assistant turn will trigger another compaction attempt.
 
 ### Events
 

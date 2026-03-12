@@ -1,13 +1,13 @@
 ---
 title: "Prompts"
-description: "How Arc constructs and delivers prompts to agents"
+description: "How Fabro constructs and delivers prompts to agents"
 ---
 
-When a workflow reaches an agent or prompt node, Arc assembles the full prompt from multiple sources: the node's `prompt` attribute, a fidelity-based preamble summarizing prior stages, a system prompt with tool guidance and environment context, project docs, and user instructions. Understanding this assembly helps you write effective prompts and control what context each node receives.
+When a workflow reaches an agent or prompt node, Fabro assembles the full prompt from multiple sources: the node's `prompt` attribute, a fidelity-based preamble summarizing prior stages, a system prompt with tool guidance and environment context, project docs, and user instructions. Understanding this assembly helps you write effective prompts and control what context each node receives.
 
 ## The prompt attribute
 
-The `prompt` attribute on a node defines the task instructions for that stage. If no `prompt` is set, Arc falls back to the node's `label`.
+The `prompt` attribute on a node defines the task instructions for that stage. If no `prompt` is set, Fabro falls back to the node's `label`.
 
 ### Inline prompts
 
@@ -65,7 +65,7 @@ A `$` not followed by an identifier character (e.g. `$5`) is left as-is. An unde
 
 ### Fallback to label
 
-If a node has neither a `prompt` attribute nor an empty one, Arc uses the `label` as the prompt:
+If a node has neither a `prompt` attribute nor an empty one, Fabro uses the `label` as the prompt:
 
 ```dot
 // "Do work" is both the display label and the prompt
@@ -76,7 +76,7 @@ This is convenient for simple nodes but not recommended for production workflows
 
 ## Prompt assembly
 
-The prompt the agent receives is not just the `prompt` attribute. Arc prepends a **preamble** (unless fidelity is `full`) that summarizes what happened in prior stages:
+The prompt the agent receives is not just the `prompt` attribute. Fabro prepends a **preamble** (unless fidelity is `full`) that summarizes what happened in prior stages:
 
 ```
 [Preamble: goal, completed stages, context values]
@@ -247,7 +247,7 @@ OpenAI and Gemini providers have their own system prompts with different identit
 
 ### Project docs
 
-Arc automatically discovers project instruction files by walking the directory hierarchy from the git root to the working directory. Which files are loaded depends on the provider:
+Fabro automatically discovers project instruction files by walking the directory hierarchy from the git root to the working directory. Which files are loaded depends on the provider:
 
 | Provider | Files |
 |---|---|
@@ -292,4 +292,4 @@ Use prompt nodes for analysis, classification, and summarization tasks where too
 
 ## Prompt logging
 
-Arc writes the assembled prompt to `{run_dir}/nodes/{node_id}/prompt.md` for every agent and prompt stage. This includes the preamble (if any) and the expanded prompt text. Use these files for debugging when an agent behaves unexpectedly.
+Fabro writes the assembled prompt to `{run_dir}/nodes/{node_id}/prompt.md` for every agent and prompt stage. This includes the preamble (if any) and the expanded prompt text. Use these files for debugging when an agent behaves unexpectedly.

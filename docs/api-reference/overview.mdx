@@ -1,17 +1,17 @@
 ---
 title: "API Overview"
-description: "Introduction to the Arc REST API"
+description: "Introduction to the Fabro REST API"
 ---
 
 <Warning>
-The Arc API is **under active development** and may be subject to change. Endpoints, request/response formats, and authentication mechanisms may evolve as the project matures.
+The Fabro API is **under active development** and may be subject to change. Endpoints, request/response formats, and authentication mechanisms may evolve as the project matures.
 </Warning>
 
-The Arc API is a REST API for managing workflow runs, interactive sessions, and related resources. All requests and responses use JSON.
+The Fabro API is a REST API for managing workflow runs, interactive sessions, and related resources. All requests and responses use JSON.
 
 ## Base URL
 
-The API is served by `arc serve`, which defaults to:
+The API is served by `fabro serve`, which defaults to:
 
 ```
 http://localhost:3000
@@ -21,7 +21,7 @@ The base URL is configurable via `server.toml`:
 
 ```toml title="server.toml"
 [api]
-base_url = "https://arc.example.com"
+base_url = "https://fabro.example.com"
 ```
 
 ## Authentication
@@ -52,7 +52,7 @@ The token must include these claims:
 
 The username is extracted from the last path segment of the `sub` claim and checked against the `allowed_usernames` list in the web auth config.
 
-Set the verification key via the `ARC_JWT_PUBLIC_KEY` environment variable (PEM format or base64-encoded PEM).
+Set the verification key via the `FABRO_JWT_PUBLIC_KEY` environment variable (PEM format or base64-encoded PEM).
 
 ### mTLS (Mutual TLS)
 
@@ -142,7 +142,7 @@ When `has_more` is `true`, increment the offset by the limit to fetch the next p
 
 ## Versioning
 
-The Arc API does not currently use versioning. All endpoints reflect the latest behavior of the running server. Breaking changes will be communicated in the [changelog](/changelog/2026-03-06).
+The Fabro API does not currently use versioning. All endpoints reflect the latest behavior of the running server. Breaking changes will be communicated in the [changelog](/changelog/2026-03-06).
 
 ## Discovery
 

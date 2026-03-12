@@ -1,13 +1,13 @@
 ---
 title: "Transitions"
-description: "How Arc decides which node to execute next"
+description: "How Fabro decides which node to execute next"
 ---
 
-After each node finishes, Arc must decide which edge to follow to the next node. This decision is fully deterministic — given the same outcome and context, Arc always picks the same edge. Understanding the transition logic helps you design workflows that route reliably.
+After each node finishes, Fabro must decide which edge to follow to the next node. This decision is fully deterministic — given the same outcome and context, Fabro always picks the same edge. Understanding the transition logic helps you design workflows that route reliably.
 
 ## How transitions work
 
-When a node completes, it produces an **outcome** with a status (`success`, `fail`, `partial_success`) and optional signals like a preferred label or suggested next node. Arc evaluates the outgoing edges in a fixed priority order:
+When a node completes, it produces an **outcome** with a status (`success`, `fail`, `partial_success`) and optional signals like a preferred label or suggested next node. Fabro evaluates the outgoing edges in a fixed priority order:
 
 1. **Condition match** — Edges with a `condition` attribute are evaluated first. If one or more conditions match, the edge with the highest `weight` wins (lexical tiebreak on target node ID).
 2. **Preferred label** — If the node's outcome includes a preferred label (e.g. from a human gate selection), the edge whose `label` matches is chosen.
@@ -81,7 +81,7 @@ gate -> next [condition="outcome=success && context.ready=true || context.overri
 
 ## Agent transitions
 
-Agent and prompt nodes can influence which edge is taken by including a JSON object in their response with routing directives. Arc scans the LLM output for the last JSON object containing any of these fields:
+Agent and prompt nodes can influence which edge is taken by including a JSON object in their response with routing directives. Fabro scans the LLM output for the last JSON object containing any of these fields:
 
 ```json
 {
@@ -97,7 +97,7 @@ Agent and prompt nodes can influence which edge is taken by including a JSON obj
 | `suggested_next_ids` | Ordered list of preferred target node IDs |
 | `context_updates` | Key-value pairs merged into the run context for downstream conditions |
 
-Arc automatically scans LLM output for these JSON objects — no special configuration is needed. However, you do need to instruct the LLM to emit the JSON in your prompt. For example:
+Fabro automatically scans LLM output for these JSON objects — no special configuration is needed. However, you do need to instruct the LLM to emit the JSON in your prompt. For example:
 
 ```dot
 review [
@@ -114,11 +114,11 @@ review -> fix     [label="Fix"]
 review -> approve [label="Approve"]
 ```
 
-The LLM's natural language response can contain other text — Arc finds the last JSON object with a recognized routing field and extracts the directives from it.
+The LLM's natural language response can contain other text — Fabro finds the last JSON object with a recognized routing field and extracts the directives from it.
 
 ## Human gate transitions
 
-Human gates use edge labels to present options to the user. The selected label becomes the `preferred_label` in the outcome, and Arc matches it to the corresponding edge:
+Human gates use edge labels to present options to the user. The selected label becomes the `preferred_label` in the outcome, and Fabro matches it to the corresponding edge:
 
 ```dot
 approve [shape=hexagon, label="Approve Plan"]
@@ -128,7 +128,7 @@ approve -> plan      [label="[R] Revise"]
 approve -> skip      [label="[S] Skip"]
 ```
 
-The `[A]`, `[R]`, `[S]` prefixes are keyboard accelerators — Arc strips them when matching, so the user can type just the letter.
+The `[A]`, `[R]`, `[S]` prefixes are keyboard accelerators — Fabro strips them when matching, so the user can type just the letter.
 
 ## Unconditional edges
 

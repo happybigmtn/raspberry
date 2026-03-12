@@ -1,14 +1,14 @@
 ---
 title: "Quick Start"
-description: "Get up and running with Arc"
+description: "Get up and running with Fabro"
 ---
 
 <Warning>
-  Arc is in private research preview. Contact [bryan@qlty.sh](mailto:bryan@qlty.sh) if you're interested in trying it.
+  Fabro is in private research preview. Contact [bryan@qlty.sh](mailto:bryan@qlty.sh) if you're interested in trying it.
 </Warning>
 
 <Note>
-Arc has two modes:
+Fabro has two modes:
 
 - **Standalone mode** — Run workflows directly from the CLI. This is what the quick start covers below.
 - **Server mode** — An API server with a web UI for launching and managing workflow runs at scale. See [Server Mode](/core-concepts/server-mode) for details.
@@ -24,7 +24,7 @@ curl -fsSL https://fabro.sh/install.sh | bash
 
 ```bash
 cd my-repo/
-arc init
+fabro init
 ```
 
 This creates a default workflow and configuration in your project directory.
@@ -46,14 +46,14 @@ You only need one provider key to get started. Add more to enable multi-model wo
 ## Run your first workflow
 
 ```bash
-arc run hello
+fabro run hello
 ```
 
 ## Next steps
 
 <Columns cols={2}>
-  <Card title="Why Arc?" icon="lightbulb" href="/getting-started/why-arc">
-    Understand the problems Arc solves.
+  <Card title="Why Fabro?" icon="lightbulb" href="/getting-started/why-arc">
+    Understand the problems Fabro solves.
   </Card>
   <Card title="Workflows" icon="diagram-project" href="/core-concepts/workflows">
     Learn how to define workflow graphs in DOT.

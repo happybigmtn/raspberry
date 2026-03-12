@@ -1,9 +1,9 @@
 ---
 title: "Brave Search"
-description: "Give Arc agents web search capabilities via the Brave Search API"
+description: "Give Fabro agents web search capabilities via the Brave Search API"
 ---
 
-Arc's [`web_search`](/agents/tools#web_search) tool lets agents search the web during workflow execution. It uses the [Brave Search API](https://brave.com/search/api/) to return titles, URLs, and descriptions for any query. The tool is registered automatically for all provider profiles (Anthropic, OpenAI, Gemini) — no workflow configuration is needed beyond setting the API key.
+Fabro's [`web_search`](/agents/tools#web_search) tool lets agents search the web during workflow execution. It uses the [Brave Search API](https://brave.com/search/api/) to return titles, URLs, and descriptions for any query. The tool is registered automatically for all provider profiles (Anthropic, OpenAI, Gemini) — no workflow configuration is needed beyond setting the API key.
 
 ## Setup
 
@@ -18,14 +18,14 @@ export BRAVE_SEARCH_API_KEY=BSA...
 3. Verify the key is working:
 
 ```bash
-arc doctor --live
+fabro doctor --live
 ```
 
 The doctor output should show **Brave Search** as "connected". If the key is missing, web search is reported as a warning — workflows still run, but `web_search` calls return an error.
 
 ## How it works
 
-Agents call the `web_search` tool with a query string. Arc sends the query to the Brave Web Search API (`/res/v1/web/search`) and returns numbered results with title, URL, and description:
+Agents call the `web_search` tool with a query string. Fabro sends the query to the Brave Web Search API (`/res/v1/web/search`) and returns numbered results with title, URL, and description:
 
 ```
 1. Rust Lang
@@ -73,7 +73,7 @@ digraph Research {
 
 ## Troubleshooting
 
-**"BRAVE_SEARCH_API_KEY environment variable is not set"** — Add the key to `.env` or your shell environment. Run `arc doctor --live` to verify.
+**"BRAVE_SEARCH_API_KEY environment variable is not set"** — Add the key to `.env` or your shell environment. Run `fabro doctor --live` to verify.
 
 **"Brave Search API returned status 401"** — The API key is invalid or expired. Generate a new key from the [Brave Search API dashboard](https://brave.com/search/api/).
 

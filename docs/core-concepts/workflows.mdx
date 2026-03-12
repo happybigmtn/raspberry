@@ -1,9 +1,9 @@
 ---
 title: "Workflows"
-description: "Core workflow concepts in Arc"
+description: "Core workflow concepts in Fabro"
 ---
 
-A workflow is a directed graph that defines a repeatable process for AI agents, shell commands, and human decisions. Unlike a DAG (directed acyclic graph), an Arc workflow can and often does include loops — for example, implement-test-fix cycles that repeat until tests pass. You write workflows in [Graphviz DOT](/reference/dot-language), check them into version control, and run them with `arc run`.
+A workflow is a directed graph that defines a repeatable process for AI agents, shell commands, and human decisions. Unlike a DAG (directed acyclic graph), an Fabro workflow can and often does include loops — for example, implement-test-fix cycles that repeat until tests pass. You write workflows in [Graphviz DOT](/reference/dot-language), check them into version control, and run them with `fabro run`.
 
 ## Anatomy of a workflow
 
@@ -28,7 +28,7 @@ digraph MyWorkflow {
 }
 ```
 
-The `goal` attribute describes what the workflow accomplishes. Arc uses it to guide agent behavior and generate retrospectives.
+The `goal` attribute describes what the workflow accomplishes. Fabro uses it to guide agent behavior and generate retrospectives.
 
 ## Key node types
 
@@ -55,7 +55,7 @@ approve -> implement [label="[A] Approve"]
 approve -> plan      [label="[R] Revise"]
 ```
 
-Arc supports additional node types for one-shot prompts, conditional branching, parallel fan-out/fan-in, and more. See [Stages and Nodes](/workflows/stages-and-nodes) for the full reference.
+Fabro supports additional node types for one-shot prompts, conditional branching, parallel fan-out/fan-in, and more. See [Stages and Nodes](/workflows/stages-and-nodes) for the full reference.
 
 ## Branching and loops
 
@@ -112,31 +112,31 @@ validate [label="Validate", prompt="Run the test suite and verify all tests pass
 From the CLI:
 
 ```bash
-arc run workflow.dot
+fabro run workflow.dot
 ```
 
 Or from a [run config TOML](/execution/run-configuration) for repeatable, parameterized runs:
 
 ```bash
-arc run run.toml
+fabro run run.toml
 ```
 
 In the web UI, the Workflows page lists all available workflows. Click into a workflow to view its DOT definition, rendered graph diagram, and run history.
 
 <Frame caption="The Workflows page lists all available workflows with their trigger type and last run time.">
-  <img src="/images/web/workflows-list.png" alt="Arc web UI Workflows list showing Fix Build, Implement Feature, Sync Drift, and Expand Product workflows" />
+  <img src="/images/web/workflows-list.png" alt="Fabro web UI Workflows list showing Fix Build, Implement Feature, Sync Drift, and Expand Product workflows" />
 </Frame>
 
 <Frame caption="The workflow detail view shows the DOT definition with syntax highlighting.">
-  <img src="/images/web/workflow-detail.png" alt="Arc web UI workflow detail showing the DOT source for Fix Build" />
+  <img src="/images/web/workflow-detail.png" alt="Fabro web UI workflow detail showing the DOT source for Fix Build" />
 </Frame>
 
 <Frame caption="The Diagram tab renders the workflow graph visually, showing nodes, edges, and conditions.">
-  <img src="/images/web/workflow-diagram.png" alt="Arc web UI workflow diagram showing the Fix Build workflow graph" />
+  <img src="/images/web/workflow-diagram.png" alt="Fabro web UI workflow diagram showing the Fix Build workflow graph" />
 </Frame>
 
 <Frame caption="The Runs tab shows all runs for this workflow, filterable by status.">
-  <img src="/images/web/workflow-runs.png" alt="Arc web UI workflow runs tab showing run history for Fix Build" />
+  <img src="/images/web/workflow-runs.png" alt="Fabro web UI workflow runs tab showing run history for Fix Build" />
 </Frame>
 
 See the [Quick Start](/getting-started/quick-start) to try it out, or browse the [example workflows](/examples/implement-feature) for real-world patterns.

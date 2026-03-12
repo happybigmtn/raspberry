@@ -3,11 +3,11 @@ title: "MCP"
 description: "Extend agents with Model Context Protocol servers"
 ---
 
-MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) lets you connect external tool servers to Arc agents. An MCP server exposes tools over a standardized protocol — databases, APIs, file systems, custom services — and Arc discovers and registers them automatically. Agents call MCP tools the same way they call built-in tools.
+MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) lets you connect external tool servers to Fabro agents. An MCP server exposes tools over a standardized protocol — databases, APIs, file systems, custom services — and Fabro discovers and registers them automatically. Agents call MCP tools the same way they call built-in tools.
 
 ## How it works
 
-When an agent session starts with MCP servers configured, Arc:
+When an agent session starts with MCP servers configured, Fabro:
 
 1. **Connects** to each server using the configured transport (stdio, HTTP, or sandbox)
 2. **Performs the MCP handshake** — exchanging protocol versions and capabilities
@@ -30,8 +30,8 @@ For example, a server named `filesystem` exposing a `read_file` tool becomes `mc
 
 MCP servers can be configured in two places:
 
-- **`~/.arc/cli.toml`** — applies to `arc exec` sessions. See [CLI Configuration](/reference/cli-configuration#mcp_servers-section).
-- **Run config TOML** — applies to workflow runs (`arc run`). See [Run Configuration](/execution/run-configuration#mcp_servers).
+- **`~/.arc/cli.toml`** — applies to `fabro exec` sessions. See [CLI Configuration](/reference/cli-configuration#mcp_servers-section).
+- **Run config TOML** — applies to workflow runs (`fabro run`). See [Run Configuration](/execution/run-configuration#mcp_servers).
 
 Each server entry specifies a transport type and optional timeouts. The server name is the TOML table key and is used in qualified tool names.
 
@@ -39,7 +39,7 @@ Each server entry specifies a transport type and optional timeouts. The server n
 
 ### Stdio
 
-The most common transport. Arc spawns a child process on the host and communicates over stdin/stdout:
+The most common transport. Fabro spawns a child process on the host and communicates over stdin/stdout:
 
 ```toml
 [mcp_servers.filesystem]
@@ -83,7 +83,7 @@ Authorization = "Bearer sk-xxx"
 
 ### Sandbox
 
-Runs the MCP server inside the workflow's sandbox (e.g., a [Daytona](/integrations/daytona) cloud VM). Arc starts the server as a background process, waits for it to listen on the specified port, obtains an authenticated preview URL, and connects via HTTP. This is the right transport for MCP servers that need access to the sandbox environment — for example, [Playwright](https://github.com/microsoft/playwright-mcp) for browser automation.
+Runs the MCP server inside the workflow's sandbox (e.g., a [Daytona](/integrations/daytona) cloud VM). Fabro starts the server as a background process, waits for it to listen on the specified port, obtains an authenticated preview URL, and connects via HTTP. This is the right transport for MCP servers that need access to the sandbox environment — for example, [Playwright](https://github.com/microsoft/playwright-mcp) for browser automation.
 
 ```toml
 [mcp_servers.playwright]
@@ -103,7 +103,7 @@ tool_timeout_secs = 120
 | `startup_timeout_secs` | Max seconds to wait for the server to start listening and complete the MCP handshake. | `10` |
 | `tool_timeout_secs` | Max seconds to wait for a single tool call. | `60` |
 
-The sandbox transport requires a remote sandbox provider (Daytona) that supports preview URLs. During session initialization, Arc:
+The sandbox transport requires a remote sandbox provider (Daytona) that supports preview URLs. During session initialization, Fabro:
 
 1. Launches the server inside the sandbox using `setsid` to fully detach the process
 2. Polls until the server is listening on the configured port (up to 30 seconds)
@@ -127,7 +127,7 @@ If a server fails to start (process crash, timeout, handshake error), it is logg
 
 When the LLM calls an MCP tool:
 
-1. Arc looks up the qualified name in the connection manager
+1. Fabro looks up the qualified name in the connection manager
 2. The call is routed to the correct server using the original (unqualified) tool name
 3. The server executes the tool and returns a result
 4. The result is converted to text and returned to the LLM as a tool result
@@ -136,7 +136,7 @@ Tool calls are subject to the `tool_timeout_secs` configured on the server. If a
 
 ### Content handling
 
-MCP tool results can contain multiple content blocks. Arc converts them to text:
+MCP tool results can contain multiple content blocks. Fabro converts them to text:
 
 | Content type | Conversion |
 |---|---|
@@ -193,10 +193,10 @@ MCP servers that fail to start do not block the agent session. The agent proceed
 
 ## Protocol details
 
-Arc implements the MCP client side using the `rmcp` SDK (protocol version `2025-03-26`). The client identifies itself as `arc-mcp` and supports:
+Fabro implements the MCP client side using the `rmcp` SDK (protocol version `2025-03-26`). The client identifies itself as `arc-mcp` and supports:
 
 - Tool listing and invocation
-- Server logging notifications (routed to Arc's tracing system)
+- Server logging notifications (routed to Fabro's tracing system)
 - Progress notifications
 - Resource update notifications
 - Cancellation notifications

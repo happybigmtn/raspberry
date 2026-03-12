@@ -106,7 +106,7 @@ The Latin phrase "de facto" is one of the most common phrases in English, especi
 - AI search summaries interpret "facto" queries as being about the Latin phrase
 - Every tech article mentioning "de facto standard" competes for attention
 
-This is a permanent, structural disadvantage. Tools like "Arc" and "Linear" overcame common-word overlap, but none had to compete with a phrase as ubiquitous as "de facto" in tech writing.
+This is a permanent, structural disadvantage. Tools like "Fabro" and "Linear" overcame common-word overlap, but none had to compete with a phrase as ubiquitous as "de facto" in tech writing.
 
 ### Critical Conflict: crates.io
 

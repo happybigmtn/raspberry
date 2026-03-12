@@ -14,24 +14,24 @@ tool = "write"
 command = "cargo fmt"
 ```
 
-## Server mode for `arc exec`
+## Server mode for `fabro exec`
 
-`arc exec` can now run as a long-lived server that proxies requests through a `/completions` endpoint. Instead of running a single agent session and exiting, server mode keeps the agent process alive and accepts Anthropic-style streaming requests over HTTP. This enables integrating Arc agents into applications that speak the standard completions API.
+`fabro exec` can now run as a long-lived server that proxies requests through a `/completions` endpoint. Instead of running a single agent session and exiting, server mode keeps the agent process alive and accepts Anthropic-style streaming requests over HTTP. This enables integrating Fabro agents into applications that speak the standard completions API.
 
 ```bash
-arc exec --server --port 8080
+fabro exec --server --port 8080
 ```
 
 ## Auto-PR on workflow completion
 
-Workflows can now automatically open a GitHub pull request when a run completes successfully. Arc creates the PR from the agent's working branch with the run summary as the description. No extra scripting or post-run steps needed — just enable the option in your run configuration.
+Workflows can now automatically open a GitHub pull request when a run completes successfully. Fabro creates the PR from the agent's working branch with the run summary as the description. No extra scripting or post-run steps needed — just enable the option in your run configuration.
 
 <Warning>
-**Breaking: CLI commands renamed.** `arc run start` is now `arc run`, and `arc agent` is now `arc exec`. The old command names no longer work.
+**Breaking: CLI commands renamed.** `fabro run start` is now `fabro run`, and `fabro agent` is now `fabro exec`. The old command names no longer work.
 
 To migrate, update any scripts or aliases:
-1. Replace `arc run start` with `arc run`
-2. Replace `arc agent` with `arc exec`
+1. Replace `fabro run start` with `fabro run`
+2. Replace `fabro agent` with `fabro exec`
 </Warning>
 
 ## More
@@ -44,7 +44,7 @@ To migrate, update any scripts or aliases:
 </Accordion>
 
 <Accordion title="CLI">
-- Added `--goal-file` flag to `arc run` for reading goal from a file instead of inline text
+- Added `--goal-file` flag to `fabro run` for reading goal from a file instead of inline text
 - MCP servers can now be configured in TOML via `cli.toml` instead of JSON
 - `verbose = true` in `cli.toml` defaults to verbose output without needing `-v`
 - `goal` is now optional in run config TOML — precedence is CLI `--goal` > TOML `goal` > DOT graph attribute
@@ -59,17 +59,17 @@ To migrate, update any scripts or aliases:
 - GitHub webhook listener via Tailscale funnel — auto-configures webhook URL on startup
 - `[sandbox.env]` support passes environment variables through to sandbox tool execution
 - Dockerfile path syntax (`dockerfile = { path = "..." }`) in snapshot config
-- `arc validate` and the workflow validator now catch unresolved `@file` references before execution
+- `fabro validate` and the workflow validator now catch unresolved `@file` references before execution
 - Fixed `@file` references with `~` home directory and `..` parent directory paths
-- Compaction progress now visible in non-verbose `arc run` output
-- Run ID printed at start of `arc run` and on resume for cross-referencing
+- Compaction progress now visible in non-verbose `fabro run` output
+- Run ID printed at start of `fabro run` and on resume for cross-referencing
 - Git checkpoint commit skipped for start node to reduce noise
 </Accordion>
 
 <Accordion title="Improvements">
-- Daytona sandboxes now named `arc-{run_id}` for easy correlation with workflow runs
-- Logs directory naming changed from `arc-run-YYYYMMDD-HHMMSS` to `YYYYMMDD-{run_id}`
-- Truncated stage failure error display to show only the last line in `arc run` output
+- Daytona sandboxes now named `fabro-{run_id}` for easy correlation with workflow runs
+- Logs directory naming changed from `fabro-run-YYYYMMDD-HHMMSS` to `YYYYMMDD-{run_id}`
+- Truncated stage failure error display to show only the last line in `fabro run` output
 - `apply_patch` error responses now include file contents for better debugging of failed edits
 - v4a patch parser/applier rewritten to match canonical OpenAI codex spec
 - Accept bare `@@` hunk headers in v4a `apply_patch` parser

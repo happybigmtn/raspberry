@@ -13,7 +13,7 @@ The delivery flow:
 
 1. You send a `POST /runs/{id}/steer` request with your guidance text
 2. The message is queued on the agent session's steering queue
-3. Before the next LLM call, Arc drains the queue and injects each message as a `Steering` turn in the conversation history
+3. Before the next LLM call, Fabro drains the queue and injects each message as a `Steering` turn in the conversation history
 4. The LLM sees the guidance alongside its existing context and adjusts accordingly
 
 Steering is **asynchronous** — the API returns `202 Accepted` immediately. The agent picks up the message at its next natural pause point (between tool calls), not mid-execution.
@@ -45,5 +45,5 @@ Steering and [human gates](/workflows/human-in-the-loop) serve different purpose
 Use human gates for structured decisions that are part of the workflow design. Use steering for reactive guidance when you're watching a run and want to intervene.
 
 <Frame caption="The Files Changed tab shows a side-by-side diff of all changes made during the run.">
-  <img src="/images/web/run-files-changed.png" alt="Arc web UI Files Changed tab showing a side-by-side diff" />
+  <img src="/images/web/run-files-changed.png" alt="Fabro web UI Files Changed tab showing a side-by-side diff" />
 </Frame>

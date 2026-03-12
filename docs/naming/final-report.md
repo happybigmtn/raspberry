@@ -2,7 +2,7 @@
 
 _Prepared 2026-03-06_
 
-Four finalist names for the project currently codenamed "Arc."
+Four finalist names for the project currently codenamed "Fabro."
 
 ---
 

@@ -3,11 +3,11 @@ title: "Observability"
 description: "How to monitor, inspect, and analyze workflow runs"
 ---
 
-Arc captures a structured event for every significant action during a workflow run — stage starts and completions, agent tool calls, edge selections, retries, failovers, sandbox lifecycle, and more. These events power real-time monitoring, post-run analysis, and cross-run analytics.
+Fabro captures a structured event for every significant action during a workflow run — stage starts and completions, agent tool calls, edge selections, retries, failovers, sandbox lifecycle, and more. These events power real-time monitoring, post-run analysis, and cross-run analytics.
 
 ## Event stream
 
-The event stream is the foundation of Arc's observability. Every workflow run emits a sequence of `WorkflowRunEvent` records that are:
+The event stream is the foundation of Fabro's observability. Every workflow run emits a sequence of `WorkflowRunEvent` records that are:
 
 - **Written to `progress.jsonl`** in the run's directory (one JSON object per line)
 - **Broadcast via SSE** to connected API clients in real time
@@ -110,7 +110,7 @@ The `ts`, `run_id`, and `event` fields are always present. The remaining fields 
 
 ## Log files
 
-Arc writes two kinds of logs:
+Fabro writes two kinds of logs:
 
 ### Run logs (`progress.jsonl`)
 
@@ -129,7 +129,7 @@ grep "EdgeSelected" ~/.arc/runs/01JKXYZ.../progress.jsonl | jq '{from: .from_nod
 
 ### Live snapshot (`live.json`)
 
-During execution, Arc also writes `live.json` — a pretty-printed copy of the most recent event. This is useful for quick status checks while a run is in progress:
+During execution, Fabro also writes `live.json` — a pretty-printed copy of the most recent event. This is useful for quick status checks while a run is in progress:
 
 ```bash
 cat ~/.arc/runs/01JKXYZ.../live.json
@@ -137,10 +137,10 @@ cat ~/.arc/runs/01JKXYZ.../live.json
 
 ### Application logs
 
-Arc uses the `tracing` crate to write structured logs to `~/.arc/logs/YYYY-MM-DD.log`. Control the log level with the `ARC_LOG` environment variable:
+Fabro uses the `tracing` crate to write structured logs to `~/.arc/logs/YYYY-MM-DD.log`. Control the log level with the `FABRO_LOG` environment variable:
 
 ```bash
-ARC_LOG=debug arc run workflow.dot
+FABRO_LOG=debug fabro run workflow.dot
 ```
 
 | Level | What's logged |
@@ -161,7 +161,7 @@ When running workflows through the API server, subscribe to a live event stream 
 The web frontend connects to the SSE stream automatically and displays run progress in real time — stage transitions, agent tool calls, and human gate prompts are all visible as they happen.
 
 <Frame caption="The Stages tab shows the full agent conversation including tool calls and responses.">
-  <img src="/images/web/run-stages.png" alt="Arc web UI run stages showing agent conversation with tool calls" />
+  <img src="/images/web/run-stages.png" alt="Fabro web UI run stages showing agent conversation with tool calls" />
 </Frame>
 
 ### CLI progress
@@ -172,14 +172,14 @@ The CLI displays a live progress bar during execution with per-stage status, dur
 
 ### Listing runs
 
-Browse your run history with `arc ps`:
+Browse your run history with `fabro ps`:
 
 ```bash
-arc ps
-arc ps --workflow PlanImplement
-arc ps --before 2026-03-01
-arc ps --label team=platform
-arc ps --json
+fabro ps
+fabro ps --workflow PlanImplement
+fabro ps --before 2026-03-01
+fabro ps --label team=platform
+fabro ps --json
 ```
 
 This scans `~/.arc/runs/` and displays each run's ID, workflow name, status, and start time. Use `--json` for machine-readable output.
@@ -246,9 +246,9 @@ ORDER BY runs DESC
 The API server tracks aggregate usage counters across all runs — total run count, total runtime, and per-model breakdowns of token usage and cost. See the [usage endpoint](/api-reference/run-outputs#get-usage) in the API reference. Counters reset on server restart.
 
 <Frame caption="The Usage tab breaks down token counts and costs by stage and by model.">
-  <img src="/images/web/run-usage.png" alt="Arc web UI run usage showing per-stage and per-model token and cost breakdown" />
+  <img src="/images/web/run-usage.png" alt="Fabro web UI run usage showing per-stage and per-model token and cost breakdown" />
 </Frame>
 
 ## Credential redaction
 
-All event output — `progress.jsonl`, SSE streams, and log files — is automatically redacted before being written. Arc detects and replaces patterns that look like API keys, AWS credentials, bearer tokens, and other secrets with `REDACTED`. This ensures sensitive values that appear in tool call arguments or command output are never persisted to disk.
+All event output — `progress.jsonl`, SSE streams, and log files — is automatically redacted before being written. Fabro detects and replaces patterns that look like API keys, AWS credentials, bearer tokens, and other secrets with `REDACTED`. This ensures sensitive values that appear in tool call arguments or command output are never persisted to disk.

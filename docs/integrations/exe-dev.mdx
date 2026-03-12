@@ -1,18 +1,18 @@
 ---
 title: "exe.dev"
-description: "Run Arc workflows in fast ephemeral VMs from exe.dev"
+description: "Run Fabro workflows in fast ephemeral VMs from exe.dev"
 ---
 
 <Warning>
-The exe.dev sandbox provider is **under development**. It requires building Arc with the `exedev` feature flag enabled. The API and configuration may change.
+The exe.dev sandbox provider is **under development**. It requires building Fabro with the `exedev` feature flag enabled. The API and configuration may change.
 </Warning>
 
-[exe.dev](https://exe.dev) provides fast ephemeral cloud VMs for Arc workflows. Each run gets a fresh VM with full machine-level isolation, connected via SSH.
+[exe.dev](https://exe.dev) provides fast ephemeral cloud VMs for Fabro workflows. Each run gets a fresh VM with full machine-level isolation, connected via SSH.
 
 ## How it works
 
 - Each run creates a new VM via the exe.dev management plane over SSH
-- Arc clones the current git repository into the VM automatically (using GitHub App credentials for private repos)
+- Fabro clones the current git repository into the VM automatically (using GitHub App credentials for private repos)
 - Agent tool calls (shell commands, file edits, grep, glob) execute over SSH inside the VM
 - Git checkpointing commits agent changes to a remote branch between stages
 - Cancelling a run cleanly tears down the VM
@@ -21,7 +21,7 @@ The exe.dev sandbox provider is **under development**. It requires building Arc 
 ## Configuration
 
 ```bash
-arc run workflow.dot --sandbox exe
+fabro run workflow.dot --sandbox exe
 ```
 
 ```toml title="run.toml"
@@ -41,7 +41,7 @@ image = "my-custom-image:latest"
 Connect to a running exe.dev sandbox via SSH for live debugging:
 
 ```bash
-arc run workflow.dot --sandbox exe --ssh
+fabro run workflow.dot --sandbox exe --ssh
 ```
 
 This prints the SSH connection command so you can connect to the VM while the workflow runs.
@@ -49,6 +49,6 @@ This prints the SSH connection command so you can connect to the VM while the wo
 ## Prerequisites
 
 - SSH keys configured for exe.dev (added via the [exe.dev dashboard](https://exe.dev))
-- A [GitHub App](/integrations/github) configured via `arc install` (for private repository cloning)
+- A [GitHub App](/integrations/github) configured via `fabro install` (for private repository cloning)
 
 See [Environments](/execution/environments#exe) for additional details on how the exe.dev sandbox operates.

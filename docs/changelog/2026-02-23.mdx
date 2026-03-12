@@ -3,14 +3,14 @@ title: "First CLI, Docker sandboxing, and web dashboard"
 date: "2026-02-23"
 ---
 
-## Arc CLI
+## Fabro CLI
 
-Run AI workflows from the command line with `arc run start`, validate DOT workflow definitions with `arc validate`, and step through dry-runs to test logic before committing real LLM calls.
+Run AI workflows from the command line with `fabro run start`, validate DOT workflow definitions with `fabro validate`, and step through dry-runs to test logic before committing real LLM calls.
 
 ```bash
-arc run start spec-dod-multimodel.dot
-arc validate my-workflow.dot
-arc run start --dry-run my-workflow.dot
+fabro run start spec-dod-multimodel.dot
+fabro validate my-workflow.dot
+fabro run start --dry-run my-workflow.dot
 ```
 
 The CLI streams LLM responses in real time and supports interactive tool approval — each tool call pauses for you to approve or reject via arrow-key prompts, giving fine-grained control over what the agent does.
@@ -20,7 +20,7 @@ The CLI streams LLM responses in real time and supports interactive tool approva
 Agent tool execution can now run inside Docker containers, so workflows can safely run shell commands, edit files, and install dependencies without affecting your host machine.
 
 ```bash
-arc run start --docker my-workflow.dot
+fabro run start --docker my-workflow.dot
 ```
 
 The container is shared across all stages in a run, so tools have access to the same filesystem throughout the workflow.

@@ -3,7 +3,7 @@ title: "Variables"
 description: "Using variables in workflows"
 ---
 
-Arc supports `$variable` placeholders that let you parameterize workflows without editing the DOT file.
+Fabro supports `$variable` placeholders that let you parameterize workflows without editing the DOT file.
 
 ## Run config variables
 
@@ -36,11 +36,11 @@ digraph Check {
 }
 ```
 
-When launched with `arc run run.toml`, Arc replaces `$repo_name`, `$repo_url`, and `$language` with their values before parsing the graph.
+When launched with `fabro run run.toml`, Fabro replaces `$repo_name`, `$repo_url`, and `$language` with their values before parsing the graph.
 
 ### Undefined variables
 
-If a `$variable` in the DOT file has no matching entry in `[vars]`, Arc raises an error. This catches typos early — a misspelled `$langauge` fails immediately rather than passing a literal `$langauge` to the LLM.
+If a `$variable` in the DOT file has no matching entry in `[vars]`, Fabro raises an error. This catches typos early — a misspelled `$langauge` fails immediately rather than passing a literal `$langauge` to the LLM.
 
 ### Escaping `$`
 
@@ -54,7 +54,7 @@ This produces `The env var is $HOME` without treating `$HOME` as a variable refe
 
 ## The `$goal` variable
 
-Inside agent and prompt node prompts, Arc automatically expands `$goal` to the workflow's `goal` attribute. This happens at runtime, after graph parsing:
+Inside agent and prompt node prompts, Fabro automatically expands `$goal` to the workflow's `goal` attribute. This happens at runtime, after graph parsing:
 
 ```dot title="example.dot"
 digraph Example {

@@ -40,7 +40,7 @@ digraph Parallel {
 ```
 
 ```bash
-arc run docs-internal/demo/06-parallel.dot
+fabro run docs-internal/demo/06-parallel.dot
 ```
 
 ## Fan-out with the fork node
@@ -96,7 +96,7 @@ The merged branch results are available to downstream nodes. The `report` node r
 
 ## Concurrency control
 
-By default, Arc runs up to 4 parallel branches simultaneously. Control this with `max_parallel`:
+By default, Fabro runs up to 4 parallel branches simultaneously. Control this with `max_parallel`:
 
 ```dot
 fork [shape=component, max_parallel=2]

@@ -32,7 +32,7 @@ digraph PlanImplement {
 ```
 
 ```bash
-arc run docs-internal/demo/10-plan-implement.dot
+fabro run docs-internal/demo/10-plan-implement.dot
 ```
 
 ## Human gates
@@ -65,7 +65,7 @@ If you choose **Revise**, execution goes back to the `plan` node. The agent runs
 start → plan → approve → [Revise] → plan → approve → [Approve] → implement → simplify → exit
 ```
 
-Loops are natural in Arc — just point an edge back to an earlier node. For safety, you can set `max_visits` on a node to prevent infinite loops:
+Loops are natural in Fabro — just point an edge back to an earlier node. For safety, you can set `max_visits` on a node to prevent infinite loops:
 
 ```dot
 plan [label="Plan", max_visits=5, ...]
@@ -83,7 +83,7 @@ The `simplify` node uses `@docs-internal/prompts/simplify.md` instead of an inli
 simplify [label="Simplify", prompt="@docs-internal/prompts/simplify.md"]
 ```
 
-The `@` prefix tells Arc to load the prompt from a Markdown file, resolved relative to the DOT file's location. This keeps DOT files concise and lets you version prompts as standalone files. See [Prompts](/agents/prompts) for details.
+The `@` prefix tells Fabro to load the prompt from a Markdown file, resolved relative to the DOT file's location. This keeps DOT files concise and lets you version prompts as standalone files. See [Prompts](/agents/prompts) for details.
 
 ## Context flow between nodes
 

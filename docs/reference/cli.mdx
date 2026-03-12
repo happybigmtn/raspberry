@@ -1,6 +1,6 @@
 ---
 title: "CLI Reference"
-description: "Arc command-line interface reference"
+description: "Fabro command-line interface reference"
 ---
 
 ## Global options
@@ -13,7 +13,7 @@ These flags apply to all subcommands:
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
-Arc loads environment variables from `~/.arc/.env`.
+Fabro loads environment variables from `~/.arc/.env`.
 
 ## Configuration
 
@@ -34,14 +34,14 @@ CLI flags always override `cli.toml` values, which override hardcoded defaults.
 
 ---
 
-## `arc run`
+## `fabro run`
 
 Launch a workflow from a `.dot` workflow file or `.toml` task config.
 
 ```bash
-arc run <WORKFLOW>
-arc run run.toml
-arc run --run-branch arc/run/abc123
+fabro run <WORKFLOW>
+fabro run run.toml
+fabro run --run-branch arc/run/abc123
 ```
 
 | Argument / Flag | Description |
@@ -68,14 +68,14 @@ arc run --run-branch arc/run/abc123
 `--preflight` conflicts with `--resume`, `--run-branch`, and `--dry-run`. `--run-branch` conflicts with `--resume`.
 </Note>
 
-## `arc ps`
+## `fabro ps`
 
 List workflow runs stored in `~/.arc/runs`.
 
 ```bash
-arc ps
-arc ps --workflow deploy --label env=prod
-arc ps --json
+fabro ps
+fabro ps --workflow deploy --label env=prod
+fabro ps --json
 ```
 
 | Flag | Description |
@@ -86,14 +86,14 @@ arc ps --json
 | `--orphans` | Include orphan directories (no `manifest.json`) |
 | `--json` | Output as JSON |
 
-## `arc system prune`
+## `fabro system prune`
 
 Delete old workflow runs. Dry-run by default — pass `--yes` to actually delete.
 
 ```bash
-arc system prune --before 2026-01-01
-arc system prune --before 2026-01-01 --yes
-arc system prune --orphans --yes
+fabro system prune --before 2026-01-01
+fabro system prune --before 2026-01-01 --yes
+fabro system prune --orphans --yes
 ```
 
 | Flag | Description |
@@ -106,14 +106,14 @@ arc system prune --orphans --yes
 
 ---
 
-## `arc exec`
+## `fabro exec`
 
 Run an agentic coding session. The agent operates in the current directory using file, search, and shell tools.
 
 ```bash
-arc exec "Add input validation to the signup form"
-arc exec "Fix the failing test" --provider openai --model gpt-5.2-codex
-arc exec "Refactor the auth module" --permissions full --auto-approve
+fabro exec "Add input validation to the signup form"
+fabro exec "Fix the failing test" --provider openai --model gpt-5.2-codex
+fabro exec "Refactor the auth module" --permissions full --auto-approve
 ```
 
 | Argument / Flag | Description | Default |
@@ -127,22 +127,22 @@ arc exec "Refactor the auth module" --permissions full --auto-approve
 | `--verbose` | Print full LLM request/response JSON to stderr | — |
 | `--skills-dir <DIR>` | Directory containing skill files (overrides default discovery) | — |
 | `--output-format <FORMAT>` | Output format: `text` (human-readable) or `json` (NDJSON event stream) | `text` |
-| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, routes through the Arc API's `/completions` endpoint | `standalone` |
-| `--server-url <URL>` | Arc API server URL (overrides `server.base_url` from `cli.toml`) | — |
+| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, routes through the Fabro API's `/completions` endpoint | `standalone` |
+| `--server-url <URL>` | Fabro API server URL (overrides `server.base_url` from `cli.toml`) | — |
 
 Permission levels control which tools are auto-approved: `read-only` allows read tools (`read_file`, `grep`, `glob`, `list_dir`) and subagent tools; `read-write` adds write tools (`write_file`, `edit_file`, `apply_patch`); `full` allows all tools including shell commands. Tools outside the permission level are either interactively prompted (if a TTY is present) or denied (with `--auto-approve`). See [default models by provider](/core-concepts/models#default-models).
 
 ---
 
-## `arc llm prompt`
+## `fabro llm prompt`
 
 Send a one-shot prompt to an LLM. Accepts a prompt as an argument, via stdin, or both (stdin is prepended).
 
 ```bash
-arc llm prompt "Explain quicksort in one paragraph"
-echo "Summarize this:" | arc llm prompt
-arc llm prompt "Translate to French" -m claude-sonnet-4-5 -o temperature=0.3
-arc llm prompt -S '{"type":"object","properties":{"name":{"type":"string"}}}' "Extract the name from: John Smith"
+fabro llm prompt "Explain quicksort in one paragraph"
+echo "Summarize this:" | fabro llm prompt
+fabro llm prompt "Translate to French" -m claude-sonnet-4-5 -o temperature=0.3
+fabro llm prompt -S '{"type":"object","properties":{"name":{"type":"string"}}}' "Extract the name from: John Smith"
 ```
 
 | Argument / Flag | Description |
@@ -155,49 +155,49 @@ arc llm prompt -S '{"type":"object","properties":{"name":{"type":"string"}}}' "E
 | `-S, --schema <SCHEMA>` | JSON schema for structured output (inline JSON string) |
 | `-o, --option <KEY=VALUE>` | Generation options: `temperature`, `max_tokens`, `top_p`, or provider-specific keys |
 
-## `arc llm chat`
+## `fabro llm chat`
 
-Start an interactive multi-turn chat session. In server mode, the session is backed by the Arc server's session endpoints.
+Start an interactive multi-turn chat session. In server mode, the session is backed by the Fabro server's session endpoints.
 
 ```bash
-arc llm chat
-arc llm chat -m claude-opus-4-6 -s "You are a helpful coding assistant"
-arc llm chat --mode server
+fabro llm chat
+fabro llm chat -m claude-opus-4-6 -s "You are a helpful coding assistant"
+fabro llm chat --mode server
 ```
 
 | Flag | Description |
 |---|---|
 | `-m, --model <MODEL>` | Model to use |
 | `-s, --system <SYSTEM>` | System prompt |
-| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, routes through the Arc API |
+| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, routes through the Fabro API |
 
 ---
 
-## `arc model list`
+## `fabro model list`
 
-List available LLM models from the built-in catalog. Running `arc model` with no subcommand also lists models.
+List available LLM models from the built-in catalog. Running `fabro model` with no subcommand also lists models.
 
 ```bash
-arc model list
-arc model list -p anthropic
-arc model list -q sonnet
-arc model list --mode server
+fabro model list
+fabro model list -p anthropic
+fabro model list -q sonnet
+fabro model list --mode server
 ```
 
 | Flag | Description |
 |---|---|
 | `-p, --provider <PROVIDER>` | Filter by provider |
 | `-q, --query <QUERY>` | Search for models matching this string (checks ID, display name, and aliases) |
-| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, fetches the catalog from the Arc API |
+| `--mode <MODE>` | `standalone` (default) or `server` — in server mode, fetches the catalog from the Fabro API |
 
-## `arc model test`
+## `fabro model test`
 
 Test model availability by sending a simple prompt to each model and reporting the result.
 
 ```bash
-arc model test
-arc model test -p anthropic
-arc model test -m claude-sonnet-4-5
+fabro model test
+fabro model test -p anthropic
+fabro model test -m claude-sonnet-4-5
 ```
 
 | Flag | Description |
@@ -207,14 +207,14 @@ arc model test -m claude-sonnet-4-5
 
 ---
 
-## `arc serve`
+## `fabro serve`
 
 Start the HTTP API server that exposes the [REST API](/api-reference) for launching and managing workflow runs.
 
 ```bash
-arc serve
-arc serve --port 8080 --host 0.0.0.0
-arc serve --sandbox daytona --max-concurrent-runs 4
+fabro serve
+fabro serve --port 8080 --host 0.0.0.0
+fabro serve --sandbox daytona --max-concurrent-runs 4
 ```
 
 | Flag | Description | Default |
@@ -228,20 +228,20 @@ arc serve --sandbox daytona --max-concurrent-runs 4
 | `--max-concurrent-runs <N>` | Maximum number of concurrent run executions | — |
 | `--config <PATH>` | Path to server config file | `~/.arc/server.toml` |
 
-Demo mode is per-request: send the `X-Arc-Demo: 1` header to get static demo data with auth disabled.
+Demo mode is per-request: send the `X-Fabro-Demo: 1` header to get static demo data with auth disabled.
 
 If no LLM provider API keys are configured, the server automatically falls back to dry-run mode.
 
 ---
 
-## `arc cp`
+## `fabro cp`
 
 Copy files between a run's sandbox and the local filesystem. The run must have a persisted sandbox record (Daytona, exe.dev, or a preserved local/Docker sandbox).
 
 ```bash
-arc cp <run-id>:/path/in/sandbox ./local-dir     # download
-arc cp ./local-file <run-id>:/path/in/sandbox     # upload
-arc cp -r <run-id>:/output ./results              # recursive download
+fabro cp <run-id>:/path/in/sandbox ./local-dir     # download
+fabro cp ./local-file <run-id>:/path/in/sandbox     # upload
+fabro cp -r <run-id>:/output ./results              # recursive download
 ```
 
 | Argument / Flag | Description |
@@ -252,17 +252,17 @@ arc cp -r <run-id>:/output ./results              # recursive download
 
 Run IDs support prefix matching — you can use the first few characters instead of the full ID.
 
-## `arc pr`
+## `fabro pr`
 
 Manage GitHub pull requests created by workflow runs. Requires a [GitHub App](/integrations/github) to be configured.
 
-### `arc pr create`
+### `fabro pr create`
 
 Create a GitHub pull request from a completed workflow run. Uses the run's persisted manifest, conclusion, and diff.
 
 ```bash
-arc pr create <run-id>
-arc pr create <run-id> --model claude-opus-4-6
+fabro pr create <run-id>
+fabro pr create <run-id> --model claude-opus-4-6
 ```
 
 | Argument / Flag | Description |
@@ -272,38 +272,38 @@ arc pr create <run-id> --model claude-opus-4-6
 
 The run must have completed successfully (or with partial success) and have a `final.patch` with changes.
 
-### `arc pr list`
+### `fabro pr list`
 
 List all pull requests created by workflow runs. Shows PR number, title, status, and the associated run ID.
 
 ```bash
-arc pr list
-arc pr list --all
+fabro pr list
+fabro pr list --all
 ```
 
 | Flag | Description |
 |---|---|
 | `--all` | Include closed and merged PRs (default: open only) |
 
-### `arc pr view`
+### `fabro pr view`
 
 Show details of a pull request from a specific run.
 
 ```bash
-arc pr view <run-id>
+fabro pr view <run-id>
 ```
 
 | Argument | Description |
 |---|---|
 | `<RUN_ID>` | Run ID or prefix (required) |
 
-### `arc pr merge`
+### `fabro pr merge`
 
 Merge a pull request from a specific run.
 
 ```bash
-arc pr merge <run-id>
-arc pr merge <run-id> --method rebase
+fabro pr merge <run-id>
+fabro pr merge <run-id> --method rebase
 ```
 
 | Argument / Flag | Description |
@@ -311,12 +311,12 @@ arc pr merge <run-id> --method rebase
 | `<RUN_ID>` | Run ID or prefix (required) |
 | `--method <METHOD>` | Merge method: `squash` (default), `merge`, or `rebase` |
 
-### `arc pr close`
+### `fabro pr close`
 
 Close a pull request from a specific run without merging.
 
 ```bash
-arc pr close <run-id>
+fabro pr close <run-id>
 ```
 
 | Argument | Description |
@@ -325,27 +325,27 @@ arc pr close <run-id>
 
 ---
 
-## `arc system df`
+## `fabro system df`
 
-Show disk usage of Arc's data directory, including run logs, worktrees, server logs, and databases.
+Show disk usage of Fabro's data directory, including run logs, worktrees, server logs, and databases.
 
 ```bash
-arc system df
-arc system df -v
+fabro system df
+fabro system df -v
 ```
 
 | Flag | Description |
 |---|---|
 | `-v, --verbose` | Show per-run breakdown |
 
-## `arc graph`
+## `fabro graph`
 
 Render a workflow DOT graph as SVG or PNG. Requires [Graphviz](https://graphviz.org) (`dot`) to be installed.
 
 ```bash
-arc graph workflow.dot
-arc graph workflow.dot --format png -o diagram.png
-arc graph run.toml --format svg
+fabro graph workflow.dot
+fabro graph workflow.dot --format png -o diagram.png
+fabro graph run.toml --format svg
 ```
 
 | Argument / Flag | Description |
@@ -354,16 +354,16 @@ arc graph run.toml --format svg
 | `--format <FORMAT>` | Output format: `svg` (default) or `png` |
 | `-o, --output <FILE>` | Output file path. Defaults to stdout. |
 
-## `arc skill install`
+## `fabro skill install`
 
-Install the built-in `arc-create-workflow` skill for AI assistants (Claude Code, Codex). The skill teaches AI assistants Arc's DOT syntax, node types, and run configuration format.
+Install the built-in `fabro-create-workflow` skill for AI assistants (Claude Code, Codex). The skill teaches AI assistants Fabro's DOT syntax, node types, and run configuration format.
 
 ```bash
 # Install into the current project (.claude/skills/ or .agents/skills/)
-arc skill install --for project --dir claude
+fabro skill install --for project --dir claude
 
 # Install for all projects (user-level, ~/.claude/skills/)
-arc skill install --for user --dir claude
+fabro skill install --for user --dir claude
 ```
 
 | Flag | Description |
@@ -372,25 +372,25 @@ arc skill install --for user --dir claude
 | `--dir <DIR>` | Directory convention: `claude` (`.claude/skills/`) or `agents` (`.agents/skills/`). Required. |
 | `--force` | Overwrite an existing installation without prompting. |
 
-## `arc validate`
+## `fabro validate`
 
 Validate a workflow file without executing it. Reports errors and warnings. Accepts both `.dot` workflow files and `.toml` run configs.
 
 ```bash
-arc validate workflow.dot
-arc validate run.toml
+fabro validate workflow.dot
+fabro validate run.toml
 ```
 
 | Argument | Description |
 |---|---|
 | `<WORKFLOW>` | Path to a `.dot` workflow file or `.toml` run config (required) |
 
-## `arc parse`
+## `fabro parse`
 
 Parse a DOT file and print its AST as JSON. Useful for debugging workflow definitions.
 
 ```bash
-arc parse workflow.dot
+fabro parse workflow.dot
 ```
 
 | Argument | Description |
@@ -399,27 +399,27 @@ arc parse workflow.dot
 
 ---
 
-## `arc init`
+## `fabro init`
 
-Initialize a new Arc project in the current git repository. Creates an `arc.toml` project config and a sample `hello` workflow.
+Initialize a new Fabro project in the current git repository. Creates an `fabro.toml` project config and a sample `hello` workflow.
 
 ```bash
-arc init
+fabro init
 ```
 
 The command must be run inside a git repository. It creates:
-- `arc.toml` — project configuration with comments and a link to docs
-- `arc/workflows/hello/workflow.dot` — a simple greeting workflow
-- `arc/workflows/hello/workflow.toml` — run config for the hello workflow
+- `fabro.toml` — project configuration with comments and a link to docs
+- `fabro/workflows/hello/workflow.dot` — a simple greeting workflow
+- `fabro/workflows/hello/workflow.toml` — run config for the hello workflow
 
-## `arc diff`
+## `fabro diff`
 
 Show the diff from a workflow run. Displays the `final.patch` for completed runs, or connects to the sandbox for a live diff from in-progress runs.
 
 ```bash
-arc diff <run-id>
-arc diff <run-id> --node work
-arc diff <run-id> --stat
+fabro diff <run-id>
+fabro diff <run-id> --node work
+fabro diff <run-id> --stat
 ```
 
 | Argument / Flag | Description |
@@ -431,14 +431,14 @@ arc diff <run-id> --stat
 
 Output is colorized when writing to a terminal.
 
-## `arc ssh`
+## `fabro ssh`
 
 SSH into a Daytona sandbox from a completed or in-progress run. Creates temporary SSH credentials and connects directly, or prints the command with `--print`.
 
 ```bash
-arc ssh <run-id>
-arc ssh <run-id> --print
-arc ssh <run-id> --ttl 120
+fabro ssh <run-id>
+fabro ssh <run-id> --print
+fabro ssh <run-id> --ttl 120
 ```
 
 | Argument / Flag | Description |
@@ -449,14 +449,14 @@ arc ssh <run-id> --ttl 120
 
 See [SSH Access](/human-tools/ssh-access) for more details on SSH workflows.
 
-## `arc preview`
+## `fabro preview`
 
 Generate a preview URL for a port exposed by a Daytona sandbox. Useful for accessing web servers, dev tools, or APIs running inside the sandbox.
 
 ```bash
-arc preview <run-id> <port>
-arc preview <run-id> 3000 --signed
-arc preview <run-id> 3000 --open
+fabro preview <run-id> <port>
+fabro preview <run-id> 3000 --signed
+fabro preview <run-id> 3000 --open
 ```
 
 | Argument / Flag | Description |
@@ -471,14 +471,14 @@ Without `--signed`, the command prints the URL, token, and a `curl` example. See
 
 ---
 
-## `arc doctor`
+## `fabro doctor`
 
 Check environment and integration health. Verifies system dependencies, API keys, and optional services. Probes live services (LLM providers, sandbox, GitHub App) by default.
 
 ```bash
-arc doctor
-arc doctor -v
-arc doctor --dry-run
+fabro doctor
+fabro doctor -v
+fabro doctor --dry-run
 ```
 
 | Flag | Description |
@@ -486,10 +486,10 @@ arc doctor --dry-run
 | `-v, --verbose` | Show detailed information for each check |
 | `--dry-run` | Skip live service probes (LLM, sandbox, API, web, Brave Search) |
 
-## `arc install`
+## `fabro install`
 
-Interactive setup wizard that walks you through configuring API keys and validating your environment. Runs `arc doctor` with live probes after setup to validate the configuration.
+Interactive setup wizard that walks you through configuring API keys and validating your environment. Runs `fabro doctor` with live probes after setup to validate the configuration.
 
 ```bash
-arc install
+fabro install
 ```

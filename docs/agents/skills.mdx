@@ -5,11 +5,11 @@ description: "Reusable prompt templates that extend agent capabilities"
 
 Skills are reusable prompt templates that give agents structured instructions for common tasks -- code review, committing, test writing, refactoring, and more. They are discovered automatically from convention directories, listed in the agent's system prompt, and can be invoked either by the user (with `/skill-name` syntax) or by the agent itself (via the `use_skill` tool).
 
-Arc implements the open [Agent Skills](https://agentskills.io/home) format. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and Markdown instructions. See the [Agent Skills specification](https://agentskills.io/specification) for the full file format, and [What are skills?](https://agentskills.io/what-are-skills) for an introduction.
+Fabro implements the open [Agent Skills](https://agentskills.io/home) format. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and Markdown instructions. See the [Agent Skills specification](https://agentskills.io/specification) for the full file format, and [What are skills?](https://agentskills.io/what-are-skills) for an introduction.
 
 ## Discovery
 
-Arc discovers skills from three convention directories, searched in order:
+Fabro discovers skills from three convention directories, searched in order:
 
 | Directory | Scope |
 |---|---|
@@ -17,7 +17,7 @@ Arc discovers skills from three convention directories, searched in order:
 | `{git_root}/.arc/skills/` | Project -- checked into the repo |
 | `{git_root}/skills/` | Project (alternate location) |
 
-Within each directory, Arc looks for `*/SKILL.md` files (one level of nesting).
+Within each directory, Fabro looks for `*/SKILL.md` files (one level of nesting).
 
 When the same skill name appears in multiple directories, **later directories override earlier ones**. This means project-level skills take precedence over global skills, letting you customize behavior per-repo.
 
@@ -37,7 +37,7 @@ Users can reference a skill with a `/` prefix in their input:
 /commit fix the off-by-one error in pagination
 ```
 
-Arc detects the `/commit` token, finds the matching skill, and expands the input by replacing the skill reference with the full template. The remaining text (`fix the off-by-one error in pagination`) is substituted into the `{{user_input}}` placeholder.
+Fabro detects the `/commit` token, finds the matching skill, and expands the input by replacing the skill reference with the full template. The remaining text (`fix the off-by-one error in pagination`) is substituted into the `{{user_input}}` placeholder.
 
 Rules for slash syntax:
 - The `/` must be preceded by whitespace or be at the start of the input
@@ -47,7 +47,7 @@ Rules for slash syntax:
 
 ### use_skill tool (agent-initiated)
 
-When skills are available, Arc adds a `use_skill` tool to the agent's toolset and lists the available skills in the system prompt:
+When skills are available, Fabro adds a `use_skill` tool to the agent's toolset and lists the available skills in the system prompt:
 
 ```
 # Available Skills
@@ -67,7 +67,7 @@ Returns the skill's template text.
 
 ## Lifecycle
 
-1. **Discovery** -- On session startup, Arc scans the skill directories and parses all valid `SKILL.md` files
+1. **Discovery** -- On session startup, Fabro scans the skill directories and parses all valid `SKILL.md` files
 2. **Registration** -- If any skills are found, the `use_skill` tool is registered and the skill list is added to the system prompt
-3. **Expansion** -- When user input contains a `/skill-name` reference, Arc expands it before sending to the LLM
+3. **Expansion** -- When user input contains a `/skill-name` reference, Fabro expands it before sending to the LLM
 4. **Tool use** -- The agent can also call `use_skill` at any time to load a skill's template mid-conversation

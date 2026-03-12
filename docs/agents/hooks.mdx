@@ -7,7 +7,7 @@ Hooks let you run custom logic at key points during a workflow — before a stag
 
 ## Hook types
 
-Arc supports four hook types, from simple shell commands to full agent sessions:
+Fabro supports four hook types, from simple shell commands to full agent sessions:
 
 ### Command
 
@@ -164,7 +164,7 @@ To return an explicit decision from a command hook, print JSON to stdout:
 
 ```bash
 #!/bin/bash
-if [ "$ARC_NODE_ID" = "deploy" ]; then
+if [ "$FABRO_NODE_ID" = "deploy" ]; then
   echo '{"decision": "skip", "reason": "deploy disabled in CI"}'
   exit 0
 fi
@@ -225,15 +225,15 @@ Command hooks receive these environment variables:
 
 | Variable | Value |
 |---|---|
-| `ARC_EVENT` | The event name (e.g., `stage_start`) |
-| `ARC_RUN_ID` | The run's unique identifier |
-| `ARC_WORKFLOW` | The workflow name |
-| `ARC_NODE_ID` | The current node ID (when applicable) |
-| `ARC_HOOK_CONTEXT` | Path to a JSON file containing the full event context (sandbox only) |
+| `FABRO_EVENT` | The event name (e.g., `stage_start`) |
+| `FABRO_RUN_ID` | The run's unique identifier |
+| `FABRO_WORKFLOW` | The workflow name |
+| `FABRO_NODE_ID` | The current node ID (when applicable) |
+| `FABRO_HOOK_CONTEXT` | Path to a JSON file containing the full event context (sandbox only) |
 
 ### Hook context
 
-The full event context is available as a JSON payload. For command hooks, it is written to a temp file (path in `ARC_HOOK_CONTEXT`) and piped to stdin. For HTTP hooks, it is the POST body.
+The full event context is available as a JSON payload. For command hooks, it is written to a temp file (path in `FABRO_HOOK_CONTEXT`) and piped to stdin. For HTTP hooks, it is the POST body.
 
 <Accordion title="Example hook context JSON">
 ```json

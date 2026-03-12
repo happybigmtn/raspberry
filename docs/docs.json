@@ -307,7 +307,7 @@
     "primary": {
       "type": "button",
       "label": "Get Started",
-      "href": "https://arc.dev/getting-started/quick-start"
+      "href": "https://fabro.dev/getting-started/quick-start"
     }
   },
   "contextual": {

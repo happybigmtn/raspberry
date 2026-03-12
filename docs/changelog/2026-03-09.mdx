@@ -1,11 +1,11 @@
 ---
-title: "Project config, arc cp, arc pr create, and exe.dev maturation"
+title: "Project config, fabro cp, fabro pr create, and exe.dev maturation"
 date: "2026-03-09"
 ---
 
 ## Project config (arc.toml)
 
-Arc now supports project-level configuration via `arc.toml`. Previously, you had to pass full file paths to `arc run` and configure each run individually. Now, you can define workflow aliases, pull request defaults, and retro settings at the project level. Arc discovers `arc.toml` by walking up from the current directory, similar to how Cargo or Node find their config files.
+Fabro now supports project-level configuration via `fabro.toml`. Previously, you had to pass full file paths to `fabro run` and configure each run individually. Now, you can define workflow aliases, pull request defaults, and retro settings at the project level. Fabro discovers `fabro.toml` by walking up from the current directory, similar to how Cargo or Node find their config files.
 
 ```toml title="arc.toml"
 [workflows]
@@ -17,12 +17,12 @@ enabled = false
 ```
 
 ```bash
-arc run implement  # resolves via arc.toml
+fabro run implement  # resolves via arc.toml
 ```
 
 ## exe.dev sandbox maturation
 
-The exe.dev sandbox provider now supports the full workflow lifecycle. Previously, exe.dev VMs could run agent stages but lacked git integration, cancellation, and checkpointing — making them unusable for real multi-stage workflows. Now, Arc automatically clones the local git repo into exe.dev VMs, supports remote git checkpointing between stages, and wires up cancellation tokens so stopping a run cleanly tears down the VM.
+The exe.dev sandbox provider now supports the full workflow lifecycle. Previously, exe.dev VMs could run agent stages but lacked git integration, cancellation, and checkpointing — making them unusable for real multi-stage workflows. Now, Fabro automatically clones the local git repo into exe.dev VMs, supports remote git checkpointing between stages, and wires up cancellation tokens so stopping a run cleanly tears down the VM.
 
 You can also specify a custom container image and connect via SSH:
 
@@ -35,32 +35,32 @@ image = "my-custom-image:latest"
 ```
 
 ```bash
-arc run --ssh my-workflow.dot
+fabro run --ssh my-workflow.dot
 ```
 
-## `arc cp` — copy files to and from sandboxes
+## `fabro cp` — copy files to and from sandboxes
 
-After a workflow run completes, you often need to retrieve files from the sandbox — build artifacts, generated reports, or logs. Previously, there was no easy way to get files out of a completed run's sandbox. Now, `arc cp` lets you copy files in either direction using the run ID.
+After a workflow run completes, you often need to retrieve files from the sandbox — build artifacts, generated reports, or logs. Previously, there was no easy way to get files out of a completed run's sandbox. Now, `fabro cp` lets you copy files in either direction using the run ID.
 
 ```bash
-arc cp <run-id>:/path/in/sandbox ./local-dir   # download
-arc cp ./local-file <run-id>:/path/in/sandbox   # upload
+fabro cp <run-id>:/path/in/sandbox ./local-dir   # download
+fabro cp ./local-file <run-id>:/path/in/sandbox   # upload
 ```
 
-## `arc pr create` — create PRs from completed runs
+## `fabro pr create` — create PRs from completed runs
 
-Sometimes you want to review a run's changes before opening a PR, or a run finishes without auto-PR configured. `arc pr create` lets you create a pull request after the fact for any completed workflow run, using the persisted manifest, conclusion, and diff from the run's log directory. PRs are created as drafts by default.
+Sometimes you want to review a run's changes before opening a PR, or a run finishes without auto-PR configured. `fabro pr create` lets you create a pull request after the fact for any completed workflow run, using the persisted manifest, conclusion, and diff from the run's log directory. PRs are created as drafts by default.
 
 ```bash
-arc pr create <run-id>
+fabro pr create <run-id>
 ```
 
-## `arc system df` — disk usage reporting
+## `fabro system df` — disk usage reporting
 
-Run logs and worktrees accumulate over time. `arc system df` shows a breakdown of disk usage across your run logs directory and any preserved worktrees, so you know when it's time to run `arc system prune`.
+Run logs and worktrees accumulate over time. `fabro system df` shows a breakdown of disk usage across your run logs directory and any preserved worktrees, so you know when it's time to run `fabro system prune`.
 
 ```bash
-arc system df
+fabro system df
 ```
 
 ## More
@@ -69,7 +69,7 @@ arc system df
 - PRs are now created as drafts by default; opt out with `draft = false` in `[pull_request]` config
 - Added `[sandbox.local] worktree_mode` config (`always`/`clean`/`dirty`/`never`) for controlling when git worktrees are created
 - Added `[pull_request]` config section in `cli.toml` so auto-PR works with `.dot` files
-- Added version info (semver, git SHA, build date) to `arc --version`
+- Added version info (semver, git SHA, build date) to `fabro --version`
 - Run summary now shows Run ID, logs path, base commit, branch, and PR URL
 - Workflow run output now shows local time instead of UTC
 </Accordion>
@@ -83,9 +83,9 @@ arc system df
 <Accordion title="Fixes">
 - Fixed deadlock in retro agent session when event channel fills up
 - Fixed PR body rendering bugs in auto-generated pull requests
-- Fixed 4 safety bugs in `arc system prune` (symlink traversal, race conditions)
+- Fixed 4 safety bugs in `fabro system prune` (symlink traversal, race conditions)
 - Fixed `@file` references failing when files aren't tracked by git
-- Fixed `arc validate` not supporting TOML workflow config files
+- Fixed `fabro validate` not supporting TOML workflow config files
 - Fixed pipe deadlock in local sandbox when child process output exceeds 64KB
 - Fixed shell-quoting in sandbox cleanup commands
 </Accordion>

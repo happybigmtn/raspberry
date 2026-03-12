@@ -1,9 +1,9 @@
 ---
 title: "Logs & Runs Directories"
-description: "Structure of Arc's local logs and runs directories"
+description: "Structure of Fabro's local logs and runs directories"
 ---
 
-Arc stores data in two directories under `~/.arc/`:
+Fabro stores data in two directories under `~/.arc/`:
 
 - **`~/.arc/runs/`** — Per-run data. Each workflow run gets its own subdirectory containing event streams, checkpoints, artifacts, and worktrees.
 - **`~/.arc/logs/`** — Daily CLI log files. One `.log` file per day with aggregated tracing output.
@@ -16,11 +16,11 @@ The CLI appends tracing output to a daily log file:
 ~/.arc/logs/2026-03-07.log
 ```
 
-The log level defaults to `info`. Set `ARC_LOG=debug` or pass `--debug` for verbose output including HTTP connection pool diagnostics.
+The log level defaults to `info`. Set `FABRO_LOG=debug` or pass `--debug` for verbose output including HTTP connection pool diagnostics.
 
 ## Run directories
 
-Each `arc run` invocation creates a timestamped directory:
+Each `fabro run` invocation creates a timestamped directory:
 
 ```
 ~/.arc/runs/20260307-01JQXYZ123ABC456DEF789/
@@ -79,18 +79,18 @@ Manager nodes that run sub-workflows write a nested `child/` directory containin
 
 ### Other directories
 
-**`worktree/`** — When running in git checkpoint mode, Arc creates a Git worktree here as the working directory for agents and commands.
+**`worktree/`** — When running in git checkpoint mode, Fabro creates a Git worktree here as the working directory for agents and commands.
 
 **`assets/`** — Test artifacts collected from the execution environment (Playwright reports, JUnit XML, Cypress screenshots/videos). Located at `worktree/assets/` for local runs or within node directories for remote sandbox runs.
 
 ## Browsing runs
 
-Use `arc ps` to scan the runs directory and display a table of all runs with their status, workflow name, and timestamps. Pass `--json` for machine-readable output.
+Use `fabro ps` to scan the runs directory and display a table of all runs with their status, workflow name, and timestamps. Pass `--json` for machine-readable output.
 
 ```bash
-arc ps
-arc ps --json
-arc ps --filter workflow=my-workflow
+fabro ps
+fabro ps --json
+fabro ps --filter workflow=my-workflow
 ```
 
 ## Full directory tree

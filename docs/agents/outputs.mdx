@@ -1,13 +1,13 @@
 ---
 title: "Outputs & Artifacts"
-description: "How Arc captures agent responses, tracks file changes, and collects test assets"
+description: "How Fabro captures agent responses, tracks file changes, and collects test assets"
 ---
 
-When an agent or prompt node finishes, Arc captures its response text and produces an **outcome** that feeds into context, transition logic, and downstream nodes. Arc also tracks every file change per stage, offloads large outputs to disk, and automatically collects test artifacts like screenshots and reports.
+When an agent or prompt node finishes, Fabro captures its response text and produces an **outcome** that feeds into context, transition logic, and downstream nodes. Fabro also tracks every file change per stage, offloads large outputs to disk, and automatically collects test artifacts like screenshots and reports.
 
 ## Response capture
 
-After an agent or prompt node completes, Arc captures the full response text and writes it to the run logs at `{run_dir}/nodes/{node_id}/response.md`. It also writes the final outcome (status, context updates, routing directives) to `{run_dir}/nodes/{node_id}/status.json`.
+After an agent or prompt node completes, Fabro captures the full response text and writes it to the run logs at `{run_dir}/nodes/{node_id}/response.md`. It also writes the final outcome (status, context updates, routing directives) to `{run_dir}/nodes/{node_id}/status.json`.
 
 ## Context updates
 
@@ -31,7 +31,7 @@ plan -> implement -> review -> exit
 
 ## Routing directives
 
-Agent and prompt nodes can influence which edge is taken after they complete by including a JSON object with routing fields in their response. Arc scans the LLM output for the **last** JSON object containing any recognized routing field:
+Agent and prompt nodes can influence which edge is taken after they complete by including a JSON object with routing fields in their response. Fabro scans the LLM output for the **last** JSON object containing any recognized routing field:
 
 ```json
 {
@@ -53,7 +53,7 @@ Agent and prompt nodes can influence which edge is taken after they complete by 
 
 ### How extraction works
 
-Arc finds all balanced `{...}` JSON objects in the response text, parses each one, and uses the **last** object that contains at least one recognized field (`preferred_next_label`, `outcome`, `failure_reason`, `suggested_next_ids`, `context_updates`). The JSON can appear anywhere in the response -- inside a fenced code block, inline with natural language, or at the end.
+Fabro finds all balanced `{...}` JSON objects in the response text, parses each one, and uses the **last** object that contains at least one recognized field (`preferred_next_label`, `outcome`, `failure_reason`, `suggested_next_ids`, `context_updates`). The JSON can appear anywhere in the response -- inside a fenced code block, inline with natural language, or at the end.
 
 ```markdown
 I've reviewed the code and found several issues that need fixing.
@@ -66,7 +66,7 @@ JSON objects without recognized fields are ignored.
 
 ### Fallback: status.json file
 
-If no routing directives are found in the response text, Arc checks whether the agent wrote a `status.json` file into the sandbox working directory. If the file exists, Arc extracts routing directives from it using the same logic. This is useful for agents that write structured output to files rather than including JSON in their response text.
+If no routing directives are found in the response text, Fabro checks whether the agent wrote a `status.json` file into the sandbox working directory. If the file exists, Fabro extracts routing directives from it using the same logic. This is useful for agents that write structured output to files rather than including JSON in their response text.
 
 Response text directives always take priority -- `status.json` is only read as a fallback when the response contains no recognized routing fields.
 
@@ -74,7 +74,7 @@ If neither source provides routing directives, the transition falls through to c
 
 ### Instructing the agent
 
-Arc does not automatically instruct agents to emit routing JSON. You must include instructions in your prompt:
+Fabro does not automatically instruct agents to emit routing JSON. You must include instructions in your prompt:
 
 ```dot
 review [
@@ -92,7 +92,7 @@ review -> approve [label="Approve"]
 
 ## Output logging
 
-Arc writes several files per stage to `{run_dir}/nodes/{node_id}/`:
+Fabro writes several files per stage to `{run_dir}/nodes/{node_id}/`:
 
 | File | Contents |
 |---|---|
@@ -104,7 +104,7 @@ These files are written for every agent and prompt node execution, including ret
 
 ## File tracking
 
-Arc records which files each stage touches. When an agent calls `write_file` or `edit_file`, Arc tracks the file path. When using a CLI-based agent backend, Arc snapshots the Git working tree before and after execution and diffs the results.
+Fabro records which files each stage touches. When an agent calls `write_file` or `edit_file`, Fabro tracks the file path. When using a CLI-based agent backend, Fabro snapshots the Git working tree before and after execution and diffs the results.
 
 The tracked paths are stored as `files_touched` on the stage outcome:
 
@@ -126,17 +126,17 @@ The tracked paths are stored as `files_touched` on the stage outcome:
 
 ### How tracking works
 
-For the **API backend**, Arc subscribes to agent session events. When a `ToolCallStarted` event fires for `write_file` or `edit_file`, Arc records the `file_path` argument as pending. When the corresponding `ToolCallCompleted` arrives without an error, the path is confirmed as touched. Failed tool calls are discarded.
+For the **API backend**, Fabro subscribes to agent session events. When a `ToolCallStarted` event fires for `write_file` or `edit_file`, Fabro records the `file_path` argument as pending. When the corresponding `ToolCallCompleted` arrives without an error, the path is confirmed as touched. Failed tool calls are discarded.
 
-For the **CLI backend**, Arc takes a different approach: it runs `git diff --name-only` and `git ls-files --others --exclude-standard` before and after the agent session, then computes the difference. Any files that appear in the "after" snapshot but not "before" are recorded as touched.
+For the **CLI backend**, Fabro takes a different approach: it runs `git diff --name-only` and `git ls-files --others --exclude-standard` before and after the agent session, then computes the difference. Any files that appear in the "after" snapshot but not "before" are recorded as touched.
 
 ## Artifact offloading
 
-When a stage produces a large context value -- an LLM response, command output, or any context update -- Arc automatically offloads it to disk instead of keeping it in memory. This prevents large outputs from bloating checkpoint files and overwhelming preamble summaries.
+When a stage produces a large context value -- an LLM response, command output, or any context update -- Fabro automatically offloads it to disk instead of keeping it in memory. This prevents large outputs from bloating checkpoint files and overwhelming preamble summaries.
 
 ### How offloading works
 
-After each node completes, Arc checks every context update. If the serialized JSON of a value exceeds **100KB**, it is written to the artifact store on disk and replaced in the context with a `file://` pointer:
+After each node completes, Fabro checks every context update. If the serialized JSON of a value exceeds **100KB**, it is written to the artifact store on disk and replaced in the context with a `file://` pointer:
 
 ```
 response.plan  -->  file:///path/to/logs/artifacts/values/response.plan.json
@@ -162,7 +162,7 @@ Each file contains the full serialized JSON value. The `ArtifactStore` manages r
 
 ### Preamble rendering
 
-When Arc builds a [preamble](/execution/context#preamble-construction) for a downstream stage, it resolves `file://` pointers and renders a reference instead of inlining the full content:
+When Fabro builds a [preamble](/execution/context#preamble-construction) for a downstream stage, it resolves `file://` pointers and renders a reference instead of inlining the full content:
 
 ```markdown
 ## Completed stages
@@ -195,11 +195,11 @@ This means artifact data survives process restarts and can be recovered when res
 
 ## Remote sandbox syncing
 
-For remote sandboxes (Docker, Daytona), artifact files stored on the host are not directly accessible inside the sandbox. Before a stage executes, Arc syncs any `file://` pointers to the sandbox filesystem.
+For remote sandboxes (Docker, Daytona), artifact files stored on the host are not directly accessible inside the sandbox. Before a stage executes, Fabro syncs any `file://` pointers to the sandbox filesystem.
 
 For each pointer in the context updates:
 
-1. Arc checks whether the file is already accessible inside the sandbox
+1. Fabro checks whether the file is already accessible inside the sandbox
 2. If not, it reads the local file and uploads it via the sandbox's `write_file` interface
 3. The file is placed at `{working_directory}/.arc/artifacts/{filename}`
 4. The pointer is rewritten to reference the remote path
@@ -220,19 +220,19 @@ For local sandboxes, syncing is a no-op since the agent can already access the h
 
 ## Automatic asset capture
 
-After each node executes a command, Arc automatically scans the sandbox for test artifacts — screenshots, videos, reports, and traces — and copies any new or changed files to the run's directory. This happens without any agent or workflow configuration.
+After each node executes a command, Fabro automatically scans the sandbox for test artifacts — screenshots, videos, reports, and traces — and copies any new or changed files to the run's directory. This happens without any agent or workflow configuration.
 
 ### How asset capture works
 
-1. **Before** the command runs, Arc takes a baseline snapshot of known asset paths in the sandbox
-2. **After** the command completes, Arc re-scans and diffs against the baseline
+1. **Before** the command runs, Fabro takes a baseline snapshot of known asset paths in the sandbox
+2. **After** the command completes, Fabro re-scans and diffs against the baseline
 3. Files that are new or modified since the command started are downloaded to the stage's asset directory
 
 Only files modified after the command started are collected. Files that match the baseline fingerprint (same size and mtime) are skipped. Individual files over 10 MB and total collections over 50 MB are also skipped.
 
 ### What gets captured
 
-Arc looks for files inside these directories:
+Fabro looks for files inside these directories:
 
 | Directory | Typical contents |
 |---|---|

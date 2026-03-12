@@ -1,9 +1,9 @@
 ---
 title: "Daytona"
-description: "Run Arc workflows in sandboxed Daytona cloud environments"
+description: "Run Fabro workflows in sandboxed Daytona cloud environments"
 ---
 
-[Daytona](https://daytona.io) provides cloud-hosted sandbox VMs for Arc workflows. Each run gets an ephemeral, isolated environment with its own filesystem, network, and compute resources — keeping your host machine clean and giving agents a reproducible workspace.
+[Daytona](https://daytona.io) provides cloud-hosted sandbox VMs for Fabro workflows. Each run gets an ephemeral, isolated environment with its own filesystem, network, and compute resources — keeping your host machine clean and giving agents a reproducible workspace.
 
 ## What the Daytona integration enables
 
@@ -25,7 +25,7 @@ description: "Run Arc workflows in sandboxed Daytona cloud environments"
 Set the sandbox provider in your run config TOML or via CLI flag:
 
 ```bash
-arc run workflow.dot --sandbox daytona
+fabro run workflow.dot --sandbox daytona
 ```
 
 ```toml title="run.toml"
@@ -91,7 +91,7 @@ disk = 20
 dockerfile = "FROM node:20-slim\nRUN apt-get update && apt-get install -y git"
 ```
 
-When a run starts with a snapshot configured, Arc looks up the snapshot by name. If it doesn't exist and a `dockerfile` is provided, Arc creates it automatically and polls until it reaches `Active` state (up to 10 minutes). If the snapshot already exists, it's reused immediately.
+When a run starts with a snapshot configured, Fabro looks up the snapshot by name. If it doesn't exist and a `dockerfile` is provided, Fabro creates it automatically and polls until it reaches `Active` state (up to 10 minutes). If the snapshot already exists, it's reused immediately.
 
 <Note>
 If the snapshot doesn't exist and no `dockerfile` is provided, the run fails immediately. Without a snapshot, sandboxes are created from the default `ubuntu:22.04` image.
@@ -99,13 +99,13 @@ If the snapshot doesn't exist and no `dockerfile` is provided, the run fails imm
 
 ## Private repositories
 
-Arc automatically clones the current repository into the sandbox at `/home/daytona/workspace`. Public repositories work without extra configuration. Private repositories require a [GitHub App](/integrations/github) — Arc uses short-lived Installation Access Tokens scoped to the specific repository.
+Fabro automatically clones the current repository into the sandbox at `/home/daytona/workspace`. Public repositories work without extra configuration. Private repositories require a [GitHub App](/integrations/github) — Fabro uses short-lived Installation Access Tokens scoped to the specific repository.
 
-If the clone fails without a GitHub App configured, Arc suggests running the setup flow:
+If the clone fails without a GitHub App configured, Fabro suggests running the setup flow:
 
 ```
 Git clone failed: ... If this is a private repository,
-configure a GitHub App with `arc install` and install it
+configure a GitHub App with `fabro install` and install it
 for your organization.
 ```
 
@@ -114,7 +114,7 @@ for your organization.
 Connect to a running Daytona sandbox via SSH for live debugging:
 
 ```bash
-arc run workflow.dot --sandbox daytona --ssh
+fabro run workflow.dot --sandbox daytona --ssh
 ```
 
 This creates temporary SSH credentials (valid for 60 minutes) and prints the connection command:
@@ -129,14 +129,14 @@ SSH credentials cannot be refreshed during a run. To keep the sandbox alive afte
 
 ## Sandbox lifecycle
 
-Each sandbox gets a unique timestamped name (e.g. `arc-20260307-143022-a3f2`) and is created as ephemeral. By default, sandboxes are destroyed when the run finishes.
+Each sandbox gets a unique timestamped name (e.g. `fabro-20260307-143022-a3f2`) and is created as ephemeral. By default, sandboxes are destroyed when the run finishes.
 
 ### Preservation
 
 To keep a sandbox alive for debugging:
 
 ```bash
-arc run workflow.dot --sandbox daytona --preserve-sandbox
+fabro run workflow.dot --sandbox daytona --preserve-sandbox
 ```
 
 Or in the run config:
@@ -147,7 +147,7 @@ provider = "daytona"
 preserve = true
 ```
 
-When preserved, Arc prints the sandbox name so you can find it in the [Daytona dashboard](https://app.daytona.io/dashboard/sandboxes).
+When preserved, Fabro prints the sandbox name so you can find it in the [Daytona dashboard](https://app.daytona.io/dashboard/sandboxes).
 
 ### Auto-stop
 
@@ -160,7 +160,7 @@ auto_stop_interval = 30
 
 ## Server defaults
 
-When running via `arc serve`, the server config at `~/.arc/server.toml` can set default Daytona settings for all runs. Run config TOML values override server defaults. Labels are **merged** — run config labels win on key collisions. The `network` setting uses simple override (run config replaces the server default entirely).
+When running via `fabro serve`, the server config at `~/.arc/server.toml` can set default Daytona settings for all runs. Run config TOML values override server defaults. Labels are **merged** — run config labels win on key collisions. The `network` setting uses simple override (run config replaces the server default entirely).
 
 See [Server Configuration](/administration/server-configuration) for details.
 

@@ -31,7 +31,7 @@ digraph BranchLoop {
 ```
 
 ```bash
-arc run docs-internal/demo/05-branch-loop.dot
+fabro run docs-internal/demo/05-branch-loop.dot
 ```
 
 ## Command nodes
@@ -98,7 +98,7 @@ This workflow has no explicit loop limit, but in production you should add one. 
 implement [label="Implement", max_visits=3, prompt="..."]
 ```
 
-After 3 visits, Arc terminates the run rather than looping forever. You can also set a graph-level limit:
+After 3 visits, Fabro terminates the run rather than looping forever. You can also set a graph-level limit:
 
 ```dot
 graph [max_node_visits="20"]

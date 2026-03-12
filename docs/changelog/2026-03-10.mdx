@@ -5,14 +5,14 @@ date: "2026-03-10"
 
 ## One-line installer and guided setup wizard
 
-Getting Arc installed and configured previously required multiple manual steps — downloading binaries, setting API keys, and configuring GitHub integration individually. Now, a single command installs Arc and walks you through everything:
+Getting Fabro installed and configured previously required multiple manual steps — downloading binaries, setting API keys, and configuring GitHub integration individually. Now, a single command installs Fabro and walks you through everything:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brynary/arc/main/install.sh | bash
-arc install
+fabro install
 ```
 
-The installer detects your platform, installs to `~/.arc/bin`, and auto-configures your shell PATH. The `arc install` wizard then guides you through LLM provider setup with immediate API key validation, OpenAI OAuth for Codex compatibility, and GitHub App creation via manifest flow — all with styled terminal output showing progress at each step.
+The installer detects your platform, installs to `~/.arc/bin`, and auto-configures your shell PATH. The `fabro install` wizard then guides you through LLM provider setup with immediate API key validation, OpenAI OAuth for Codex compatibility, and GitHub App creation via manifest flow — all with styled terminal output showing progress at each step.
 
 ## MCP servers in workflows
 
@@ -27,7 +27,7 @@ port = 3100
 
 ## Devcontainer support in sandboxes
 
-Workflows can now use your project's `devcontainer.json` to configure sandbox environments. When `devcontainer = true` is set in the sandbox config, Arc resolves the devcontainer from the repo, uses its Dockerfile for the Daytona snapshot, runs lifecycle hooks (`onCreateCommand`, `postCreateCommand`, `postStartCommand`), and merges devcontainer environment variables into the sandbox. Unsupported `COPY`/`ADD` instructions in base Dockerfiles are detected and reported.
+Workflows can now use your project's `devcontainer.json` to configure sandbox environments. When `devcontainer = true` is set in the sandbox config, Fabro resolves the devcontainer from the repo, uses its Dockerfile for the Daytona snapshot, runs lifecycle hooks (`onCreateCommand`, `postCreateCommand`, `postStartCommand`), and merges devcontainer environment variables into the sandbox. Unsupported `COPY`/`ADD` instructions in base Dockerfiles are detected and reported.
 
 ```toml title="workflow.toml"
 [sandbox]
@@ -35,7 +35,7 @@ devcontainer = true
 ```
 
 <Warning>
-**`--no-dotenv` flag removed.** Arc now always loads `~/.arc/.env` and never loads a local `./.env` file. If you were relying on project-local `.env` files, move those values to `~/.arc/.env`.
+**`--no-dotenv` flag removed.** Fabro now always loads `~/.arc/.env` and never loads a local `./.env` file. If you were relying on project-local `.env` files, move those values to `~/.arc/.env`.
 </Warning>
 
 ## More
@@ -45,23 +45,23 @@ devcontainer = true
 </Accordion>
 
 <Accordion title="CLI">
-- Added `arc pr list/view/merge/close` subcommands for managing pull requests created by workflow runs
-- Added `arc init` command to scaffold new projects with a generated `arc.toml`
-- Added `arc diff` command to view code changes from workflow runs, with live diffs for in-progress runs
-- `arc setup` renamed to `arc install` for clarity
-- Added `arc ssh` command for direct SSH access to Daytona sandboxes
-- Added `arc preview` command to get preview URLs for ports exposed by Daytona sandboxes
-- `arc doctor` now runs live service probes by default; use `--dry-run` to skip
-- `arc doctor` now validates GitHub App configuration and private key
-- `arc doctor` now hides unconfigured LLM providers for a cleaner output
-- `arc doctor` sections reordered: Config, LLM, GitHub App, Cloud sandbox, Brave Search
-- `arc run --preflight` now shows a Repository section, merged LLM check, and truncated output
-- Added `[pull_request]` support to project config (`arc.toml`) for project-level PR defaults
+- Added `fabro pr list/view/merge/close` subcommands for managing pull requests created by workflow runs
+- Added `fabro init` command to scaffold new projects with a generated `fabro.toml`
+- Added `fabro diff` command to view code changes from workflow runs, with live diffs for in-progress runs
+- `fabro setup` renamed to `fabro install` for clarity
+- Added `fabro ssh` command for direct SSH access to Daytona sandboxes
+- Added `fabro preview` command to get preview URLs for ports exposed by Daytona sandboxes
+- `fabro doctor` now runs live service probes by default; use `--dry-run` to skip
+- `fabro doctor` now validates GitHub App configuration and private key
+- `fabro doctor` now hides unconfigured LLM providers for a cleaner output
+- `fabro doctor` sections reordered: Config, LLM, GitHub App, Cloud sandbox, Brave Search
+- `fabro run --preflight` now shows a Repository section, merged LLM check, and truncated output
+- Added `[pull_request]` support to project config (`fabro.toml`) for project-level PR defaults
 - Per-run data moved from `~/.arc/logs/` to `~/.arc/runs/`; daily CLI logs stay in `~/.arc/logs/`
 - Per-run tracing logs now written to `cli.log` inside each run directory
 - Asset paths now display full `~/...` paths after workflow run output
-- Hidden `arc ps`, `llm`, `exec`, and `parse` from CLI help output
-- PR body now includes Arc Details section even when retro is skipped
+- Hidden `fabro ps`, `llm`, `exec`, and `parse` from CLI help output
+- PR body now includes Fabro Details section even when retro is skipped
 - Bumped version to 0.2.0
 </Accordion>
 

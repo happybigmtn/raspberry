@@ -5,7 +5,7 @@ description: "Server config file, CLI overrides, and environment variables"
 
 ## Config file
 
-The server config file at `~/.arc/server.toml` controls how `arc serve` behaves — API binding, authentication, run defaults, and more. The [Quick Start](/getting-started/quick-start) doesn't require one, but production deployments should configure it explicitly.
+The server config file at `~/.arc/server.toml` controls how `fabro serve` behaves — API binding, authentication, run defaults, and more. The [Quick Start](/getting-started/quick-start) doesn't require one, but production deployments should configure it explicitly.
 
 ### Full reference
 
@@ -17,7 +17,7 @@ max_concurrent_runs = 8
 data_dir = "/var/lib/arc"
 
 [api]
-base_url = "https://arc.example.com"
+base_url = "https://fabro.example.com"
 
 [api.tls]
 cert = "/etc/arc/tls/cert.pem"
@@ -80,7 +80,7 @@ default_branch = "main"
 
 ### CLI overrides
 
-Several `server.toml` settings can be overridden via `arc serve` flags:
+Several `server.toml` settings can be overridden via `fabro serve` flags:
 
 | Flag | Default | Description |
 |---|---|---|
@@ -101,7 +101,7 @@ The `[llm]`, `[setup]`, `[sandbox]`, `[checkpoint]`, and `[vars]` sections in `s
 
 ### `[log]` section
 
-Configure the default log level without environment variables. Precedence: `ARC_LOG` env var > `--debug` flag > `[log]` level > `"info"`.
+Configure the default log level without environment variables. Precedence: `FABRO_LOG` env var > `--debug` flag > `[log]` level > `"info"`.
 
 | Key | Description | Default |
 |---|---|---|
@@ -120,7 +120,7 @@ The CLI can also set `[git.author]` in `cli.toml` to override the server default
 
 ### `[git.webhooks]` section
 
-Enable automatic GitHub webhook delivery via Tailscale funnel. When configured, `arc serve` binds a local HTTP listener, exposes it through `tailscale funnel`, and updates the GitHub App's webhook URL on startup. Incoming webhooks are verified with HMAC-SHA256.
+Enable automatic GitHub webhook delivery via Tailscale funnel. When configured, `fabro serve` binds a local HTTP listener, exposes it through `tailscale funnel`, and updates the GitHub App's webhook URL on startup. Incoming webhooks are verified with HMAC-SHA256.
 
 | Key | Description | Values |
 |---|---|---|
@@ -140,7 +140,7 @@ Exclude globs from `server.toml` and run configs are merged (union, deduplicated
 
 ## Environment variables
 
-Arc reads environment variables from a `.env` file in the working directory (if present) and from the shell environment. Provider API keys are required for the models you want to use; everything else is optional.
+Fabro reads environment variables from a `.env` file in the working directory (if present) and from the shell environment. Provider API keys are required for the models you want to use; everything else is optional.
 
 ### LLM provider keys
 
@@ -165,8 +165,8 @@ Arc reads environment variables from a `.env` file in the working directory (if 
 
 | Variable | Description |
 |---|---|
-| `ARC_JWT_PRIVATE_KEY` | Ed25519 private key (base64-encoded PEM) for JWT signing |
-| `ARC_JWT_PUBLIC_KEY` | Ed25519 public key (base64-encoded PEM) for JWT verification |
+| `FABRO_JWT_PRIVATE_KEY` | Ed25519 private key (base64-encoded PEM) for JWT signing |
+| `FABRO_JWT_PUBLIC_KEY` | Ed25519 public key (base64-encoded PEM) for JWT verification |
 | `SESSION_SECRET` | Session encryption secret (64-character hex string) |
 
 ### GitHub App (optional)
@@ -181,11 +181,11 @@ Arc reads environment variables from a `.env` file in the working directory (if 
 
 | Variable | Description |
 |---|---|
-| `ARC_SLACK_APP_TOKEN` | Slack App-level token |
-| `ARC_SLACK_BOT_TOKEN` | Slack Bot token |
+| `FABRO_SLACK_APP_TOKEN` | Slack App-level token |
+| `FABRO_SLACK_BOT_TOKEN` | Slack Bot token |
 
 ### Logging
 
 | Variable | Default | Description |
 |---|---|---|
-| `ARC_LOG` | `info` | Log level: `error`, `warn`, `info`, `debug` |
+| `FABRO_LOG` | `info` | Log level: `error`, `warn`, `info`, `debug` |

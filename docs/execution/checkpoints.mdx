@@ -1,9 +1,9 @@
 ---
 title: "Checkpoints"
-description: "How Arc uses Git to checkpoint and resume workflow runs"
+description: "How Fabro uses Git to checkpoint and resume workflow runs"
 ---
 
-Arc checkpoints every workflow run using Git. After each node completes, Arc commits the file changes and execution state so that interrupted runs can be resumed exactly where they left off. This happens automatically — no configuration required beyond running inside a Git repository.
+Fabro checkpoints every workflow run using Git. After each node completes, Fabro commits the file changes and execution state so that interrupted runs can be resumed exactly where they left off. This happens automatically — no configuration required beyond running inside a Git repository.
 
 ## Two branches, two purposes
 
@@ -18,26 +18,26 @@ The run branch is a regular Git branch that grows one commit per completed node.
 
 ### Run branch commits
 
-After each node finishes, Arc stages file changes and creates a commit on the run branch. Files matching `[checkpoint] exclude_globs` patterns (configured in [run.toml](/execution/run-configuration#checkpoint) or [server.toml](/administration/server-configuration#checkpoint-section)) are excluded from staging:
+After each node finishes, Fabro stages file changes and creates a commit on the run branch. Files matching `[checkpoint] exclude_globs` patterns (configured in [run.toml](/execution/run-configuration#checkpoint) or [server.toml](/administration/server-configuration#checkpoint-section)) are excluded from staging:
 
 ```
 arc(01JKXYZ...): plan (success)
 
-Arc-Run: 01JKXYZ...
-Arc-Completed: 2
-Arc-Checkpoint: a1b2c3d4...
+Fabro-Run: 01JKXYZ...
+Fabro-Completed: 2
+Fabro-Checkpoint: a1b2c3d4...
 ```
 
 The commit message follows a structured format:
 
 | Part | Description |
 |---|---|
-| Subject line | `arc({run_id}): {node_id} ({status})` |
-| `Arc-Run` trailer | The run ID |
-| `Arc-Completed` trailer | Number of completed nodes so far |
-| `Arc-Checkpoint` trailer | SHA of the corresponding commit on the metadata branch |
+| Subject line | `fabro({run_id}): {node_id} ({status})` |
+| `Fabro-Run` trailer | The run ID |
+| `Fabro-Completed` trailer | Number of completed nodes so far |
+| `Fabro-Checkpoint` trailer | SHA of the corresponding commit on the metadata branch |
 
-The `Arc-Checkpoint` trailer links each run branch commit to its metadata branch commit, so you can navigate from file changes to the full execution state and back.
+The `Fabro-Checkpoint` trailer links each run branch commit to its metadata branch commit, so you can navigate from file changes to the full execution state and back.
 
 ### Metadata branch
 
@@ -74,17 +74,17 @@ The checkpoint is also saved to `checkpoint.json` in the run directory for quick
 
 ## Worktrees
 
-Arc uses Git worktrees to isolate workflow runs from your working directory. When a run starts in a clean Git repository:
+Fabro uses Git worktrees to isolate workflow runs from your working directory. When a run starts in a clean Git repository:
 
-1. Arc records the current HEAD as the **base SHA**
+1. Fabro records the current HEAD as the **base SHA**
 2. Creates a new branch `arc/run/{run_id}` at that SHA
 3. Adds a worktree at `{run_dir}/worktree` on that branch
 4. Changes into the worktree directory for the duration of the run
 
-This means your original working directory stays untouched while the agent makes changes in the worktree. When the run completes, Arc removes the worktree and restores your original directory.
+This means your original working directory stays untouched while the agent makes changes in the worktree. When the run completes, Fabro removes the worktree and restores your original directory.
 
 <Note>
-If the working directory has uncommitted changes, Arc skips worktree setup and runs in place, logging a warning. Git checkpointing is disabled in this case.
+If the working directory has uncommitted changes, Fabro skips worktree setup and runs in place, logging a warning. Git checkpointing is disabled in this case.
 </Note>
 
 For Daytona sandboxes, the worktree is created inside the remote sandbox instead. The metadata branch is still written to the host repository so that runs can be resumed locally. Both the run branch and the metadata branch are pushed to origin after each checkpoint — the run branch is pushed from the sandbox, while the metadata branch is pushed from the host using a GitHub App installation token. On the remote, the metadata branch appears at `arc/meta/{run_id}` (rather than the local `refs/arc/{run_id}` custom ref, since GitHub disallows branch names starting with `refs/`).
@@ -98,23 +98,23 @@ There are two ways to resume an interrupted run:
 Resume from a `checkpoint.json` saved in the run directory:
 
 ```bash
-arc run workflow.dot --resume path/to/logs/checkpoint.json
+fabro run workflow.dot --resume path/to/logs/checkpoint.json
 ```
 
-Arc loads the checkpoint, restores the context and execution state, and continues from the next node after the checkpoint.
+Fabro loads the checkpoint, restores the context and execution state, and continues from the next node after the checkpoint.
 
 ### From a run branch
 
 Resume from the Git branches created during a previous run:
 
 ```bash
-arc run --run-branch arc/run/01JKXYZ...
+fabro run --run-branch arc/run/01JKXYZ...
 ```
 
 This reads the checkpoint, manifest, and graph DOT from the metadata branch (`refs/arc/01JKXYZ...`), re-attaches a worktree to the existing run branch, and resumes execution. No workflow file argument is needed — everything is recovered from Git.
 
 <Accordion title="What happens during resume">
-1. Arc reads `checkpoint.json` from the metadata branch
+1. Fabro reads `checkpoint.json` from the metadata branch
 2. Reads `manifest.json` and `graph.dot` to reconstruct the workflow
 3. Creates a fresh worktree attached to the existing run branch
 4. Restores the full context, completed node list, retry counts, and failure signatures

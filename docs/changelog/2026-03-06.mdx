@@ -5,13 +5,13 @@ date: "2026-03-06"
 
 ## Provider API keys forwarded to sandboxes
 
-Agent CLI tools running inside Daytona sandboxes can now authenticate with LLM providers automatically. Arc collects the relevant API key environment variables (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and forwards them into the sandbox environment, so CLI agents like Claude and Codex can make API calls without manual credential setup.
+Agent CLI tools running inside Daytona sandboxes can now authenticate with LLM providers automatically. Fabro collects the relevant API key environment variables (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and forwards them into the sandbox environment, so CLI agents like Claude and Codex can make API calls without manual credential setup.
 
-Previously, sandbox-based agents would fail to authenticate because API keys were only available on the Arc server, not inside the sandbox.
+Previously, sandbox-based agents would fail to authenticate because API keys were only available on the Fabro server, not inside the sandbox.
 
 ## Checkpoint pushing for Daytona runs
 
-When a workflow runs on a Daytona sandbox, Arc now pushes the run branch to origin after each checkpoint. Previously, commits on the run branch were lost when the sandbox was deleted, making it impossible to review intermediate work.
+When a workflow runs on a Daytona sandbox, Fabro now pushes the run branch to origin after each checkpoint. Previously, commits on the run branch were lost when the sandbox was deleted, making it impossible to review intermediate work.
 
 This required upgrading the GitHub App token permission from `contents:read` to `contents:write`. Tokens are automatically refreshed before they expire.
 
@@ -19,9 +19,9 @@ This required upgrading the GitHub App token permission from `contents:read` to 
 
 Daytona sandboxes now authenticate git clones using GitHub App Installation Access Tokens (IATs) instead of the user's `gh` CLI token. Each token is scoped to `contents: read` on the specific repository being cloned.
 
-Arc automatically detects whether a repository is public or private. Public repositories are cloned without credentials. Private repositories get a short-lived, minimally-scoped IAT generated from the GitHub App configured during `arc install`.
+Fabro automatically detects whether a repository is public or private. Public repositories are cloned without credentials. Private repositories get a short-lived, minimally-scoped IAT generated from the GitHub App configured during `fabro install`.
 
-When credentials are missing or misconfigured, Arc provides specific error messages for each failure mode:
+When credentials are missing or misconfigured, Fabro provides specific error messages for each failure mode:
 - App not installed for the organization
 - Installation suspended
 - Repository not accessible to the app
@@ -53,5 +53,5 @@ To migrate:
 <Accordion title="Fixes">
 - Fixed dry-run mode issues with stub scripts, runner working directory, and transition weights
 - Fixed GitHub App repo visibility check incorrectly treating 401/403 responses as public
-- Fixed duplicate `.env` variables when re-running `arc install`
+- Fixed duplicate `.env` variables when re-running `fabro install`
 </Accordion>

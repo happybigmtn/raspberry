@@ -3,7 +3,7 @@ title: "Model Stylesheets"
 description: "Assign LLM models to workflow nodes using CSS-like rules"
 ---
 
-Model stylesheets let you assign LLM models, providers, and settings to workflow nodes using a CSS-like syntax. Instead of hardcoding a model on every node, you write a set of rules that target nodes by ID, class, shape, or a universal wildcard — and Arc applies them by specificity.
+Model stylesheets let you assign LLM models, providers, and settings to workflow nodes using a CSS-like syntax. Instead of hardcoding a model on every node, you write a set of rules that target nodes by ID, class, shape, or a universal wildcard — and Fabro applies them by specificity.
 
 ## Defining a stylesheet
 
@@ -67,7 +67,7 @@ Stylesheets support four properties:
 | `llm_model` | Model ID or alias | `claude-sonnet-4-5`, `opus`, `gemini-pro` |
 | `llm_provider` | Provider name | `anthropic`, `openai`, `gemini` |
 | `reasoning_effort` | Reasoning effort level | `low`, `medium`, `high` |
-| `backend` | Agent execution backend — `api` (default) runs Arc's own tool loop, `cli` delegates to an external CLI tool. See [Backends](/core-concepts/agents#backends). | `cli`, `api` |
+| `backend` | Agent execution backend — `api` (default) runs Fabro's own tool loop, `cli` delegates to an external CLI tool. See [Backends](/core-concepts/agents#backends). | `cli`, `api` |
 
 See [Models](/core-concepts/models) for the full list of model IDs and aliases.
 

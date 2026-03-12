@@ -1,13 +1,13 @@
 ---
 title: "Sprites"
-description: "Run Arc workflows in persistent Sprites VMs from Fly.io"
+description: "Run Fabro workflows in persistent Sprites VMs from Fly.io"
 ---
 
 <Warning>
 The Sprites sandbox provider is **in progress** and not yet available for use. This page describes the planned integration. We'll update it when Sprites support ships.
 </Warning>
 
-[Sprites](https://sprites.dev) (by Fly.io) provides persistent, hardware-isolated Linux microVMs for Arc workflows. Unlike ephemeral providers, Sprites VMs persist across runs with auto-sleep/wake — so dependencies stay installed and caches stay warm.
+[Sprites](https://sprites.dev) (by Fly.io) provides persistent, hardware-isolated Linux microVMs for Fabro workflows. Unlike ephemeral providers, Sprites VMs persist across runs with auto-sleep/wake — so dependencies stay installed and caches stay warm.
 
 ## How it works
 
@@ -21,7 +21,7 @@ The Sprites sandbox provider is **in progress** and not yet available for use. T
 ## Configuration
 
 ```bash
-arc run workflow.dot --sandbox sprites
+fabro run workflow.dot --sandbox sprites
 ```
 
 ```toml title="run.toml"
@@ -54,7 +54,7 @@ sprite_name = "my-existing-sprite"
 
 ## Reusing Sprites
 
-Set `sprite_name` to reuse an existing Sprite across runs. When set, Arc skips creation and destruction — the Sprite persists between runs with its filesystem intact:
+Set `sprite_name` to reuse an existing Sprite across runs. When set, Fabro skips creation and destruction — the Sprite persists between runs with its filesystem intact:
 
 ```toml title="run.toml"
 [sandbox.sprites]

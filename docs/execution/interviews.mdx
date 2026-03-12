@@ -1,11 +1,11 @@
 ---
 title: "Interviews"
-description: "How Arc collects human input during workflow execution"
+description: "How Fabro collects human input during workflow execution"
 ---
 
 When a workflow reaches a [human gate](/workflows/human-in-the-loop), it needs to pause and wait for a person to respond. The **interviewer** is the abstraction that makes this work — it presents a question, collects an answer, and returns it to the engine so execution can continue.
 
-Arc ships with several interviewer implementations for different environments: an interactive terminal prompt for the CLI, a web-based queue for the API server and web UI, an auto-approve mode for CI, and record/replay support for testing.
+Fabro ships with several interviewer implementations for different environments: an interactive terminal prompt for the CLI, a web-based queue for the API server and web UI, an auto-approve mode for CI, and record/replay support for testing.
 
 ## Question types
 
@@ -61,14 +61,14 @@ The handler then passes the question to the interviewer, waits for an answer, an
 
 ## Channels
 
-The `Interviewer` trait has a simple interface — `ask(question) → answer` — and Arc provides implementations for each delivery channel:
+The `Interviewer` trait has a simple interface — `ask(question) → answer` — and Fabro provides implementations for each delivery channel:
 
 ### Console
 
 The default for CLI runs. On a TTY, the console interviewer uses interactive widgets (arrow-key selection, checkbox multi-select, confirm prompts) via `dialoguer`. When stdin is piped (non-TTY), it falls back to a line-based reader with numbered options.
 
 ```bash
-arc run workflow.dot
+fabro run workflow.dot
 # At a human gate:
 # ? Approve Plan
 #   [1] A - [A] Approve
@@ -84,7 +84,7 @@ This decoupling means the workflow engine and the user interface can run in diff
 
 ### Slack
 
-Arc's Slack integration uses the web interviewer under the hood. When a human gate fires, the pending question is rendered as a Slack message with interactive buttons. When a user clicks a button, the Slack event handler calls `submit_answer()` on the web interviewer, unblocking the workflow.
+Fabro's Slack integration uses the web interviewer under the hood. When a human gate fires, the pending question is rendered as a Slack message with interactive buttons. When a user clicks a button, the Slack event handler calls `submit_answer()` on the web interviewer, unblocking the workflow.
 
 ### Auto-approve
 
@@ -97,12 +97,12 @@ For fully automated runs or CI pipelines, the auto-approve interviewer answers e
 Enable it with the `--auto-approve` flag:
 
 ```bash
-arc run workflow.dot --auto-approve
+fabro run workflow.dot --auto-approve
 ```
 
 ## Timeouts
 
-Questions can have a `timeout_seconds` field. When set, Arc wraps the interviewer call with a timeout:
+Questions can have a `timeout_seconds` field. When set, Fabro wraps the interviewer call with a timeout:
 
 - If the user answers before the deadline, their answer is used normally
 - If the timeout elapses and a `default` answer is set on the question, the default is used

@@ -1,28 +1,28 @@
 ---
 title: "Agents"
-description: "Core agent concepts in Arc"
+description: "Core agent concepts in Fabro"
 ---
 
-An agent in Arc is an LLM session with access to tools. When a workflow reaches an agent node, Arc creates a session, sends the prompt and prior context to the model, and lets the agent work autonomously — reading files, running commands, editing code, spawning sub-agents — until it decides the task is complete.
+An agent in Fabro is an LLM session with access to tools. When a workflow reaches an agent node, Fabro creates a session, sends the prompt and prior context to the model, and lets the agent work autonomously — reading files, running commands, editing code, spawning sub-agents — until it decides the task is complete.
 
 ## The agent loop
 
 Each agent turn follows the same cycle:
 
-1. **Send** — Arc sends the conversation history (system prompt, prior messages, tool results) to the LLM
+1. **Send** — Fabro sends the conversation history (system prompt, prior messages, tool results) to the LLM
 2. **Receive** — The model responds with text, tool calls, or both
-3. **Execute** — Arc executes any tool calls in the sandbox and appends the results to the conversation
+3. **Execute** — Fabro executes any tool calls in the sandbox and appends the results to the conversation
 4. **Repeat** — If the model made tool calls, go back to step 1. If it responded with only text, the agent is done.
 
-This loop continues until the model stops calling tools, indicating it considers the task complete. Arc also enforces guardrails: token budgets, turn limits, and loop detection to prevent runaway agents.
+This loop continues until the model stops calling tools, indicating it considers the task complete. Fabro also enforces guardrails: token budgets, turn limits, and loop detection to prevent runaway agents.
 
 ## Backends
 
-Every agent node uses a **backend** that determines how Arc interacts with the LLM. There are two options:
+Every agent node uses a **backend** that determines how Fabro interacts with the LLM. There are two options:
 
 ### API backend (default)
 
-Arc manages the agent loop directly — it calls the LLM provider's API, executes built-in tools in the sandbox, and tracks file changes via tool call events. This is the default and supports the full feature set:
+Fabro manages the agent loop directly — it calls the LLM provider's API, executes built-in tools in the sandbox, and tracks file changes via tool call events. This is the default and supports the full feature set:
 
 - [Session caching](/execution/context) via `fidelity="full"` + `thread_id`
 - [Sub-agents](/agents/subagents)
@@ -31,7 +31,7 @@ Arc manages the agent loop directly — it calls the LLM provider's API, execute
 
 ### CLI backend
 
-Arc delegates execution to an external coding assistant CLI. The CLI tool manages its own tool loop internally — Arc sends the prompt, waits for the CLI to finish, and tracks file changes via `git diff` before and after execution.
+Fabro delegates execution to an external coding assistant CLI. The CLI tool manages its own tool loop internally — Fabro sends the prompt, waits for the CLI to finish, and tracks file changes via `git diff` before and after execution.
 
 The CLI is selected automatically based on the node's provider:
 
@@ -56,7 +56,7 @@ implement [label="Implement", backend="cli", llm_provider="anthropic"]
 
 | Capability | API backend | CLI backend |
 |---|---|---|
-| Tools | Arc built-in tools + MCP | CLI's own tool set |
+| Tools | Fabro built-in tools + MCP | CLI's own tool set |
 | Session caching | Supported (`fidelity` + `thread_id`) | Not supported |
 | Sub-agents | Supported | Not supported |
 | Provider failover | Supported | Not supported |
@@ -99,7 +99,7 @@ plan [label="Plan", prompt="Analyze the codebase and write a step-by-step plan."
 simplify [label="Simplify", prompt="@prompts/simplify.md"]
 ```
 
-Arc also injects a system prompt with context about the workflow goal, prior stage outputs, available tools, and the agent's role. See [Prompts](/agents/prompts) for details.
+Fabro also injects a system prompt with context about the workflow goal, prior stage outputs, available tools, and the agent's role. See [Prompts](/agents/prompts) for details.
 
 ## Sub-agents
 
