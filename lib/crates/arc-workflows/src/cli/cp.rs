@@ -166,6 +166,7 @@ pub async fn reconnect(record: &SandboxRecord) -> Result<Box<dyn arc_agent::sand
                 destination: destination.to_string(),
                 working_directory: record.working_directory.clone(),
                 config_file: None,
+                preview_url_base: None,
             };
             let sandbox = arc_ssh::SshSandbox::from_existing(Box::new(ssh), config);
             Ok(Box::new(sandbox))

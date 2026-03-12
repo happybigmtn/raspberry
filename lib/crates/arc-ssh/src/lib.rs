@@ -56,6 +56,9 @@ pub struct SshConfig {
     pub working_directory: String,
     /// Optional path to a custom SSH config file.
     pub config_file: Option<String>,
+    /// Base URL for port previews (e.g. `"http://beast"`).
+    /// When set, `get_preview_url(port)` returns `"{preview_url_base}:{port}"`.
+    pub preview_url_base: Option<String>,
 }
 
 /// Parameters for cloning a git repo into the sandbox during initialization.
@@ -725,6 +728,17 @@ impl Sandbox for SshSandbox {
     fn origin_url(&self) -> Option<&str> {
         self.origin_url.get().map(String::as_str)
     }
+
+    async fn get_preview_url(
+        &self,
+        port: u16,
+    ) -> Result<Option<(String, HashMap<String, String>)>, String> {
+        Ok(self
+            .config
+            .preview_url_base
+            .as_ref()
+            .map(|base| (format!("{base}:{port}"), HashMap::new())))
+    }
 }
 
 #[cfg(test)]
@@ -880,6 +894,7 @@ mod tests {
             destination: "user@testhost".to_string(),
             working_directory: "/home/user/workspace".to_string(),
             config_file: None,
+            preview_url_base: None,
         }
     }
 
@@ -889,6 +904,22 @@ mod tests {
     }
 
     // ---- Metadata accessors ----
+
+    #[tokio::test]
+    async fn get_preview_url_returns_none_when_not_configured() {
+        let sandbox = sandbox_with_mock(MockSshRunner::new());
+        assert_eq!(sandbox.get_preview_url(3000).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_preview_url_returns_url_when_configured() {
+        let mut config = test_config();
+        config.preview_url_base = Some("http://beast".to_string());
+        let sandbox = SshSandbox::from_existing(Box::new(MockSshRunner::new()), config);
+        let (url, headers) = sandbox.get_preview_url(3000).await.unwrap().unwrap();
+        assert_eq!(url, "http://beast:3000");
+        assert!(headers.is_empty());
+    }
 
     #[test]
     fn working_directory_returns_configured_path() {
