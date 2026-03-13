@@ -31,7 +31,6 @@ git2.workspace = true
 [build-dependencies]
 toml = "0.8"
 serde = { workspace = true }
-chrono = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

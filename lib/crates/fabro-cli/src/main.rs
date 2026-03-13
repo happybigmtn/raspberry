@@ -11,8 +11,17 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::debug;
 
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("FABRO_GIT_SHA"),
+    " ",
+    env!("FABRO_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(name = "fabro", version, long_version = fabro_util::version::LONG_VERSION.as_str())]
+#[command(name = "fabro", version, long_version = LONG_VERSION)]
 struct Cli {
     /// Enable DEBUG-level logging (default is INFO)
     #[arg(long, global = true)]

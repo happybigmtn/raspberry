@@ -787,7 +787,7 @@ impl ProgressUI {
     }
 
     pub fn show_version(&mut self) {
-        let version = fabro_util::version::LONG_VERSION.as_str();
+        let version = fabro_util::version::FABRO_VERSION;
         match &self.renderer {
             ProgressRenderer::Tty(tty) => {
                 let bar = tty.multi.add(ProgressBar::new_spinner());
