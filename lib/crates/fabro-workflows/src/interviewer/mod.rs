@@ -51,6 +51,8 @@ pub struct Question {
     pub timeout_seconds: Option<f64>,
     pub stage: String,
     pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub context_display: Option<String>,
 }
 
 impl Question {
@@ -64,6 +66,7 @@ impl Question {
             timeout_seconds: None,
             stage: String::new(),
             metadata: HashMap::new(),
+            context_display: None,
         }
     }
 }

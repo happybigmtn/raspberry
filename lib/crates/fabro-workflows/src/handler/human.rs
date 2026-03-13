@@ -99,7 +99,7 @@ impl Handler for HumanHandler {
     async fn execute(
         &self,
         node: &Node,
-        _context: &Context,
+        context: &Context,
         graph: &Graph,
         _run_dir: &Path,
         _services: &EngineServices,
@@ -142,6 +142,18 @@ impl Handler for HumanHandler {
         question.options = options;
         question.allow_freeform = freeform_target.is_some();
         question.stage.clone_from(&node.id);
+
+        // Look up the prior node's full response
+        if let Some(serde_json::Value::String(last_node)) = context.get(keys::LAST_STAGE) {
+            if let Some(serde_json::Value::String(response)) =
+                context.get(&keys::response_key(&last_node))
+            {
+                let text = response.trim();
+                if !text.is_empty() {
+                    question.context_display = Some(text.to_owned());
+                }
+            }
+        }
 
         // 3. Present to interviewer
         let question_text = node.label().to_string();

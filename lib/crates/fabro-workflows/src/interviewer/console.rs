@@ -155,6 +155,10 @@ impl Interviewer for ConsoleInterviewer {
         // If stdin is a TTY, use dialoguer for interactive arrow-key navigation.
         // Otherwise, fall back to the line-based reader for piped input.
         if std::io::stdin().is_terminal() {
+            if let Some(ref context_text) = question.context_display {
+                let rendered = self.styles.render_markdown(context_text);
+                eprint!("{rendered}");
+            }
             let q = question;
             return tokio::task::spawn_blocking(move || match q.question_type {
                 QuestionType::MultipleChoice => ask_select_interactive(&q),
