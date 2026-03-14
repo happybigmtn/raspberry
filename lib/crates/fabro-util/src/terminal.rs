@@ -48,6 +48,25 @@ impl Styles {
         termimad::term_text(text).to_string()
     }
 
+    /// Render Markdown wrapped to a specific width (in columns).
+    /// Returns plain text when color is disabled.
+    #[must_use]
+    pub fn render_markdown_width(&self, text: &str, width: usize) -> String {
+        if !self.use_color {
+            return text.to_string();
+        }
+        termimad::MadSkin::default()
+            .text(text, Some(width))
+            .to_string()
+    }
+
+    /// Return the terminal width in columns, or 80 if it cannot be detected.
+    #[must_use]
+    pub fn terminal_width() -> usize {
+        let (w, _) = termimad::terminal_size();
+        w as usize
+    }
+
     /// Create styles based on whether stderr is a TTY.
     /// Respects `NO_COLOR` environment variable.
     #[must_use]

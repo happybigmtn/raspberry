@@ -294,7 +294,9 @@ pub fn format_event_pretty(line: &str, styles: &fabro_util::terminal::Styles) ->
                 styles.dim.apply_to(model),
             );
             let indent = "           ";
-            let rendered = styles.render_markdown(text);
+            let term_width = fabro_util::terminal::Styles::terminal_width();
+            let wrap_width = term_width.saturating_sub(indent.len());
+            let rendered = styles.render_markdown_width(text, wrap_width);
             let body: String = rendered
                 .lines()
                 .map(|l| format!("{indent}{l}"))
