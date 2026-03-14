@@ -8133,7 +8133,7 @@ fn hook_toml_run_config_parsing() {
     let toml = r#"
 version = 1
 goal = "Test hooks in run config"
-graph = "test.dot"
+graph = "test.fabro"
 
 [[hooks]]
 event = "stage_start"
@@ -8317,7 +8317,7 @@ fn hook_toml_prompt_and_agent_parsing() {
     let toml = r#"
 version = 1
 goal = "Test prompt/agent hooks"
-graph = "test.dot"
+graph = "test.fabro"
 
 [[hooks]]
 event = "stage_start"
