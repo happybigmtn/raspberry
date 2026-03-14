@@ -1,13 +1,13 @@
 <div align="left" id="top">
-<a href="https://fabro.dev"><img alt="Fabro" src="docs/logo/dark.svg" height="75"></a>
+<a href="https://docs.fabro.sh"><img alt="Fabro" src="docs/logo/dark.svg" height="75"></a>
 </div>
 
 ## The open source dark software factory for expert engineers
 
-AI coding agents are powerful but unpredictable. You either babysit every step or review a 50-file diff you don't trust. Fabro gives you a middle path: define the process as a graph, let agents execute it, and intervene only where it matters. [Why Fabro?](https://fabro.dev/getting-started/why-arc)
+AI coding agents are powerful but unpredictable. You either babysit every step or review a 50-file diff you don't trust. Fabro gives you a middle path: define the process as a graph, let agents execute it, and intervene only where it matters. [Why Fabro?](https://docs.fabro.sh/getting-started/why-arc)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE.md)
-[![docs](https://img.shields.io/badge/docs-fabro.dev-357F9E)](https://fabro.dev)
+[![docs](https://img.shields.io/badge/docs-fabro.dev-357F9E)](https://docs.fabro.sh)
 
 ```bash
 curl -fsSL https://fabro.sh/install.sh | bash
@@ -53,6 +53,8 @@ curl -fsSL https://fabro.sh/install.sh | bash
 
 A plan-approve-implement workflow where a human reviews the plan before the agent writes code:
 
+<img src="docs/images/plan-implement-readme.svg" alt="Plan-Implement workflow graph showing Start → Plan → Approve Plan → Implement → Simplify → Exit with a Revise loop" />
+
 ```dot
 digraph PlanImplement {
     graph [
@@ -78,19 +80,19 @@ digraph PlanImplement {
 }
 ```
 
-Agents run as multi-turn LLM sessions with tool access. Human gates (`hexagon`) pause for approval. The stylesheet routes planning to a cheap model and coding to a frontier model. See the [DOT language reference](https://fabro.dev/reference/dot-language) for the full syntax.
+Agents run as multi-turn LLM sessions with tool access. Human gates (`hexagon`) pause for approval. The stylesheet routes planning to a cheap model and coding to a frontier model. See the [DOT language reference](https://docs.fabro.sh/reference/dot-language) for the full syntax.
 
 ---
 
 ## 📖 Documentation
 
-Fabro ships with [comprehensive documentation](https://fabro.dev) covering every feature in depth:
+Fabro ships with [comprehensive documentation](https://docs.fabro.sh) covering every feature in depth:
 
-- [**Getting Started**](https://fabro.dev/getting-started/introduction) -- Installation, first workflow, and why Fabro exists
-- [**Defining Workflows**](https://fabro.dev/workflows/stages-and-nodes) -- Node types, transitions, variables, stylesheets, and human gates
-- [**Executing Workflows**](https://fabro.dev/execution/run-configuration) -- Run configuration, sandboxes, checkpoints, retros, and failure handling
-- [**Tutorials**](https://fabro.dev/tutorials/hello-world) -- Step-by-step guides from hello world to parallel multi-model ensembles
-- [**API Reference**](https://fabro.dev/api-reference/overview) -- Full OpenAPI spec with authentication, SSE events, and client SDKs
+- [**Getting Started**](https://docs.fabro.sh/getting-started/introduction) -- Installation, first workflow, and why Fabro exists
+- [**Defining Workflows**](https://docs.fabro.sh/workflows/stages-and-nodes) -- Node types, transitions, variables, stylesheets, and human gates
+- [**Executing Workflows**](https://docs.fabro.sh/execution/run-configuration) -- Run configuration, sandboxes, checkpoints, retros, and failure handling
+- [**Tutorials**](https://docs.fabro.sh/tutorials/hello-world) -- Step-by-step guides from hello world to parallel multi-model ensembles
+- [**API Reference**](https://docs.fabro.sh/api-reference/overview) -- Full OpenAPI spec with authentication, SSE events, and client SDKs
 
 ---
 
