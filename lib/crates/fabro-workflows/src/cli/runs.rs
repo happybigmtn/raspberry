@@ -109,13 +109,13 @@ pub struct RunInfo {
     pub total_cost: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_repo_path: Option<String>,
+    pub goal: String,
     #[serde(skip)]
     pub start_time_dt: Option<DateTime<Utc>>,
     #[serde(skip)]
     pub end_time: Option<DateTime<Utc>>,
     #[serde(skip)]
     pub path: PathBuf,
-    pub goal: String,
     #[serde(skip)]
     pub is_orphan: bool,
 }
@@ -464,9 +464,10 @@ fn short_run_id(id: &str) -> &str {
 }
 
 fn truncate_goal(goal: &str, max_len: usize) -> String {
-    let chars: Vec<char> = goal.chars().collect();
+    let line = goal.lines().next().unwrap_or("");
+    let chars: Vec<char> = line.chars().collect();
     if chars.len() <= max_len {
-        return goal.to_string();
+        return line.to_string();
     }
     let truncated: String = chars[..max_len - 3].iter().collect();
     format!("{truncated}...")
@@ -787,11 +788,7 @@ pub fn df_from(args: &DfArgs, data_dir: &Path, runs_base: &Path, logs_base: &Pat
             .iter()
             .map(|detail| {
                 let run_id_display = short_run_id(&detail.run_id);
-                let workflow_display = if detail.workflow_name.len() > 16 {
-                    format!("{}...", &detail.workflow_name[..13])
-                } else {
-                    detail.workflow_name.clone()
-                };
+                let workflow_display = truncate_goal(&detail.workflow_name, 16);
                 let age = if let Some(dt) = detail.start_time_dt {
                     let dur = now.signed_duration_since(dt);
                     if dur.num_days() > 0 {
