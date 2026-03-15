@@ -112,14 +112,11 @@ pub enum WorkflowRunEvent {
         stage: String,
         duration_ms: u64,
     },
-    CheckpointSaved {
-        node_id: String,
-    },
     CheckpointCompleted {
-        run_id: String,
         node_id: String,
         status: String,
-        git_commit_sha: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_commit_sha: Option<String>,
     },
     CheckpointFailed {
         node_id: String,
@@ -471,16 +468,10 @@ impl WorkflowRunEvent {
             } => {
                 warn!(stage, duration_ms, "Interview timeout");
             }
-            Self::CheckpointSaved { node_id } => {
-                debug!(node_id, "Checkpoint saved");
-            }
             Self::CheckpointCompleted {
-                run_id,
-                node_id,
-                status,
-                ..
+                node_id, status, ..
             } => {
-                debug!(run_id, node_id, status, "Checkpoint completed");
+                debug!(node_id, status, "Checkpoint completed");
             }
             Self::CheckpointFailed { node_id, error } => {
                 error!(node_id, error, "Checkpoint failed");
@@ -989,7 +980,6 @@ fn rename_fields(event_name: &str, fields: &mut serde_json::Map<String, serde_js
         default_node_label(fields);
         rename(fields, "start_node", "start_node_id");
     } else if event_name == "SubgraphCompleted"
-        || event_name == "CheckpointSaved"
         || event_name == "CheckpointCompleted"
         || event_name == "CheckpointFailed"
     {
@@ -1920,28 +1910,33 @@ mod tests {
     }
 
     #[test]
-    fn rename_fields_checkpoint_saved() {
-        let event = WorkflowRunEvent::CheckpointSaved {
-            node_id: "plan".to_string(),
-        };
-        let (name, fields) = flatten_event(&event);
-        assert_eq!(name, "CheckpointSaved");
-        assert_eq!(fields["node_id"], "plan");
-        assert_eq!(fields["node_label"], "plan");
-    }
-
-    #[test]
     fn rename_fields_checkpoint_completed() {
         let event = WorkflowRunEvent::CheckpointCompleted {
-            run_id: "r1".to_string(),
             node_id: "work".to_string(),
             status: "success".to_string(),
-            git_commit_sha: "abc123".to_string(),
+            git_commit_sha: Some("abc123".to_string()),
         };
         let (name, fields) = flatten_event(&event);
         assert_eq!(name, "CheckpointCompleted");
         assert_eq!(fields["node_id"], "work");
         assert_eq!(fields["node_label"], "work");
+
+        // Without git_commit_sha
+        let event_no_git = WorkflowRunEvent::CheckpointCompleted {
+            node_id: "plan".to_string(),
+            status: "success".to_string(),
+            git_commit_sha: None,
+        };
+        let json = serde_json::to_string(&event_no_git).unwrap();
+        assert!(!json.contains("git_commit_sha"));
+        let deserialized: WorkflowRunEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            WorkflowRunEvent::CheckpointCompleted {
+                git_commit_sha: None,
+                ..
+            }
+        ));
     }
 
     #[test]

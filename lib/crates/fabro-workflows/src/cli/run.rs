@@ -491,10 +491,12 @@ pub async fn run_command(
     {
         let sha_clone = Arc::clone(&last_git_sha);
         emitter.on_event(move |event| {
-            if let crate::event::WorkflowRunEvent::CheckpointCompleted { git_commit_sha, .. } =
-                event
+            if let crate::event::WorkflowRunEvent::CheckpointCompleted {
+                git_commit_sha: Some(sha),
+                ..
+            } = event
             {
-                *sha_clone.lock().unwrap() = Some(git_commit_sha.clone());
+                *sha_clone.lock().unwrap() = Some(sha.clone());
             }
         });
     }

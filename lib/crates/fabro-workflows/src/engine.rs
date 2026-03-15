@@ -1876,23 +1876,6 @@ impl WorkflowRunEngine {
             let checkpoint_path = config.run_dir.join("checkpoint.json");
             if let Err(e) = checkpoint.save(&checkpoint_path) {
                 context.append_log(format!("checkpoint save failed: {e}"));
-            } else {
-                self.services
-                    .emitter
-                    .emit(&WorkflowRunEvent::CheckpointSaved {
-                        node_id: node.id.clone(),
-                    });
-
-                // CheckpointSaved hook (non-blocking)
-                {
-                    let mut hook_ctx = HookContext::new(
-                        HookEvent::CheckpointSaved,
-                        run_id.clone(),
-                        graph.name.clone(),
-                    );
-                    hook_ctx.node_id = Some(node.id.clone());
-                    let _ = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
-                }
             }
 
             // Step 6b: Write shadow branch first, then run branch commit with trailer
@@ -1959,11 +1942,22 @@ impl WorkflowRunEngine {
                         self.services
                             .emitter
                             .emit(&WorkflowRunEvent::CheckpointCompleted {
-                                run_id: run_id.clone(),
                                 node_id: node.id.clone(),
                                 status: outcome.status.to_string(),
-                                git_commit_sha: sha.clone(),
+                                git_commit_sha: Some(sha.clone()),
                             });
+
+                        // CheckpointSaved hook (non-blocking)
+                        {
+                            let mut hook_ctx = HookContext::new(
+                                HookEvent::CheckpointSaved,
+                                run_id.clone(),
+                                graph.name.clone(),
+                            );
+                            hook_ctx.node_id = Some(node.id.clone());
+                            let _ = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
+                        }
+
                         self.services.emitter.emit(&WorkflowRunEvent::GitCommit {
                             node_id: Some(node.id.clone()),
                             sha: sha.clone(),
@@ -2053,6 +2047,26 @@ impl WorkflowRunEngine {
                             failure_class: FailureClass::Deterministic,
                         });
                     }
+                }
+            } else {
+                // Non-git checkpoint path (start node or git disabled)
+                self.services
+                    .emitter
+                    .emit(&WorkflowRunEvent::CheckpointCompleted {
+                        node_id: node.id.clone(),
+                        status: outcome.status.to_string(),
+                        git_commit_sha: None,
+                    });
+
+                // CheckpointSaved hook (non-blocking)
+                {
+                    let mut hook_ctx = HookContext::new(
+                        HookEvent::CheckpointSaved,
+                        run_id.clone(),
+                        graph.name.clone(),
+                    );
+                    hook_ctx.node_id = Some(node.id.clone());
+                    let _ = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
                 }
             }
 
@@ -2952,7 +2966,7 @@ mod tests {
 
         let collected = events.lock().unwrap();
         // Should have: RunStarted, StageStarted (start), StageCompleted (start),
-        // CheckpointSaved, RunCompleted
+        // CheckpointCompleted, RunCompleted
         assert!(collected.len() >= 4);
     }
 
@@ -5194,7 +5208,11 @@ mod tests {
         let git_checkpoint_node_ids: Vec<&str> = collected
             .iter()
             .filter_map(|e| match e {
-                WorkflowRunEvent::CheckpointCompleted { node_id, .. } => Some(node_id.as_str()),
+                WorkflowRunEvent::CheckpointCompleted {
+                    node_id,
+                    git_commit_sha: Some(_),
+                    ..
+                } => Some(node_id.as_str()),
                 _ => None,
             })
             .collect();

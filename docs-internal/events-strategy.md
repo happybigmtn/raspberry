@@ -184,8 +184,7 @@ WorkflowRunEvent::MyNewEvent { node_id, duration_ms, .. } => {
 
 | Event | JSONL fields |
 |---|---|
-| `CheckpointSaved` | `node_id`, `node_label` |
-| `CheckpointCompleted` | `run_id`, `node_id`, `node_label`, `status`, `git_commit_sha` |
+| `CheckpointCompleted` | `node_id`, `node_label`, `status`, `git_commit_sha` (optional) |
 | `CheckpointFailed` | `node_id`, `node_label`, `error` |
 | `GitCommit` | `node_id` (optional), `node_label` (optional), `sha` |
 | `GitPush` | `branch`, `success` |

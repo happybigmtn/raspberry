@@ -58,8 +58,7 @@ Events fall into several categories:
 |---|---|---|
 | `EdgeSelected` | `from_node`, `to_node`, `label`, `condition` | Transition between nodes |
 | `LoopRestart` | `from_node`, `to_node` | Loop restart edge taken |
-| `CheckpointSaved` | `node_id` | Checkpoint written to disk |
-| `CheckpointCompleted` | `node_id`, `git_commit_sha` | Checkpoint committed to Git |
+| `CheckpointCompleted` | `node_id`, `git_commit_sha` (optional) | Checkpoint saved (with git SHA when git is enabled) |
 | `GitCommit` | `node_id`, `sha` | Git commit created |
 | `GitPush` | `branch`, `success` | Git push attempted |
 | `GitBranch` | `branch`, `sha` | Git branch created |

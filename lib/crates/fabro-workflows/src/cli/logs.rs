@@ -567,7 +567,6 @@ pub fn format_event_pretty(line: &str, styles: &fabro_util::terminal::Styles) ->
         | "SetupStarted"
         | "SetupCommandStarted"
         | "SetupCommandCompleted"
-        | "CheckpointSaved"
         | "CheckpointCompleted"
         | "CheckpointFailed"
         | "GitCommit"
