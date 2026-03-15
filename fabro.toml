@@ -14,7 +14,7 @@ auto_stop_interval = 30
 repo = "fabro-sh/fabro"
 
 [sandbox.daytona.snapshot]
-name = "fabro-v4"
+name = "fabro-v5"
 cpu = 4
 memory = 8
 disk = 20
