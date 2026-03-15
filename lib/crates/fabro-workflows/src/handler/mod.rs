@@ -38,6 +38,8 @@ pub struct EngineServices {
     pub hook_runner: Option<Arc<HookRunner>>,
     /// Environment variables from `[sandbox.env]` config, injected into command nodes.
     pub env: HashMap<String, String>,
+    /// When true, handlers should skip real execution and return simulated results.
+    pub dry_run: bool,
 }
 
 impl EngineServices {

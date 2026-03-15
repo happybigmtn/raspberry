@@ -832,6 +832,7 @@ impl WorkflowRunEngine {
                 git_state: std::sync::RwLock::new(None),
                 hook_runner: None,
                 env: HashMap::new(),
+                dry_run: false,
             },
             interviewer: None,
         }
@@ -848,6 +849,7 @@ impl WorkflowRunEngine {
                 git_state: std::sync::RwLock::new(None),
                 hook_runner: services.hook_runner.clone(),
                 env: services.env.clone(),
+                dry_run: services.dry_run,
             },
             interviewer: None,
         }
@@ -869,6 +871,7 @@ impl WorkflowRunEngine {
                 git_state: std::sync::RwLock::new(None),
                 hook_runner: None,
                 env: HashMap::new(),
+                dry_run: false,
             },
             interviewer: Some(interviewer),
         }
@@ -882,6 +885,11 @@ impl WorkflowRunEngine {
     /// Set environment variables from `[sandbox.env]` config.
     pub fn set_env(&mut self, env: HashMap<String, String>) {
         self.services.env = env;
+    }
+
+    /// Enable dry-run mode so handlers skip real execution.
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.services.dry_run = dry_run;
     }
 
     /// Run lifecycle hooks and return the merged decision.

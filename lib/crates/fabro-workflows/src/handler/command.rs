@@ -46,6 +46,18 @@ impl Handler for CommandHandler {
             return Ok(Outcome::fail_classify("No script specified"));
         }
 
+        if services.dry_run {
+            let mut outcome = Outcome::success();
+            outcome.notes = Some(format!("[Simulated] Command skipped: {script}"));
+            outcome
+                .context_updates
+                .insert(keys::COMMAND_OUTPUT.to_string(), serde_json::json!(""));
+            outcome
+                .context_updates
+                .insert(keys::COMMAND_STDERR.to_string(), serde_json::json!(""));
+            return Ok(outcome);
+        }
+
         let language = node
             .attrs
             .get("language")
@@ -168,6 +180,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: std::collections::HashMap::new(),
+            dry_run: false,
         }
     }
 
@@ -185,6 +198,33 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.status, StageStatus::Fail);
         assert_eq!(outcome.failure_reason(), Some("No script specified"));
+    }
+
+    #[tokio::test]
+    async fn dry_run_skips_execution() {
+        let handler = CommandHandler;
+        let mut node = Node::new("script_node");
+        node.attrs.insert(
+            "script".to_string(),
+            AttrValue::String("echo hello".to_string()),
+        );
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let run_dir = tempfile::tempdir().unwrap();
+
+        let mut services = make_services();
+        services.dry_run = true;
+
+        let outcome = handler
+            .execute(&node, &context, &graph, run_dir.path(), &services)
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, StageStatus::Success);
+        assert!(outcome.notes.as_deref().unwrap().contains("[Simulated]"));
+        assert!(outcome.notes.as_deref().unwrap().contains("echo hello"));
+        // No stdout/stderr logs should be written
+        let stage_dir = run_dir.path().join("nodes").join("script_node");
+        assert!(!stage_dir.join("stdout.log").exists());
     }
 
     #[tokio::test]
@@ -678,6 +718,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: std::collections::HashMap::new(),
+            dry_run: false,
         }
     }
 

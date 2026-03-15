@@ -141,7 +141,7 @@ impl Handler for SubWorkflowHandler {
         let child_config = RunConfig {
             run_dir: child_logs,
             cancel_token: Some(cancel_token),
-            dry_run: false,
+            dry_run: services.dry_run,
             run_id: format!("{parent_run_id}_child_{}", node.id),
             git_checkpoint_enabled: false,
             host_repo_path: None,
@@ -274,6 +274,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         }
     }
 
@@ -407,6 +408,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let handler = SubWorkflowHandler;
@@ -516,6 +518,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let handler = SubWorkflowHandler;
@@ -577,6 +580,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let handler = SubWorkflowHandler;
@@ -744,6 +748,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let handler = SubWorkflowHandler;
@@ -828,6 +833,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let handler = SubWorkflowHandler;

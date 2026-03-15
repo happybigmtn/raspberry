@@ -1133,6 +1133,9 @@ pub async fn run_command(
     if !sandbox_env.is_empty() {
         engine.set_env(sandbox_env);
     }
+    if dry_run_mode {
+        engine.set_dry_run(true);
+    }
 
     // Wire up hook runner from run config or run defaults
     {
@@ -1769,12 +1772,15 @@ async fn run_from_branch(
             Some(Box::new(BackendRouter::new(Box::new(api), cli)))
         }
     });
-    let engine = crate::engine::WorkflowRunEngine::with_interviewer(
+    let mut engine = crate::engine::WorkflowRunEngine::with_interviewer(
         registry,
         Arc::clone(&emitter),
         interviewer,
         Arc::clone(&sandbox),
     );
+    if dry_run_mode {
+        engine.set_dry_run(true);
+    }
 
     let meta_branch = Some(crate::git::MetadataStore::branch_name(&run_id));
     let config = RunConfig {

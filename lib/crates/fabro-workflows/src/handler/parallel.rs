@@ -384,6 +384,7 @@ impl Handler for ParallelHandler {
             let emitter = Arc::clone(&services.emitter);
             let hook_runner = services.hook_runner.clone();
             let env = services.env.clone();
+            let dry_run = services.dry_run;
             let graph = graph.clone();
             let run_dir = run_dir.to_path_buf();
             let sem = Arc::clone(&semaphore);
@@ -432,6 +433,7 @@ impl Handler for ParallelHandler {
                     git_state: std::sync::RwLock::new(None),
                     hook_runner: hook_runner.clone(),
                     env: env.clone(),
+                    dry_run,
                 };
                 let handler = registry.resolve(target_node);
                 let outcome = handler
@@ -742,6 +744,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: std::collections::HashMap::new(),
+            dry_run: false,
         }
     }
 

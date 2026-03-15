@@ -164,6 +164,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: std::collections::HashMap::new(),
+            dry_run: false,
         }
     }
 

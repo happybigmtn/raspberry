@@ -360,6 +360,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         }
     }
 
@@ -497,6 +498,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let outcome = handler
@@ -561,6 +563,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let outcome = handler
@@ -626,6 +629,7 @@ mod tests {
             git_state: std::sync::RwLock::new(None),
             hook_runner: None,
             env: HashMap::new(),
+            dry_run: false,
         };
 
         let outcome = handler
