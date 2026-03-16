@@ -1,42 +1,48 @@
 ---
 import Layout from "../layouts/Layout.astro";
 
-const dotExample = `<span class="text-teal-300">digraph</span> <span class="text-ice-50">plan_implement_verify</span> {
-  <span class="text-ice-300">goal = "Build and verify a feature"</span>
+const dotExample = `<span class="text-teal-300">digraph</span> <span class="text-ice-50">PlanImplement</span> {
+  <span class="text-teal-300">graph</span> [
+    <span class="text-teal-500">goal</span>=<span class="text-ice-300">"Plan, approve, implement, and simplify a change"</span>
+    <span class="text-teal-500">model_stylesheet</span>=<span class="text-ice-300">"
+      *        { model: claude-haiku-4-5; }
+      .coding  { model: claude-sonnet-4-5; }
+    "</span>
+  ]
 
-  <span class="text-teal-500">start</span>  [shape=Mdiamond]
-  <span class="text-teal-500">plan</span>   [shape=box]
-  <span class="text-teal-500">review</span> [shape=diamond]
-  <span class="text-teal-500">impl</span>   [shape=box]
-  <span class="text-teal-500">verify</span> [shape=box]
-  <span class="text-teal-500">done</span>   [shape=Msquare]
+  <span class="text-teal-500">start</span>  [shape=Mdiamond, label=<span class="text-ice-300">"Start"</span>]
+  <span class="text-teal-500">exit</span>   [shape=Msquare, label=<span class="text-ice-300">"Exit"</span>]
 
-  <span class="text-ice-300">start  -&gt; plan</span>
-  <span class="text-ice-300">plan   -&gt; review</span>
-  <span class="text-ice-300">review -&gt; plan</span>   [label=<span class="text-coral">"revise"</span>]
-  <span class="text-ice-300">review -&gt; impl</span>   [label=<span class="text-mint">"approve"</span>]
-  <span class="text-ice-300">impl   -&gt; verify</span>
-  <span class="text-ice-300">verify -&gt; impl</span>   [label=<span class="text-coral">"fail"</span>]
-  <span class="text-ice-300">verify -&gt; done</span>   [label=<span class="text-mint">"pass"</span>]
+  <span class="text-teal-500">plan</span>      [label=<span class="text-ice-300">"Plan"</span>, prompt=<span class="text-ice-300">"Analyze the goal and codebase. Write a step-by-step plan."</span>]
+  <span class="text-teal-500">approve</span>   [shape=hexagon, label=<span class="text-ice-300">"Approve Plan"</span>]
+  <span class="text-teal-500">implement</span> [label=<span class="text-ice-300">"Implement"</span>, class=<span class="text-ice-300">"coding"</span>]
+  <span class="text-teal-500">simplify</span>  [label=<span class="text-ice-300">"Simplify"</span>, class=<span class="text-ice-300">"coding"</span>]
+
+  <span class="text-ice-300">start -> plan -> approve</span>
+  <span class="text-ice-300">approve -> implement</span>  [label=<span class="text-mint">"Approve"</span>]
+  <span class="text-ice-300">approve -> plan</span>       [label=<span class="text-coral">"Revise"</span>]
+  <span class="text-ice-300">implement -> simplify -> exit</span>
 }`;
 
-const cssExample = `<span class="text-ice-300">/* Fast model for planning */</span>
-<span class="text-teal-300">box</span> {
-  <span class="text-teal-500">model</span>: <span class="text-ice-50">gemini/gemini-2.5-flash</span>;
+const cssExample = `<span class="text-ice-300">/* All nodes default to fast + cheap */</span>
+<span class="text-teal-300">*</span> {
+  <span class="text-teal-500">model</span>: <span class="text-ice-50">claude-haiku-4-5</span>;
+  <span class="text-teal-500">reasoning_effort</span>: <span class="text-ice-50">low</span>;
 }
 
-<span class="text-ice-300">/* Frontier for verification */</span>
-<span class="text-teal-300">#verify</span> {
-  <span class="text-teal-500">model</span>: <span class="text-ice-50">anthropic/claude-opus-4</span>;
+<span class="text-ice-300">/* Coding stages use a frontier model */</span>
+<span class="text-teal-300">.coding</span> {
+  <span class="text-teal-500">model</span>: <span class="text-ice-50">claude-sonnet-4-5</span>;
+  <span class="text-teal-500">reasoning_effort</span>: <span class="text-ice-50">high</span>;
 }
 
-<span class="text-ice-300">/* Code generation */</span>
-<span class="text-teal-300">#impl</span> {
-  <span class="text-teal-500">model</span>: <span class="text-ice-50">anthropic/claude-sonnet-4</span>;
+<span class="text-ice-300">/* Cross-critique with a different provider */</span>
+<span class="text-teal-300">#review</span> {
+  <span class="text-teal-500">model</span>: <span class="text-ice-50">gemini-3.1-pro-preview</span>;
 }`;
 ---
 
-<Layout title="Fabro — AI Software Factory">
+<Layout title="Fabro — The Dark Software Factory">
   <!-- Nav -->
   <nav class="fixed top-0 z-50 w-full border-b border-navy-800/60 bg-navy-950/70 backdrop-blur-xl">
     <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
@@ -45,10 +51,10 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
         <span class="font-display text-xl font-bold tracking-tight text-ice-50">Fabro</span>
       </a>
       <div class="flex items-center gap-6">
-        <a href="https://docs.arc.computer" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">Docs</a>
-        <a href="https://github.com/qltysh/arc" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">GitHub</a>
+        <a href="https://docs.fabro.sh" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">Docs</a>
+        <a href="https://github.com/fabro-sh/fabro" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">GitHub</a>
         <a
-          href="https://docs.arc.computer/getting-started/quick-start"
+          href="https://docs.fabro.sh/getting-started/quick-start"
           class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-teal-500 hover:shadow-[0_0_20px_-4px_rgba(53,127,158,0.5)]"
         >
           Get started
@@ -69,30 +75,35 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
       <div class="relative mx-auto max-w-5xl px-6 text-center">
         <div class="reveal">
           <p class="mb-6 inline-block rounded-full border border-teal-700/40 bg-teal-700/10 px-4 py-1.5 text-sm font-medium text-teal-300">
-            Open Source
+            Open Source &middot; MIT Licensed
           </p>
         </div>
         <h1 class="reveal reveal-d1 font-display text-5xl font-extrabold leading-[1.08] tracking-tight text-ice-50 sm:text-7xl">
-          The AI software factory<br />
-          for <span class="gradient-text">expert engineering teams</span>
+          The dark software factory<br />
+          for <span class="gradient-text">expert engineers</span>
         </h1>
         <p class="reveal reveal-d2 mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-ice-300">
-          Ship production code through long-horizon deterministic workflows, built-in verification,
-          and full observability — without trading quality for speed.
+          AI coding agents are powerful but unpredictable. Define your process as a graph, let agents execute it,
+          and intervene only where it matters.
         </p>
-        <div class="reveal reveal-d3 mt-12 flex items-center justify-center gap-4">
-          <a
-            href="https://docs.arc.computer/getting-started/quick-start"
-            class="rounded-xl bg-teal-700 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-teal-500 hover:shadow-[0_0_24px_-4px_rgba(53,127,158,0.5)]"
-          >
-            Get started
-          </a>
-          <a
-            href="https://docs.arc.computer"
-            class="rounded-xl border border-navy-600 px-7 py-3.5 text-sm font-semibold text-ice-300 transition-all hover:border-teal-700/60 hover:text-ice-50"
-          >
-            Read the docs
-          </a>
+        <div class="reveal reveal-d3 mt-10 flex flex-col items-center gap-5">
+          <div class="rounded-xl border border-navy-600 bg-navy-900/60 px-6 py-3">
+            <code class="text-sm font-mono text-teal-300">$ curl -fsSL https://fabro.sh/install.sh | bash</code>
+          </div>
+          <div class="flex items-center gap-4">
+            <a
+              href="https://docs.fabro.sh/getting-started/quick-start"
+              class="rounded-xl bg-teal-700 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-teal-500 hover:shadow-[0_0_24px_-4px_rgba(53,127,158,0.5)]"
+            >
+              Get started
+            </a>
+            <a
+              href="https://docs.fabro.sh"
+              class="rounded-xl border border-navy-600 px-7 py-3.5 text-sm font-semibold text-ice-300 transition-all hover:border-teal-700/60 hover:text-ice-50"
+            >
+              Read the docs
+            </a>
+          </div>
         </div>
       </div>
     </section>
@@ -102,12 +113,67 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
       <div class="section-divider mx-auto max-w-xs"></div>
       <div class="mx-auto max-w-3xl px-6 pt-28 text-center">
         <h2 class="reveal font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl">
-          Controlled, auditable pipelines<br class="hidden sm:inline" /> for real engineering
+          Stop babysitting agents.<br class="hidden sm:inline" /> Start orchestrating workflows.
         </h2>
         <p class="reveal reveal-d1 mt-5 text-lg leading-relaxed text-ice-300">
-          Instead of one-shot code generation, Fabro runs workflows: plan, implement, verify, review, ship — using
-          the right model at each step, with guardrails that fail closed.
+          You either babysit every step or review a 50-file diff you don't trust.
+          Fabro gives you a middle path: version-controlled workflow graphs that orchestrate AI agents,
+          shell commands, and human decisions into repeatable, long-horizon coding processes.
         </p>
+      </div>
+    </section>
+
+    <!-- Use Cases -->
+    <section class="relative py-28">
+      <div class="section-divider mx-auto max-w-xs"></div>
+      <div class="mx-auto max-w-6xl px-6 pt-28">
+        <h2 class="reveal font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl text-center mb-16">
+          Why teams use Fabro
+        </h2>
+        <div class="grid gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="reveal flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Extend disengagement time</div>
+              <div class="mt-1 text-sm text-ice-300">Define a workflow with verification gates and walk away. Fabro keeps the process on track without you.</div>
+            </div>
+          </div>
+          <div class="reveal reveal-d1 flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Leverage ensemble intelligence</div>
+              <div class="mt-1 text-sm text-ice-300">Use one model to implement, another to cross-critique, and a third to summarize — all in a single workflow.</div>
+            </div>
+          </div>
+          <div class="reveal reveal-d2 flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Guarantee code quality</div>
+              <div class="mt-1 text-sm text-ice-300">Layer test suites, linters, type checkers, and LLM-as-judge into your workflow graph. Failures trigger fix loops automatically.</div>
+            </div>
+          </div>
+          <div class="reveal reveal-d3 flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Reduce token bills</div>
+              <div class="mt-1 text-sm text-ice-300">Route cheap tasks to fast models and reserve frontier models for the steps that need them. One-line stylesheet change.</div>
+            </div>
+          </div>
+          <div class="reveal reveal-d4 flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Improve agent security</div>
+              <div class="mt-1 text-sm text-ice-300">Run agents in cloud sandboxes with full network and filesystem isolation. Keep untrusted code off your laptop.</div>
+            </div>
+          </div>
+          <div class="reveal reveal-d5 flex items-start gap-3">
+            <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
+            <div>
+              <div class="font-display font-semibold text-ice-50">Run agents 24/7</div>
+              <div class="mt-1 text-sm text-ice-300">The API server queues and executes runs continuously. Close your laptop — results are waiting when you return.</div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -115,132 +181,143 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
     <section class="relative py-28">
       <div class="section-divider mx-auto max-w-xs"></div>
       <div class="mx-auto max-w-6xl px-6 pt-28">
+        <h2 class="reveal font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl text-center mb-16">
+          Key features
+        </h2>
         <div class="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
           <div class="glow-card reveal rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-teal-700/40 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-teal-700/15">
-              <svg class="h-5 w-5 text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Deterministic long-horizon runs</h3>
+            <div class="mb-3 text-2xl">🔀</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Deterministic workflow graphs</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Predictable automation with guardrails and rerun-ability. Human-in-the-loop when needed, fully automated when it's not.
+              Define pipelines in Graphviz DOT with branching, loops, parallelism, and human gates. Diffable, reviewable, version-controlled.
             </p>
           </div>
 
           <div class="glow-card reveal reveal-d1 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-mint/30 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-mint/10">
-              <svg class="h-5 w-5 text-mint" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Verification-first pipeline</h3>
+            <div class="mb-3 text-2xl">🙋</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Human-in-the-loop</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Builds, tests, static analysis, LLM review, and human approval — baked into every workflow, not bolted on after.
+              Approval gates pause for human decisions. Steer running agents mid-turn. Interview steps collect structured input.
             </p>
           </div>
 
           <div class="glow-card reveal reveal-d2 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-teal-700/40 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-teal-700/15">
-              <svg class="h-5 w-5 text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Multi-model orchestration</h3>
+            <div class="mb-3 text-2xl">🎨</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Multi-model routing</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Use the right model for each step. CSS-like stylesheets assign fast models for breadth, frontier models for correctness.
+              CSS-like stylesheets route each node to the right model and provider, with automatic fallback chains.
             </p>
           </div>
 
           <div class="glow-card reveal reveal-d3 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-amber/25 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-amber/10">
-              <svg class="h-5 w-5 text-amber" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Total observability</h3>
+            <div class="mb-3 text-2xl">☁️</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Cloud sandboxes</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Trace every step down to each tool call. Inspect inputs, outputs, and timing. Compare runs and diagnose regressions.
+              Run agents in isolated cloud VMs with snapshot-based setup, network controls, and automatic cleanup. SSH in with <code class="text-teal-300">fabro ssh</code>.
             </p>
           </div>
 
           <div class="glow-card reveal reveal-d4 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-mint/30 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-mint/10">
-              <svg class="h-5 w-5 text-mint" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Cloud sandboxes</h3>
+            <div class="mb-3 text-2xl">🌲</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Git checkpointing</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Ephemeral sandboxes for safe execution. Preview environments to validate changes end-to-end. SSH access when you need it.
+              Every stage commits code changes and execution metadata to Git branches. Resume, revert, or trace any change.
             </p>
           </div>
 
           <div class="glow-card reveal reveal-d5 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
             <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-coral/25 to-transparent"></div>
-            <div class="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-coral/10">
-              <svg class="h-5 w-5 text-coral" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-              </svg>
-            </div>
-            <h3 class="font-display text-lg font-semibold text-ice-50">Open source, forkable</h3>
+            <div class="mb-3 text-2xl">📊</div>
+            <h3 class="font-display text-lg font-semibold text-ice-50">Automatic retrospectives</h3>
             <p class="mt-2 text-sm leading-relaxed text-ice-300">
-              Written in Rust. MIT-licensed. Fork it, extend it, make it the center of your engineering process.
+              Each run generates a retro with cost, duration, files touched, and an LLM-written narrative. Your workflows improve over time.
             </p>
+          </div>
+        </div>
+
+        <!-- Bottom row: wider cards -->
+        <div class="mt-5 grid gap-5 md:grid-cols-2">
+          <div class="glow-card reveal rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
+            <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-teal-700/40 to-transparent"></div>
+            <div class="flex items-start gap-4">
+              <div class="text-2xl">⚡</div>
+              <div>
+                <h3 class="font-display text-lg font-semibold text-ice-50">API server + web UI</h3>
+                <p class="mt-2 text-sm leading-relaxed text-ice-300">
+                  REST API with SSE event streaming and a React web UI. Run workflows programmatically or as a service. Queue runs, track progress, manage at scale.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="glow-card reveal reveal-d1 rounded-xl border border-navy-800 bg-navy-800/25 p-8 relative overflow-hidden">
+            <div class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-teal-700/40 to-transparent"></div>
+            <div class="flex items-start gap-4">
+              <div class="text-2xl">🦀</div>
+              <div>
+                <h3 class="font-display text-lg font-semibold text-ice-50">Single binary, no runtime</h3>
+                <p class="mt-2 text-sm leading-relaxed text-ice-300">
+                  One compiled Rust executable with zero dependencies. No Python, no Node, no Docker required.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Built for Real Engineering -->
+    <!-- Workflow-as-Code -->
     <section class="relative py-28">
       <div class="section-divider mx-auto max-w-xs"></div>
       <div class="mx-auto max-w-6xl px-6 pt-28">
         <div class="grid items-start gap-16 lg:grid-cols-2">
           <div class="reveal">
             <h2 class="font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl">
-              Built for real engineering,<br class="hidden sm:inline" /> not promptware
+              Workflow-as-Code
             </h2>
             <p class="mt-5 text-lg leading-relaxed text-ice-300">
-              Fabro is built like infrastructure: solid architecture, strong defaults, and the reliability you expect from production tooling.
+              Define how work gets done in version-controlled graph files. Each node is a stage — agent, command,
+              human gate, conditional — executed by the workflow engine.
             </p>
             <ul class="mt-8 space-y-4">
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
-                <span class="text-ice-300">Written in Rust for performance, safety, and a durable core</span>
+                <span class="text-ice-300"><strong class="text-ice-50">Agent nodes</strong> run multi-turn LLM sessions with tool access</span>
               </li>
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
-                <span class="text-ice-300">Designed for long-horizon tasks across real codebases, not toy demos</span>
+                <span class="text-ice-300"><strong class="text-ice-50">Human gates</strong> (<code class="text-teal-300">hexagon</code>) pause for approval or revision</span>
               </li>
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
-                <span class="text-ice-300">Open source — fork it, extend it, and make it the center of your business</span>
+                <span class="text-ice-300"><strong class="text-ice-50">Parallel nodes</strong> fan out for concurrent execution, then merge</span>
+              </li>
+              <li class="flex items-start gap-3">
+                <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
+                <span class="text-ice-300"><strong class="text-ice-50">Command nodes</strong> run shell scripts for builds, tests, and linters</span>
               </li>
             </ul>
           </div>
 
-          <!-- Workflow-as-Code example -->
+          <!-- DOT example -->
           <div class="reveal reveal-d2 rounded-xl border border-navy-800 bg-navy-900/60 p-6 shadow-[0_0_60px_-15px_rgba(103,178,215,0.08)]">
             <div class="mb-3 flex items-center gap-2">
               <span class="h-3 w-3 rounded-full bg-coral/70"></span>
               <span class="h-3 w-3 rounded-full bg-amber/70"></span>
               <span class="h-3 w-3 rounded-full bg-mint/70"></span>
-              <span class="ml-3 text-xs text-ice-300/60 font-mono">workflow.fabro</span>
+              <span class="ml-3 text-xs text-ice-300/60 font-mono">plan-implement.fabro</span>
             </div>
-            <pre class="overflow-x-auto text-sm leading-relaxed"><code class="font-mono" set:html={dotExample} /></pre>
+            <pre class="overflow-x-auto text-[13px] leading-relaxed"><code class="font-mono" set:html={dotExample} /></pre>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Verification -->
+    <!-- Human-in-the-Loop -->
     <section class="relative py-28">
       <div class="section-divider mx-auto max-w-xs"></div>
       <div class="mx-auto max-w-6xl px-6 pt-28">
@@ -250,22 +327,22 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
               <div class="glow-card rounded-lg border border-navy-800 bg-navy-800/25 p-5">
                 <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-teal-500">Gate</div>
                 <div class="font-display text-sm font-semibold text-ice-50">Build + Tests</div>
-                <p class="mt-1 text-xs text-ice-300">Hard gate. Fails block the pipeline.</p>
+                <p class="mt-1 text-xs text-ice-300">Hard gate. Failures trigger automatic fix loops.</p>
               </div>
               <div class="glow-card rounded-lg border border-navy-800 bg-navy-800/25 p-5">
                 <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-teal-500">Gate</div>
                 <div class="font-display text-sm font-semibold text-ice-50">Static Analysis</div>
-                <p class="mt-1 text-xs text-ice-300">Policy checks enforced at every stage.</p>
+                <p class="mt-1 text-xs text-ice-300">Linters, type checkers, policy checks at every stage.</p>
               </div>
               <div class="glow-card rounded-lg border border-navy-800 bg-navy-800/25 p-5">
                 <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-amber">Layer</div>
-                <div class="font-display text-sm font-semibold text-ice-50">LLM Review</div>
-                <p class="mt-1 text-xs text-ice-300">Additional layer, not a substitute for real checks.</p>
+                <div class="font-display text-sm font-semibold text-ice-50">LLM-as-Judge</div>
+                <p class="mt-1 text-xs text-ice-300">Cross-critique from a fresh model with different blindspots.</p>
               </div>
               <div class="glow-card rounded-lg border border-navy-800 bg-navy-800/25 p-5">
-                <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-mint">Loop</div>
-                <div class="font-display text-sm font-semibold text-ice-50">Human Review</div>
-                <p class="mt-1 text-xs text-ice-300">Integrated cleanly into the workflow graph.</p>
+                <div class="mb-2 text-xs font-semibold uppercase tracking-wider text-mint">Human</div>
+                <div class="font-display text-sm font-semibold text-ice-50">Approval Gate</div>
+                <p class="mt-1 text-xs text-ice-300">Approve, revise, or steer agents mid-turn.</p>
               </div>
             </div>
           </div>
@@ -275,7 +352,7 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
             </h2>
             <p class="mt-5 text-lg leading-relaxed text-ice-300">
               Fabro doesn't just produce output — it validates it. Builds and tests are gates, not suggestions.
-              LLM review adds a layer. Human review loops close the gap.
+              Failures trigger automatic fix loops. Human gates let you approve, revise, or steer.
             </p>
             <p class="mt-6 text-sm font-semibold text-teal-500">
               Mergeable results that survive CI and code review.
@@ -295,17 +372,17 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
               Multi-model, multi-provider
             </h2>
             <p class="mt-5 text-lg leading-relaxed text-ice-300">
-              Different steps deserve different models. Fabro orchestrates an ensemble so you get the best
-              quality per dollar — fast models for breadth, frontier models for correctness.
+              CSS-like stylesheets assign models to workflow stages by ID, class, or shape.
+              Use fast models for breadth, frontier models for correctness — with automatic fallback chains.
             </p>
             <ul class="mt-8 space-y-4">
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
-                <span class="text-ice-300">CSS-like stylesheets assign models to workflow stages</span>
+                <span class="text-ice-300">Anthropic, OpenAI, and Gemini models out of the box</span>
               </li>
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
-                <span class="text-ice-300">Provider flexibility — avoid lock-in, keep leverage</span>
+                <span class="text-ice-300">Selector specificity: <code class="text-teal-300">#id</code> &gt; <code class="text-teal-300">.class</code> &gt; <code class="text-teal-300">shape</code> &gt; <code class="text-teal-300">*</code></span>
               </li>
               <li class="flex items-start gap-3">
                 <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
@@ -327,6 +404,63 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
       </div>
     </section>
 
+    <!-- Sandboxes -->
+    <section class="relative py-28">
+      <div class="section-divider mx-auto max-w-xs"></div>
+      <div class="mx-auto max-w-6xl px-6 pt-28">
+        <div class="grid items-start gap-16 lg:grid-cols-2">
+          <div class="order-2 lg:order-1 reveal reveal-d1">
+            <div class="rounded-xl border border-navy-800 bg-navy-900/60 p-6">
+              <div class="space-y-3 font-mono text-sm">
+                <div class="flex items-center gap-3">
+                  <span class="text-ice-300/50">$</span>
+                  <span class="text-teal-300">fabro run deploy --sandbox daytona</span>
+                </div>
+                <div class="text-ice-300/70 pl-5">
+                  <div>Provisioning sandbox... <span class="text-mint">done</span> (3.2s)</div>
+                  <div>Cloning repository... <span class="text-mint">done</span></div>
+                  <div>Running workflow... <span class="text-mint">stage 1/5</span></div>
+                </div>
+                <div class="mt-4 flex items-center gap-3 border-t border-navy-800 pt-3">
+                  <span class="text-ice-300/50">$</span>
+                  <span class="text-teal-300">fabro ssh</span>
+                  <span class="text-ice-300/50 text-xs">← shell into the running sandbox</span>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="text-ice-300/50">$</span>
+                  <span class="text-teal-300">fabro preview 3000</span>
+                  <span class="text-ice-300/50 text-xs">← expose a port for live debugging</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="order-1 lg:order-2 reveal">
+            <h2 class="font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl">
+              Cloud sandboxes with<br class="hidden sm:inline" /> SSH and preview links
+            </h2>
+            <p class="mt-5 text-lg leading-relaxed text-ice-300">
+              Run agents in isolated cloud VMs — not on your laptop. Full network and filesystem isolation,
+              snapshot-based setup, and automatic cleanup.
+            </p>
+            <ul class="mt-8 space-y-4">
+              <li class="flex items-start gap-3">
+                <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
+                <span class="text-ice-300">Shell into running sandboxes with <code class="text-teal-300">fabro ssh</code></span>
+              </li>
+              <li class="flex items-start gap-3">
+                <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
+                <span class="text-ice-300">Expose ports with <code class="text-teal-300">fabro preview</code> for live debugging</span>
+              </li>
+              <li class="flex items-start gap-3">
+                <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-teal-500"></span>
+                <span class="text-ice-300">6 providers: local, Docker, Daytona, SSH, exe.dev, Sprites</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Observability -->
     <section class="relative py-28">
       <div class="section-divider mx-auto max-w-xs"></div>
@@ -336,8 +470,8 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
             Ground-up observability
           </h2>
           <p class="reveal reveal-d1 mt-5 text-lg leading-relaxed text-ice-300">
-            If you can't see what happened, you can't trust it. Full traceability across runs — inspect every model
-            call, every tool invocation, every decision point.
+            Full traceability across runs — every model call, every tool invocation, every decision point.
+            Query run data with SQL. Automatic retrospectives rate each run and surface friction points.
           </p>
         </div>
 
@@ -345,14 +479,14 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
         <div class="reveal reveal-d2 mt-16 rounded-xl border border-navy-800 bg-navy-900/40 p-6 overflow-hidden">
           <div class="mb-5 flex items-center gap-2.5">
             <div class="h-2 w-2 rounded-full bg-mint animate-pulse-glow"></div>
-            <span class="text-xs font-mono text-ice-300/70">arc.workflow.run — trace</span>
+            <span class="text-xs font-mono text-ice-300/70">fabro.workflow.run — trace</span>
           </div>
           <div class="space-y-2">
             <div class="flex items-center gap-3">
               <span class="shrink-0 w-20 text-right text-xs font-mono text-ice-300/50">workflow</span>
               <div class="relative h-7 flex-1">
                 <div class="absolute inset-x-0 h-full rounded-md bg-teal-700/25 border border-teal-700/30 flex items-center px-3">
-                  <span class="text-[11px] font-mono text-teal-300">arc.workflow.run — 24.3s</span>
+                  <span class="text-[11px] font-mono text-teal-300">fabro.workflow.run — 24.3s</span>
                 </div>
               </div>
             </div>
@@ -373,12 +507,59 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <span class="shrink-0 w-20 text-right text-xs font-mono text-ice-300/50">verify</span>
+              <span class="shrink-0 w-20 text-right text-xs font-mono text-ice-300/50">simplify</span>
               <div class="relative h-7 flex-1">
-                <div class="absolute left-[63%] h-full rounded-md bg-amber/12 border border-amber/20 flex items-center px-3" style="width: 28%">
-                  <span class="text-[11px] font-mono text-amber truncate">7.5s</span>
+                <div class="absolute left-[63%] h-full rounded-md bg-amber/12 border border-amber/20 flex items-center px-3" style="width: 18%">
+                  <span class="text-[11px] font-mono text-amber truncate">4.2s</span>
                 </div>
               </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="shrink-0 w-20 text-right text-xs font-mono text-ice-300/50">retro</span>
+              <div class="relative h-7 flex-1">
+                <div class="absolute left-[82%] h-full rounded-md bg-coral/12 border border-coral/20 flex items-center px-3" style="width: 14%">
+                  <span class="text-[11px] font-mono text-coral truncate">3.3s</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CLI -->
+    <section class="relative py-28">
+      <div class="section-divider mx-auto max-w-xs"></div>
+      <div class="mx-auto max-w-4xl px-6 pt-28">
+        <div class="text-center">
+          <h2 class="reveal font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl">
+            Powerful CLI
+          </h2>
+          <p class="reveal reveal-d1 mt-5 text-lg leading-relaxed text-ice-300">
+            One binary. Zero dependencies. Everything you need to run, inspect, and manage workflows.
+          </p>
+        </div>
+        <div class="reveal reveal-d2 mt-12 rounded-xl border border-navy-800 bg-navy-900/60 p-6 font-mono text-sm">
+          <div class="space-y-4">
+            <div>
+              <div class="text-ice-300/50 text-xs mb-2">Run workflows</div>
+              <div class="text-teal-300">$ fabro run plan-implement</div>
+              <div class="text-teal-300 mt-1">$ fabro run --sandbox daytona --resume</div>
+            </div>
+            <div class="border-t border-navy-800 pt-4">
+              <div class="text-ice-300/50 text-xs mb-2">Manage runs</div>
+              <div class="text-teal-300">$ fabro ps</div>
+              <div class="text-teal-300 mt-1">$ fabro logs &lt;run-id&gt;</div>
+              <div class="text-teal-300 mt-1">$ fabro diff &lt;run-id&gt;</div>
+            </div>
+            <div class="border-t border-navy-800 pt-4">
+              <div class="text-ice-300/50 text-xs mb-2">Debug sandboxes</div>
+              <div class="text-teal-300">$ fabro ssh</div>
+              <div class="text-teal-300 mt-1">$ fabro preview 3000</div>
+            </div>
+            <div class="border-t border-navy-800 pt-4">
+              <div class="text-ice-300/50 text-xs mb-2">Ship results</div>
+              <div class="text-teal-300">$ fabro pr create &lt;run-id&gt;</div>
             </div>
           </div>
         </div>
@@ -413,7 +594,7 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
           <div class="flex items-start gap-4">
             <span class="mt-0.5 flex-shrink-0 text-teal-500 font-mono text-lg">&rarr;</span>
             <div>
-              <div class="font-display font-semibold text-ice-50">Audit trails</div>
+              <div class="font-display font-semibold text-ice-50">Git checkpoints + audit trails</div>
               <div class="text-sm text-ice-300/40 line-through decoration-ice-300/20">Not opaque agents</div>
             </div>
           </div>
@@ -428,23 +609,6 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
       </div>
     </section>
 
-    <!-- Workflow as Code -->
-    <section class="relative py-28">
-      <div class="section-divider mx-auto max-w-xs"></div>
-      <div class="mx-auto max-w-3xl px-6 pt-28 text-center">
-        <h2 class="reveal font-display text-3xl font-bold tracking-tight text-ice-50 sm:text-4xl">
-          Workflow-as-Code
-        </h2>
-        <p class="reveal reveal-d1 mt-5 text-lg leading-relaxed text-ice-300">
-          Define how work gets done in version-controlled graph files, then run it consistently.
-          Composable steps. Auditable history. Repeatable results. IaC for coding.
-        </p>
-        <div class="reveal reveal-d2 mt-10 inline-block rounded-lg border border-navy-800 bg-navy-900/50 px-6 py-3">
-          <code class="text-sm font-mono text-teal-300">$ fabro run workflow.fabro</code>
-        </div>
-      </div>
-    </section>
-
     <!-- CTA -->
     <section class="relative overflow-hidden py-32">
       <div class="absolute inset-0 dot-grid"></div>
@@ -455,19 +619,24 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
           Workflows you can audit.<br />
           <span class="gradient-text">Output you can trust.</span>
         </h2>
-        <div class="reveal reveal-d1 mt-12 flex items-center justify-center gap-4">
-          <a
-            href="https://docs.arc.computer/getting-started/quick-start"
-            class="rounded-xl bg-teal-700 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-teal-500 hover:shadow-[0_0_24px_-4px_rgba(53,127,158,0.5)]"
-          >
-            Get started
-          </a>
-          <a
-            href="https://github.com/qltysh/arc"
-            class="rounded-xl border border-navy-600 px-7 py-3.5 text-sm font-semibold text-ice-300 transition-all hover:border-teal-700/60 hover:text-ice-50"
-          >
-            View on GitHub
-          </a>
+        <div class="reveal reveal-d1 mt-10 flex flex-col items-center gap-5">
+          <div class="rounded-xl border border-navy-600 bg-navy-900/60 px-6 py-3">
+            <code class="text-sm font-mono text-teal-300">$ curl -fsSL https://fabro.sh/install.sh | bash</code>
+          </div>
+          <div class="flex items-center justify-center gap-4">
+            <a
+              href="https://docs.fabro.sh/getting-started/quick-start"
+              class="rounded-xl bg-teal-700 px-7 py-3.5 text-sm font-semibold text-white transition-all hover:bg-teal-500 hover:shadow-[0_0_24px_-4px_rgba(53,127,158,0.5)]"
+            >
+              Get started
+            </a>
+            <a
+              href="https://github.com/fabro-sh/fabro"
+              class="rounded-xl border border-navy-600 px-7 py-3.5 text-sm font-semibold text-ice-300 transition-all hover:border-teal-700/60 hover:text-ice-50"
+            >
+              View on GitHub
+            </a>
+          </div>
         </div>
       </div>
     </section>
@@ -482,8 +651,8 @@ const cssExample = `<span class="text-ice-300">/* Fast model for planning */</sp
           <span class="text-sm text-ice-300">Fabro — Open source, MIT-licensed</span>
         </div>
         <div class="flex items-center gap-6">
-          <a href="https://docs.arc.computer" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">Docs</a>
-          <a href="https://github.com/qltysh/arc" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">GitHub</a>
+          <a href="https://docs.fabro.sh" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">Docs</a>
+          <a href="https://github.com/fabro-sh/fabro" class="text-sm text-ice-300 hover:text-ice-50 transition-colors">GitHub</a>
         </div>
       </div>
     </div>
