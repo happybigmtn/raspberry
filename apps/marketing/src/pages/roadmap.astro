@@ -38,13 +38,13 @@ const statusConfig = {
   <!-- Nav -->
   <nav class="fixed top-0 z-50 w-full border-b border-navy-800/60 bg-navy-950/70 backdrop-blur-xl">
     <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-      <a href="/" class="flex items-center">
-        <img src="/logotype.svg" alt="Fabro" class="h-7" />
-      </a>
-      <div class="hidden md:flex items-center gap-8">
-        <a href="https://docs.fabro.sh" class="text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Docs</a>
-        <a href="https://docs.fabro.sh/changelog" class="text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Changelog</a>
-        <a href="/roadmap" class="text-sm font-medium text-ice-50 transition-colors">Roadmap</a>
+      <div class="flex items-center gap-8">
+        <a href="/" class="flex items-center">
+          <img src="/logotype.svg" alt="Fabro" class="h-7" />
+        </a>
+        <a href="https://docs.fabro.sh" class="hidden md:inline-flex text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Docs</a>
+        <a href="/roadmap" class="hidden md:inline-flex text-sm font-medium text-ice-50 transition-colors">Roadmap</a>
+        <a href="https://docs.fabro.sh/changelog" class="hidden md:inline-flex text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Changelog</a>
       </div>
       <div class="flex items-center gap-5">
         <a href="/discord" class="hidden md:block text-ice-300 hover:text-ice-50 transition-colors" aria-label="Discord">
@@ -69,8 +69,8 @@ const statusConfig = {
     <div id="mobile-menu" class="md:hidden hidden border-t border-navy-800/60 bg-navy-950/95 backdrop-blur-xl">
       <div class="px-6 py-5 space-y-4">
         <a href="https://docs.fabro.sh" class="block text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Docs</a>
-        <a href="https://docs.fabro.sh/changelog" class="block text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Changelog</a>
         <a href="/roadmap" class="block text-sm font-medium text-ice-50 transition-colors">Roadmap</a>
+        <a href="https://docs.fabro.sh/changelog" class="block text-sm font-medium text-ice-100 hover:text-ice-50 transition-colors">Changelog</a>
         <hr class="border-navy-800/60" />
         <div class="flex items-center gap-5">
           <a href="/discord" class="text-ice-300 hover:text-ice-50 transition-colors" aria-label="Discord">
@@ -272,8 +272,8 @@ const statusConfig = {
           <ul class="space-y-2 text-sm">
             <li><a href="https://docs.fabro.sh/getting-started/quick-start" class="text-ice-300 hover:text-ice-50 transition-colors">Quick Start</a></li>
             <li><a href="https://docs.fabro.sh" class="text-ice-300 hover:text-ice-50 transition-colors">Docs</a></li>
-            <li><a href="https://docs.fabro.sh/changelog" class="text-ice-300 hover:text-ice-50 transition-colors">Changelog</a></li>
             <li><a href="/roadmap" class="text-ice-300 hover:text-ice-50 transition-colors">Roadmap</a></li>
+            <li><a href="https://docs.fabro.sh/changelog" class="text-ice-300 hover:text-ice-50 transition-colors">Changelog</a></li>
             <li><a href="https://github.com/fabro-sh/fabro/releases" class="text-ice-300 hover:text-ice-50 transition-colors">Releases</a></li>
           </ul>
         </div>

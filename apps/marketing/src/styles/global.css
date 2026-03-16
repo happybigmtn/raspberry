@@ -79,6 +79,11 @@
   pointer-events: none;
 }
 
+/* Prevent grid/flex blowout from wide children (SVGs, pre blocks) */
+.grid > * {
+  min-width: 0;
+}
+
 /* Feature card hover glow */
 .glow-card {
   transition: border-color 0.4s ease, box-shadow 0.4s ease, transform 0.4s ease;
