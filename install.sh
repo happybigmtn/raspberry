@@ -102,42 +102,48 @@ else
   tilde_bin_dir=$(tildify "$INSTALL_DIR")
   echo "" >&2
 
-  case $(basename "${SHELL:-sh}") in
-  zsh)
-    : "${ZDOTDIR:="$HOME"}"
-    shell_config="${ZDOTDIR%/}/.zshrc"
-    {
-      printf '\n# fabro\n'
-      echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-    } >>"$shell_config"
-    info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$shell_config")${RESET}"
-    ;;
-  bash)
-    shell_config="$HOME/.bashrc"
-    if [ -f "$HOME/.bash_profile" ]; then
-      shell_config="$HOME/.bash_profile"
-    fi
-    {
-      printf '\n# fabro\n'
-      echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-    } >>"$shell_config"
-    info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$shell_config")${RESET}"
-    ;;
-  fish)
-    fish_config="$HOME/.config/fish/config.fish"
-    mkdir -p "$(dirname "$fish_config")"
-    {
-      printf '\n# fabro\n'
-      echo "fish_add_path $INSTALL_DIR"
-    } >>"$fish_config"
-    info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$fish_config")${RESET}"
-    ;;
-  *)
+  if [ -t 2 ] && [ -e /dev/tty ]; then
+    case $(basename "${SHELL:-sh}") in
+    zsh)
+      : "${ZDOTDIR:="$HOME"}"
+      shell_config="${ZDOTDIR%/}/.zshrc"
+      {
+        printf '\n# fabro\n'
+        echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+      } >>"$shell_config"
+      info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$shell_config")${RESET}"
+      ;;
+    bash)
+      shell_config="$HOME/.bashrc"
+      if [ -f "$HOME/.bash_profile" ]; then
+        shell_config="$HOME/.bash_profile"
+      fi
+      {
+        printf '\n# fabro\n'
+        echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+      } >>"$shell_config"
+      info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$shell_config")${RESET}"
+      ;;
+    fish)
+      fish_config="$HOME/.config/fish/config.fish"
+      mkdir -p "$(dirname "$fish_config")"
+      {
+        printf '\n# fabro\n'
+        echo "fish_add_path $INSTALL_DIR"
+      } >>"$fish_config"
+      info "Added ${BOLD_CYAN}${tilde_bin_dir}${RESET} to \$PATH in ${BOLD_CYAN}$(tildify "$fish_config")${RESET}"
+      ;;
+    *)
+      info "Add ${BOLD_CYAN}${tilde_bin_dir}${RESET} to your PATH:"
+      echo "" >&2
+      info "  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}"
+      ;;
+    esac
+  else
     info "Add ${BOLD_CYAN}${tilde_bin_dir}${RESET} to your PATH:"
     echo "" >&2
     info "  ${BOLD}export PATH=\"${INSTALL_DIR}:\$PATH\"${RESET}"
-    ;;
-  esac
+  fi
 
   export PATH="${INSTALL_DIR}:$PATH"
 fi
