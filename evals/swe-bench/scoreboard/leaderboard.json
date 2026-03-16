@@ -1,5 +1,18 @@
 [
   {
+    "run_name": "sonnet-20min-20260316",
+    "date": "2026-03-16",
+    "model": "claude-sonnet-4-6",
+    "provider": "anthropic",
+    "resolved": 173,
+    "total": 300,
+    "resolve_pct": 57.7,
+    "patched": 297,
+    "patch_pct": 99.0,
+    "total_cost_usd": 55.22,
+    "avg_cost_usd": 0.1841
+  },
+  {
     "run_name": "sonnet-baseline-20260316",
     "date": "2026-03-16",
     "model": "claude-sonnet-4-6",
