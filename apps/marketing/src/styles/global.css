@@ -18,9 +18,9 @@
   --color-amber: #F0A45B;
   --color-coral: #E86B6B;
 
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Lexend", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
 
   --animate-float: float 8s ease-in-out infinite;
   --animate-pulse-glow: pulse-glow 4s ease-in-out infinite;
