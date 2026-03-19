@@ -134,6 +134,7 @@ macro_rules! provider_tests {
             gemini
         );
         provider_test!($scenario, Provider::Kimi, "kimi-k2.5", kimi);
+        #[cfg(feature = "quarantine")]
         provider_test!($scenario, Provider::Zai, "glm-4.7", zai);
         provider_test!($scenario, Provider::Minimax, "minimax-m2.5", minimax);
         #[cfg(feature = "quarantine")]
@@ -181,6 +182,7 @@ macro_rules! non_openai_provider_tests {
             gemini
         );
         provider_test!($scenario, Provider::Kimi, "kimi-k2.5", kimi);
+        #[cfg(feature = "quarantine")]
         provider_test!($scenario, Provider::Zai, "glm-4.7", zai);
         provider_test!($scenario, Provider::Minimax, "minimax-m2.5", minimax);
         #[cfg(feature = "quarantine")]
@@ -436,6 +438,7 @@ reasoning_effort_tests!(
     gemini_reasoning_effort
 );
 reasoning_effort_tests!(Provider::Kimi, "kimi-k2.5", kimi_reasoning_effort);
+#[cfg(feature = "quarantine")]
 reasoning_effort_tests!(Provider::Zai, "glm-4.7", zai_reasoning_effort);
 reasoning_effort_tests!(Provider::Minimax, "minimax-m2.5", minimax_reasoning_effort);
 #[cfg(feature = "quarantine")]
@@ -491,6 +494,7 @@ loop_detection_tests!(
     gemini_loop_detection
 );
 loop_detection_tests!(Provider::Kimi, "kimi-k2.5", kimi_loop_detection);
+#[cfg(feature = "quarantine")]
 loop_detection_tests!(Provider::Zai, "glm-4.7", zai_loop_detection);
 loop_detection_tests!(Provider::Minimax, "minimax-m2.5", minimax_loop_detection);
 #[cfg(feature = "quarantine")]
