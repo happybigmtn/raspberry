@@ -1,8 +1,5 @@
-use std::path::{Path, PathBuf};
-
 use anyhow::Result;
 use clap::Args;
-use serde::Serialize;
 
 #[derive(Args)]
 pub struct InspectArgs {
@@ -10,77 +7,16 @@ pub struct InspectArgs {
     pub run: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct InspectOutput {
-    pub run_id: String,
-    pub run_dir: PathBuf,
-    pub status: fabro_workflows::run_status::RunStatus,
-    pub status_record: Option<serde_json::Value>,
-    pub manifest: Option<serde_json::Value>,
-    pub conclusion: Option<serde_json::Value>,
-    pub checkpoint: Option<serde_json::Value>,
-    pub state: Option<serde_json::Value>,
-    pub live: Option<serde_json::Value>,
-    pub sandbox: Option<serde_json::Value>,
-}
-
 pub fn run(args: &InspectArgs) -> Result<()> {
     let base = fabro_workflows::run_lookup::default_runs_base();
-    let run = fabro_workflows::run_lookup::resolve_run(&base, &args.run)?;
-    let output = inspect_run_dir(&run.run_id, &run.path, run.status)?;
+    let output = fabro_workflows::run_inspect::inspect_run(&base, &args.run)?;
     let json = serde_json::to_string_pretty(&[output])?;
     println!("{json}");
     Ok(())
 }
 
-fn inspect_run_dir(
-    run_id: &str,
-    run_dir: &Path,
-    status: fabro_workflows::run_status::RunStatus,
-) -> Result<InspectOutput> {
-    let manifest = fabro_workflows::manifest::Manifest::load(&run_dir.join("manifest.json"))
-        .ok()
-        .and_then(|v| serde_json::to_value(v).ok());
-    let status_record =
-        fabro_workflows::run_status::RunStatusRecord::load(&run_dir.join("status.json"))
-            .ok()
-            .and_then(|v| serde_json::to_value(v).ok());
-    let conclusion =
-        fabro_workflows::conclusion::Conclusion::load(&run_dir.join("conclusion.json"))
-            .ok()
-            .and_then(|v| serde_json::to_value(v).ok());
-    let checkpoint =
-        fabro_workflows::checkpoint::Checkpoint::load(&run_dir.join("checkpoint.json"))
-            .ok()
-            .and_then(|v| serde_json::to_value(v).ok());
-    let state = fabro_workflows::live_state::RunLiveState::load(&run_dir.join("state.json"))
-        .ok()
-        .and_then(|v| serde_json::to_value(v).ok());
-    let live = std::fs::read_to_string(run_dir.join("live.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok());
-    let sandbox =
-        fabro_workflows::sandbox_record::SandboxRecord::load(&run_dir.join("sandbox.json"))
-            .ok()
-            .and_then(|v| serde_json::to_value(v).ok());
-
-    Ok(InspectOutput {
-        run_id: run_id.to_string(),
-        run_dir: run_dir.to_path_buf(),
-        status,
-        status_record,
-        manifest,
-        conclusion,
-        checkpoint,
-        state,
-        live,
-        sandbox,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::Utc;
     use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 
@@ -120,7 +56,9 @@ mod tests {
         )
         .unwrap();
 
-        let output = inspect_run_dir("run-1", run_dir, RunStatus::Running).unwrap();
+        let output =
+            fabro_workflows::run_inspect::inspect_run_dir("run-1", run_dir, RunStatus::Running)
+                .unwrap();
 
         assert!(output.status_record.is_some());
         assert!(output.state.is_some());

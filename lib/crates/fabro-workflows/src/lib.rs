@@ -154,6 +154,7 @@ pub mod outcome;
 pub mod preamble;
 pub mod pull_request;
 pub mod run_fork;
+pub mod run_inspect;
 pub mod run_lookup;
 pub mod run_rewind;
 pub mod run_status;

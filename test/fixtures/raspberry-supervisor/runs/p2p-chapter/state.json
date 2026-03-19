@@ -1,0 +1,15 @@
+{
+  "run_id": "01P2PRUNNING00000000000000000",
+  "updated_at": "2026-03-18T22:10:00Z",
+  "status": "running",
+  "current_stage_id": "review",
+  "current_stage_label": "Review",
+  "current_stage_attempt": 1,
+  "current_stage_max_attempts": 3,
+  "last_completed_stage_id": "draft",
+  "last_completed_stage_label": "Draft",
+  "last_completed_stage_status": "success",
+  "last_event": "StageStarted",
+  "last_event_seq": 12,
+  "completed_stage_count": 1
+}

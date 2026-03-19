@@ -1,0 +1,18 @@
+[package]
+name = "raspberry-supervisor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Raspberry supervisory control-plane primitives layered on Fabro"
+
+[dependencies]
+anyhow.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+fabro-workflows = { path = "../fabro-workflows" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

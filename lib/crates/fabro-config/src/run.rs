@@ -305,10 +305,22 @@ pub fn load_run_config(path: &Path) -> anyhow::Result<WorkflowRunConfig> {
     let mut config = parse_run_config(&contents)?;
 
     let config_dir = path.parent().unwrap_or(Path::new("."));
+    resolve_work_dir(&mut config, config_dir);
     resolve_dockerfile(&mut config, config_dir)?;
     resolve_sandbox_env(&mut config)?;
 
     Ok(config)
+}
+
+fn resolve_work_dir(config: &mut WorkflowRunConfig, config_dir: &Path) {
+    let Some(work_dir) = config.work_dir.as_ref() else {
+        return;
+    };
+    let path = Path::new(work_dir);
+    if path.is_absolute() {
+        return;
+    }
+    config.work_dir = Some(config_dir.join(path).display().to_string());
 }
 
 /// Resolve `${env.VARNAME}` references in `[sandbox.env]` values.
@@ -387,4 +399,28 @@ pub fn parse_run_config(contents: &str) -> anyhow::Result<WorkflowRunConfig> {
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_run_config_resolves_relative_work_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("fabro/run-configs/bootstrap");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("workflow.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ngraph = \"../../workflows/demo.fabro\"\ndirectory = \"../..\"\n",
+        )
+        .unwrap();
+
+        let config = load_run_config(&path).unwrap();
+        assert_eq!(
+            config.work_dir,
+            Some(dir.path().join("fabro").display().to_string())
+        );
+    }
 }

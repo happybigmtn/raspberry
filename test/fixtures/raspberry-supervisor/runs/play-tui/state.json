@@ -1,0 +1,13 @@
+{
+  "run_id": "01MYOSUPLAYFAIL0000000000000",
+  "updated_at": "2026-03-18T23:21:00Z",
+  "status": "failed",
+  "reason": "workflow_error",
+  "last_completed_stage_id": "layout",
+  "last_completed_stage_label": "Layout",
+  "last_completed_stage_status": "success",
+  "last_failure": "terminal snapshot mismatch",
+  "last_event": "WorkflowRunFailed",
+  "last_event_seq": 11,
+  "completed_stage_count": 1
+}

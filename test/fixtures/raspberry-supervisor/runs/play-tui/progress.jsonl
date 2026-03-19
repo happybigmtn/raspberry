@@ -1,0 +1,2 @@
+{"ts":"2026-03-18T23:18:00.000Z","run_id":"01MYOSUPLAYFAIL0000000000000","event":"StageCompleted","node_id":"layout","node_label":"Layout","duration_ms":2200,"usage":{"model":"gpt-5.4","input_tokens":900,"output_tokens":500},"files_read":["DESIGN.md"],"files_written":["crates/myosu-tui/src/shell.rs"]}
+{"ts":"2026-03-18T23:21:00.000Z","run_id":"01MYOSUPLAYFAIL0000000000000","event":"WorkflowRunFailed","error":"terminal snapshot mismatch"}

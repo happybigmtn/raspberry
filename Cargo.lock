@@ -4073,6 +4073,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "raspberry-cli"
+version = "0.174.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "predicates",
+ "raspberry-supervisor",
+ "tempfile",
+]
+
+[[package]]
+name = "raspberry-supervisor"
+version = "0.174.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fabro-workflows",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rayon"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

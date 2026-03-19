@@ -424,6 +424,7 @@ pub async fn run_command(
     github_app: Option<fabro_github::GitHubAppCredentials>,
     git_author: fabro_workflows::git::GitAuthor,
 ) -> anyhow::Result<()> {
+    let start_cwd = std::env::current_dir().context("failed to determine current directory")?;
     // Handle --run-branch resume: read everything from git metadata
     if let Some(branch) = args.run_branch.clone() {
         return run_from_branch(args, &branch, styles, git_author, run_defaults, github_app).await;
@@ -453,6 +454,11 @@ pub async fn run_command(
             }
             None => (dot, None),
         }
+    };
+    let dot_path = if dot_path.is_absolute() {
+        dot_path
+    } else {
+        start_cwd.join(dot_path)
     };
 
     // Extract workflow slug from the workflow path argument.

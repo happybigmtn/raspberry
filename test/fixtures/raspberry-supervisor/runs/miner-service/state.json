@@ -1,0 +1,15 @@
+{
+  "run_id": "01MYOSUMINERRUN0000000000000",
+  "updated_at": "2026-03-18T23:20:00Z",
+  "status": "running",
+  "current_stage_id": "service",
+  "current_stage_label": "Service Bringup",
+  "current_stage_attempt": 1,
+  "current_stage_max_attempts": 3,
+  "last_completed_stage_id": "spec",
+  "last_completed_stage_label": "Spec",
+  "last_completed_stage_status": "success",
+  "last_event": "StageStarted",
+  "last_event_seq": 5,
+  "completed_stage_count": 1
+}

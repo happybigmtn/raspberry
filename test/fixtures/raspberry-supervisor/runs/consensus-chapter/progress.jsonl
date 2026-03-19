@@ -1,0 +1,2 @@
+{"ts":"2026-03-18T21:59:00.000Z","run_id":"01CONSENSUSFAIL000000000000000","event":"StageCompleted","node_id":"brief","node_label":"Brief","duration_ms":1800,"usage":{"model":"gpt-5.4","input_tokens":700,"output_tokens":300},"files_read":["docs/source.md"],"files_written":["brief.md"]}
+{"ts":"2026-03-18T22:00:00.000Z","run_id":"01CONSENSUSFAIL000000000000000","event":"WorkflowRunFailed","error":"LLM error: builder error"}

@@ -1,0 +1,2 @@
+{"ts":"2026-03-18T23:19:00.000Z","run_id":"01MYOSUMINERRUN0000000000000","event":"StageCompleted","node_id":"spec","node_label":"Spec","duration_ms":6400,"usage":{"model":"gpt-5.4","input_tokens":1400,"output_tokens":600},"files_read":["crates/myosu-miner/src/main.rs"],"files_written":["myosu/outputs/miner/miner_spec.md"]}
+{"ts":"2026-03-18T23:20:00.000Z","run_id":"01MYOSUMINERRUN0000000000000","event":"StageStarted","node_id":"service","node_label":"Service Bringup"}

@@ -1,0 +1,41 @@
+{
+  "schema_version": "raspberry.program.v2",
+  "program": "raspberry-demo",
+  "updated_at": "2026-03-19T03:02:15.969565842Z",
+  "lanes": {
+    "consensus:chapter": {
+      "lane_key": "consensus:chapter",
+      "status": "failed",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/consensus-chapter.toml",
+      "current_fabro_run_id": "01CONSENSUSFAIL000000000000000",
+      "last_started_at": "2026-03-18T22:00:00Z",
+      "last_error": "LLM error: builder error",
+      "last_completed_stage_label": "Brief",
+      "last_stage_duration_ms": 1800,
+      "last_usage_summary": "gpt-5.4: 700 in / 300 out",
+      "last_files_read": [
+        "docs/source.md"
+      ],
+      "last_files_written": [
+        "brief.md"
+      ]
+    },
+    "p2p:chapter": {
+      "lane_key": "p2p:chapter",
+      "status": "running",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/p2p-chapter.toml",
+      "current_fabro_run_id": "01P2PRUNNING00000000000000000",
+      "current_stage_label": "Review",
+      "last_started_at": "2026-03-18T22:10:00Z",
+      "last_completed_stage_label": "Draft",
+      "last_stage_duration_ms": 8200,
+      "last_usage_summary": "gpt-5.4: 1200 in / 800 out",
+      "last_files_read": [
+        "docs/notes.md"
+      ],
+      "last_files_written": [
+        "draft.md"
+      ]
+    }
+  }
+}

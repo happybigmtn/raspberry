@@ -1,0 +1,41 @@
+{
+  "schema_version": "raspberry.program.v2",
+  "program": "myosu-bootstrap",
+  "updated_at": "2026-03-19T03:02:15.969603971Z",
+  "lanes": {
+    "miner:service": {
+      "lane_key": "miner:service",
+      "status": "running",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/miner-service.toml",
+      "current_fabro_run_id": "01MYOSUMINERRUN0000000000000",
+      "current_stage_label": "Service Bringup",
+      "last_started_at": "2026-03-18T23:20:00Z",
+      "last_completed_stage_label": "Spec",
+      "last_stage_duration_ms": 6400,
+      "last_usage_summary": "gpt-5.4: 1400 in / 600 out",
+      "last_files_read": [
+        "crates/myosu-miner/src/main.rs"
+      ],
+      "last_files_written": [
+        "myosu/outputs/miner/miner_spec.md"
+      ]
+    },
+    "play:tui": {
+      "lane_key": "play:tui",
+      "status": "failed",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/play-tui.toml",
+      "current_fabro_run_id": "01MYOSUPLAYFAIL0000000000000",
+      "last_started_at": "2026-03-18T23:21:00Z",
+      "last_error": "terminal snapshot mismatch",
+      "last_completed_stage_label": "Layout",
+      "last_stage_duration_ms": 2200,
+      "last_usage_summary": "gpt-5.4: 900 in / 500 out",
+      "last_files_read": [
+        "DESIGN.md"
+      ],
+      "last_files_written": [
+        "crates/myosu-tui/src/shell.rs"
+      ]
+    }
+  }
+}

@@ -1,0 +1,78 @@
+program: raspberry-demo
+target_repo: .
+state_path: .raspberry/program-state.json
+max_parallel: 2
+units:
+  runtime:
+    title: Runtime
+    output_root: outputs/runtime
+    artifacts:
+      review: review.md
+      page: page.html
+    milestones:
+      - id: reviewed
+        requires: [review]
+      - id: publish_ready
+        requires: [page]
+    lanes:
+      chapter:
+        title: Runtime Chapter
+        run_config: run-configs/runtime-chapter.toml
+        managed_milestone: reviewed
+      page:
+        title: Runtime Page
+        run_config: run-configs/runtime-page.toml
+        managed_milestone: publish_ready
+        dependencies:
+          - unit: runtime
+            lane: chapter
+            milestone: reviewed
+      proof:
+        title: Runtime Proof
+        run_config: run-configs/runtime-proof.toml
+        managed_milestone: publish_ready
+        dependencies:
+          - unit: runtime
+            lane: chapter
+            milestone: reviewed
+
+  consensus:
+    title: Consensus
+    output_root: outputs/consensus
+    artifacts:
+      review: review.md
+      page: page.html
+    milestones:
+      - id: reviewed
+        requires: [review]
+      - id: publish_ready
+        requires: [page]
+    lanes:
+      chapter:
+        title: Consensus Chapter
+        run_config: run-configs/consensus-chapter.toml
+        managed_milestone: reviewed
+        run_dir: runs/consensus-chapter
+      page:
+        title: Consensus Page
+        run_config: run-configs/consensus-page.toml
+        managed_milestone: publish_ready
+        dependencies:
+          - unit: consensus
+            lane: chapter
+            milestone: reviewed
+
+  p2p:
+    title: P2P
+    output_root: outputs/p2p
+    artifacts:
+      review: review.md
+    milestones:
+      - id: reviewed
+        requires: [review]
+    lanes:
+      chapter:
+        title: P2P Chapter
+        run_config: run-configs/p2p-chapter.toml
+        managed_milestone: reviewed
+        run_dir: runs/p2p-chapter

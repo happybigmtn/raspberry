@@ -1,0 +1,2 @@
+{"ts":"2026-03-18T22:09:00.000Z","run_id":"01P2PRUNNING00000000000000000","event":"StageCompleted","node_id":"draft","node_label":"Draft","duration_ms":8200,"usage":{"model":"gpt-5.4","input_tokens":1200,"output_tokens":800},"files_read":["docs/notes.md"],"files_written":["draft.md"]}
+{"ts":"2026-03-18T22:10:00.000Z","run_id":"01P2PRUNNING00000000000000000","event":"StageStarted","node_id":"review","node_label":"Review"}

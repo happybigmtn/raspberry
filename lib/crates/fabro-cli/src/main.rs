@@ -7,7 +7,8 @@ mod logging;
 mod skill;
 mod upgrade;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -261,47 +262,20 @@ fn detach_run(args: commands::run::RunArgs) -> Result<()> {
     );
     std::fs::File::create(run_dir.join("progress.jsonl"))?;
 
-    let log_file = std::fs::File::create(run_dir.join("detach.log"))?;
+    let log_path = run_dir.join("detach.log");
+    std::fs::File::create(&log_path)?;
 
     // Rebuild argv: current exe + original args, stripping --detach/-d, injecting --run-id and --run-dir
     let exe = std::env::current_exe()?;
-    let mut child_args: Vec<String> = Vec::new();
-    child_args.push("run".to_string());
-
     let raw_args: Vec<String> = std::env::args().collect();
-    // Skip argv[0] (binary) and argv[1] ("run"), then filter out --detach / -d
-    let mut iter = raw_args.iter().skip(2).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--detach" || arg == "-d" {
-            continue;
-        }
-        // Skip --run-dir and its value (we'll override it)
-        if arg == "--run-dir" {
-            iter.next(); // consume the value
-            continue;
-        }
-        if arg.starts_with("--run-dir=") {
-            continue;
-        }
-        // Skip --run-id and its value (we'll override it)
-        if arg == "--run-id" {
-            iter.next();
-            continue;
-        }
-        if arg.starts_with("--run-id=") {
-            continue;
-        }
-        child_args.push(arg.clone());
-    }
-    child_args.push("--run-id".to_string());
-    child_args.push(run_id.clone());
-    child_args.push("--run-dir".to_string());
-    child_args.push(run_dir.to_string_lossy().to_string());
+    let child_args = rebuild_detached_args(&raw_args, &run_id, &run_dir)?;
+    let wrapper_command = build_detached_wrapper_command(&exe, &child_args, &run_dir, &log_path)?;
 
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.args(&child_args)
-        .stdout(log_file.try_clone()?)
-        .stderr(log_file)
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(wrapper_command)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null());
 
     // Detach from the controlling terminal on unix
@@ -316,9 +290,130 @@ fn detach_run(args: commands::run::RunArgs) -> Result<()> {
         }
     }
 
-    cmd.spawn()?;
+    let mut child = cmd.spawn()?;
+    ensure_detached_child_started(&mut child, &run_dir)?;
     println!("{run_id}");
     Ok(())
+}
+
+fn rebuild_detached_args(
+    raw_args: &[String],
+    run_id: &str,
+    run_dir: &std::path::Path,
+) -> Result<Vec<String>> {
+    let run_index = raw_args
+        .iter()
+        .position(|arg| arg == "run")
+        .ok_or_else(|| anyhow::anyhow!("failed to rebuild detached argv: missing `run` subcommand"))?;
+
+    let mut child_args: Vec<String> = raw_args
+        .iter()
+        .skip(1)
+        .take(run_index.saturating_sub(1))
+        .cloned()
+        .collect();
+    child_args.push("run".to_string());
+
+    let mut iter = raw_args.iter().skip(run_index + 1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--detach" || arg == "-d" {
+            continue;
+        }
+        if arg == "--run-dir" {
+            iter.next();
+            continue;
+        }
+        if arg.starts_with("--run-dir=") {
+            continue;
+        }
+        if arg == "--run-id" {
+            iter.next();
+            continue;
+        }
+        if arg.starts_with("--run-id=") {
+            continue;
+        }
+        child_args.push(arg.clone());
+    }
+
+    child_args.push("--run-id".to_string());
+    child_args.push(run_id.to_string());
+    child_args.push("--run-dir".to_string());
+    child_args.push(run_dir.to_string_lossy().to_string());
+    Ok(child_args)
+}
+
+fn build_detached_wrapper_command(
+    exe: &Path,
+    child_args: &[String],
+    run_dir: &Path,
+    log_path: &Path,
+) -> Result<String> {
+    let quoted_exe = shell_quote(exe.as_os_str().to_string_lossy().as_ref())?;
+    let quoted_args = child_args
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Result<Vec<_>>>()?;
+    let quoted_log_path = shell_quote(log_path.as_os_str().to_string_lossy().as_ref())?;
+    let quoted_status_path = shell_quote(
+        run_dir
+            .join("status.json")
+            .as_os_str()
+            .to_string_lossy()
+            .as_ref(),
+    )?;
+
+    Ok(format!(
+        "{} {} > {} 2>&1\n\
+code=$?\n\
+if [ \"$code\" -ne 0 ] && [ -f {} ]; then\n\
+  if grep -q '\"status\": \"submitted\"' {} || grep -q '\"status\": \"starting\"' {}; then\n\
+    printf '{{\\n  \"status\": \"failed\",\\n  \"reason\": \"workflow_error\",\\n  \"updated_at\": \"%s\"\\n}}\\n' \"$(date -u +\"%Y-%m-%dT%H:%M:%S.%NZ\")\" > {}\n\
+  fi\n\
+fi\n\
+exit \"$code\"\n",
+        quoted_exe,
+        quoted_args.join(" "),
+        quoted_log_path,
+        quoted_status_path,
+        quoted_status_path,
+        quoted_status_path,
+        quoted_status_path,
+    ))
+}
+
+fn shell_quote(value: &str) -> Result<String> {
+    shlex::try_quote(value)
+        .map(|quoted| quoted.into_owned())
+        .map_err(|_| anyhow::anyhow!("failed to shell-quote detached argument"))
+}
+
+fn ensure_detached_child_started(child: &mut std::process::Child, run_dir: &Path) -> Result<()> {
+    for _ in 0..60 {
+        if let Some(status) = child.try_wait()? {
+            fabro_workflows::run_status::write_run_status(
+                run_dir,
+                fabro_workflows::run_status::RunStatus::Failed,
+                Some(fabro_workflows::run_status::StatusReason::WorkflowError),
+            );
+            let detail = read_detach_log(run_dir)
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| format!("detached child exited immediately with status {status}"));
+            return Err(anyhow::anyhow!(detail));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+fn read_detach_log(run_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(run_dir.join("detach.log")).ok().and_then(|contents| {
+        contents
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(ToOwned::to_owned)
+    })
 }
 
 #[tokio::main]
@@ -395,6 +490,93 @@ fn send_telemetry_event(
         subcommand = command_name,
         "Telemetry event queued"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_detached_wrapper_command, ensure_detached_child_started, rebuild_detached_args};
+    use std::path::Path;
+
+    #[test]
+    fn rebuild_detached_args_preserves_global_flags_before_run() {
+        let raw_args = vec![
+            "fabro".to_string(),
+            "--no-upgrade-check".to_string(),
+            "run".to_string(),
+            "--detach".to_string(),
+            "workflow.toml".to_string(),
+        ];
+
+        let args = rebuild_detached_args(
+            &raw_args,
+            "01TESTRUNID000000000000000",
+            std::path::Path::new("/tmp/run"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            args,
+            vec![
+                "--no-upgrade-check".to_string(),
+                "run".to_string(),
+                "workflow.toml".to_string(),
+                "--run-id".to_string(),
+                "01TESTRUNID000000000000000".to_string(),
+                "--run-dir".to_string(),
+                "/tmp/run".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_detached_child_started_reports_immediate_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("detach.log"), "error: boom\n").unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 2")
+            .spawn()
+            .unwrap();
+
+        let err = ensure_detached_child_started(&mut child, dir.path()).unwrap_err();
+        assert!(err.to_string().contains("error: boom"));
+
+        let status = std::fs::read_to_string(dir.path().join("status.json")).unwrap();
+        assert!(status.contains("\"status\": \"failed\""));
+    }
+
+    #[test]
+    fn detached_wrapper_marks_submitted_run_failed_on_nonzero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path();
+        let log_path = run_dir.join("detach.log");
+        let status_path = run_dir.join("status.json");
+        std::fs::write(
+            &status_path,
+            "{\n  \"status\": \"submitted\",\n  \"updated_at\": \"2026-03-19T00:00:00Z\"\n}\n",
+        )
+        .unwrap();
+
+        let command = build_detached_wrapper_command(
+            Path::new("sh"),
+            &["-c".to_string(), "echo boom >&2; exit 7".to_string()],
+            run_dir,
+            &log_path,
+        )
+        .unwrap();
+
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(7));
+
+        let status = std::fs::read_to_string(&status_path).unwrap();
+        assert!(status.contains("\"status\": \"failed\""));
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("boom"));
+    }
 }
 
 async fn main_inner() -> (String, Result<()>) {

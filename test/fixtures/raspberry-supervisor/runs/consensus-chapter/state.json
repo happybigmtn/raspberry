@@ -1,0 +1,13 @@
+{
+  "run_id": "01CONSENSUSFAIL000000000000000",
+  "updated_at": "2026-03-18T22:00:00Z",
+  "status": "failed",
+  "reason": "workflow_error",
+  "last_completed_stage_id": "brief",
+  "last_completed_stage_label": "Brief",
+  "last_completed_stage_status": "success",
+  "last_failure": "LLM error: builder error",
+  "last_event": "WorkflowRunFailed",
+  "last_event_seq": 9,
+  "completed_stage_count": 1
+}

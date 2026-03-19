@@ -1,0 +1,177 @@
+version: 1
+program: myosu-bootstrap
+target_repo: .
+state_path: .raspberry/myosu-program-state.json
+max_parallel: 3
+run_dir: fabro/runs/programs
+units:
+  - id: chain
+    title: Chain Runtime
+    output_root: myosu/outputs/chain
+    artifacts:
+      - id: runtime_spec
+        path: runtime_spec.md
+      - id: runtime_review
+        path: runtime_review.md
+    milestones:
+      - id: specified
+        requires: [runtime_spec]
+      - id: reviewed
+        requires: [runtime_spec, runtime_review]
+    lanes:
+      - id: runtime
+        kind: platform
+        title: Runtime Lane
+        run_config: run-configs/chain-runtime.toml
+        managed_milestone: reviewed
+        proof_profile: cargo_workspace
+        produces: [runtime_spec, runtime_review]
+
+  - id: validator
+    title: Validator Oracle
+    output_root: myosu/outputs/validator
+    artifacts:
+      - id: validator_spec
+        path: validator_spec.md
+    milestones:
+      - id: specified
+        requires: [validator_spec]
+    lanes:
+      - id: oracle
+        kind: service
+        title: Oracle Lane
+        run_config: run-configs/validator-oracle.toml
+        managed_milestone: specified
+        proof_profile: validator_tests
+        depends_on:
+          - unit: chain
+            milestone: reviewed
+        checks:
+          - label: chain_ready
+            kind: precondition
+            type: command_succeeds
+            command: test -f myosu/preconditions/chain-ready.flag
+        produces: [validator_spec]
+
+  - id: miner
+    title: Miner Service
+    output_root: myosu/outputs/miner
+    artifacts:
+      - id: miner_spec
+        path: miner_spec.md
+      - id: miner_service
+        path: miner_service.md
+    milestones:
+      - id: specified
+        requires: [miner_spec]
+      - id: service_ready
+        requires: [miner_spec, miner_service]
+    lanes:
+      - id: service
+        kind: service
+        title: Miner Service Lane
+        run_config: run-configs/miner-service.toml
+        managed_milestone: service_ready
+        proof_profile: miner_tests
+        service_state_path: myosu/state/miner-service-state.json
+        depends_on:
+          - unit: chain
+            milestone: reviewed
+        checks:
+          - label: abstractions_ready
+            kind: precondition
+            type: file_exists
+            path: myosu/preconditions/abstractions-ready.flag
+          - label: miner_http_ok
+            kind: health
+            scope: running
+            type: json_field_equals
+            path: runs/miner-service/health.json
+            field: status
+            equals: "ok"
+          - label: training_active
+            kind: health
+            scope: running
+            type: json_field_equals
+            path: runs/miner-service/health.json
+            field: training_active
+            equals: true
+        produces: [miner_spec, miner_service]
+        run_dir: runs/miner-service
+
+  - id: operations
+    title: Operations Scorecard
+    output_root: myosu/outputs/operations
+    artifacts:
+      - id: scorecard
+        path: scorecard.md
+    milestones:
+      - id: publish_ready
+        requires: [scorecard]
+    lanes:
+      - id: scorecard
+        kind: orchestration
+        title: Scorecard Lane
+        run_config: run-configs/operations-scorecard.toml
+        managed_milestone: publish_ready
+        proof_profile: ops_smoke
+        proof_state_path: myosu/state/validator-proof-state.json
+        depends_on:
+          - unit: validator
+            milestone: specified
+        checks:
+          - label: validator_proof_passed
+            kind: proof
+            type: command_stdout_contains
+            command: cat myosu/preconditions/validator-proof.json
+            contains: '"status": "passed"'
+        produces: [scorecard]
+
+  - id: launch
+    title: Devnet Launch
+    output_root: myosu/outputs/launch
+    artifacts:
+      - id: launch_report
+        path: launch_report.md
+    milestones:
+      - id: ready
+        requires: [launch_report]
+    lanes:
+      - id: devnet
+        kind: orchestration
+        title: Devnet Launch Lane
+        run_config: run-configs/launch-devnet.toml
+        managed_milestone: ready
+        proof_profile: launch_smoke
+        orchestration_state_path: myosu/state/devnet-launch-state.json
+        depends_on:
+          - unit: chain
+            milestone: reviewed
+          - unit: validator
+            milestone: specified
+          - unit: miner
+            milestone: specified
+        produces: [launch_report]
+
+  - id: play
+    title: Gameplay TUI
+    output_root: myosu/outputs/play
+    artifacts:
+      - id: tui_spec
+        path: tui_spec.md
+    milestones:
+      - id: specified
+        requires: [tui_spec]
+    lanes:
+      - id: tui
+        kind: interface
+        title: TUI Lane
+        run_config: run-configs/play-tui.toml
+        managed_milestone: specified
+        proof_profile: tui_snapshots
+        depends_on:
+          - unit: validator
+            lane: oracle
+            milestone: specified
+        produces: [tui_spec]
+        run_dir: runs/play-tui
