@@ -19,6 +19,8 @@ pub enum CodergenResult {
     Text {
         text: String,
         usage: Option<StageUsage>,
+        files_read: Vec<String>,
+        files_written: Vec<String>,
         files_touched: Vec<String>,
         last_file_touched: Option<String>,
     },
@@ -267,48 +269,65 @@ impl Handler for AgentHandler {
                     node_id: node.id.clone(),
                 }) as Arc<dyn fabro_agent::ToolHookCallback>
             });
-        let (response_text, stage_usage, backend_files_touched, last_file_touched) =
-            if let Some(backend) = &self.backend {
-                let result = backend
-                    .run(
-                        node,
-                        &prompt,
-                        context,
-                        thread_id.as_deref(),
-                        &services.emitter,
-                        &stage_dir,
-                        &services.sandbox,
-                        tool_hooks,
-                    )
-                    .await;
-                match result {
-                    Ok(CodergenResult::Full(outcome)) => {
-                        let status_json = serde_json::to_string_pretty(&outcome)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        tokio::fs::write(stage_dir.join("status.json"), &status_json).await?;
-                        return Ok(outcome);
-                    }
-                    Ok(CodergenResult::Text {
-                        text,
-                        usage,
-                        files_touched,
-                        last_file_touched,
-                    }) => (text, usage, files_touched, last_file_touched),
-                    Err(e) if e.is_retryable() => {
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        return Ok(e.to_fail_outcome());
-                    }
-                }
-            } else {
-                (
-                    format!("[Simulated] Response for stage: {}", node.id),
-                    None,
-                    Vec::new(),
-                    None,
+        let (
+            response_text,
+            stage_usage,
+            backend_files_read,
+            backend_files_written,
+            backend_files_touched,
+            last_file_touched,
+        ) = if let Some(backend) = &self.backend {
+            let result = backend
+                .run(
+                    node,
+                    &prompt,
+                    context,
+                    thread_id.as_deref(),
+                    &services.emitter,
+                    &stage_dir,
+                    &services.sandbox,
+                    tool_hooks,
                 )
-            };
+                .await;
+            match result {
+                Ok(CodergenResult::Full(outcome)) => {
+                    let status_json =
+                        serde_json::to_string_pretty(&outcome).unwrap_or_else(|_| "{}".to_string());
+                    tokio::fs::write(stage_dir.join("status.json"), &status_json).await?;
+                    return Ok(outcome);
+                }
+                Ok(CodergenResult::Text {
+                    text,
+                    usage,
+                    files_read,
+                    files_written,
+                    files_touched,
+                    last_file_touched,
+                }) => (
+                    text,
+                    usage,
+                    files_read,
+                    files_written,
+                    files_touched,
+                    last_file_touched,
+                ),
+                Err(e) if e.is_retryable() => {
+                    return Err(e);
+                }
+                Err(e) => {
+                    return Ok(e.to_fail_outcome());
+                }
+            }
+        } else {
+            (
+                format!("[Simulated] Response for stage: {}", node.id),
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
+        };
 
         // 4. Write response to logs
         tokio::fs::write(stage_dir.join("response.md"), &response_text).await?;
@@ -360,6 +379,8 @@ impl Handler for AgentHandler {
             }
         }
         outcome.usage = stage_usage;
+        outcome.files_read = backend_files_read;
+        outcome.files_written = backend_files_written;
         outcome.files_touched = backend_files_touched;
 
         let status_json =
@@ -536,6 +557,8 @@ mod tests {
                     text: r#"Done. {"outcome": "success", "preferred_next_label": "approve"}"#
                         .to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })
@@ -592,6 +615,8 @@ mod tests {
                 Ok(CodergenResult::Text {
                     text: "Done writing results.".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: vec!["results.md".to_string()],
                     files_touched: vec!["results.md".to_string()],
                     last_file_touched: Some("results.md".to_string()),
                 })
@@ -702,6 +727,8 @@ mod tests {
                 Ok(CodergenResult::Text {
                     text: "ok".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })
@@ -755,6 +782,8 @@ mod tests {
                 Ok(CodergenResult::Text {
                     text: "ok".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })
@@ -986,6 +1015,8 @@ Some text in between.
                 Ok(CodergenResult::Text {
                     text: "ok".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })
@@ -1056,6 +1087,8 @@ Some text in between.
                 Ok(CodergenResult::Text {
                     text: "ok".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })

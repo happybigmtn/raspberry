@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -35,8 +35,6 @@ fn build_profile(model: &str, provider: Provider) -> Box<dyn ProviderProfile> {
 struct FileTracking {
     /// Maps tool_call_id → file_path for in-flight write/edit calls.
     pending: HashMap<String, String>,
-    /// Set of all file paths successfully written/edited.
-    touched: HashSet<String>,
     /// Most recently modified file path.
     last: Option<String>,
 }
@@ -63,7 +61,6 @@ fn track_file_event(event: &AgentEvent, state: &mut FileTracking) {
         } => {
             if !*is_error {
                 if let Some(path) = state.pending.remove(tool_call_id) {
-                    state.touched.insert(path.clone());
                     state.last = Some(path);
                 }
             } else {
@@ -396,6 +393,8 @@ impl CodergenBackend for AgentApiBackend {
         Ok(CodergenResult::Text {
             text: response.text(),
             usage: Some(stage_usage),
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             last_file_touched: None,
         })
@@ -449,7 +448,6 @@ impl CodergenBackend for AgentApiBackend {
         // File change tracking: shared between spawned task and main fn.
         let file_tracking = Arc::new(Mutex::new(FileTracking {
             pending: HashMap::new(),
-            touched: HashSet::new(),
             last: None,
         }));
 
@@ -603,12 +601,17 @@ impl CodergenBackend for AgentApiBackend {
             })
             .unwrap_or_default();
 
-        // Collect files_touched from the shared tracking state.
-        let (files_touched, last_file_touched) = {
+        // Collect file operations from the session tracker plus the last written file.
+        let (files_read, files_written, files_touched, last_file_touched) = {
+            let tracker = session.file_tracker();
+            let mut files_read = tracker.read_files();
+            let mut files_written = tracker.written_files();
+            let mut files_touched = tracker.touched_files();
+            files_read.sort();
+            files_written.sort();
+            files_touched.sort();
             let s = file_tracking.lock().unwrap();
-            let mut v: Vec<String> = s.touched.iter().cloned().collect();
-            v.sort();
-            (v, s.last.clone())
+            (files_read, files_written, files_touched, s.last.clone())
         };
 
         let provider_used = serde_json::json!({
@@ -628,6 +631,8 @@ impl CodergenBackend for AgentApiBackend {
         Ok(CodergenResult::Text {
             text: response,
             usage: Some(stage_usage),
+            files_read,
+            files_written,
             files_touched,
             last_file_touched,
         })
@@ -660,7 +665,6 @@ mod tests {
     fn new_file_tracking() -> FileTracking {
         FileTracking {
             pending: HashMap::new(),
-            touched: HashSet::new(),
             last: None,
         }
     }
@@ -694,7 +698,6 @@ mod tests {
             },
             &mut state,
         );
-        assert!(state.touched.contains("/tmp/foo.rs"));
         assert_eq!(state.last.as_deref(), Some("/tmp/foo.rs"));
     }
 
@@ -737,7 +740,6 @@ mod tests {
             },
             &mut state,
         );
-        assert!(state.touched.contains("/src/lib.rs"));
         assert_eq!(state.last.as_deref(), Some("/src/lib.rs"));
     }
 
@@ -787,7 +789,7 @@ mod tests {
             },
             &mut state,
         );
-        assert!(state.touched.contains("/deep/file.rs"));
+        assert_eq!(state.last.as_deref(), Some("/deep/file.rs"));
     }
 
     #[test]
@@ -827,7 +829,7 @@ mod tests {
             &mut state,
         );
         assert!(state.pending.is_empty());
-        assert!(!state.touched.contains("/err.rs"));
+        assert_eq!(state.last, None);
     }
 
     #[test]

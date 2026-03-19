@@ -34,6 +34,24 @@ impl FileTracker {
         self.files.len()
     }
 
+    pub fn read_files(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter_map(|(path, ops)| ops.read.then_some(path.clone()))
+            .collect()
+    }
+
+    pub fn written_files(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter_map(|(path, ops)| (ops.written || ops.edited).then_some(path.clone()))
+            .collect()
+    }
+
+    pub fn touched_files(&self) -> Vec<String> {
+        self.files.keys().cloned().collect()
+    }
+
     pub fn render(&self) -> String {
         let mut output = String::new();
         for (path, ops) in &self.files {
@@ -63,6 +81,13 @@ impl FileTracker {
                         self.record_read(path);
                     }
                 }
+                "read_many_files" => {
+                    if let Some(paths) = tc.arguments.get("paths").and_then(|v| v.as_array()) {
+                        for path in paths.iter().filter_map(|v| v.as_str()) {
+                            self.record_read(path);
+                        }
+                    }
+                }
                 "write_file" => {
                     if let Some(path) = tc.arguments.get("file_path").and_then(|v| v.as_str()) {
                         self.record_write(path);
@@ -84,6 +109,32 @@ impl FileTracker {
                             self.record_write(path.trim());
                         } else if let Some(path) = line.strip_prefix("Updated file: ") {
                             self.record_edit(path.trim());
+                        }
+                    }
+                }
+                "grep" => {
+                    let content = match result.content.as_str() {
+                        Some(s) => s.to_string(),
+                        None => result.content.to_string(),
+                    };
+                    for line in content.lines() {
+                        if let Some(path) = line.split(':').next() {
+                            let path = path.trim();
+                            if !path.is_empty() {
+                                self.record_read(path);
+                            }
+                        }
+                    }
+                }
+                "glob" => {
+                    let content = match result.content.as_str() {
+                        Some(s) => s.to_string(),
+                        None => result.content.to_string(),
+                    };
+                    for line in content.lines() {
+                        let path = line.trim();
+                        if !path.is_empty() {
+                            self.record_read(path);
                         }
                     }
                 }
@@ -222,5 +273,54 @@ mod tests {
         )];
         tracker.record_from_tool_calls(&tool_calls, &results);
         assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn read_and_written_views_split_operations() {
+        let mut tracker = FileTracker::default();
+        tracker.record_read("src/lib.rs");
+        tracker.record_write("src/main.rs");
+        tracker.record_edit("src/config.rs");
+
+        assert_eq!(tracker.read_files(), vec!["src/lib.rs".to_string()]);
+        assert_eq!(
+            tracker.written_files(),
+            vec!["src/config.rs".to_string(), "src/main.rs".to_string()]
+        );
+        assert_eq!(
+            tracker.touched_files(),
+            vec![
+                "src/config.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "src/main.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn record_from_tool_calls_tracks_grep_and_glob_reads() {
+        let mut tracker = FileTracker::default();
+        let tool_calls = vec![
+            ToolCall::new("tc1", "grep", serde_json::json!({"pattern": "foo"})),
+            ToolCall::new("tc2", "glob", serde_json::json!({"pattern": "*.rs"})),
+        ];
+        let results = vec![
+            ToolResult::success(
+                "tc1",
+                serde_json::json!("src/lib.rs:1:foo\nsrc/main.rs:2:foo"),
+            ),
+            ToolResult::success("tc2", serde_json::json!("src/bin.rs\nsrc/lib.rs")),
+        ];
+        tracker.record_from_tool_calls(&tool_calls, &results);
+
+        assert_eq!(
+            tracker.read_files(),
+            vec![
+                "src/bin.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "src/main.rs".to_string(),
+            ]
+        );
+        assert!(tracker.written_files().is_empty());
     }
 }

@@ -451,6 +451,8 @@ mod tests {
                 Ok(CodergenResult::Text {
                     text: "The best candidate is branch_b".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })

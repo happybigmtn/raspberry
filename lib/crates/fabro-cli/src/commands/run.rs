@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use fabro_workflows::devcontainer_bridge;
 use fabro_workflows::engine::{RunConfig, WorkflowRunEngine};
 use fabro_workflows::event::EventEmitter;
 use fabro_workflows::handler::default_registry;
+use fabro_workflows::live_state::RunLiveState;
 use fabro_workflows::outcome::StageStatus;
 use fabro_workflows::sandbox_provider::SandboxProvider;
 use fabro_workflows::workflow::WorkflowBuilder;
@@ -679,15 +681,31 @@ pub async fn run_command(
     {
         let jsonl_path = run_dir.join("progress.jsonl");
         let live_path = run_dir.join("live.json");
+        let state_path = run_dir.join("state.json");
         let run_id = Arc::new(Mutex::new(run_id.clone()));
+        let event_seq = Arc::new(AtomicU64::new(0));
+        let live_state = Arc::new(Mutex::new(RunLiveState::new(
+            run_id.lock().unwrap().clone(),
+        )));
         let run_id_clone = Arc::clone(&run_id);
+        let event_seq_clone = Arc::clone(&event_seq);
+        let live_state_clone = Arc::clone(&live_state);
+        let _ = live_state.lock().unwrap().save(&state_path);
         emitter.on_event(move |event| {
             if let fabro_workflows::event::WorkflowRunEvent::WorkflowRunStarted { run_id, .. } =
                 event
             {
                 *run_id_clone.lock().unwrap() = run_id.clone();
             }
-            let envelope = build_event_envelope(event, &run_id_clone.lock().unwrap());
+            let observed_at = Utc::now();
+            let current_event_seq = event_seq_clone.fetch_add(1, Ordering::Relaxed) + 1;
+            let envelope = build_event_envelope(
+                event,
+                &run_id_clone.lock().unwrap(),
+                current_event_seq,
+                &observed_at,
+            );
+            let event_name = envelope.get("event").and_then(serde_json::Value::as_str);
             // Append to progress.jsonl
             if let Ok(line) = serde_json::to_string(&envelope) {
                 let line = fabro_util::redact::redact_jsonl_line(&line);
@@ -703,7 +721,12 @@ pub async fn run_command(
             // Overwrite live.json
             if let Ok(pretty) = serde_json::to_string_pretty(&envelope) {
                 let pretty = fabro_util::redact::redact_jsonl_line(&pretty);
-                let _ = std::fs::write(&live_path, pretty);
+                let _ = fabro_workflows::write_text_atomic(&live_path, &pretty, "live");
+            }
+            {
+                let mut state = live_state_clone.lock().unwrap();
+                state.observe(event, event_name, Some(current_event_seq), observed_at);
+                let _ = state.save(&state_path);
             }
         });
     }
@@ -1074,7 +1097,6 @@ pub async fn run_command(
             }));
             Arc::new(env)
         }
-        _ => bail!("exe.dev sandbox support is not enabled in this build"),
     };
 
     // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
@@ -1815,7 +1837,6 @@ async fn run_from_branch(
             SandboxProvider::Daytona => {
                 bail!("--run-branch resume is not yet supported with --sandbox daytona");
             }
-            _ => bail!("exe.dev sandbox support is not enabled in this build"),
         };
 
     // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
@@ -2164,7 +2185,6 @@ async fn run_preflight(
         SandboxProvider::Local => {
             Ok(Arc::new(LocalSandbox::new(original_cwd.clone())) as Arc<dyn Sandbox>)
         }
-        _ => Err("exe.dev sandbox support is not enabled in this build".to_string()),
     };
 
     let sandbox_ok = match sandbox_result {
@@ -2611,20 +2631,28 @@ async fn generate_retro(
 fn build_event_envelope(
     event: &fabro_workflows::event::WorkflowRunEvent,
     run_id: &str,
+    event_seq: u64,
+    observed_at: &chrono::DateTime<Utc>,
 ) -> serde_json::Value {
     let (event_name, event_fields) = fabro_workflows::event::flatten_event(event);
     let mut envelope = serde_json::Map::new();
     envelope.insert(
         "ts".to_string(),
-        serde_json::Value::String(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        serde_json::Value::String(
+            observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        ),
     );
     envelope.insert(
         "run_id".to_string(),
         serde_json::Value::String(run_id.to_string()),
     );
     envelope.insert("event".to_string(), serde_json::Value::String(event_name));
+    envelope.insert(
+        "event_seq".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(event_seq)),
+    );
     for (k, v) in event_fields {
-        if k != "ts" && k != "run_id" && k != "event" {
+        if k != "ts" && k != "run_id" && k != "event" && k != "event_seq" {
             envelope.insert(k, v);
         }
     }
@@ -3092,7 +3120,8 @@ mod tests {
             attempt: 1,
             max_attempts: 3,
         };
-        let envelope = build_event_envelope(&event, "run-123");
+        let observed_at = Utc::now();
+        let envelope = build_event_envelope(&event, "run-123", 7, &observed_at);
         let json = serde_json::to_string(&envelope).unwrap();
         // Parse the raw JSON to get field order
         let fields: Vec<String> = json
@@ -3113,5 +3142,10 @@ mod tests {
             &fields[2], "event",
             "third field must be event, got: {fields:?}"
         );
+        assert_eq!(
+            &fields[3], "event_seq",
+            "fourth field must be event_seq, got: {fields:?}"
+        );
+        assert_eq!(envelope["event_seq"], 7);
     }
 }

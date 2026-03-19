@@ -1217,6 +1217,8 @@ impl CodergenBackend for MockCodergenBackend {
                 &prompt[..prompt.len().min(50)]
             ),
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             last_file_touched: None,
         })
@@ -6082,6 +6084,8 @@ mod real_llm {
             Ok(CodergenResult::Text {
                 text: response.text(),
                 usage: None,
+                files_read: Vec::new(),
+                files_written: Vec::new(),
                 files_touched: Vec::new(),
                 last_file_touched: None,
             })

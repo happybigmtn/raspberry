@@ -3,6 +3,46 @@ pub(crate) fn millis_u64(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Write text to a file via a sibling temp file + rename.
+pub fn write_text_atomic(
+    path: &std::path::Path,
+    contents: &str,
+    label: &str,
+) -> error::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(error::FabroError::Checkpoint(format!(
+            "{label} write failed: no parent directory for {}",
+            path.display()
+        )));
+    };
+    std::fs::create_dir_all(parent)?;
+
+    let file_name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+        error::FabroError::Checkpoint(format!(
+            "{label} write failed: invalid file name for {}",
+            path.display()
+        ))
+    })?;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = parent.join(format!(".{file_name}.{unique}.tmp"));
+    std::fs::write(&temp_path, contents)?;
+    if let Err(first_err) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(path);
+        if let Err(second_err) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error::FabroError::Checkpoint(format!(
+                "{label} rename failed for {}: {first_err}; retry failed: {second_err}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Save a value as pretty-printed JSON to a file.
 pub(crate) fn save_json<T: serde::Serialize>(
     value: &T,
@@ -11,8 +51,7 @@ pub(crate) fn save_json<T: serde::Serialize>(
 ) -> error::Result<()> {
     let json = serde_json::to_string_pretty(value)
         .map_err(|e| error::FabroError::Checkpoint(format!("{label} serialize failed: {e}")))?;
-    std::fs::write(path, json)?;
-    Ok(())
+    write_text_atomic(path, &json, label)
 }
 
 /// Load a value from a JSON file.
@@ -109,6 +148,7 @@ pub mod event;
 pub mod git;
 pub mod graph_render;
 pub mod handler;
+pub mod live_state;
 pub mod manifest;
 pub mod outcome;
 pub mod preamble;

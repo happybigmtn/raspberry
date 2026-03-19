@@ -111,6 +111,10 @@ pub struct Outcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<StageUsage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_read: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_written: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files_touched: Vec<String>,
     /// When set, the engine bypasses edge selection and jumps directly to this node.
     /// Used by the parallel handler to skip re-executing branch nodes.
@@ -132,6 +136,8 @@ impl Outcome {
             notes: None,
             failure: None,
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             jump_to_node: None,
             duration_ms: None,
@@ -148,6 +154,8 @@ impl Outcome {
             notes: None,
             failure: Some(FailureDetail::new(reason, FailureClass::Deterministic)),
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             jump_to_node: None,
             duration_ms: None,
@@ -166,6 +174,8 @@ impl Outcome {
             notes: None,
             failure: Some(FailureDetail::new(reason, failure_class)),
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             jump_to_node: None,
             duration_ms: None,
@@ -184,6 +194,8 @@ impl Outcome {
             notes: None,
             failure: Some(FailureDetail::new(reason, failure_class)),
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             jump_to_node: None,
             duration_ms: None,
@@ -209,6 +221,8 @@ impl Outcome {
             notes: None,
             failure: None,
             usage: None,
+            files_read: Vec::new(),
+            files_written: Vec::new(),
             files_touched: Vec::new(),
             jump_to_node: None,
             duration_ms: None,

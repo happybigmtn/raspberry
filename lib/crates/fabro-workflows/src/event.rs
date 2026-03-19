@@ -60,6 +60,10 @@ pub enum WorkflowRunEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<crate::outcome::FailureDetail>,
         notes: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files_read: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files_written: Vec<String>,
         files_touched: Vec<String>,
         attempt: usize,
         max_attempts: usize,
@@ -1273,6 +1277,8 @@ mod tests {
                 FailureClass::Deterministic,
             )),
             notes: Some("fixed 3 of 5 issues".to_string()),
+            files_read: vec!["src/lib.rs".to_string()],
+            files_written: vec!["src/main.rs".to_string()],
             files_touched: vec!["src/main.rs".to_string()],
             attempt: 2,
             max_attempts: 3,
@@ -1295,6 +1301,8 @@ mod tests {
             usage: None,
             failure: None,
             notes: None,
+            files_read: vec![],
+            files_written: vec![],
             files_touched: vec![],
             attempt: 1,
             max_attempts: 1,

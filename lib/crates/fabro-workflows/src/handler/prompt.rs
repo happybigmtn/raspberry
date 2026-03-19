@@ -92,38 +92,47 @@ impl Handler for PromptHandler {
         tokio::fs::write(stage_dir.join("prompt.md"), &prompt).await?;
 
         // 3. Call LLM backend (one_shot)
-        let (response_text, stage_usage, backend_files_touched) =
-            if let Some(backend) = &self.backend {
-                let result = backend
-                    .one_shot(node, &prompt, system_prompt.as_deref(), &stage_dir)
-                    .await;
-                match result {
-                    Ok(CodergenResult::Full(outcome)) => {
-                        let status_json = serde_json::to_string_pretty(&outcome)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        tokio::fs::write(stage_dir.join("status.json"), &status_json).await?;
-                        return Ok(outcome);
-                    }
-                    Ok(CodergenResult::Text {
-                        text,
-                        usage,
-                        files_touched,
-                        ..
-                    }) => (text, usage, files_touched),
-                    Err(e) if e.is_retryable() => {
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        return Ok(e.to_fail_outcome());
-                    }
+        let (
+            response_text,
+            stage_usage,
+            backend_files_read,
+            backend_files_written,
+            backend_files_touched,
+        ) = if let Some(backend) = &self.backend {
+            let result = backend
+                .one_shot(node, &prompt, system_prompt.as_deref(), &stage_dir)
+                .await;
+            match result {
+                Ok(CodergenResult::Full(outcome)) => {
+                    let status_json =
+                        serde_json::to_string_pretty(&outcome).unwrap_or_else(|_| "{}".to_string());
+                    tokio::fs::write(stage_dir.join("status.json"), &status_json).await?;
+                    return Ok(outcome);
                 }
-            } else {
-                (
-                    format!("[Simulated] Response for stage: {}", node.id),
-                    None,
-                    Vec::new(),
-                )
-            };
+                Ok(CodergenResult::Text {
+                    text,
+                    usage,
+                    files_read,
+                    files_written,
+                    files_touched,
+                    ..
+                }) => (text, usage, files_read, files_written, files_touched),
+                Err(e) if e.is_retryable() => {
+                    return Err(e);
+                }
+                Err(e) => {
+                    return Ok(e.to_fail_outcome());
+                }
+            }
+        } else {
+            (
+                format!("[Simulated] Response for stage: {}", node.id),
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
 
         // 4. Write response to logs
         tokio::fs::write(stage_dir.join("response.md"), &response_text).await?;
@@ -145,6 +154,8 @@ impl Handler for PromptHandler {
 
         extract_status_fields(&response_text, &mut outcome);
         outcome.usage = stage_usage;
+        outcome.files_read = backend_files_read;
+        outcome.files_written = backend_files_written;
         outcome.files_touched = backend_files_touched;
 
         let status_json =
@@ -231,6 +242,8 @@ mod tests {
                 Ok(CodergenResult::Text {
                     text: "one-shot response".to_string(),
                     usage: None,
+                    files_read: Vec::new(),
+                    files_written: Vec::new(),
                     files_touched: Vec::new(),
                     last_file_touched: None,
                 })
@@ -296,6 +309,8 @@ mod tests {
             Ok(CodergenResult::Text {
                 text: "classified".to_string(),
                 usage: None,
+                files_read: Vec::new(),
+                files_written: Vec::new(),
                 files_touched: Vec::new(),
                 last_file_touched: None,
             })

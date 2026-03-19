@@ -339,17 +339,56 @@ pub fn visit_from_context(context: &Context) -> usize {
 }
 
 /// Write status.json for a completed node into {`run_dir}/nodes/{node_id}/status.json`.
-fn write_node_status(run_dir: &Path, node_id: &str, visit: usize, outcome: &Outcome) {
+fn write_node_status(
+    run_dir: &Path,
+    node_id: &str,
+    visit: usize,
+    outcome: &Outcome,
+    duration_ms: u64,
+    attempt: usize,
+    max_attempts: usize,
+) {
     let node_dir = node_dir(run_dir, node_id, visit);
     let _ = std::fs::create_dir_all(&node_dir);
-    let status = serde_json::json!({
-        "status": outcome.status.to_string(),
-        "notes": outcome.notes,
-        "failure_reason": outcome.failure_reason(),
-        "timestamp": Utc::now().to_rfc3339(),
-    });
-    if let Ok(json) = serde_json::to_string_pretty(&status) {
-        let _ = std::fs::write(node_dir.join("status.json"), json);
+
+    let status_path = node_dir.join("status.json");
+    let mut status = std::fs::read_to_string(&status_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    status.insert(
+        "status".to_string(),
+        serde_json::json!(outcome.status.to_string()),
+    );
+    status.insert("duration_ms".to_string(), serde_json::json!(duration_ms));
+    status.insert("attempt".to_string(), serde_json::json!(attempt));
+    status.insert("max_attempts".to_string(), serde_json::json!(max_attempts));
+    status.insert(
+        "completed_at".to_string(),
+        serde_json::json!(Utc::now().to_rfc3339()),
+    );
+    status.insert(
+        "updated_at".to_string(),
+        serde_json::json!(Utc::now().to_rfc3339()),
+    );
+    if let Some(notes) = &outcome.notes {
+        status.insert("notes".to_string(), serde_json::json!(notes));
+    } else {
+        status.remove("notes");
+    }
+    if let Some(failure_reason) = outcome.failure_reason() {
+        status.insert(
+            "failure_reason".to_string(),
+            serde_json::json!(failure_reason),
+        );
+    } else {
+        status.remove("failure_reason");
+    }
+
+    if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(status)) {
+        let _ = crate::write_text_atomic(&status_path, &json, "node status");
     }
 }
 
@@ -1760,6 +1799,8 @@ impl WorkflowRunEngine {
                                 usage: None,
                                 failure: None,
                                 notes: None,
+                                files_read: vec![],
+                                files_written: vec![],
                                 files_touched: vec![],
                                 attempt: 1,
                                 max_attempts: 1,
@@ -2019,6 +2060,8 @@ impl WorkflowRunEngine {
                         usage: outcome.usage.clone(),
                         failure: outcome.failure.clone(),
                         notes: outcome.notes.clone(),
+                        files_read: outcome.files_read.clone(),
+                        files_written: outcome.files_written.clone(),
                         files_touched: outcome.files_touched.clone(),
                         attempt: usize::try_from(attempts_used).unwrap_or(usize::MAX),
                         max_attempts: usize::try_from(retry_policy.max_attempts)
@@ -2039,7 +2082,15 @@ impl WorkflowRunEngine {
             }
 
             // Write per-node status.json (spec 5.6)
-            write_node_status(&config.run_dir, &node.id, visit, &outcome);
+            write_node_status(
+                &config.run_dir,
+                &node.id,
+                visit,
+                &outcome,
+                stage_duration_ms,
+                usize::try_from(attempts_used).unwrap_or(usize::MAX),
+                usize::try_from(retry_policy.max_attempts).unwrap_or(usize::MAX),
+            );
 
             // Offload large context values to artifact store before recording
             if let Err(e) = offload_large_values(&mut outcome.context_updates, &artifact_store) {
@@ -3693,6 +3744,38 @@ mod tests {
         let status: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&status_path).unwrap()).unwrap();
         assert_eq!(status["status"], "success");
+        assert!(status.get("duration_ms").is_some());
+        assert!(status.get("attempt").is_some());
+    }
+
+    #[test]
+    fn write_node_status_preserves_existing_outcome_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let node_dir = dir.path().join("nodes").join("work");
+        std::fs::create_dir_all(&node_dir).unwrap();
+        std::fs::write(
+            node_dir.join("status.json"),
+            r#"{
+              "status": "running",
+              "usage": {"model":"gpt-test","input_tokens":12,"output_tokens":4},
+              "files_written": ["README.md"]
+            }"#,
+        )
+        .unwrap();
+
+        let mut outcome = Outcome::success();
+        outcome.notes = Some("done".to_string());
+
+        write_node_status(dir.path(), "work", 1, &outcome, 1500, 2, 5);
+
+        let status: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(node_dir.join("status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status["status"], "success");
+        assert_eq!(status["duration_ms"], 1500);
+        assert_eq!(status["attempt"], 2);
+        assert_eq!(status["usage"]["model"], "gpt-test");
+        assert_eq!(status["files_written"][0], "README.md");
     }
 
     #[tokio::test]

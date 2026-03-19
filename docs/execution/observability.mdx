@@ -30,7 +30,7 @@ Events fall into several categories:
 | Event | Key fields | Description |
 |---|---|---|
 | `StageStarted` | `node_id`, `name`, `handler_type`, `attempt`, `max_attempts` | Node begins executing |
-| `StageCompleted` | `node_id`, `duration_ms`, `status`, `usage`, `files_touched` | Node finishes |
+| `StageCompleted` | `node_id`, `duration_ms`, `status`, `usage`, `files_read`, `files_written`, `files_touched` | Node finishes |
 | `StageFailed` | `node_id`, `failure`, `will_retry` | Node fails (may or may not retry) |
 | `StageRetrying` | `node_id`, `attempt`, `max_attempts`, `delay_ms` | Retry scheduled after failure |
 
@@ -109,13 +109,19 @@ Each line in `progress.jsonl` is a JSON object with a standard envelope:
   "ts": "2026-03-05T14:30:01.234Z",
   "run_id": "01JKXYZ...",
   "event": "Agent.ToolCallStarted",
+  "event_seq": 42,
   "stage": "implement",
   "tool_name": "shell",
   "arguments": {"command": "cargo test"}
 }
 ```
 
-The `ts`, `run_id`, and `event` fields are always present. The remaining fields vary by event type. Events are flattened — nested variants like agent and sandbox events use dot notation (e.g. `Agent.ToolCallStarted`, `Sandbox.Ready`).
+The `ts`, `run_id`, `event`, and `event_seq` fields are always present. The
+remaining fields vary by event type. `event_seq` is a per-run monotonic cursor,
+which makes it easier for supervisors to follow progress without relying on
+timestamp ordering alone. Events are flattened — nested variants like agent and
+sandbox events use dot notation (e.g. `Agent.ToolCallStarted`,
+`Sandbox.Ready`).
 
 ## Log files
 
@@ -136,13 +142,28 @@ grep -E "StageFailed|WorkflowRunFailed" ~/.fabro/runs/01JKXYZ.../progress.jsonl 
 grep "EdgeSelected" ~/.fabro/runs/01JKXYZ.../progress.jsonl | jq '{from: .from_node, to: .to_node}'
 ```
 
-### Live snapshot (`live.json`)
+### Live event snapshot (`live.json`)
 
 During execution, Fabro also writes `live.json` — a pretty-printed copy of the most recent event. This is useful for quick status checks while a run is in progress:
 
 ```bash
 cat ~/.fabro/runs/01JKXYZ.../live.json
 ```
+
+### Stable run snapshot (`state.json`)
+
+Fabro also maintains `state.json`, a stable current-state snapshot derived from
+the event stream. This is the better file for supervisors and automation that
+need to know the current stage without replaying `progress.jsonl`:
+
+```bash
+cat ~/.fabro/runs/01JKXYZ.../state.json
+fabro inspect 01JKXYZ...
+```
+
+`state.json` includes the run status, current stage, last completed stage, last
+failure, last observed event, last event sequence number, the latest checkpoint
+SHA/time, and the last stage's file telemetry.
 
 ### Application logs
 
@@ -200,8 +221,10 @@ Each run's directory contains a standard set of files:
 | File | Description |
 |---|---|
 | `manifest.json` | Run metadata — ID, workflow name, start time, labels |
+| `status.json` | Coarse lifecycle state with optional reason |
 | `progress.jsonl` | Full event stream |
 | `live.json` | Last event snapshot (overwritten during run) |
+| `state.json` | Stable current-state snapshot for supervisors and tooling |
 | `checkpoint.json` | Final execution state |
 | `retro.json` | Retrospective (if retro generation is enabled) |
 | `conclusion.json` | Terminal status (`completed`, `failed`, `canceled`) |
