@@ -1,0 +1,20 @@
+[package]
+name = "fabro-synthesis"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Blueprint schema, rendering, and reconciliation for Fabro workflow packages"
+
+[dependencies]
+anyhow.workspace = true
+fabro-config = { path = "../fabro-config" }
+fabro-workflows = { path = "../fabro-workflows" }
+raspberry-supervisor = { path = "../raspberry-supervisor" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -437,8 +437,8 @@ pub async fn run_command(
 
     // Apply project-level config overrides (fabro.toml) on top of CLI defaults.
     // Precedence: workflow.toml > fabro.toml > cli.toml/server.toml
-    if let Ok(Some((_config_path, project_config))) =
-        project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())
+    if let Some((_config_path, project_config)) =
+        project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())?
     {
         tracing::debug!("Applying run defaults from fabro.toml");
         run_defaults.merge_overlay(project_config.into_run_defaults());
@@ -2644,9 +2644,7 @@ fn build_event_envelope(
     let mut envelope = serde_json::Map::new();
     envelope.insert(
         "ts".to_string(),
-        serde_json::Value::String(
-            observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        ),
+        serde_json::Value::String(observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     );
     envelope.insert(
         "run_id".to_string(),

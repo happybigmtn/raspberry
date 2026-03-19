@@ -4,11 +4,7 @@ pub(crate) fn millis_u64(d: std::time::Duration) -> u64 {
 }
 
 /// Write text to a file via a sibling temp file + rename.
-pub fn write_text_atomic(
-    path: &std::path::Path,
-    contents: &str,
-    label: &str,
-) -> error::Result<()> {
+pub fn write_text_atomic(path: &std::path::Path, contents: &str, label: &str) -> error::Result<()> {
     let Some(parent) = path.parent() else {
         return Err(error::FabroError::Checkpoint(format!(
             "{label} write failed: no parent directory for {}",
@@ -17,12 +13,15 @@ pub fn write_text_atomic(
     };
     std::fs::create_dir_all(parent)?;
 
-    let file_name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        error::FabroError::Checkpoint(format!(
-            "{label} write failed: invalid file name for {}",
-            path.display()
-        ))
-    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            error::FabroError::Checkpoint(format!(
+                "{label} write failed: invalid file name for {}",
+                path.display()
+            ))
+        })?;
 
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

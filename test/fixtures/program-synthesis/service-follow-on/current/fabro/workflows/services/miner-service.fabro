@@ -1,0 +1,12 @@
+digraph MinerService {
+    graph [goal="Bootstrap the miner service lane."]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    inventory [label="Inventory"]
+    review [label="Review"]
+
+    start -> inventory -> review -> exit
+}

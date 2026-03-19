@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 raspberry-supervisor = { path = "../raspberry-supervisor" }
+raspberry-tui = { path = "../raspberry-tui" }
 
 [dev-dependencies]
 assert_cmd = "2"

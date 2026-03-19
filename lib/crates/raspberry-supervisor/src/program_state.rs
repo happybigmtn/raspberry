@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use fabro_workflows::conclusion::Conclusion;
 use fabro_workflows::live_state::RunLiveState;
-use fabro_workflows::run_inspect::{RunInspection, finished_at, inspect_run, summarize_usage};
+use fabro_workflows::run_inspect::{finished_at, inspect_run, summarize_usage, RunInspection};
 use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -134,10 +134,11 @@ impl ProgramRuntimeState {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), ProgramStateError> {
-        let json = serde_json::to_string_pretty(self).map_err(|source| ProgramStateError::Serialize {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|source| ProgramStateError::Serialize {
+                path: path.to_path_buf(),
+                source,
+            })?;
         write_atomic(path, &json).map_err(|source| ProgramStateError::Write {
             path: path.to_path_buf(),
             source,
@@ -202,6 +203,33 @@ pub fn mark_lane_submitted(
     state.updated_at = now;
 }
 
+pub fn mark_lane_started(
+    state: &mut ProgramRuntimeState,
+    lane_key: &str,
+    run_config: &Path,
+) {
+    let now = Utc::now();
+    let record = ensure_lane_record(state, lane_key, run_config);
+    record.status = LaneExecutionStatus::Running;
+    record.current_run_id = None;
+    record.current_fabro_run_id = None;
+    record.current_stage_label = None;
+    record.last_finished_at = None;
+    record.last_exit_status = None;
+    record.last_error = None;
+    record.last_completed_stage_label = None;
+    record.last_stage_duration_ms = None;
+    record.last_usage_summary = None;
+    record.last_files_read.clear();
+    record.last_files_written.clear();
+    record.last_stdout_snippet = None;
+    record.last_stderr_snippet = None;
+    if record.last_started_at.is_none() {
+        record.last_started_at = Some(now);
+    }
+    state.updated_at = now;
+}
+
 pub fn mark_lane_dispatch_failed(
     state: &mut ProgramRuntimeState,
     lane_key: &str,
@@ -241,7 +269,8 @@ pub fn refresh_program_state(
             let record = ensure_lane_record(state, &lane_key, &run_config);
             let progress = if let Some(run_id) = tracked_run_id(record) {
                 read_live_lane_progress_for_run_id(run_id)?
-            } else if let Some(run_dir) = manifest.resolve_lane_run_dir(manifest_path, unit_id, lane_id)
+            } else if let Some(run_dir) =
+                manifest.resolve_lane_run_dir(manifest_path, unit_id, lane_id)
             {
                 read_live_lane_progress(&run_dir)?
             } else {
@@ -252,16 +281,28 @@ pub fn refresh_program_state(
             };
             let mut lane_changed = false;
 
-            lane_changed |= assign_opt(&mut record.current_fabro_run_id, progress.fabro_run_id.clone());
+            lane_changed |= assign_opt(
+                &mut record.current_fabro_run_id,
+                progress.fabro_run_id.clone(),
+            );
             lane_changed |= assign_opt(&mut record.current_run_id, progress.fabro_run_id.clone());
             lane_changed |= assign_opt(&mut record.last_run_id, progress.fabro_run_id.clone());
-            lane_changed |= assign_opt(&mut record.current_stage_label, progress.current_stage_label.clone());
+            lane_changed |= assign_opt(
+                &mut record.current_stage_label,
+                progress.current_stage_label.clone(),
+            );
             lane_changed |= assign_opt(
                 &mut record.last_completed_stage_label,
                 progress.last_completed_stage_label.clone(),
             );
-            lane_changed |= assign_opt(&mut record.last_stage_duration_ms, progress.last_stage_duration_ms);
-            lane_changed |= assign_opt(&mut record.last_usage_summary, progress.last_usage_summary.clone());
+            lane_changed |= assign_opt(
+                &mut record.last_stage_duration_ms,
+                progress.last_stage_duration_ms,
+            );
+            lane_changed |= assign_opt(
+                &mut record.last_usage_summary,
+                progress.last_usage_summary.clone(),
+            );
             lane_changed |= assign_opt(&mut record.last_error, progress.last_failure.clone());
             lane_changed |= assign_opt(&mut record.last_finished_at, progress.finished_at);
             if record.last_files_read != progress.last_files_read {
@@ -335,7 +376,9 @@ fn tracked_run_id(record: &LaneRuntimeRecord) -> Option<&str> {
         .or(record.current_run_id.as_deref())
 }
 
-fn read_live_lane_progress_for_run_id(run_id: &str) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
+fn read_live_lane_progress_for_run_id(
+    run_id: &str,
+) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
     let base = fabro_workflows::run_lookup::default_runs_base();
     let inspection = match inspect_run(&base, run_id) {
         Ok(inspection) => inspection,
@@ -367,11 +410,15 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
             .as_ref()
             .map(|state| state.status)
             .or_else(|| run_status.as_ref().map(|status| status.status)),
-        current_stage_label: run_state.as_ref().and_then(|state| state.current_stage_label.clone()),
+        current_stage_label: run_state
+            .as_ref()
+            .and_then(|state| state.current_stage_label.clone()),
         last_completed_stage_label: run_state
             .as_ref()
             .and_then(|state| state.last_completed_stage_label.clone()),
-        last_failure: run_state.as_ref().and_then(|state| state.last_failure.clone()),
+        last_failure: run_state
+            .as_ref()
+            .and_then(|state| state.last_failure.clone()),
         updated_at: run_state.as_ref().map(|state| state.updated_at),
         finished_at: conclusion.as_ref().map(|conclusion| conclusion.timestamp),
         ..LiveLaneProgress::default()
@@ -401,7 +448,8 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
                     .or_else(|| value.get("name"))
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned);
-                progress.last_stage_duration_ms = value.get("duration_ms").and_then(|value| value.as_u64());
+                progress.last_stage_duration_ms =
+                    value.get("duration_ms").and_then(|value| value.as_u64());
                 progress.last_files_read = parse_string_array(&value, "files_read");
                 progress.last_files_written = parse_string_array(&value, "files_written");
                 progress.last_usage_summary = summarize_event_usage(&value);
@@ -419,7 +467,8 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned)
                     .or_else(|| {
-                        value.get("failure_reason")
+                        value
+                            .get("failure_reason")
                             .and_then(|value| value.as_str())
                             .map(ToOwned::to_owned)
                     });
@@ -430,7 +479,9 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
     }
 
     if progress.fabro_run_id.is_none() {
-        progress.fabro_run_id = run_root.file_name().map(|name| name.to_string_lossy().into_owned());
+        progress.fabro_run_id = run_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
     }
     if progress.fabro_run_id.is_none()
         && progress.latest_event.is_none()

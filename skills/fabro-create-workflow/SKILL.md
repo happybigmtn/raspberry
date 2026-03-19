@@ -1,185 +1,150 @@
 ---
 name: fabro-create-workflow
-description: Create Fabro workflow DOT graphs and TOML run configurations from natural language requirements. Use when the user wants to create a new workflow, build a pipeline, design a multi-step agent process, or write a .fabro or .toml file for Fabro. Covers topology selection, node types, model assignment, edge routing, and run configuration.
+description: Use when the user wants to create or evolve a Fabro workflow package for a repo. Triggers on requests to write `.fabro` or `.toml` files, map repo work into units and lanes, synthesize a full `fabro/` package from broad requirements, or evolve an existing `fabro/` tree against doctrine and run evidence.
 ---
 
 # Fabro Create Workflow
 
-Turn requirements into a runnable Fabro workflow: a `.fabro` graph file defining the pipeline structure and an optional `.toml` run configuration.
+Turn requirements into a Fabro workflow package: a `.fabro` graph, a `.toml`
+run config, and, when Raspberry supervision is involved, the repo-level
+contract that lets the supervisory plane understand what the workflow owns.
 
-## Workflow
+When the request is broad or repo-shaped, do not jump straight to isolated
+files. Use a blueprint first, then create or evolve the full checked-in
+`fabro/` package from that blueprint.
 
-### Step 1: Fetch Current Model Catalog
+If the request is Raspberry-shaped, answer the repo question first:
 
-Run `fabro model list` to get available models and providers. Never guess model IDs or provider names -- they change frequently.
+- what unit and lane exist?
+- what milestone does the lane own?
+- which artifacts prove that milestone?
+- which checks or state files will the supervisor read?
+- which run config path should the manifest point at?
 
-### Step 2: Understand Requirements
+Do not jump straight to graph syntax if those answers are missing.
 
-Clarify what the workflow should accomplish:
-- What is the end goal?
-- What tools or languages are involved?
-- Does it need human approval gates?
-- Should multiple models or providers be used?
-- Is parallelism needed (e.g., multi-perspective review, ensemble)?
-- Does it need a verify/fix loop?
-- What sandbox environment is appropriate (local, docker, daytona)?
+## Start
 
-### Step 3: Choose Topology
+1. Run `fabro model list` before naming models or providers.
+2. Classify the request:
+   - Plain Fabro workflow authoring: read `references/dot-language.md`,
+     `references/run-configuration.md`, and
+     `references/example-workflows.md`.
+   - Raspberry-supervised repo or lane authoring: also read
+     `references/raspberry-authoring.md` and
+     `references/raspberry-examples.md`.
+   - Broad repo bootstrap or repo update request: also read
+     `references/program-synthesis.md`,
+     `references/program-interview.md`,
+     `references/program-blueprint-schema.md`, and
+     `references/program-evolution.md`.
+3. Prefer the simplest topology that satisfies the goal.
+4. Produce both the graph and the run config whenever the workflow will be
+   checked into a repo or referenced from a Raspberry manifest.
 
-Pick the simplest topology that satisfies the requirements. See `references/example-workflows.md` for complete examples of each pattern.
+## Program Synthesis Mode
 
-| Pattern | When to use |
-|---|---|
-| **Linear** | Simple sequential steps, no branching |
-| **Command-then-analyze** | Shell output feeds into LLM analysis |
-| **Implement-test-fix loop** | Code generation with validation cycle |
-| **Human approval gate** | Needs human review before proceeding |
-| **Plan-approve-implement** | Complex changes needing upfront planning |
-| **Parallel fan-out** | Independent analyses merged into synthesis |
-| **Multi-model ensemble** | Multiple providers give independent opinions |
-| **Production pipeline** | Toolchain checks + implement + verify + fixup loops |
+Use this mode when the user is not asking for one lane file, but for a repo
+package or a repo update.
 
-Combine patterns as needed. For example, a production pipeline might include a human gate after planning and a parallel fan-out for review.
+Two sub-modes exist:
 
-### Step 4: Write the DOT Graph
+- **Create**: broad requirement or spec corpus -> blueprint -> full executable
+  `fabro/` package
+- **Evolve**: existing `fabro/` tree + doctrine + run evidence ->
+  imported blueprint -> revised blueprint -> deterministic package patch
 
-See `references/dot-language.md` for the full language reference.
+In both modes, the blueprint is the primary design artifact. Do not free-write
+the final `fabro/` tree first.
 
-**Required elements:**
-1. `digraph Name { ... }` wrapper
-2. `graph [goal="..."]` attribute
-3. `rankdir=LR` (preferred for readability)
-4. Exactly one `start [shape=Mdiamond, label="Start"]`
-5. Exactly one `exit [shape=Msquare, label="Exit"]`
+## Plain Fabro Workflow Authoring
 
-**Choose node shapes by purpose:**
-- `box` (default) -- agent with tools (implement, fix, write code)
-- `tab` -- single LLM call without tools (analyze, plan, review, synthesize)
-- `parallelogram` -- shell command (build, test, lint)
-- `diamond` -- conditional routing (no prompt, only conditions on edges)
-- `hexagon` -- human decision gate
-- `component` -- parallel fan-out
-- `tripleoctagon` -- merge parallel results
+Use the generic Fabro references when the user is building a standalone
+workflow or asking about DOT or TOML syntax.
 
-**Prompt guidelines:**
-- Be specific and actionable in prompts
-- Tell the agent exactly what to do, what files to create/modify, what output to produce
-- Use `shape=tab` for nodes that only need to think, not act
-- Use `prompt="@path/to/file.md"` for long prompts (path relative to DOT file)
-- Set `reasoning_effort="low"` on simple analysis or summary nodes
+Core rules:
 
-**Edge routing:**
-- Use `condition="outcome=success"` and unconditional fallback for check gates
-- Diamond nodes must have multiple outgoing edges with conditions
-- Use `max_visits` on fix/retry nodes to prevent infinite loops (typically 3)
-- Use `goal_gate=true` on verification nodes that must pass for the workflow to succeed
-- Set `retry_target` on goal gates to specify where to jump on failure
+- Every workflow is a `digraph` with `graph [goal="..."]`.
+- Exactly one start node and one exit node are required.
+- `box` nodes are tool-using agents, `tab` nodes are single prompt calls,
+  `parallelogram` nodes run commands, `diamond` nodes route, `hexagon` nodes
+  ask humans, `component` fans out, and `tripleoctagon` merges.
+- Validate with `fabro run --preflight run.toml` or
+  `fabro validate workflow.fabro`.
 
-### Step 5: Assign Models via Stylesheet
+## Raspberry-Supervised Repo Authoring
 
-Use `model_stylesheet` for model assignment rather than per-node attributes:
+Use this mode when the user is asking from the perspective of a supervised repo
+such as `coding/myosu`, or when they mention lanes, milestones, program
+manifests, proof profiles, health checks, or the supervisory plane.
 
-```dot
-graph [model_stylesheet="
-    *        { model: claude-sonnet-4-6;}
-    .coding  { model: claude-opus-4-6;}
-    .review  { model: gemini-3.1-pro-preview;}
-"]
-```
+Your job is not only to produce a Fabro graph. Your job is to make the repo
+legible to the supervisory plane.
 
-- Use `*` for the default model (usually a fast/cheap model)
-- Use `.class` selectors for role-based assignment (`.coding`, `.review`, `.verify`)
-- Use `#nodeid` selectors for specific node overrides
-- Assign `class="coding"` etc. on nodes to match stylesheet rules
-- **Critical:** Use semicolons between properties in stylesheet rules
+That means the answer should usually include:
 
-**Model selection heuristics:**
-- Fast/cheap models for simple analysis, summaries, routing: `claude-haiku-4-5`, `gemini-3-flash-preview`, `gpt-5-mini`
-- Strong models for coding, complex reasoning: `claude-opus-4-6`, `claude-sonnet-4-6`, `gpt-5.4`
-- Use `reasoning_effort="high"` for complex coding tasks
-- For ensembles, pick models from different providers for diversity
+- the manifest fields the repo must define
+- the artifacts and milestone contract for the lane
+- the recommended Fabro topology for the lane
+- the run-config path and workflow package layout
+- any proof, health, or orchestration state surfaces the repo must expose
 
-### Step 6: Write the TOML Run Configuration (if needed)
+When the user asks "what does this repo need to do?", answer with a
+repo-readiness checklist first and a workflow proposal second.
 
-See `references/run-configuration.md` for the full reference.
+## Output Shape
 
-A TOML file is optional for simple workflows (you can run `fabro run workflow.fabro` directly). Create one when you need:
-- Sandbox configuration (provider, environment variables)
-- Setup commands (install dependencies)
-- Variable definitions
-- LLM fallbacks
-- Hooks
-- Asset collection
+For a normal workflow request, return:
 
-Minimal TOML:
+- `workflow.fabro`
+- `workflow.toml` if needed
+- optional prompt files under `prompts/`
 
-```toml
-version = 1
-graph = "workflow.fabro"
-```
+For a Raspberry request, return:
 
-Common additions:
+- manifest edits or a manifest-ready checklist
+- `workflow.fabro`
+- `workflow.toml`
+- the artifact, milestone, and check contract the repo must satisfy
 
-```toml
-[sandbox]
-provider = "local"
+For a broad repo create request, return:
 
-[sandbox.local]
-worktree_mode = "always"
+- a blueprint draft
+- the full package generation plan or generated package files
 
-[sandbox.env]
-NODE_ENV = "test"
-```
+For an evolve request, return:
 
-### Step 7: Validate
-
-Run `fabro run --preflight workflow.toml` (or `fabro run --preflight workflow.fabro`) to validate without executing.
-
-If validation fails, fix the reported errors and re-validate.
+- imported current-state findings
+- doctrine/evidence drift findings
+- a revised blueprint
+- the deterministic patch plan for the existing `fabro/` tree
 
 ## Guardrails
 
-- **Diamond nodes route only.** Never put a `prompt` on a `diamond` node -- it only evaluates edge conditions.
-- **All nodes reachable from start.** No orphan nodes.
-- **No edges into start or out of exit.**
-- **LLM nodes need prompts.** Every `box` and `tab` node must have a `prompt` attribute.
-- **Conditional nodes need multiple outgoing edges** with `condition` attributes.
-- **Prevent infinite loops.** Use `max_visits` on retry/fix nodes. Typical value: 3.
-- **Use `goal_gate=true`** on critical verification steps that must succeed.
-- **Use `outcome=success` conditions** on edges leaving command/conditional nodes.
-- **Model IDs must match the catalog.** Always run `fabro model list` first.
-- **Semicolons in stylesheets.** Properties must be separated by semicolons.
-
-## File Organization
-
-Place workflow files together in a directory:
-
-```
-my-workflow/
-  workflow.fabro        # the graph
-  workflow.toml         # run configuration (optional)
-  prompts/              # external prompt files (optional)
-    implement.md
-    review.md
-```
-
-## Running Workflows
-
-```bash
-fabro run workflow.fabro                  # run graph directly
-fabro run workflow.toml                   # run with TOML config
-fabro run workflow.toml --dry-run         # simulated LLM backend
-fabro run workflow.toml --no-retro        # skip retro (faster for testing)
-fabro run workflow.toml --auto-approve    # auto-approve human gates
-fabro run workflow.toml --model claude-opus-4-6  # override model
-fabro run workflow.toml --sandbox local   # override sandbox
-fabro validate workflow.fabro            # validate only
-```
+- Never put a `prompt` on a `diamond` node.
+- Every `box` and `tab` node needs a `prompt`.
+- No edges may enter the start node or leave the exit node.
+- Prefer `model_stylesheet` over per-node model assignment.
+- Keep retry loops bounded with `max_visits` or retry policy.
+- For Raspberry lanes, do not invent hidden control-plane semantics. If the
+  manifest does not say what proves success, surface that gap explicitly.
+- For Raspberry lanes, the graph should write or update the durable artifacts
+  that the lane's milestone requires. A lane is not ready just because the
+  graph "did work".
 
 ## References
 
-- `references/dot-language.md` -- Complete DOT language reference (node types, attributes, edges, conditions, stylesheets, fidelity, variables)
-- `references/run-configuration.md` -- Complete TOML run configuration reference (sandbox, setup, hooks, LLM, vars, assets)
-- `references/example-workflows.md` -- 9 complete example workflows from simple to production-grade
+- `references/dot-language.md` for Fabro graph syntax and validator rules
+- `references/run-configuration.md` for TOML run config behavior
+- `references/example-workflows.md` for generic topology patterns
+- `references/raspberry-authoring.md` for the repo contract required by the
+  supervisory plane
+- `references/raspberry-examples.md` for lane-oriented examples grounded in the
+  current Raspberry fixture model
+- `references/program-synthesis.md` for blueprint-first repo synthesis
+- `references/program-interview.md` for targeted clarification rules
+- `references/program-blueprint-schema.md` for the blueprint fields
+- `references/program-evolution.md` for updating an existing `fabro/` tree
+  from doctrine and evidence
 
 {{user_input}}

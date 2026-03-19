@@ -1,0 +1,22 @@
+version: 1
+program: ready-program
+target_repo: .
+state_path: .raspberry/ready-program-state.json
+max_parallel: 1
+units:
+  - id: docs
+    title: Ready Child Program
+    output_root: portfolio/ready
+    artifacts:
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [review]
+    lanes:
+      - id: default
+        kind: artifact
+        title: Ready Child Lane
+        run_config: run-configs/runtime-page.toml
+        managed_milestone: reviewed
+        produces: [review]

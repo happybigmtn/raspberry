@@ -1,0 +1,13 @@
+version = 1
+graph = "../../workflows/bootstrap/poker.fabro"
+goal = """
+Reconcile the poker lane with current doctrine and reviewed artifact
+expectations.
+"""
+directory = "../../.."
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"

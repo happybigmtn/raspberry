@@ -1,0 +1,31 @@
+version: 1
+program:
+  id: craps
+  max_parallel: 1
+units:
+  - id: gameplay
+    title: Craps Gameplay
+    output_root: outputs/craps/gameplay
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: rules
+        kind: interface
+        title: Craps Rules Lane
+        family: bootstrap
+        goal: |
+          Bootstrap the craps gameplay lane for Fabro and Raspberry.
+          Produce a reviewed lane contract for local gameplay and future
+          implementation work.
+        managed_milestone: reviewed
+        produces: [spec, review]
+        proof_profile: craps_bootstrap
+        prompt_context: >
+          Inspect the requirements, define the gameplay boundary, and produce
+          reviewed artifacts suitable for a later implementation lane.

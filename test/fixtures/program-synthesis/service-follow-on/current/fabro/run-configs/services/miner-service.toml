@@ -1,0 +1,6 @@
+version = 1
+graph = "../../workflows/services/miner-service.fabro"
+goal = """
+Bootstrap the miner service lane and emit durable reviewed artifacts.
+"""
+directory = "../../.."

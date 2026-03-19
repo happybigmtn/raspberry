@@ -1,13 +1,11 @@
-# DOT Language Reference for Arc Workflows
+# Fabro Workflow DOT Reference
 
-## Graph Structure
+Use this reference for the graph itself. Use
+`raspberry-authoring.md` for the repo contract around the graph.
 
-Every workflow is a `digraph` with a name and body. Three required elements:
-1. A `goal` attribute on the graph
-2. Exactly one `start` node with `shape=Mdiamond`
-3. Exactly one `exit` node with `shape=Msquare`
+## Required Structure
 
-Only `digraph` is supported (not `graph` or `strict`).
+Every Fabro workflow is a directed graph:
 
 ```dot
 digraph MyWorkflow {
@@ -17,212 +15,147 @@ digraph MyWorkflow {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    // nodes and edges here
+    main [shape=tab, label="Main", prompt="Do the work."]
 
-    start -> node1 -> node2 -> exit
+    start -> main -> exit
 }
 ```
 
-Workflows **can include loops** (unlike DAGs).
+Required rules:
 
-## Value Types
+- use `digraph`, not `graph` or `strict`
+- set `graph [goal="..."]`
+- define exactly one start node and one exit node
+- make every useful node reachable from the start node
 
-| Type | Syntax | Examples |
+## Node Shapes
+
+| Shape | Meaning | Use for |
 |---|---|---|
-| String | Double-quoted | `"Run tests"` |
-| Integer | Bare digits | `42`, `-1` |
-| Float | Digits with decimal | `3.14` |
-| Boolean | Keywords | `true`, `false` |
-| Duration | Integer + unit | `250ms`, `30s`, `15m`, `2h`, `1d` |
-| Bare string | Identifier | `claude-sonnet-4-6` |
+| `Mdiamond` | Start | workflow entry |
+| `Msquare` | Exit | workflow terminal |
+| `box` | Agent | tool-using implementation or fixup |
+| `tab` | Prompt | one-shot planning, review, synthesis |
+| `parallelogram` | Command | tests, lint, build, probes |
+| `diamond` | Conditional | routing only |
+| `hexagon` | Human | approval or choice gate |
+| `component` | Parallel fan-out | independent branches |
+| `tripleoctagon` | Fan-in | merge parallel branches |
+| `insulator` | Wait | sleep or delay |
+| `house` | Sub-workflow manager | orchestration of child workflows |
 
-Comments: `//` line and `/* */` block.
+## Key Node Attributes
 
-## Graph-Level Attributes
+### All nodes
 
-| Attribute | Type | Description |
-|---|---|---|
-| `goal` | String | Workflow objective (required) |
-| `rankdir` | Identifier | Layout: `LR` or `TB` |
-| `model_stylesheet` | String | CSS-like model assignment rules |
-| `default_max_retry` | Integer | Default retry count for all nodes (default: 3) |
-| `retry_target` | String | Default node to jump to on retry |
-| `fallback_retry_target` | String | Fallback retry target |
-| `default_fidelity` | String | Default fidelity for all nodes |
-| `default_thread` | String | Default thread ID for all nodes |
-| `max_node_visits` | Integer | Max visits per node (0 = unlimited) |
-| `stall_timeout` | Duration | Timeout for stalled workflows (default: 1800s) |
+- `label`
+- `class`
+- `timeout`
+- `max_visits`
+- `max_retries`
+- `retry_policy`
+- `retry_target`
+- `goal_gate`
 
-## Node Types (by shape)
+### Agent and prompt nodes
 
-| Shape | Handler | Purpose |
-|---|---|---|
-| `Mdiamond` | start | Entry point (exactly one) |
-| `Msquare` | exit | Terminal (exactly one) |
-| `box` (default) | agent | Multi-turn LLM with tool access |
-| `tab` | prompt | Single LLM call, no tools |
-| `parallelogram` | command | Execute a shell script |
-| `hexagon` | human | Human-in-the-loop decision gate |
-| `diamond` | conditional | Route based on conditions |
-| `component` | parallel | Fan-out to concurrent branches |
-| `tripleoctagon` | parallel.fan_in | Merge parallel branch results |
-| `insulator` | wait | Pause for a duration |
-| `house` | stack.manager_loop | Sub-workflow orchestration |
+- `prompt`
+- `reasoning_effort`
+- `max_tokens`
+- `fidelity`
+- `thread_id`
+- `model`
+- `provider`
+- `backend`
 
-### Agent Nodes (box, default)
+### Command nodes
 
-Multi-turn LLM with tools (shell, read_file, write_file, grep, glob, web_search, web_fetch, edit_file).
+- `script`
+- `language`
 
-Key attributes: `prompt`, `reasoning_effort` (low/medium/high), `max_tokens`, `fidelity`, `thread_id`, `timeout`, `backend` (api or cli), `model`, `provider`, `project_memory`.
+### Parallel fan-out nodes
 
-### Prompt Nodes (tab)
+- `join_policy`
+- `error_policy`
+- `max_parallel`
 
-Single LLM call, no tool use. Same attributes as agent but never invokes tools.
+## Routing Rules
 
-### Command Nodes (parallelogram)
+Use these patterns:
 
-Run a shell script. Attributes: `script` (shell command), `language` ("shell" or "python").
+- command success gate:
+  `validate -> exit [condition="outcome=success"]`
+- unconditional fallback:
+  `validate -> fixup`
+- bounded repair loop:
+  set `max_visits=3` on the fix node or use retry policy
 
-### Human Nodes (hexagon)
+Rules that matter in practice:
 
-Pause for human choice. Edge labels define options. Supports:
-- Keyboard accelerators: `[A] Approve`, `A) Approve`, `A - Approve`
-- Freeform input: `freeform=true` on an edge
-- Default on timeout: `human.default_choice`
+- `diamond` nodes route only; they do not have prompts
+- conditional routing requires multiple outgoing edges
+- `goal_gate=true` is appropriate for a must-pass verification step
+- if a goal gate can fail, give it a retry target directly or at graph level
 
-### Conditional Nodes (diamond)
+## Model Assignment
 
-Route execution based on conditions. Must have multiple outgoing edges with `condition` attributes. No prompt attribute.
-
-### Parallel Fan-Out (component)
-
-Attributes: `join_policy` (wait_all, first_success, k_of_n(N), quorum(F)), `error_policy` (continue, fail_fast, ignore), `max_parallel` (default: 4).
-
-### Fan-In / Merge (tripleoctagon)
-
-Collects results from parallel branches. Results available as `parallel_results.json`.
-
-### Wait Nodes (insulator)
-
-Attribute: `duration` (e.g. `"30s"`, `"2m"`).
-
-### Sub-workflow (house)
-
-Attributes: `stack.child_dotfile`, `stack.child_dot_source`, `manager.max_cycles` (default: 1000), `manager.poll_interval` (default: 45s), `manager.stop_condition`.
-
-## Common Node Attributes
-
-| Attribute | Description |
-|---|---|
-| `label` | Display name |
-| `class` | Space-separated classes for stylesheet targeting |
-| `max_visits` | Max times this node can execute |
-| `goal_gate` | When `true`, workflow fails if this node doesn't succeed |
-| `max_retries` | Override default retry count |
-| `retry_policy` | Preset: `none`, `standard`, `aggressive`, `linear`, `patient` |
-| `retry_target` | Node ID to jump to on retry |
-| `auto_status` | Auto-generate status updates |
-
-## Edges and Transitions
-
-After each node, Arc evaluates outgoing edges in priority order:
-1. **Condition match** -- edges with `condition`, highest `weight` wins
-2. **Preferred label** -- from human gate or LLM routing directive
-3. **Suggested next** -- node suggests a next node ID
-4. **Unconditional fallback** -- edges without conditions, `weight` tiebreak
-
-Edge attributes: `label`, `condition`, `weight` (higher wins, default: 0), `fidelity`, `thread_id`, `loop_restart`.
-
-### Condition Grammar
-
-```
-Expr       ::= OrExpr
-OrExpr     ::= AndExpr ('||' AndExpr)*
-AndExpr    ::= UnaryExpr ('&&' UnaryExpr)*
-UnaryExpr  ::= '!' UnaryExpr | Clause
-Clause     ::= Key Op Value | Key
-```
-
-Operators: `=`, `!=`, `>`, `<`, `>=`, `<=`, `contains`, `matches`.
-
-Common patterns:
-- `condition="outcome=success"` -- stage succeeded
-- `condition="outcome=fail"` -- stage failed
-- `condition="context.tests_passed=true"` -- check context variable
-
-## Model Stylesheets
-
-CSS-like syntax for assigning models to nodes:
+Prefer `model_stylesheet` over hand-assigning models on every node:
 
 ```dot
 graph [model_stylesheet="
-    *        { model: claude-haiku-4-5;}
-    .coding  { model: claude-sonnet-4-6;}
-    #review  { model: gemini-3.1-pro-preview;}
+    *        { model: claude-haiku-4-5; reasoning_effort: low; }
+    .coding  { model: claude-sonnet-4-6; reasoning_effort: high; }
+    .review  { model: gpt-5.4; reasoning_effort: high; }
 "]
 ```
 
-Selectors by specificity (low to high): `*` (universal, 0), shape name (1), `.class` (2), `#nodeid` (3). Higher specificity wins. Same specificity: last rule wins. Explicit node attributes override stylesheets.
+Rules:
 
-Properties: `model`, `provider` (optional — auto-inferred from the model catalog), `reasoning_effort`, `backend`.
+- `*` sets the default
+- `.class` targets role-based groups
+- `#node_id` targets one node
+- use semicolons between properties
+- explicit node attributes override the stylesheet
 
-**Critical:** Use semicolons between properties (e.g. `model: foo; provider: bar;`).
+Always run `fabro model list` before naming a concrete model.
 
-## Variables
+## Variables and Prompt Files
 
-Define in `[vars]` section of TOML. Expanded into DOT source before parsing with `$variable` syntax. Undefined variables raise an error. Escape literal `$` with `$$`. Built-in: `$goal`.
+- define variables in TOML `[vars]`
+- use them in DOT as `$name`
+- use `$$` for a literal dollar sign
+- use `prompt="@prompts/plan.md"` for long prompts
 
-## External Prompt Files
+`@file` paths resolve relative to the DOT file.
 
-Reference external files with `prompt="@path/to/file.md"` (path relative to DOT file).
+## Validator Rules To Respect
 
-## Subgraphs
+The built-in validator checks at least these rules:
 
-Group nodes visually and apply scoped defaults:
+- exactly one start node
+- exactly one exit node
+- no incoming edges to start
+- no outgoing edges from exit
+- every edge target exists
+- condition syntax parses
+- stylesheet syntax parses
+- LLM nodes have prompts
+- `@file` references resolve
+- `goal_gate` nodes have a retry path
+- selection rules do not conflict with conditional routing
 
-```dot
-subgraph cluster_impl {
-    label = "Implementation"
-    node [thread_id="impl", fidelity="full"]
-    plan      [label="Plan"]
-    implement [label="Implement"]
-}
-```
+Use `fabro validate workflow.fabro` for graph-only validation and
+`fabro run --preflight run.toml` for full run-config validation.
 
-When a subgraph has a `label`, it's converted to a CSS class applied to all nodes within.
+## Topology Hints
 
-## Validation Rules
+Use the smallest topology that matches the work:
 
-Enforced at parse time:
-- Exactly one start node and one exit node
-- All nodes reachable from start
-- No incoming edges to start, no outgoing edges from exit
-- Edge targets reference existing nodes
-- Condition expressions parse correctly
-- Stylesheet syntax is valid
-- LLM nodes have a `prompt` attribute
-- `@file` references point to existing files
-- Conditional (diamond) nodes have multiple outgoing edges with conditions
+- `tab -> exit` for a one-shot plan or summary
+- `command -> tab -> exit` when shell output needs analysis
+- `implement -> validate -> fix -> validate` for code loops
+- `fork -> branches -> merge -> synthesize` for independent analyses
+- `plan -> human -> implement` when approval matters
 
-## Retry Policies
-
-| Preset | Attempts | Backoff |
-|---|---|---|
-| `none` | 1 | No retries |
-| `standard` | 5 | 5s initial, 2x exponential |
-| `aggressive` | 5 | 500ms initial, 2x exponential |
-| `linear` | 3 | 500ms fixed |
-| `patient` | 3 | 2s initial, 3x exponential |
-
-## Fidelity Levels
-
-Controls how much prior context is passed to a node:
-
-| Value | Behavior |
-|---|---|
-| `compact` | Structured summary (default) |
-| `full` | Complete context |
-| `summary:high` | Detailed summary |
-| `summary:medium` | Moderate summary |
-| `summary:low` | Brief summary |
-| `truncate` | Minimal -- only goal and run ID |
+For Raspberry lanes, choose the topology only after deciding what milestone and
+artifacts the lane owns.

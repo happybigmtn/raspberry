@@ -1,0 +1,13 @@
+{
+  "schema_version": "raspberry.program.v2",
+  "program": "myosu-update",
+  "updated_at": "2026-03-19T00:00:00Z",
+  "lanes": {
+    "games:poker": {
+      "lane_key": "games:poker",
+      "status": "failed",
+      "run_config": "fabro/run-configs/bootstrap/poker.toml",
+      "last_error": "missing reviewed artifact"
+    }
+  }
+}

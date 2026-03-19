@@ -381,7 +381,11 @@ fabro graph run.toml --format svg
 
 ## `fabro skill install`
 
-Install the built-in `fabro-create-workflow` skill for AI assistants (Claude Code, Codex). The skill teaches AI assistants Fabro's Graphviz syntax, node types, and run configuration format.
+Install the built-in `fabro-create-workflow` skill for AI assistants (Claude
+Code, Codex). The skill teaches Fabro workflow syntax, run-config authoring,
+topology selection, the repo-level lane contract expected by the evolving
+Raspberry supervisory plane, and the blueprint-first create/evolve flow for
+repo-level `fabro/` packages.
 
 ```bash
 # Install into the current project (.claude/skills/ or .agents/skills/)
@@ -396,6 +400,63 @@ fabro skill install --for user --dir claude
 | `--for <SCOPE>` | `user` (default) — installs to `~/<dir>/skills/`. `project` — installs to `./<dir>/skills/`. |
 | `--dir <DIR>` | Directory convention: `claude` (`.claude/skills/`) or `agents` (`.agents/skills/`). Required. |
 | `--force` | Overwrite an existing installation without prompting. |
+
+## `fabro synth create`
+
+Create a checked-in `fabro/` package from a blueprint file.
+
+```bash
+fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
+```
+
+| Flag | Description |
+|---|---|
+| `--blueprint <FILE>` | Path to the blueprint YAML file. |
+| `--target-repo <DIR>` | Target repository root where the `fabro/` package should be written. |
+
+Use this after a skill-guided create pass has produced a blueprint and you want
+the full executable package: manifests, run configs, workflow graphs, prompts,
+and checks.
+
+## `fabro synth import`
+
+Import an existing checked-in `fabro/` package into a blueprint file.
+
+```bash
+fabro synth import --target-repo /home/r/coding/myosu --program myosu-platform --output /tmp/myosu-platform.yaml
+```
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the current `fabro/` package. |
+| `--program <ID>` | Program id matching `fabro/programs/<ID>.yaml`. |
+| `--output <FILE>` | Path to write the imported blueprint YAML. |
+
+Use this to bootstrap a reviewable blueprint from an existing program before a
+skill-guided evolve pass.
+
+## `fabro synth evolve`
+
+Evolve an existing checked-in `fabro/` package from a revised blueprint.
+
+```bash
+fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu
+
+# Review-first: write the evolved package into a separate tree
+fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu --preview-root /tmp/myosu-preview
+```
+
+| Flag | Description |
+|---|---|
+| `--blueprint <FILE>` | Path to the revised blueprint YAML file. |
+| `--target-repo <DIR>` | Target repository root containing the current `fabro/` package. |
+| `--preview-root <DIR>` | Optional alternate root where the evolved package should be written. Use this for review-first iteration. |
+
+Use this after a skill-guided evolve pass has imported the current package,
+read doctrine and run evidence, and produced a revised blueprint that should be
+be applied deterministically to the full workflow package. When `--preview-root`
+is supplied, findings are computed against `--target-repo` but files are written
+to the preview tree instead of mutating the live repo.
 
 ## `fabro rewind`
 

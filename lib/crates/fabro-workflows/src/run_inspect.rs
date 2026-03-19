@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::conclusion::Conclusion;
 use crate::live_state::RunLiveState;
 use crate::manifest::Manifest;
-use crate::run_lookup::{RunInfo, resolve_run};
+use crate::run_lookup::{resolve_run, RunInfo};
 use crate::run_status::{RunStatus, RunStatusRecord};
 use crate::sandbox_record::SandboxRecord;
 
@@ -70,9 +70,8 @@ impl ProgressSummary {
 }
 
 pub fn inspect_run(base: &Path, identifier: &str) -> Result<RunInspection> {
-    let run = resolve_run(base, identifier).with_context(|| {
-        format!("failed to resolve run `{identifier}` in {}", base.display())
-    })?;
+    let run = resolve_run(base, identifier)
+        .with_context(|| format!("failed to resolve run `{identifier}` in {}", base.display()))?;
     inspect_run_info(&run)
 }
 
@@ -105,10 +104,7 @@ pub fn inspect_run_dir(run_id: &str, run_dir: &Path, status: RunStatus) -> Resul
     })
 }
 
-fn load_progress_summary(
-    run_dir: &Path,
-    state: Option<&RunLiveState>,
-) -> Result<ProgressSummary> {
+fn load_progress_summary(run_dir: &Path, state: Option<&RunLiveState>) -> Result<ProgressSummary> {
     let progress_path = run_dir.join("progress.jsonl");
     let contents = match std::fs::read_to_string(&progress_path) {
         Ok(contents) => contents,
@@ -121,7 +117,8 @@ fn load_progress_summary(
 
     let mut summary = ProgressSummary {
         latest_event: state.and_then(|state| state.last_event.clone()),
-        last_completed_stage_label: state.and_then(|state| state.last_completed_stage_label.clone()),
+        last_completed_stage_label: state
+            .and_then(|state| state.last_completed_stage_label.clone()),
         current_stage_label: state.and_then(|state| state.current_stage_label.clone()),
         last_files_read: state
             .map(|state| state.last_files_read.clone())

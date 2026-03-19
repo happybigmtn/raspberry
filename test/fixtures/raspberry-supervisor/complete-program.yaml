@@ -1,0 +1,22 @@
+version: 1
+program: complete-program
+target_repo: .
+state_path: .raspberry/complete-program-state.json
+max_parallel: 1
+units:
+  - id: docs
+    title: Complete Child Program
+    output_root: portfolio/complete
+    artifacts:
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [review]
+    lanes:
+      - id: default
+        kind: artifact
+        title: Complete Child Lane
+        run_config: run-configs/runtime-page.toml
+        managed_milestone: reviewed
+        produces: [review]

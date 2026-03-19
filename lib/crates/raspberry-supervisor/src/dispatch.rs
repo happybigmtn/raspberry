@@ -3,21 +3,33 @@ use std::process::Command;
 use std::sync::Arc;
 use std::thread;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::evaluate::{LaneExecutionStatus, evaluate_program};
+use crate::autodev::{orchestrate_program, AutodevSettings};
+use crate::evaluate::{evaluate_program, LaneExecutionStatus};
 use crate::manifest::ProgramManifest;
 use crate::program_state::{
-    ProgramRuntimeState, ProgramStateError, mark_lane_dispatch_failed, mark_lane_submitted,
+    mark_lane_dispatch_failed, mark_lane_started, mark_lane_submitted, ProgramRuntimeState,
+    ProgramStateError,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchOutcome {
     pub lane_key: String,
     pub exit_status: i32,
     pub fabro_run_id: Option<String>,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchSettings {
+    pub fabro_bin: PathBuf,
+    pub max_parallel_override: Option<usize>,
+    pub doctrine_files: Vec<PathBuf>,
+    pub evidence_paths: Vec<PathBuf>,
+    pub preview_evolve_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -34,6 +46,8 @@ pub enum DispatchError {
     LaneNotReady { lane: String },
     #[error("run config for lane `{lane}` does not exist at {path}")]
     MissingRunConfig { lane: String, path: PathBuf },
+    #[error("program manifest for lane `{lane}` does not exist at {path}")]
+    MissingProgramManifest { lane: String, path: PathBuf },
     #[error("failed to spawn fabro for lane `{lane}` at {path}: {source}")]
     Spawn {
         lane: String,
@@ -50,14 +64,15 @@ pub enum DispatchError {
 pub fn execute_selected_lanes(
     manifest_path: &Path,
     selected_lanes: &[String],
-    fabro_bin: &Path,
-    max_parallel_override: Option<usize>,
+    settings: &DispatchSettings,
 ) -> Result<Vec<DispatchOutcome>, DispatchError> {
     let manifest = ProgramManifest::load(manifest_path)?;
     let evaluated = evaluate_program(manifest_path)?;
-    let mut state = ProgramRuntimeState::load_optional(&manifest.resolved_state_path(manifest_path))?
-        .unwrap_or_else(|| ProgramRuntimeState::new(manifest.program.clone()));
-    let max_parallel = max_parallel_override
+    let mut state =
+        ProgramRuntimeState::load_optional(&manifest.resolved_state_path(manifest_path))?
+            .unwrap_or_else(|| ProgramRuntimeState::new(manifest.program.clone()));
+    let max_parallel = settings
+        .max_parallel_override
         .unwrap_or(manifest.max_parallel)
         .max(1);
 
@@ -73,7 +88,7 @@ pub fn execute_selected_lanes(
     };
 
     let target_repo = manifest.resolved_target_repo(manifest_path);
-    let fabro_bin = Arc::new(fabro_bin.to_path_buf());
+    let settings = Arc::new(settings.clone());
     let mut outcomes = Vec::new();
     for chunk in ready_lanes.chunks(max_parallel) {
         let mut chunk_lanes = Vec::new();
@@ -95,29 +110,49 @@ pub fn execute_selected_lanes(
 
         let mut handles = Vec::new();
         for lane in chunk_lanes {
-            let fabro_bin = Arc::clone(&fabro_bin);
+            let settings = Arc::clone(&settings);
             let target_repo = target_repo.clone();
+            let child_manifest = manifest.resolve_lane_program_manifest(
+                manifest_path,
+                &lane.unit_id,
+                &lane.lane_id,
+            );
+            let is_program_lane = child_manifest.is_some();
             let lane_key = lane.lane_key.clone();
-            handles.push((lane_key, thread::spawn(move || {
-                let outcome = run_fabro(&fabro_bin, &target_repo, &lane.run_config, &lane.lane_key);
-                (lane, outcome)
-            })));
+            handles.push((
+                lane_key,
+                thread::spawn(move || {
+                    let outcome = if let Some(child_manifest) = child_manifest {
+                        run_program_lane(&lane.lane_key, &child_manifest, &settings)
+                    } else {
+                        run_fabro(
+                            &settings.fabro_bin,
+                            &target_repo,
+                            &lane.run_config,
+                            &lane.lane_key,
+                        )
+                    };
+                    (lane, is_program_lane, outcome)
+                }),
+            ));
         }
 
         for (lane_key, handle) in handles {
-            let (lane, output) = handle
+            let (lane, is_program_lane, output) = handle
                 .join()
-                .map_err(|_| DispatchError::WorkerPanicked {
-                    lane: lane_key,
-                })?;
+                .map_err(|_| DispatchError::WorkerPanicked { lane: lane_key })?;
             let output = output?;
             if output.exit_status == 0 {
-                let Some(run_id) = output.fabro_run_id.as_deref() else {
-                    return Err(DispatchError::MissingRunId {
-                        lane: lane.lane_key.clone(),
-                    });
-                };
-                mark_lane_submitted(&mut state, &lane.lane_key, &lane.run_config, run_id);
+                if is_program_lane && output.fabro_run_id.is_none() {
+                    mark_lane_started(&mut state, &lane.lane_key, &lane.run_config);
+                } else {
+                    let Some(run_id) = output.fabro_run_id.as_deref() else {
+                        return Err(DispatchError::MissingRunId {
+                            lane: lane.lane_key.clone(),
+                        });
+                    };
+                    mark_lane_submitted(&mut state, &lane.lane_key, &lane.run_config, run_id);
+                }
             } else {
                 mark_lane_dispatch_failed(&mut state, &lane.lane_key, &lane.run_config, &output);
             }
@@ -127,6 +162,60 @@ pub fn execute_selected_lanes(
     }
 
     Ok(outcomes)
+}
+
+fn run_program_lane(
+    lane_key: &str,
+    program_manifest: &Path,
+    settings: &DispatchSettings,
+) -> Result<DispatchOutcome, DispatchError> {
+    if !program_manifest.exists() {
+        return Err(DispatchError::MissingProgramManifest {
+            lane: lane_key.to_string(),
+            path: program_manifest.to_path_buf(),
+        });
+    }
+
+    let child_manifest = ProgramManifest::load(program_manifest)?;
+    let preview_evolve_root = settings
+        .preview_evolve_root
+        .as_ref()
+        .map(|root| root.join(&child_manifest.program));
+    let result = orchestrate_program(
+        program_manifest,
+        &AutodevSettings {
+            fabro_bin: settings.fabro_bin.clone(),
+            max_parallel_override: None,
+            max_cycles: 1,
+            poll_interval_ms: 1,
+            evolve_every_seconds: 0,
+            doctrine_files: settings.doctrine_files.clone(),
+            evidence_paths: settings.evidence_paths.clone(),
+            preview_evolve_root,
+        },
+    );
+
+    match result {
+        Ok(report) => Ok(DispatchOutcome {
+            lane_key: lane_key.to_string(),
+            exit_status: 0,
+            fabro_run_id: None,
+            stdout: format!(
+                "child_program={} stop_reason={:?} cycles={}",
+                report.program,
+                report.stop_reason,
+                report.cycles.len()
+            ),
+            stderr: String::new(),
+        }),
+        Err(error) => Ok(DispatchOutcome {
+            lane_key: lane_key.to_string(),
+            exit_status: 1,
+            fabro_run_id: None,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        }),
+    }
 }
 
 fn run_fabro(

@@ -143,6 +143,11 @@ enum Command {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
+    /// Synthesize or evolve checked-in Fabro workflow packages
+    Synth {
+        #[command(subcommand)]
+        command: commands::synth::SynthCommand,
+    },
     /// Open the Discord community in the browser
     Discord,
     /// Open the docs website in the browser
@@ -269,6 +274,7 @@ fn detach_run(args: commands::run::RunArgs) -> Result<()> {
     let exe = std::env::current_exe()?;
     let raw_args: Vec<String> = std::env::args().collect();
     let child_args = rebuild_detached_args(&raw_args, &run_id, &run_dir)?;
+    write_detach_prelude(&log_path, &exe, &child_args)?;
     let wrapper_command = build_detached_wrapper_command(&exe, &child_args, &run_dir, &log_path)?;
 
     let mut cmd = std::process::Command::new("sh");
@@ -304,7 +310,9 @@ fn rebuild_detached_args(
     let run_index = raw_args
         .iter()
         .position(|arg| arg == "run")
-        .ok_or_else(|| anyhow::anyhow!("failed to rebuild detached argv: missing `run` subcommand"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to rebuild detached argv: missing `run` subcommand")
+        })?;
 
     let mut child_args: Vec<String> = raw_args
         .iter()
@@ -364,7 +372,7 @@ fn build_detached_wrapper_command(
     )?;
 
     Ok(format!(
-        "{} {} > {} 2>&1\n\
+        "{} {} >> {} 2>&1\n\
 code=$?\n\
 if [ \"$code\" -ne 0 ] && [ -f {} ]; then\n\
   if grep -q '\"status\": \"submitted\"' {} || grep -q '\"status\": \"starting\"' {}; then\n\
@@ -382,6 +390,21 @@ exit \"$code\"\n",
     ))
 }
 
+fn write_detach_prelude(log_path: &Path, exe: &Path, child_args: &[String]) -> Result<()> {
+    let mut prelude = format!("# fabro detach\nexe: {}\n", exe.display());
+    for arg in child_args {
+        prelude.push_str("arg: ");
+        prelude.push_str(arg);
+        prelude.push('\n');
+    }
+    std::fs::write(log_path, prelude)?;
+    Ok(())
+}
+
+fn detached_run_started(run_dir: &Path) -> bool {
+    run_dir.join("run.pid").exists()
+}
+
 fn shell_quote(value: &str) -> Result<String> {
     shlex::try_quote(value)
         .map(|quoted| quoted.into_owned())
@@ -390,6 +413,9 @@ fn shell_quote(value: &str) -> Result<String> {
 
 fn ensure_detached_child_started(child: &mut std::process::Child, run_dir: &Path) -> Result<()> {
     for _ in 0..60 {
+        if detached_run_started(run_dir) {
+            return Ok(());
+        }
         if let Some(status) = child.try_wait()? {
             fabro_workflows::run_status::write_run_status(
                 run_dir,
@@ -398,22 +424,41 @@ fn ensure_detached_child_started(child: &mut std::process::Child, run_dir: &Path
             );
             let detail = read_detach_log(run_dir)
                 .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| format!("detached child exited immediately with status {status}"));
+                .unwrap_or_else(|| {
+                    format!("detached child exited immediately with status {status}")
+                });
             return Err(anyhow::anyhow!(detail));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(())
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGTERM);
+    }
+    let _ = child.kill();
+    fabro_workflows::run_status::write_run_status(
+        run_dir,
+        fabro_workflows::run_status::RunStatus::Failed,
+        Some(fabro_workflows::run_status::StatusReason::WorkflowError),
+    );
+    let detail = read_detach_log(run_dir)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "detached child never created run.pid".to_string());
+    Err(anyhow::anyhow!(
+        "detached child did not create run.pid within startup window: {detail}"
+    ))
 }
 
 fn read_detach_log(run_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(run_dir.join("detach.log")).ok().and_then(|contents| {
-        contents
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .map(ToOwned::to_owned)
-    })
+    std::fs::read_to_string(run_dir.join("detach.log"))
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(ToOwned::to_owned)
+        })
 }
 
 #[tokio::main]
@@ -494,7 +539,10 @@ fn send_telemetry_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_detached_wrapper_command, ensure_detached_child_started, rebuild_detached_args};
+    use super::{
+        build_detached_wrapper_command, ensure_detached_child_started, rebuild_detached_args,
+        write_detach_prelude,
+    };
     use std::path::Path;
 
     #[test]
@@ -577,6 +625,46 @@ mod tests {
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(log.contains("boom"));
     }
+
+    #[test]
+    fn ensure_detached_child_started_requires_run_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("status.json"),
+            "{\n  \"status\": \"submitted\",\n  \"updated_at\": \"2026-03-19T00:00:00Z\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("detach.log"), "still booting\n").unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 10")
+            .spawn()
+            .unwrap();
+
+        let err = ensure_detached_child_started(&mut child, dir.path()).unwrap_err();
+        assert!(err.to_string().contains("run.pid"));
+
+        let status = std::fs::read_to_string(dir.path().join("status.json")).unwrap();
+        assert!(status.contains("\"status\": \"failed\""));
+    }
+
+    #[test]
+    fn write_detach_prelude_records_exe_and_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("detach.log");
+        write_detach_prelude(
+            &log_path,
+            Path::new("/tmp/fabro"),
+            &["run".to_string(), "workflow.toml".to_string()],
+        )
+        .unwrap();
+
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("# fabro detach"));
+        assert!(log.contains("exe: /tmp/fabro"));
+        assert!(log.contains("arg: run"));
+        assert!(log.contains("arg: workflow.toml"));
+    }
 }
 
 async fn main_inner() -> (String, Result<()>) {
@@ -634,6 +722,11 @@ async fn main_inner() -> (String, Result<()>) {
         Command::Workflow { command } => match command {
             WorkflowCommand::List(_) => "workflow list",
             WorkflowCommand::Create(_) => "workflow create",
+        },
+        Command::Synth { command } => match command {
+            commands::synth::SynthCommand::Import(_) => "synth import",
+            commands::synth::SynthCommand::Create(_) => "synth create",
+            commands::synth::SynthCommand::Evolve(_) => "synth evolve",
         },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
@@ -990,6 +1083,17 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 WorkflowCommand::Create(args) => {
                     commands::workflow::create_command(&args)?;
+                }
+            },
+            Command::Synth { command } => match command {
+                commands::synth::SynthCommand::Import(args) => {
+                    commands::synth::import_command(&args)?;
+                }
+                commands::synth::SynthCommand::Create(args) => {
+                    commands::synth::create_command(&args)?;
+                }
+                commands::synth::SynthCommand::Evolve(args) => {
+                    commands::synth::evolve_command(&args)?;
                 }
             },
             Command::Skill { command } => match command {

@@ -1,0 +1,38 @@
+version: 1
+program:
+  id: myosu-services
+  max_parallel: 1
+inputs:
+  doctrine_files: []
+  evidence_paths: []
+package:
+  fabro_root: fabro
+units:
+  - id: miner
+    title: Miner Service
+    output_root: outputs/miner/service
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: service
+        kind: service
+        title: Miner Service Lane
+        family: services
+        workflow_family: services
+        slug: miner-service
+        template: service_bootstrap
+        goal: |
+          Bootstrap the miner service lane and emit durable reviewed artifacts.
+        managed_milestone: reviewed
+        produces: [spec, review]
+        checks:
+          - label: chain_pallet_review_ready
+            kind: precondition
+            type: file_exists
+            path: outputs/chain/pallet/review.md

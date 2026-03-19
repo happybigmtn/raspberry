@@ -1,12 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use raspberry_supervisor::{
-    LaneExecutionStatus, ProgramManifest, evaluate_program, execute_selected_lanes,
-    render_grouped_summary, render_status_table,
+    evaluate_program, execute_selected_lanes, orchestrate_program, render_grouped_summary,
+    render_status_table, AutodevSettings, AutodevStopReason, DispatchSettings,
+    LaneExecutionStatus, ProgramManifest,
 };
 
 #[derive(Debug, Parser)]
@@ -22,6 +23,8 @@ enum Commands {
     Status(ManifestArgs),
     Watch(WatchArgs),
     Execute(ExecuteArgs),
+    Autodev(AutodevArgs),
+    Tui(TuiArgs),
 }
 
 #[derive(Debug, Args)]
@@ -52,6 +55,34 @@ struct ExecuteArgs {
     lanes: Vec<String>,
 }
 
+#[derive(Debug, Args)]
+struct AutodevArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long, default_value = "fabro")]
+    fabro_bin: PathBuf,
+    #[arg(long)]
+    max_parallel: Option<usize>,
+    #[arg(long, default_value_t = 5)]
+    max_cycles: usize,
+    #[arg(long, default_value_t = 500)]
+    poll_interval_ms: u64,
+    #[arg(long, default_value_t = 1800)]
+    evolve_every_seconds: u64,
+    #[arg(long = "doctrine")]
+    doctrine_files: Vec<PathBuf>,
+    #[arg(long = "evidence")]
+    evidence_paths: Vec<PathBuf>,
+    #[arg(long)]
+    preview_evolve_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct TuiArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -59,16 +90,18 @@ fn main() -> Result<()> {
         Commands::Status(args) => run_status(&args.manifest),
         Commands::Watch(args) => run_watch(args),
         Commands::Execute(args) => run_execute(args),
+        Commands::Autodev(args) => run_autodev(args),
+        Commands::Tui(args) => run_tui(args),
     }
 }
 
-fn run_plan(manifest_path: &PathBuf) -> Result<()> {
+fn run_plan(manifest_path: &Path) -> Result<()> {
     let program = evaluate_program(manifest_path)?;
     println!("{}", render_grouped_summary(&program));
     Ok(())
 }
 
-fn run_status(manifest_path: &PathBuf) -> Result<()> {
+fn run_status(manifest_path: &Path) -> Result<()> {
     let program = evaluate_program(manifest_path)?;
     println!("{}", render_status_table(&program));
     Ok(())
@@ -124,10 +157,15 @@ fn run_execute(args: ExecuteArgs) -> Result<()> {
     let outcomes = execute_selected_lanes(
         &args.manifest,
         &selected,
-        &args.fabro_bin,
-        args.max_parallel,
+        &DispatchSettings {
+            fabro_bin: args.fabro_bin.clone(),
+            max_parallel_override: args.max_parallel,
+            doctrine_files: Vec::new(),
+            evidence_paths: Vec::new(),
+            preview_evolve_root: None,
+        },
     )
-        .with_context(|| format!("failed to execute lanes for program `{}`", manifest.program))?;
+    .with_context(|| format!("failed to execute lanes for program `{}`", manifest.program))?;
 
     println!("Program: {}", manifest.program);
     println!(
@@ -136,17 +174,76 @@ fn run_execute(args: ExecuteArgs) -> Result<()> {
     );
     for outcome in outcomes {
         if outcome.exit_status == 0 {
-            let run_id = outcome
-                .fabro_run_id
-                .as_deref()
-                .unwrap_or("unknown");
+            let run_id = outcome.fabro_run_id.as_deref().unwrap_or("unknown");
             println!(
                 "{} [submitted] run_id={} exit_status={}",
                 outcome.lane_key, run_id, outcome.exit_status
             );
         } else {
-            println!("{} [failed] exit_status={}", outcome.lane_key, outcome.exit_status);
+            println!(
+                "{} [failed] exit_status={}",
+                outcome.lane_key, outcome.exit_status
+            );
         }
     }
     Ok(())
+}
+
+fn run_autodev(args: AutodevArgs) -> Result<()> {
+    let report = orchestrate_program(
+        &args.manifest,
+        &AutodevSettings {
+            fabro_bin: args.fabro_bin.clone(),
+            max_parallel_override: args.max_parallel,
+            max_cycles: args.max_cycles,
+            poll_interval_ms: args.poll_interval_ms,
+            evolve_every_seconds: args.evolve_every_seconds,
+            doctrine_files: args.doctrine_files.clone(),
+            evidence_paths: args.evidence_paths.clone(),
+            preview_evolve_root: args.preview_evolve_root.clone(),
+        },
+    )?;
+
+    println!("Program: {}", report.program);
+    println!("Autodev cycles: {}", report.cycles.len());
+    for cycle in &report.cycles {
+        println!("Cycle {}:", cycle.cycle);
+        if cycle.evolved {
+            println!(
+                "  evolve: applied{}",
+                cycle
+                    .evolve_target
+                    .as_deref()
+                    .map(|target| format!(" target={target}"))
+                    .unwrap_or_default()
+            );
+        } else {
+            println!("  evolve: skipped");
+        }
+        if cycle.ready_lanes.is_empty() {
+            println!("  ready: none");
+        } else {
+            println!("  ready: {}", cycle.ready_lanes.join(", "));
+        }
+        if cycle.dispatched.is_empty() {
+            println!("  dispatched: none");
+        } else {
+            for outcome in &cycle.dispatched {
+                let run_id = outcome.fabro_run_id.as_deref().unwrap_or("unknown");
+                println!("  dispatched: {} run_id={run_id}", outcome.lane_key);
+            }
+        }
+        println!("  running_after: {}", cycle.running_after);
+        println!("  complete_after: {}", cycle.complete_after);
+    }
+    let stop_reason = match report.stop_reason {
+        AutodevStopReason::Settled => "settled",
+        AutodevStopReason::CycleLimit => "cycle_limit",
+    };
+    println!("Stop reason: {stop_reason}");
+    Ok(())
+}
+
+fn run_tui(args: TuiArgs) -> Result<()> {
+    raspberry_tui::run(&args.manifest)
 }

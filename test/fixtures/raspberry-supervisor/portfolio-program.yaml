@@ -1,0 +1,25 @@
+version: 1
+program: portfolio-demo
+target_repo: .
+state_path: .raspberry/portfolio-program-state.json
+max_parallel: 2
+units:
+  - id: ready
+    title: Ready Program
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Ready Program Lane
+        run_config: ready-program.yaml
+        program_manifest: ready-program.yaml
+        managed_milestone: coordinated
+
+  - id: complete
+    title: Complete Program
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Complete Program Lane
+        run_config: complete-program.yaml
+        program_manifest: complete-program.yaml
+        managed_milestone: coordinated

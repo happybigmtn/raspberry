@@ -14,5 +14,6 @@ mod run_progress;
 pub mod runs;
 pub(crate) mod shared;
 pub mod ssh;
+pub mod synth;
 pub mod validate;
 pub mod workflow;

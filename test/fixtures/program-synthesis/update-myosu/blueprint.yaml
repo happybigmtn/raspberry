@@ -1,0 +1,50 @@
+version: 1
+program:
+  id: myosu-update
+  max_parallel: 2
+inputs:
+  doctrine_files:
+    - doctrine/OS.md
+  evidence_paths:
+    - evidence/run-observation.md
+units:
+  - id: games
+    title: Updated Game Surfaces
+    output_root: outputs/games
+    artifacts:
+      - id: poker_spec
+        path: poker/spec.md
+      - id: poker_review
+        path: poker/review.md
+      - id: tutorial_spec
+        path: tutorial/spec.md
+      - id: tutorial_review
+        path: tutorial/review.md
+    milestones:
+      - id: poker_reviewed
+        requires: [poker_spec, poker_review]
+      - id: tutorial_reviewed
+        requires: [tutorial_spec, tutorial_review]
+    lanes:
+      - id: poker
+        kind: platform
+        title: Poker Lane
+        family: bootstrap
+        goal: |
+          Reconcile the poker lane with current doctrine and reviewed artifact
+          expectations.
+        managed_milestone: poker_reviewed
+        produces: [poker_spec, poker_review]
+        proof_profile: poker_bootstrap
+      - id: tutorial
+        kind: interface
+        title: Tutorial Lane
+        family: bootstrap
+        goal: |
+          Add a tutorial lane that owns the reviewed gameplay tutorial surface.
+        managed_milestone: tutorial_reviewed
+        depends_on:
+          - unit: games
+            milestone: poker_reviewed
+        produces: [tutorial_spec, tutorial_review]
+        proof_profile: tutorial_bootstrap

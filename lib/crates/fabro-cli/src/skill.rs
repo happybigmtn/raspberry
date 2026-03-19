@@ -11,12 +11,38 @@ const REF_EXAMPLE_WORKFLOWS: &str =
     include_str!("../../../../skills/fabro-create-workflow/references/example-workflows.md");
 const REF_RUN_CONFIGURATION: &str =
     include_str!("../../../../skills/fabro-create-workflow/references/run-configuration.md");
+const REF_RASPBERRY_AUTHORING: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/raspberry-authoring.md");
+const REF_RASPBERRY_EXAMPLES: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/raspberry-examples.md");
+const REF_PROGRAM_SYNTHESIS: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/program-synthesis.md");
+const REF_PROGRAM_INTERVIEW: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/program-interview.md");
+const REF_PROGRAM_BLUEPRINT_SCHEMA: &str = include_str!(
+    "../../../../skills/fabro-create-workflow/references/program-blueprint-schema.md"
+);
+const REF_PROGRAM_EVOLUTION: &str = include_str!(
+    "../../../../skills/fabro-create-workflow/references/program-evolution.md"
+);
 
 const SKILL_FILES: &[(&str, &str)] = &[
     ("SKILL.md", SKILL_MD),
     ("references/dot-language.md", REF_DOT_LANGUAGE),
     ("references/example-workflows.md", REF_EXAMPLE_WORKFLOWS),
     ("references/run-configuration.md", REF_RUN_CONFIGURATION),
+    ("references/raspberry-authoring.md", REF_RASPBERRY_AUTHORING),
+    ("references/raspberry-examples.md", REF_RASPBERRY_EXAMPLES),
+    ("references/program-synthesis.md", REF_PROGRAM_SYNTHESIS),
+    ("references/program-interview.md", REF_PROGRAM_INTERVIEW),
+    (
+        "references/program-blueprint-schema.md",
+        REF_PROGRAM_BLUEPRINT_SCHEMA,
+    ),
+    (
+        "references/program-evolution.md",
+        REF_PROGRAM_EVOLUTION,
+    ),
 ];
 
 #[derive(Clone, ValueEnum)]
@@ -110,6 +136,12 @@ mod tests {
         assert!(!REF_DOT_LANGUAGE.is_empty());
         assert!(!REF_EXAMPLE_WORKFLOWS.is_empty());
         assert!(!REF_RUN_CONFIGURATION.is_empty());
+        assert!(!REF_RASPBERRY_AUTHORING.is_empty());
+        assert!(!REF_RASPBERRY_EXAMPLES.is_empty());
+        assert!(!REF_PROGRAM_SYNTHESIS.is_empty());
+        assert!(!REF_PROGRAM_INTERVIEW.is_empty());
+        assert!(!REF_PROGRAM_BLUEPRINT_SCHEMA.is_empty());
+        assert!(!REF_PROGRAM_EVOLUTION.is_empty());
     }
 
     #[test]

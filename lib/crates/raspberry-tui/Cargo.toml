@@ -1,0 +1,19 @@
+[package]
+name = "raspberry-tui"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Read-only Raspberry run observer terminal UI"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+crossterm.workspace = true
+fabro-workflows = { path = "../fabro-workflows" }
+ratatui.workspace = true
+raspberry-supervisor = { path = "../raspberry-supervisor" }
+serde_json.workspace = true
+
+[dev-dependencies]
+indoc = "2"
+tempfile = "3"

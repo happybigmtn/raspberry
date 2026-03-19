@@ -9,6 +9,12 @@ use thiserror::Error;
 pub type ArtifactKey = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolvedArtifact {
+    pub id: ArtifactKey,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProgramManifest {
     pub program: String,
     pub target_repo: PathBuf,
@@ -39,6 +45,7 @@ pub struct LaneManifest {
     pub kind: LaneKind,
     pub title: String,
     pub run_config: PathBuf,
+    pub program_manifest: Option<PathBuf>,
     pub managed_milestone: String,
     pub dependencies: Vec<LaneDependency>,
     pub produces: Vec<ArtifactKey>,
@@ -50,21 +57,16 @@ pub struct LaneManifest {
     pub run_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneKind {
+    #[default]
     Artifact,
     Service,
     Orchestration,
     Interface,
     Platform,
     Recurring,
-}
-
-impl Default for LaneKind {
-    fn default() -> Self {
-        Self::Artifact
-    }
 }
 
 impl fmt::Display for LaneKind {
@@ -92,40 +94,41 @@ pub struct LaneCheck {
     pub probe: LaneCheckProbe,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneCheckKind {
+    #[default]
     Precondition,
     Proof,
     Health,
 }
 
-impl Default for LaneCheckKind {
-    fn default() -> Self {
-        Self::Precondition
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneCheckScope {
+    #[default]
     Ready,
     Running,
-}
-
-impl Default for LaneCheckScope {
-    fn default() -> Self {
-        Self::Ready
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LaneCheckProbe {
-    FileExists { path: PathBuf },
-    JsonFieldEquals { path: PathBuf, field: String, equals: Value },
-    CommandSucceeds { command: String },
-    CommandStdoutContains { command: String, contains: String },
+    FileExists {
+        path: PathBuf,
+    },
+    JsonFieldEquals {
+        path: PathBuf,
+        field: String,
+        equals: Value,
+    },
+    CommandSucceeds {
+        command: String,
+    },
+    CommandStdoutContains {
+        command: String,
+        contains: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -194,6 +197,8 @@ struct MapLaneManifest {
     pub kind: LaneKind,
     pub title: String,
     pub run_config: PathBuf,
+    #[serde(default)]
+    pub program_manifest: Option<PathBuf>,
     pub managed_milestone: String,
     #[serde(default)]
     pub dependencies: Vec<LaneDependency>,
@@ -266,6 +271,8 @@ struct ListLaneManifest {
     pub kind: LaneKind,
     pub title: String,
     pub run_config: PathBuf,
+    #[serde(default)]
+    pub program_manifest: Option<PathBuf>,
     pub managed_milestone: String,
     #[serde(default, alias = "depends_on")]
     pub dependencies: Vec<LaneDependency>,
@@ -349,6 +356,19 @@ impl ProgramManifest {
             .map(|lane_spec| resolve_relative(manifest_path, &lane_spec.run_config))
     }
 
+    pub fn resolve_lane_program_manifest(
+        &self,
+        manifest_path: &Path,
+        unit: &str,
+        lane: &str,
+    ) -> Option<PathBuf> {
+        self.units
+            .get(unit)
+            .and_then(|spec| spec.lanes.get(lane))
+            .and_then(|lane_spec| lane_spec.program_manifest.as_ref())
+            .map(|path| resolve_relative(manifest_path, path))
+    }
+
     pub fn resolve_lane_run_dir(
         &self,
         manifest_path: &Path,
@@ -360,6 +380,44 @@ impl ProgramManifest {
             .and_then(|spec| spec.lanes.get(lane))
             .and_then(|lane_spec| lane_spec.run_dir.as_ref())
             .map(|path| resolve_relative(manifest_path, path))
+    }
+
+    /// Resolves the curated artifacts associated with a lane.
+    ///
+    /// The lane's `produces` list is the source of truth. When that list is
+    /// empty, the full unit artifact set is returned so observer surfaces still
+    /// have something meaningful to display.
+    pub fn resolve_lane_artifacts(
+        &self,
+        manifest_path: &Path,
+        unit: &str,
+        lane: &str,
+    ) -> Vec<ResolvedArtifact> {
+        let Some(unit_spec) = self.units.get(unit) else {
+            return Vec::new();
+        };
+        let Some(lane_spec) = unit_spec.lanes.get(lane) else {
+            return Vec::new();
+        };
+
+        let artifact_ids = if lane_spec.produces.is_empty() {
+            unit_spec.artifacts.keys().cloned().collect::<Vec<_>>()
+        } else {
+            lane_spec.produces.clone()
+        };
+
+        let mut artifacts = Vec::new();
+        for artifact_id in artifact_ids {
+            let Some(relative_path) = unit_spec.artifacts.get(&artifact_id) else {
+                continue;
+            };
+            let path = resolve_unit_artifact_path(manifest_path, unit_spec, relative_path);
+            artifacts.push(ResolvedArtifact {
+                id: artifact_id,
+                path,
+            });
+        }
+        artifacts
     }
 
     fn validate(&self, manifest_path: &Path) -> Result<(), ManifestError> {
@@ -412,9 +470,10 @@ fn normalize_map_manifest(manifest: MapProgramManifest) -> ProgramManifest {
                                 (
                                     lane_id,
                                     LaneManifest {
-                                    title: lane.title,
+                                        title: lane.title,
                                         kind: lane.kind,
                                         run_config: lane.run_config,
+                                        program_manifest: lane.program_manifest,
                                         managed_milestone: lane.managed_milestone,
                                         dependencies: lane.dependencies,
                                         produces: lane.produces,
@@ -462,21 +521,22 @@ fn normalize_list_manifest(
             })?;
             BTreeMap::from([(
                 "default".to_string(),
-                        LaneManifest {
-                            title: unit.title.clone(),
-                            kind: LaneKind::Artifact,
-                            run_config,
-                            managed_milestone,
-                            dependencies: unit.dependencies.clone(),
-                            produces: unit.produces.clone(),
-                            proof_profile: None,
-                            proof_state_path: None,
-                            service_state_path: None,
-                            orchestration_state_path: None,
-                            checks: Vec::new(),
-                            run_dir: unit.run_dir.clone(),
-                        },
-                    )])
+                LaneManifest {
+                    title: unit.title.clone(),
+                    kind: LaneKind::Artifact,
+                    run_config,
+                    program_manifest: None,
+                    managed_milestone,
+                    dependencies: unit.dependencies.clone(),
+                    produces: unit.produces.clone(),
+                    proof_profile: None,
+                    proof_state_path: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: unit.run_dir.clone(),
+                },
+            )])
         } else {
             unit.lanes
                 .into_iter()
@@ -487,6 +547,7 @@ fn normalize_list_manifest(
                             title: lane.title,
                             kind: lane.kind,
                             run_config: lane.run_config,
+                            program_manifest: lane.program_manifest,
                             managed_milestone: lane.managed_milestone,
                             dependencies: lane.dependencies,
                             produces: lane.produces,
@@ -570,7 +631,7 @@ fn validate_unit(
     }
 
     for (lane_id, lane) in &unit.lanes {
-        if !milestone_ids.contains(&lane.managed_milestone) {
+        if lane.program_manifest.is_none() && !milestone_ids.contains(&lane.managed_milestone) {
             return Err(invalid_manifest(
                 manifest_path,
                 format!(
@@ -619,11 +680,17 @@ fn validate_unit(
                 }
             }
             if let Some(dep_milestone) = dependency.milestone.as_ref() {
-                if !dep_unit
+                let milestone_known_on_unit = dep_unit
                     .milestones
                     .iter()
-                    .any(|milestone| milestone.id == *dep_milestone)
-                {
+                    .any(|milestone| milestone.id == *dep_milestone);
+                let milestone_known_on_lane = dependency
+                    .lane
+                    .as_ref()
+                    .and_then(|dep_lane| dep_unit.lanes.get(dep_lane))
+                    .map(|dep_lane| dep_lane.managed_milestone == *dep_milestone)
+                    .unwrap_or(false);
+                if !milestone_known_on_unit && !milestone_known_on_lane {
                     return Err(invalid_manifest(
                         manifest_path,
                         format!(
@@ -652,6 +719,21 @@ fn resolve_relative(manifest_path: &Path, path: &Path) -> PathBuf {
     }
     let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     base.join(path)
+}
+
+fn resolve_unit_artifact_path(
+    manifest_path: &Path,
+    unit: &UnitManifest,
+    artifact_path: &Path,
+) -> PathBuf {
+    if artifact_path.is_absolute() {
+        return artifact_path.to_path_buf();
+    }
+    let Some(output_root) = unit.output_root.as_ref() else {
+        return resolve_relative(manifest_path, artifact_path);
+    };
+    let root = resolve_relative(manifest_path, output_root);
+    root.join(artifact_path)
 }
 
 #[cfg(test)]
@@ -711,6 +793,7 @@ mod tests {
                             kind: LaneKind::Artifact,
                             title: "Chapter".to_string(),
                             run_config: PathBuf::from("chapter.toml"),
+                            program_manifest: None,
                             managed_milestone: "reviewed".to_string(),
                             dependencies: vec![LaneDependency {
                                 unit: "runtime".to_string(),
@@ -731,9 +814,26 @@ mod tests {
         };
 
         let path = PathBuf::from("program.yaml");
-        let error = manifest.validate(&path).expect_err("manifest should be invalid");
+        let error = manifest
+            .validate(&path)
+            .expect_err("manifest should be invalid");
         assert!(error
             .to_string()
             .contains("references unknown dependency lane"));
+    }
+
+    #[test]
+    fn resolve_lane_artifacts_uses_lane_outputs() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml");
+        let manifest = ProgramManifest::load(&path).expect("myosu-style fixture should load");
+
+        let artifacts = manifest.resolve_lane_artifacts(&path, "play", "tui");
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, "tui_spec");
+        assert!(artifacts[0]
+            .path
+            .ends_with("test/fixtures/raspberry-supervisor/myosu/outputs/play/tui_spec.md"));
     }
 }

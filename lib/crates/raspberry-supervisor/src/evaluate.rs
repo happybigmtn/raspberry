@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::manifest::{
     LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
-    ProgramManifest,
+    LaneManifest, ProgramManifest,
 };
 use crate::program_state::{
     LaneRuntimeRecord, ProgramRuntimeState, ProgramStateError, refresh_program_state,
@@ -150,6 +150,17 @@ struct UnitStatus {
     present_artifacts: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChildProgramSummary {
+    program: String,
+    complete: usize,
+    ready: usize,
+    running: usize,
+    blocked: usize,
+    failed: usize,
+    total: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum EvaluateError {
     #[error(transparent)]
@@ -176,7 +187,12 @@ pub fn evaluate_with_state(
 ) -> EvaluatedProgram {
     let runtime_records = runtime_record_map(program_state);
     let unit_statuses = build_unit_statuses(manifest_path, manifest);
-    let satisfied = satisfied_milestones(manifest, &runtime_records, &unit_statuses);
+    let satisfied = satisfied_milestones(
+        manifest_path,
+        manifest,
+        &runtime_records,
+        &unit_statuses,
+    );
     let mut lanes = Vec::new();
 
     for (unit_id, unit) in &manifest.units {
@@ -387,6 +403,7 @@ fn evaluate_lane(
         .unwrap_or_default();
     let check_result = evaluate_lane_checks(manifest_path, manifest, lane);
     let orchestration_state = lane_orchestration_state(manifest_path, lane);
+    let child_program = summarize_child_program(manifest_path, lane);
 
     let status = classify_lane(
         &key,
@@ -397,6 +414,7 @@ fn evaluate_lane(
         &run_snapshot,
         &check_result,
         orchestration_state,
+        child_program.as_ref(),
     );
     let detail = lane_detail(
         &key,
@@ -408,6 +426,7 @@ fn evaluate_lane(
         &check_result,
         orchestration_state,
         status,
+        child_program.as_ref(),
     );
     let operational_state =
         lane_operational_state(manifest_path, manifest, lane, status, &check_result);
@@ -469,6 +488,7 @@ fn evaluate_lane(
 }
 
 fn satisfied_milestones(
+    manifest_path: &Path,
     manifest: &ProgramManifest,
     runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
     unit_statuses: &BTreeMap<String, UnitStatus>,
@@ -489,6 +509,12 @@ fn satisfied_milestones(
                 .get(&lane_key)
                 .map(|record| record.status == LaneExecutionStatus::Complete)
                 .unwrap_or(false)
+                || lane
+                    .program_manifest
+                    .as_ref()
+                    .and_then(|_| summarize_child_program(manifest_path, lane))
+                    .map(|summary| summary.complete == summary.total && summary.total > 0)
+                    .unwrap_or(false)
                 || unit
                     .milestones
                     .iter()
@@ -618,7 +644,17 @@ fn classify_lane(
     run_snapshot: &RunSnapshot,
     check_result: &LaneCheckResult,
     orchestration_state: Option<LaneOrchestrationState>,
+    child_program: Option<&ChildProgramSummary>,
 ) -> LaneExecutionStatus {
+    if let Some(child_program) = child_program {
+        return classify_child_program_lane(
+            lane,
+            satisfied,
+            check_result,
+            orchestration_state,
+            child_program,
+        );
+    }
     if runtime_record
         .map(|record| record.status == LaneExecutionStatus::Complete)
         .unwrap_or(false)
@@ -641,6 +677,38 @@ fn classify_lane(
         return LaneExecutionStatus::Running;
     }
     if dependencies_satisfied(&lane.dependencies, satisfied) {
+        return LaneExecutionStatus::Ready;
+    }
+    LaneExecutionStatus::Blocked
+}
+
+fn classify_child_program_lane(
+    lane: &crate::manifest::LaneManifest,
+    satisfied: &BTreeSet<String>,
+    check_result: &LaneCheckResult,
+    orchestration_state: Option<LaneOrchestrationState>,
+    child_program: &ChildProgramSummary,
+) -> LaneExecutionStatus {
+    if child_program.failed > 0 {
+        return LaneExecutionStatus::Failed;
+    }
+    if child_program.running > 0 {
+        return LaneExecutionStatus::Running;
+    }
+    if child_program.complete == child_program.total && child_program.total > 0 {
+        return LaneExecutionStatus::Complete;
+    }
+    if !check_result.ready_precondition_failing.is_empty()
+        || !check_result.ready_proof_failing.is_empty()
+    {
+        return LaneExecutionStatus::Blocked;
+    }
+    if let Some(LaneOrchestrationState::Waiting | LaneOrchestrationState::Blocked) =
+        orchestration_state
+    {
+        return LaneExecutionStatus::Blocked;
+    }
+    if child_program.ready > 0 && dependencies_satisfied(&lane.dependencies, satisfied) {
         return LaneExecutionStatus::Ready;
     }
     LaneExecutionStatus::Blocked
@@ -685,7 +753,19 @@ fn lane_detail(
     check_result: &LaneCheckResult,
     orchestration_state: Option<LaneOrchestrationState>,
     status: LaneExecutionStatus,
+    child_program: Option<&ChildProgramSummary>,
 ) -> String {
+    if let Some(child_program) = child_program {
+        return child_program_detail(
+            lane_key,
+            lane,
+            satisfied,
+            check_result,
+            orchestration_state,
+            status,
+            child_program,
+        );
+    }
     match status {
         LaneExecutionStatus::Complete => {
             format!("managed milestone `{}` satisfied", lane.managed_milestone)
@@ -759,6 +839,48 @@ fn lane_detail(
     }
 }
 
+fn child_program_detail(
+    lane_key: &str,
+    lane: &crate::manifest::LaneManifest,
+    satisfied: &BTreeSet<String>,
+    check_result: &LaneCheckResult,
+    orchestration_state: Option<LaneOrchestrationState>,
+    status: LaneExecutionStatus,
+    child_program: &ChildProgramSummary,
+) -> String {
+    let summary = format!(
+        "child program `{}`: complete={} ready={} running={} blocked={} failed={}",
+        child_program.program,
+        child_program.complete,
+        child_program.ready,
+        child_program.running,
+        child_program.blocked,
+        child_program.failed
+    );
+    match status {
+        LaneExecutionStatus::Complete => format!("{summary} | all child lanes complete"),
+        LaneExecutionStatus::Ready => format!("{summary} | ready child work available"),
+        LaneExecutionStatus::Running => format!("{summary} | child work in flight"),
+        LaneExecutionStatus::Failed => format!("{summary} | child program has failures"),
+        LaneExecutionStatus::Blocked => {
+            if child_program.ready > 0 {
+                format!(
+                    "{summary} | waiting on {}",
+                    blocked_detail(
+                        lane_key,
+                        lane,
+                        satisfied,
+                        check_result,
+                        orchestration_state,
+                    )
+                )
+            } else {
+                format!("{summary} | no child lanes are currently ready")
+            }
+        }
+    }
+}
+
 fn blocked_detail(
     lane_key: &str,
     lane: &crate::manifest::LaneManifest,
@@ -799,6 +921,37 @@ fn blocked_detail(
             dependency_display_key(dependency)
         })
         .unwrap_or_else(|| format!("lane `{lane_key}` is blocked"))
+}
+
+fn summarize_child_program(
+    manifest_path: &Path,
+    lane: &LaneManifest,
+) -> Option<ChildProgramSummary> {
+    let program_manifest = lane.program_manifest.as_ref()?;
+    let program_manifest = resolve_check_path(manifest_path, program_manifest);
+    if program_manifest == manifest_path {
+        return None;
+    }
+    let program = evaluate_program(&program_manifest).ok()?;
+    let mut summary = ChildProgramSummary {
+        program: program.program,
+        complete: 0,
+        ready: 0,
+        running: 0,
+        blocked: 0,
+        failed: 0,
+        total: program.lanes.len(),
+    };
+    for lane in program.lanes {
+        match lane.status {
+            LaneExecutionStatus::Complete => summary.complete += 1,
+            LaneExecutionStatus::Ready => summary.ready += 1,
+            LaneExecutionStatus::Running => summary.running += 1,
+            LaneExecutionStatus::Blocked => summary.blocked += 1,
+            LaneExecutionStatus::Failed => summary.failed += 1,
+        }
+    }
+    Some(summary)
 }
 
 fn load_run_snapshot(run_dir: &Path) -> RunSnapshot {
@@ -1092,6 +1245,11 @@ mod tests {
             .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml")
     }
 
+    fn portfolio_fixture_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor/portfolio-program.yaml")
+    }
+
     #[test]
     fn evaluate_fixture_classifies_all_lane_states() {
         let program = evaluate_program(&fixture_path()).expect("fixture should evaluate");
@@ -1173,5 +1331,30 @@ mod tests {
             .find(|lane| lane.lane_key == "launch:devnet")
             .expect("launch lane should exist");
         assert_eq!(launch.orchestration_state, Some(LaneOrchestrationState::Waiting));
+    }
+
+    #[test]
+    fn evaluate_portfolio_fixture_summarizes_child_programs() {
+        let program =
+            evaluate_program(&portfolio_fixture_path()).expect("portfolio fixture should evaluate");
+        let statuses: BTreeMap<String, LaneExecutionStatus> = program
+            .lanes
+            .iter()
+            .map(|lane| (lane.lane_key.clone(), lane.status))
+            .collect();
+
+        assert_eq!(statuses.get("ready:program"), Some(&LaneExecutionStatus::Ready));
+        assert_eq!(
+            statuses.get("complete:program"),
+            Some(&LaneExecutionStatus::Complete)
+        );
+
+        let ready = program
+            .lanes
+            .iter()
+            .find(|lane| lane.lane_key == "ready:program")
+            .expect("ready program lane should exist");
+        assert!(ready.detail.contains("child program `ready-program`"));
+        assert!(ready.detail.contains("ready=1"));
     }
 }
