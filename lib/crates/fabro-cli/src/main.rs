@@ -119,7 +119,11 @@ enum Command {
     #[command(hide = true)]
     Init,
     /// Set up the Fabro environment (LLMs, certs, GitHub)
-    Install,
+    Install {
+        /// Base URL for the web UI (used for OAuth callback URLs)
+        #[arg(long, default_value = "http://localhost:5173")]
+        web_url: String,
+    },
     /// List workflow runs
     #[command(hide = true)]
     Ps(commands::runs::RunsListArgs),
@@ -490,7 +494,7 @@ async fn main_inner() -> (String, Result<()>) {
             RepoCommand::Deinit => "repo deinit",
         },
         Command::Init => "init",
-        Command::Install => "install",
+        Command::Install { .. } => "install",
         Command::Ps(_) => "ps",
         Command::Rm(_) => "rm",
         Command::Pr { command } => match command {
@@ -572,7 +576,7 @@ async fn main_inner() -> (String, Result<()>) {
             | Command::Exec(_)
             | Command::Repo { .. }
             | Command::Init
-            | Command::Install
+            | Command::Install { .. }
     ) {
         upgrade::spawn_upgrade_check(cli.no_upgrade_check, upgrade_check_enabled)
     } else {
@@ -845,8 +849,8 @@ async fn main_inner() -> (String, Result<()>) {
                 );
                 init::run_init().await?;
             }
-            Command::Install => {
-                install::run_install().await?;
+            Command::Install { web_url } => {
+                install::run_install(&web_url).await?;
             }
             Command::Ps(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stdout();
