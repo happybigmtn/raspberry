@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use thiserror::Error;
 
+use crate::controller_lease::{acquire_autodev_lease, ControllerLeaseError};
 use crate::dispatch::{execute_selected_lanes, DispatchError, DispatchOutcome, DispatchSettings};
 use crate::evaluate::{evaluate_program, EvaluateError, LaneExecutionStatus};
 use crate::failure::{
@@ -193,6 +194,8 @@ pub enum AutodevError {
     },
     #[error("recursive child program cycle detected: {cycle}")]
     RecursiveProgramCycle { cycle: String },
+    #[error(transparent)]
+    ControllerLease(#[from] ControllerLeaseError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +252,7 @@ pub fn orchestrate_program(
     }
     let guard = enter_orchestration_scope(&manifest_path)?;
     let initial_manifest = ProgramManifest::load(&manifest_path)?;
+    let _lease = acquire_autodev_lease(&manifest_path, &initial_manifest)?;
     let max_cycles = settings.max_cycles.max(1);
     let poll_interval = Duration::from_millis(settings.poll_interval_ms.max(1));
     let evolve_every = Duration::from_secs(settings.evolve_every_seconds);
@@ -513,7 +517,7 @@ fn advance_child_programs(
             .preview_evolve_root
             .as_ref()
             .map(|root| root.join(&child_manifest_spec.program));
-        let _ = orchestrate_program(
+        match orchestrate_program(
             &child_manifest,
             &AutodevSettings {
                 fabro_bin: settings.fabro_bin.clone(),
@@ -532,8 +536,13 @@ fn advance_child_programs(
                     .chain(std::iter::once(manifest_path.to_path_buf()))
                     .collect(),
             },
-        )?;
-        advanced = true;
+        ) {
+            Ok(_) => advanced = true,
+            Err(AutodevError::ControllerLease(ControllerLeaseError::AlreadyRunning { .. })) => {
+                advanced = true;
+            }
+            Err(error) => return Err(error),
+        }
     }
     Ok(advanced)
 }

@@ -1,4 +1,5 @@
 pub mod autodev;
+mod controller_lease;
 pub mod dispatch;
 pub mod evaluate;
 pub mod failure;
