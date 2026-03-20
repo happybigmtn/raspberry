@@ -125,14 +125,16 @@ impl Transform for ModelResolutionTransform {
                 .map(String::from);
             if let Some(model) = model {
                 if let Some(info) = fabro_model::get_model_info(&model) {
+                    let canonical_id = info.id;
+                    let provider = info.provider;
                     // Resolve alias to canonical model ID
-                    if model != info.id {
+                    if model != canonical_id {
                         node.attrs
-                            .insert("model".to_string(), AttrValue::String(info.id.clone()));
+                            .insert("model".to_string(), AttrValue::String(canonical_id));
                     }
                     if !node.attrs.contains_key("provider") {
                         node.attrs
-                            .insert("provider".to_string(), AttrValue::String(info.provider));
+                            .insert("provider".to_string(), AttrValue::String(provider));
                     }
                 }
             }
