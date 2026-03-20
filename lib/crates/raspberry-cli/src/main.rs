@@ -171,6 +171,7 @@ fn run_execute(args: ExecuteArgs) -> Result<()> {
             doctrine_files: Vec::new(),
             evidence_paths: Vec::new(),
             preview_evolve_root: None,
+            manifest_stack: Vec::new(),
         },
     )
     .with_context(|| format!("failed to execute lanes for program `{}`", manifest.program))?;
@@ -210,6 +211,7 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
             doctrine_files: args.doctrine_files.clone(),
             evidence_paths: args.evidence_paths.clone(),
             preview_evolve_root: args.preview_evolve_root.clone(),
+            manifest_stack: Vec::new(),
         },
     )?;
 

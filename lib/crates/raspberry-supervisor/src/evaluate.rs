@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,10 @@ use crate::program_state::{
     refresh_program_state, sync_program_state_with_evaluated, LaneRuntimeRecord,
     ProgramRuntimeState, ProgramStateError,
 };
+
+thread_local! {
+    static EVALUATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -188,22 +193,73 @@ pub(crate) fn evaluate_program_internal(
     manifest_path: &Path,
     propagate_parents: bool,
 ) -> Result<EvaluatedProgram, EvaluateError> {
-    let manifest = ProgramManifest::load(manifest_path)?;
-    let state_path = manifest.resolved_state_path(manifest_path);
+    let manifest_path = normalize_path(manifest_path);
+    if evaluation_stack_contains(&manifest_path) {
+        let manifest = ProgramManifest::load(&manifest_path)?;
+        let state_path = manifest.resolved_state_path(&manifest_path);
+        let program_state = ProgramRuntimeState::load_optional(&state_path)?;
+        return Ok(evaluate_with_state(
+            &manifest_path,
+            &manifest,
+            program_state.as_ref(),
+        ));
+    }
+    let _guard = enter_evaluation_scope(&manifest_path);
+    let manifest = ProgramManifest::load(&manifest_path)?;
+    let state_path = manifest.resolved_state_path(&manifest_path);
     let mut program_state = ProgramRuntimeState::load_optional(&state_path)?
         .unwrap_or_else(|| ProgramRuntimeState::new(&manifest.program));
-    if refresh_program_state(manifest_path, &manifest, &mut program_state)? {
+    if refresh_program_state(&manifest_path, &manifest, &mut program_state)? {
         program_state.save(&state_path)?;
     }
-    let program = evaluate_with_state(manifest_path, &manifest, Some(&program_state));
+    let program = evaluate_with_state(&manifest_path, &manifest, Some(&program_state));
     if sync_program_state_with_evaluated(&mut program_state, &program) {
         program_state.save(&state_path)?;
     }
-    let _ = sync_autodev_report_with_program(manifest_path, &manifest, &program);
+    let _ = sync_autodev_report_with_program(&manifest_path, &manifest, &program);
     if propagate_parents {
-        refresh_parent_programs(manifest_path, &manifest)?;
+        refresh_parent_programs(&manifest_path, &manifest)?;
     }
     Ok(program)
+}
+
+pub(crate) fn evaluation_stack_contains(manifest_path: &Path) -> bool {
+    let manifest_path = normalize_path(manifest_path);
+    EVALUATION_STACK.with(|stack| stack.borrow().iter().any(|path| path == &manifest_path))
+}
+
+fn enter_evaluation_scope(manifest_path: &Path) -> EvaluationScopeGuard {
+    let manifest_path = normalize_path(manifest_path);
+    EVALUATION_STACK.with(|stack| {
+        stack.borrow_mut().push(manifest_path);
+    });
+    EvaluationScopeGuard
+}
+
+struct EvaluationScopeGuard;
+
+impl Drop for EvaluationScopeGuard {
+    fn drop(&mut self) {
+        EVALUATION_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR.to_string()),
+        }
+    }
+    normalized
 }
 
 pub(crate) fn refresh_parent_programs(
@@ -1031,6 +1087,9 @@ fn summarize_child_program(
     }
     if let Some(summary) = summarize_child_program_from_state(&program_manifest) {
         return Some(summary);
+    }
+    if evaluation_stack_contains(&program_manifest) {
+        return None;
     }
     let program = evaluate_program(&program_manifest).ok()?;
     let mut summary = ChildProgramSummary {

@@ -32,6 +32,7 @@ pub struct DispatchSettings {
     pub doctrine_files: Vec<PathBuf>,
     pub evidence_paths: Vec<PathBuf>,
     pub preview_evolve_root: Option<PathBuf>,
+    pub manifest_stack: Vec<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -292,6 +293,7 @@ fn run_program_lane(
             doctrine_files: settings.doctrine_files.clone(),
             evidence_paths: settings.evidence_paths.clone(),
             preview_evolve_root,
+            manifest_stack: settings.manifest_stack.clone(),
         },
     );
 

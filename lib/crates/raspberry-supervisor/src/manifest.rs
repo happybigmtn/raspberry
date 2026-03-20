@@ -717,10 +717,10 @@ fn invalid_manifest(path: &Path, message: impl Into<String>) -> ManifestError {
 
 fn resolve_relative(manifest_path: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return path.to_path_buf();
+        return normalize_path(path);
     }
     let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    base.join(path)
+    normalize_path(&base.join(path))
 }
 
 fn resolve_unit_artifact_path(
@@ -729,13 +729,29 @@ fn resolve_unit_artifact_path(
     artifact_path: &Path,
 ) -> PathBuf {
     if artifact_path.is_absolute() {
-        return artifact_path.to_path_buf();
+        return normalize_path(artifact_path);
     }
     let Some(output_root) = unit.output_root.as_ref() else {
         return resolve_relative(manifest_path, artifact_path);
     };
     let root = resolve_relative(manifest_path, output_root);
-    root.join(artifact_path)
+    normalize_path(&root.join(artifact_path))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR.to_string()),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -837,5 +853,19 @@ mod tests {
         assert!(artifacts[0]
             .path
             .ends_with("test/fixtures/raspberry-supervisor/myosu/outputs/play/tui_spec.md"));
+    }
+
+    #[test]
+    fn resolve_relative_normalizes_nested_parent_segments() {
+        let manifest_path = Path::new("/tmp/repo/fabro/programs/../../fabro/programs/myosu.yaml");
+        let resolved = resolve_relative(
+            manifest_path,
+            Path::new("../../fabro/programs/myosu-bootstrap.yaml"),
+        );
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/repo/fabro/programs/myosu-bootstrap.yaml")
+        );
     }
 }

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ use crate::failure::{
 };
 use crate::manifest::{ManifestError, ProgramManifest};
 
+thread_local! {
+    static ORCHESTRATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutodevSettings {
     pub fabro_bin: PathBuf,
@@ -28,6 +33,7 @@ pub struct AutodevSettings {
     pub doctrine_files: Vec<PathBuf>,
     pub evidence_paths: Vec<PathBuf>,
     pub preview_evolve_root: Option<PathBuf>,
+    pub manifest_stack: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +191,8 @@ pub enum AutodevError {
         stdout: String,
         stderr: String,
     },
+    #[error("recursive child program cycle detected: {cycle}")]
+    RecursiveProgramCycle { cycle: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,7 +231,24 @@ pub fn orchestrate_program(
     manifest_path: &Path,
     settings: &AutodevSettings,
 ) -> Result<AutodevReport, AutodevError> {
-    let initial_manifest = ProgramManifest::load(manifest_path)?;
+    let manifest_path = normalize_path(manifest_path);
+    if settings
+        .manifest_stack
+        .iter()
+        .any(|path| path == &manifest_path)
+    {
+        let mut cycle = settings
+            .manifest_stack
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        cycle.push(manifest_path.display().to_string());
+        return Err(AutodevError::RecursiveProgramCycle {
+            cycle: cycle.join(" -> "),
+        });
+    }
+    let guard = enter_orchestration_scope(&manifest_path)?;
+    let initial_manifest = ProgramManifest::load(&manifest_path)?;
     let max_cycles = settings.max_cycles.max(1);
     let poll_interval = Duration::from_millis(settings.poll_interval_ms.max(1));
     let evolve_every = Duration::from_secs(settings.evolve_every_seconds);
@@ -238,9 +263,9 @@ pub fn orchestrate_program(
     };
 
     for cycle_index in 0..max_cycles {
-        let manifest = ProgramManifest::load(manifest_path)?;
+        let manifest = ProgramManifest::load(&manifest_path)?;
         let cycle_number = cycle_index + 1;
-        let program_before = evaluate_program(manifest_path)?;
+        let program_before = evaluate_program(&manifest_path)?;
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);
         let complete_before =
@@ -264,7 +289,7 @@ pub fn orchestrate_program(
             complete: complete_before,
             failed_recovery_keys: failed_recovery_keys(&program_before),
         };
-        let doctrine_changed = doctrine_inputs_changed(manifest_path, &manifest, settings)?;
+        let doctrine_changed = doctrine_inputs_changed(&manifest_path, &manifest, settings)?;
 
         let mut evolved = false;
         let mut evolve_target = None;
@@ -279,7 +304,7 @@ pub fn orchestrate_program(
             !regenerable_failures.is_empty(),
             last_evolve_frontier.as_ref(),
         ) {
-            run_synth_evolve(manifest_path, &manifest, settings)?;
+            run_synth_evolve(&manifest_path, &manifest, settings)?;
             last_evolve_at = Some(Instant::now());
             last_evolve_frontier = Some(frontier_before);
             evolved = true;
@@ -290,7 +315,7 @@ pub fn orchestrate_program(
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| {
                         manifest
-                            .resolved_target_repo(manifest_path)
+                            .resolved_target_repo(&manifest_path)
                             .display()
                             .to_string()
                     }),
@@ -298,12 +323,12 @@ pub fn orchestrate_program(
         }
 
         let manifest = if evolved {
-            ProgramManifest::load(manifest_path)?
+            ProgramManifest::load(&manifest_path)?
         } else {
             manifest
         };
         let program = if evolved {
-            evaluate_program(manifest_path)?
+            evaluate_program(&manifest_path)?
         } else {
             program_before
         };
@@ -333,7 +358,7 @@ pub fn orchestrate_program(
             Vec::new()
         } else {
             execute_selected_lanes(
-                manifest_path,
+                &manifest_path,
                 &lanes_to_dispatch,
                 &DispatchSettings {
                     fabro_bin: settings.fabro_bin.clone(),
@@ -341,11 +366,17 @@ pub fn orchestrate_program(
                     doctrine_files: settings.doctrine_files.clone(),
                     evidence_paths: settings.evidence_paths.clone(),
                     preview_evolve_root: settings.preview_evolve_root.clone(),
+                    manifest_stack: settings
+                        .manifest_stack
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(manifest_path.clone()))
+                        .collect(),
                 },
             )?
         };
 
-        let program_after = evaluate_program(manifest_path)?;
+        let program_after = evaluate_program(&manifest_path)?;
         let running_after = program_after
             .lanes
             .iter()
@@ -369,7 +400,7 @@ pub fn orchestrate_program(
         });
         report.current = Some(current_snapshot(&program_after));
         report.updated_at = Utc::now();
-        save_autodev_report(manifest_path, &manifest, &report)?;
+        save_autodev_report(&manifest_path, &manifest, &report)?;
 
         let has_ready = program_after
             .lanes
@@ -380,7 +411,7 @@ pub fn orchestrate_program(
             .iter()
             .any(|lane| lane.status == LaneExecutionStatus::Running);
         if !has_ready && !has_running {
-            if advance_child_programs(manifest_path, &manifest, settings)? {
+            if advance_child_programs(&manifest_path, &manifest, settings)? {
                 if cycle_number < max_cycles {
                     thread::sleep(poll_interval);
                     continue;
@@ -389,7 +420,7 @@ pub fn orchestrate_program(
             report.stop_reason = AutodevStopReason::Settled;
             report.current = Some(current_snapshot(&program_after));
             report.updated_at = Utc::now();
-            save_autodev_report(manifest_path, &manifest, &report)?;
+            save_autodev_report(&manifest_path, &manifest, &report)?;
             return Ok(report);
         }
 
@@ -400,11 +431,58 @@ pub fn orchestrate_program(
 
     report.stop_reason = AutodevStopReason::CycleLimit;
     report.updated_at = Utc::now();
-    let final_manifest = ProgramManifest::load(manifest_path)?;
-    let final_program = evaluate_program(manifest_path)?;
+    let final_manifest = ProgramManifest::load(&manifest_path)?;
+    let final_program = evaluate_program(&manifest_path)?;
     report.current = Some(current_snapshot(&final_program));
-    save_autodev_report(manifest_path, &final_manifest, &report)?;
+    save_autodev_report(&manifest_path, &final_manifest, &report)?;
+    drop(guard);
     Ok(report)
+}
+
+fn enter_orchestration_scope(
+    manifest_path: &Path,
+) -> Result<OrchestrationScopeGuard, AutodevError> {
+    ORCHESTRATION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(index) = stack.iter().position(|path| path == manifest_path) {
+            let mut cycle = stack[index..]
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            cycle.push(manifest_path.display().to_string());
+            return Err(AutodevError::RecursiveProgramCycle {
+                cycle: cycle.join(" -> "),
+            });
+        }
+        stack.push(manifest_path.to_path_buf());
+        Ok(OrchestrationScopeGuard)
+    })
+}
+
+struct OrchestrationScopeGuard;
+
+impl Drop for OrchestrationScopeGuard {
+    fn drop(&mut self) {
+        ORCHESTRATION_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR.to_string()),
+        }
+    }
+    normalized
 }
 
 fn advance_child_programs(
@@ -450,6 +528,12 @@ fn advance_child_programs(
                     doctrine_files: settings.doctrine_files.clone(),
                     evidence_paths: settings.evidence_paths.clone(),
                     preview_evolve_root,
+                    manifest_stack: settings
+                        .manifest_stack
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(manifest_path.to_path_buf()))
+                        .collect(),
                 },
             )?;
             advanced = true;
@@ -1622,6 +1706,7 @@ units:
             doctrine_files: Vec::new(),
             evidence_paths: Vec::new(),
             preview_evolve_root: None,
+            manifest_stack: Vec::new(),
         };
 
         assert!(
@@ -1745,5 +1830,81 @@ units:
             true,
             Some(&frontier),
         ));
+    }
+
+    #[test]
+    fn orchestrate_program_reports_recursive_child_program_cycles() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let programs_dir = temp.path().join("fabro/programs");
+        std::fs::create_dir_all(&programs_dir).expect("program dir");
+        let parent_manifest = programs_dir.join("parent.yaml");
+        let child_manifest = programs_dir.join("child.yaml");
+        std::fs::write(
+            &parent_manifest,
+            r#"
+version: 1
+program: parent
+target_repo: ../..
+state_path: ../../.raspberry/parent-state.json
+max_parallel: 1
+units:
+  - id: child
+    title: Child
+    output_root: ../../.raspberry/portfolio/child
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Child Program
+        run_config: ../../fabro/programs/child.yaml
+        managed_milestone: coordinated
+        program_manifest: ../../fabro/programs/child.yaml
+"#,
+        )
+        .expect("parent manifest");
+        std::fs::write(
+            &child_manifest,
+            r#"
+version: 1
+program: child
+target_repo: ../..
+state_path: ../../.raspberry/child-state.json
+max_parallel: 1
+units:
+  - id: parent
+    title: Parent
+    output_root: ../../.raspberry/portfolio/parent
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Parent Program
+        run_config: ../../fabro/programs/parent.yaml
+        managed_milestone: coordinated
+        program_manifest: ../../fabro/programs/parent.yaml
+"#,
+        )
+        .expect("child manifest");
+
+        let error = orchestrate_program(
+            &parent_manifest,
+            &AutodevSettings {
+                fabro_bin: PathBuf::from("/bin/false"),
+                max_parallel_override: None,
+                frontier_budget: None,
+                max_cycles: 1,
+                poll_interval_ms: 1,
+                evolve_every_seconds: 0,
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        )
+        .expect_err("recursive program cycle should fail cleanly");
+
+        assert!(!error.to_string().is_empty());
     }
 }

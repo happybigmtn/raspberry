@@ -626,6 +626,9 @@ fn sync_child_program_runtime_record(
     record: &mut LaneRuntimeRecord,
     child_manifest: &Path,
 ) -> bool {
+    if crate::evaluate::evaluation_stack_contains(child_manifest) {
+        return false;
+    }
     let mut child_has_ready = false;
     let mut child_has_running = false;
     let mut child_has_failed = false;
@@ -761,6 +764,12 @@ fn sync_child_program_runtime_record(
             child.last_usage_summary.clone(),
         );
         if record.last_error.take().is_some() {
+            changed = true;
+        }
+        if record.last_stdout_snippet.take().is_some() {
+            changed = true;
+        }
+        if record.last_stderr_snippet.take().is_some() {
             changed = true;
         }
         if record.failure_kind.take().is_some() {
@@ -1655,6 +1664,8 @@ mod tests {
         );
         assert!(record.last_error.is_none());
         assert!(record.last_exit_status.is_none());
+        assert!(record.last_stdout_snippet.is_none());
+        assert!(record.last_stderr_snippet.is_none());
     }
 
     #[test]
