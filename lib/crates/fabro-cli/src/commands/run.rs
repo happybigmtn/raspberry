@@ -7,7 +7,9 @@ use std::time::Instant;
 use anyhow::{bail, Context};
 use chrono::{Local, Utc};
 use clap::{Args, ValueEnum};
-use fabro_agent::{DockerSandbox, DockerSandboxConfig, LocalSandbox, Sandbox};
+use fabro_agent::{
+    DockerSandbox, DockerSandboxConfig, LocalSandbox, Sandbox, WorktreeConfig, WorktreeSandbox,
+};
 use fabro_config::run::{RunDefaults, WorkflowRunConfig};
 use fabro_config::{project as project_config, run as run_config, sandbox as sandbox_config};
 use fabro_interview::{AutoApproveInterviewer, ConsoleInterviewer, FileInterviewer, Interviewer};
@@ -433,6 +435,15 @@ struct CostAccumulator {
     has_pricing: bool,
 }
 
+/// Create a [`LocalSandbox`] wired to emit [`WorkflowRunEvent::Sandbox`] events.
+fn local_sandbox_with_callback(cwd: PathBuf, emitter: Arc<EventEmitter>) -> Arc<dyn Sandbox> {
+    let mut env = LocalSandbox::new(cwd);
+    env.set_event_callback(Arc::new(move |event| {
+        emitter.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
+    }));
+    Arc::new(env)
+}
+
 /// Result of workflow preparation (shared between `create` and `run` commands).
 pub(crate) struct PreparedWorkflow {
     pub source: String,
@@ -792,29 +803,33 @@ pub async fn run_command(
     };
 
     // Determine the working directory strategy.
-    // Remote sandboxes clone from origin; local runs may use a git worktree.
-    let workdir_strategy = if sandbox_provider.is_remote() {
-        WorkdirStrategy::Cloud
-    } else {
-        let worktree_mode = resolve_worktree_mode(run_cfg.as_ref(), &run_defaults);
-        match worktree_mode {
-            sandbox_config::WorktreeMode::Always => WorkdirStrategy::LocalWorktree,
-            sandbox_config::WorktreeMode::Clean => {
-                if git_status.is_clean() {
-                    WorkdirStrategy::LocalWorktree
-                } else {
-                    WorkdirStrategy::LocalDirectory
+    // Only the Local provider supports git worktrees on the host.
+    // Remote sandboxes (Daytona, Exe, SSH) clone from origin inside the sandbox.
+    // Docker uses the bind-mounted host directory as-is.
+    let workdir_strategy = match sandbox_provider {
+        SandboxProvider::Local => {
+            let worktree_mode = resolve_worktree_mode(run_cfg.as_ref(), &run_defaults);
+            match worktree_mode {
+                sandbox_config::WorktreeMode::Always => WorkdirStrategy::LocalWorktree,
+                sandbox_config::WorktreeMode::Clean => {
+                    if git_status.is_clean() {
+                        WorkdirStrategy::LocalWorktree
+                    } else {
+                        WorkdirStrategy::LocalDirectory
+                    }
                 }
-            }
-            sandbox_config::WorktreeMode::Dirty => {
-                if git_status.is_clean() {
-                    WorkdirStrategy::LocalDirectory
-                } else {
-                    WorkdirStrategy::LocalWorktree
+                sandbox_config::WorktreeMode::Dirty => {
+                    if git_status.is_clean() {
+                        WorkdirStrategy::LocalDirectory
+                    } else {
+                        WorkdirStrategy::LocalWorktree
+                    }
                 }
+                sandbox_config::WorktreeMode::Never => WorkdirStrategy::LocalDirectory,
             }
-            sandbox_config::WorktreeMode::Never => WorkdirStrategy::LocalDirectory,
         }
+        SandboxProvider::Docker => WorkdirStrategy::LocalDirectory,
+        _ => WorkdirStrategy::Cloud,
     };
     debug!(
         ?workdir_strategy,
@@ -895,22 +910,29 @@ pub async fn run_command(
         }
     }
 
-    // Set up git worktree for local isolation.
-    let (worktree_work_dir, worktree_path, worktree_branch, worktree_base_sha) =
-        if workdir_strategy == WorkdirStrategy::LocalWorktree {
-            match setup_worktree(&original_cwd, &run_dir, &run_id) {
-                Ok((wd, wt, branch, base)) => (Some(wd), Some(wt), Some(branch), Some(base)),
-                Err(e) => {
-                    eprintln!(
-                        "{} Git worktree setup failed ({e}), running without worktree.",
-                        styles.yellow.apply_to("Warning:"),
-                    );
-                    (None, None, None, None)
-                }
+    // Compute worktree configuration for local isolation.
+    // The actual git setup (branch, worktree add, reset) happens inside the sandbox
+    // creation block for SandboxProvider::Local below.
+    let (mut worktree_path, mut worktree_branch, mut worktree_base_sha) = if workdir_strategy
+        == WorkdirStrategy::LocalWorktree
+    {
+        match fabro_workflows::git::head_sha(&original_cwd) {
+            Ok(base_sha) => {
+                let branch_name = format!("{}{run_id}", fabro_workflows::git::RUN_BRANCH_PREFIX);
+                let wt_path = run_dir.join("worktree");
+                (Some(wt_path), Some(branch_name), Some(base_sha))
             }
-        } else {
-            (None, None, None, None)
-        };
+            Err(e) => {
+                eprintln!(
+                    "{} Git worktree setup failed ({e}), running without worktree.",
+                    styles.yellow.apply_to("Warning:"),
+                );
+                (None, None, None)
+            }
+        }
+    } else {
+        (None, None, None)
+    };
 
     if let Some(ref wt) = worktree_path {
         progress_ui
@@ -1183,12 +1205,43 @@ pub async fn run_command(
             Arc::new(env)
         }
         SandboxProvider::Local => {
-            let mut env = LocalSandbox::new(cwd.clone());
-            let emitter_cb = Arc::clone(&emitter);
-            env.set_event_callback(Arc::new(move |event| {
-                emitter_cb.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
-            }));
-            Arc::new(env)
+            if let (Some(base_sha), Some(branch_name), Some(wt_path)) = (
+                worktree_base_sha.as_ref(),
+                worktree_branch.as_ref(),
+                worktree_path.as_ref(),
+            ) {
+                // Set up a WorktreeSandbox for git-isolated local execution.
+                let wt_path_str = wt_path.to_string_lossy().into_owned();
+                let inner = local_sandbox_with_callback(original_cwd.clone(), Arc::clone(&emitter));
+                let wt_config = WorktreeConfig {
+                    branch_name: branch_name.clone(),
+                    base_sha: base_sha.clone(),
+                    worktree_path: wt_path_str,
+                    skip_branch_creation: false,
+                };
+                let mut wt_sandbox = WorktreeSandbox::new(inner, wt_config);
+                wt_sandbox.set_event_callback(Arc::clone(&emitter).worktree_callback());
+
+                match wt_sandbox.initialize().await {
+                    Ok(()) => {
+                        std::env::set_current_dir(wt_path)?;
+                        Arc::new(wt_sandbox) as Arc<dyn Sandbox>
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} Git worktree setup failed ({e}), running without worktree.",
+                            styles.yellow.apply_to("Warning:"),
+                        );
+                        // Reset so RunConfig does not enable git checkpointing
+                        worktree_path = None;
+                        worktree_branch = None;
+                        worktree_base_sha = None;
+                        local_sandbox_with_callback(cwd.clone(), Arc::clone(&emitter))
+                    }
+                }
+            } else {
+                local_sandbox_with_callback(cwd.clone(), Arc::clone(&emitter))
+            }
         }
     };
 
@@ -1336,7 +1389,7 @@ pub async fn run_command(
 
     // 7. Execute
     // Set up metadata branch for git checkpointing (host or remote — engine fills remote)
-    let meta_branch = if worktree_work_dir.is_some() {
+    let meta_branch = if worktree_path.is_some() {
         Some(fabro_workflows::git::MetadataStore::branch_name(&run_id))
     } else {
         None
@@ -1350,7 +1403,7 @@ pub async fn run_command(
         cancel_token: None,
         dry_run: dry_run_mode,
         run_id: run_id.clone(),
-        git_checkpoint_enabled: worktree_work_dir.is_some(),
+        git_checkpoint_enabled: worktree_path.is_some(),
         host_repo_path: Some(original_cwd.clone()),
         base_sha: worktree_base_sha,
         run_branch: worktree_branch,
@@ -1750,29 +1803,6 @@ pub async fn run_command(
     }
 }
 
-/// Set up a git worktree for an isolated workflow run.
-/// Caller must have already verified the repo is clean via `git::ensure_clean`.
-/// Returns (work_dir, worktree_path, branch_name, base_sha) on success.
-fn setup_worktree(
-    original_cwd: &std::path::Path,
-    run_dir: &std::path::Path,
-    run_id: &str,
-) -> anyhow::Result<(PathBuf, PathBuf, String, String)> {
-    let base_sha =
-        fabro_workflows::git::head_sha(original_cwd).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let branch_name = format!("{}{run_id}", fabro_workflows::git::RUN_BRANCH_PREFIX);
-    fabro_workflows::git::create_branch(original_cwd, &branch_name)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let worktree_path = run_dir.join("worktree");
-    fabro_workflows::git::replace_worktree(original_cwd, &worktree_path, &branch_name)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    std::env::set_current_dir(&worktree_path)?;
-
-    Ok((worktree_path.clone(), worktree_path, branch_name, base_sha))
-}
-
 /// Resume a workflow run from a git run branch.
 ///
 /// Reads the checkpoint, manifest, and graph DOT from the metadata branch
@@ -1865,21 +1895,31 @@ async fn run_from_branch(
     };
 
     let emitter = Arc::new(EventEmitter::new());
-    let (sandbox, worktree_path): (Arc<dyn fabro_agent::Sandbox>, Option<PathBuf>) =
+    let (sandbox, _worktree_path): (Arc<dyn fabro_agent::Sandbox>, Option<PathBuf>) =
         match sandbox_provider {
             SandboxProvider::Local | SandboxProvider::Docker => {
-                // Re-attach worktree to the existing run branch
+                // Re-attach worktree to the existing run branch via WorktreeSandbox.
                 let wt = run_dir.join("worktree");
-                fabro_workflows::git::replace_worktree(&original_cwd, &wt, run_branch).map_err(
-                    |e| anyhow::anyhow!("failed to attach worktree to {run_branch}: {e}"),
-                )?;
+                let wt_str = wt.to_string_lossy().into_owned();
+
+                let inner = local_sandbox_with_callback(original_cwd.clone(), Arc::clone(&emitter));
+                let wt_config = WorktreeConfig {
+                    branch_name: run_branch.to_string(),
+                    base_sha: base_sha.clone().unwrap_or_default(),
+                    worktree_path: wt_str.clone(),
+                    skip_branch_creation: true, // branch already exists on resume
+                };
+                let mut wt_sandbox = WorktreeSandbox::new(inner, wt_config);
+                wt_sandbox.set_event_callback(Arc::clone(&emitter).worktree_callback());
+
+                wt_sandbox.initialize().await.map_err(|e| {
+                    anyhow::anyhow!("failed to attach worktree to {run_branch}: {e}")
+                })?;
                 std::env::set_current_dir(&wt)?;
-                let mut env = fabro_agent::LocalSandbox::new(wt.clone());
-                let emitter_cb = Arc::clone(&emitter);
-                env.set_event_callback(Arc::new(move |event| {
-                    emitter_cb.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
-                }));
-                (Arc::new(env), Some(wt))
+                (
+                    Arc::new(wt_sandbox) as Arc<dyn fabro_agent::Sandbox>,
+                    Some(wt),
+                )
             }
             #[cfg(feature = "exedev")]
             SandboxProvider::Exe => {
@@ -1928,14 +1968,8 @@ async fn run_from_branch(
     let sandbox: Arc<dyn fabro_agent::Sandbox> =
         Arc::new(fabro_agent::ReadBeforeWriteSandbox::new(sandbox));
 
-    // For remote sandboxes, prepare a setup command to fetch+checkout the existing run branch
-    let resume_setup_commands: Vec<String> = if sandbox.is_remote() {
-        vec![format!(
-            "git fetch origin {run_branch} && git checkout {run_branch}"
-        )]
-    } else {
-        Vec::new()
-    };
+    // Let the sandbox provide any commands needed to resume on the existing run branch
+    let resume_setup_commands: Vec<String> = sandbox.resume_setup_commands(run_branch);
 
     // Build interviewer
     let interviewer: Arc<dyn Interviewer> = if args.auto_approve {
@@ -1990,11 +2024,7 @@ async fn run_from_branch(
         cancel_token: None,
         dry_run: dry_run_mode,
         run_id: run_id.clone(),
-        git_checkpoint_enabled: if sandbox.is_remote() {
-            true
-        } else {
-            worktree_path.is_some()
-        },
+        git_checkpoint_enabled: true, // always true for resume (worktree or sandbox git is set up)
         host_repo_path: Some(original_cwd.clone()),
         base_sha,
         run_branch: Some(run_branch.to_string()),
