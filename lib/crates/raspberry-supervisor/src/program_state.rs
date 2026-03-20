@@ -467,6 +467,15 @@ pub fn refresh_program_state(
                     if record.recovery_action.take().is_some() {
                         lane_changed = true;
                     }
+                    if record.last_error.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.last_stdout_snippet.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.last_stderr_snippet.take().is_some() {
+                        lane_changed = true;
+                    }
                 }
                 Some(RunStatus::Succeeded) => {
                     if record.status == LaneExecutionStatus::Running {
@@ -490,6 +499,15 @@ pub fn refresh_program_state(
                         lane_changed = true;
                     }
                     if record.recovery_action.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.last_error.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.last_stdout_snippet.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.last_stderr_snippet.take().is_some() {
                         lane_changed = true;
                     }
                 }
@@ -615,7 +633,7 @@ pub fn sync_program_state_with_evaluated(
             &mut record.last_stderr_snippet,
             lane.last_stderr_snippet.clone(),
         );
-        if lane.status != LaneExecutionStatus::Failed && lane.last_error.is_none() {
+        if lane.status != LaneExecutionStatus::Failed {
             if record.last_error.take().is_some() {
                 changed = true;
             }
@@ -1519,9 +1537,9 @@ mod tests {
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
                 last_exit_status: Some(0),
-                last_error: None,
-                failure_kind: None,
-                recovery_action: None,
+                last_error: Some("merge failed".to_string()),
+                failure_kind: Some(crate::failure::FailureKind::IntegrationConflict),
+                recovery_action: Some(crate::failure::FailureRecoveryAction::RefreshFromTrunk),
                 last_completed_stage_label: Some("Exit".to_string()),
                 last_stage_duration_ms: Some(0),
                 last_usage_summary: None,
@@ -1686,6 +1704,74 @@ mod tests {
     }
 
     #[test]
+    fn refresh_program_state_clears_stale_failure_residue_for_succeeded_run_progress() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor");
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+        let manifest_path = temp.path().join("program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/progress.jsonl"),
+            concat!(
+                "{\"ts\":\"2026-03-18T21:59:00.000Z\",\"run_id\":\"01CONSENSUSFAIL000000000000000\",",
+                "\"event\":\"StageCompleted\",\"node_id\":\"brief\",\"node_label\":\"Brief\",",
+                "\"duration_ms\":1800,\"usage\":{\"model\":\"gpt-5.4\",\"input_tokens\":700,",
+                "\"output_tokens\":300},\"files_read\":[\"docs/source.md\"],",
+                "\"files_written\":[\"brief.md\"]}\n",
+                "{\"ts\":\"2026-03-18T22:00:00.000Z\",\"run_id\":\"01CONSENSUSFAIL000000000000000\",",
+                "\"event\":\"WorkflowRunCompleted\",\"usage\":{\"model\":\"gpt-5.4\",",
+                "\"input_tokens\":700,\"output_tokens\":300}}\n"
+            ),
+        )
+        .expect("write progress");
+
+        let mut state = ProgramRuntimeState::new("raspberry-demo");
+        state.lanes.insert(
+            "consensus:chapter".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "consensus:chapter".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
+                current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_stage_label: Some("Review".to_string()),
+                last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: Some("LLM error: builder error".to_string()),
+                failure_kind: Some(crate::failure::FailureKind::Unknown),
+                recovery_action: Some(crate::failure::FailureRecoveryAction::SurfaceBlocked),
+                last_completed_stage_label: Some("Brief".to_string()),
+                last_stage_duration_ms: Some(1800),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: Some("stdout".to_string()),
+                last_stderr_snippet: Some("stderr".to_string()),
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("consensus:chapter")
+            .expect("consensus record exists");
+        assert_eq!(record.status, LaneExecutionStatus::Ready);
+        assert_eq!(record.last_exit_status, Some(0));
+        assert!(record.last_error.is_none());
+        assert!(record.failure_kind.is_none());
+        assert!(record.recovery_action.is_none());
+        assert!(record.last_stdout_snippet.is_none());
+        assert!(record.last_stderr_snippet.is_none());
+    }
+
+    #[test]
     fn sync_program_state_with_evaluated_clears_stale_failure_residue_for_ready_lane() {
         let mut state = ProgramRuntimeState::new("demo");
         state.lanes.insert(
@@ -1749,8 +1835,8 @@ mod tests {
                 last_usage_summary: None,
                 last_files_read: Vec::new(),
                 last_files_written: Vec::new(),
-                last_stdout_snippet: None,
-                last_stderr_snippet: None,
+                last_stdout_snippet: Some("stdout".to_string()),
+                last_stderr_snippet: Some("stderr".to_string()),
                 ready_checks_passing: Vec::new(),
                 ready_checks_failing: Vec::new(),
                 running_checks_passing: Vec::new(),
@@ -1766,6 +1852,91 @@ mod tests {
             .get("foundations:foundations")
             .expect("lane record");
         assert_eq!(record.status, LaneExecutionStatus::Ready);
+        assert!(record.last_error.is_none());
+        assert!(record.failure_kind.is_none());
+        assert!(record.recovery_action.is_none());
+        assert!(record.last_stdout_snippet.is_none());
+        assert!(record.last_stderr_snippet.is_none());
+    }
+
+    #[test]
+    fn sync_program_state_with_evaluated_clears_stale_failure_residue_for_complete_lane() {
+        let mut state = ProgramRuntimeState::new("demo");
+        state.lanes.insert(
+            "interface:lane".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "interface:lane".to_string(),
+                status: LaneExecutionStatus::Failed,
+                run_config: Some(PathBuf::from("run-configs/interface.toml")),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: None,
+                last_run_id: Some("01FAILED".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some("provider rejected request".to_string()),
+                failure_kind: Some(crate::failure::FailureKind::ProviderPolicyMismatch),
+                recovery_action: Some(crate::failure::FailureRecoveryAction::RegenerateLane),
+                last_completed_stage_label: Some("Exit".to_string()),
+                last_stage_duration_ms: Some(0),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: Some("stdout".to_string()),
+                last_stderr_snippet: Some("stderr".to_string()),
+            },
+        );
+
+        let program = EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "interface:lane".to_string(),
+                unit_id: "interface".to_string(),
+                unit_title: "Interface".to_string(),
+                lane_id: "lane".to_string(),
+                lane_title: "Interface Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Interface,
+                status: LaneExecutionStatus::Complete,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "managed milestone `reviewed` satisfied".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("run-configs/interface.toml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: Some("01COMPLETE".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(0),
+                last_error: Some("provider rejected request".to_string()),
+                failure_kind: Some(crate::failure::FailureKind::ProviderPolicyMismatch),
+                recovery_action: Some(crate::failure::FailureRecoveryAction::RegenerateLane),
+                last_completed_stage_label: Some("Exit".to_string()),
+                last_stage_duration_ms: Some(0),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: Some("stdout".to_string()),
+                last_stderr_snippet: Some("stderr".to_string()),
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
+        };
+
+        let changed = sync_program_state_with_evaluated(&mut state, &program);
+
+        assert!(changed);
+        let record = state.lanes.get("interface:lane").expect("lane record");
+        assert_eq!(record.status, LaneExecutionStatus::Complete);
         assert!(record.last_error.is_none());
         assert!(record.failure_kind.is_none());
         assert!(record.recovery_action.is_none());
