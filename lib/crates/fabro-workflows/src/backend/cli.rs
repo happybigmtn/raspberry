@@ -1701,7 +1701,10 @@ mod tests {
         assert_eq!(response.text, "Here is the implementation.");
         assert_eq!(response.input_tokens, 100);
         assert_eq!(response.output_tokens, 50);
-        assert_eq!(response.served_model.as_deref(), Some("MiniMax-M2.7-highspeed"));
+        assert_eq!(
+            response.served_model.as_deref(),
+            Some("MiniMax-M2.7-highspeed")
+        );
     }
 
     #[test]

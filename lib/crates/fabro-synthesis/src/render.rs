@@ -133,11 +133,8 @@ fn augment_with_implementation_follow_on_units(
         .collect::<BTreeSet<_>>();
 
     for candidate in candidates {
-        let dependency_milestone = source_lane_managed_milestone(
-            &blueprint,
-            &candidate.unit_id,
-            &candidate.lane_id,
-        );
+        let dependency_milestone =
+            source_lane_managed_milestone(&blueprint, &candidate.unit_id, &candidate.lane_id);
         let manifest_relative = candidate
             .program_manifest
             .strip_prefix(target_repo)
@@ -742,7 +739,7 @@ fn implementation_quality_command(
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|future slice|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|future slice|compile-only|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -1901,10 +1898,12 @@ struct ImplementationEvidence {
     first_code_surface: Option<String>,
     first_slice_work: Option<String>,
     first_proof_gate: Option<String>,
+    first_smoke_gate: Option<String>,
     first_health_gate: Option<String>,
     observability_notes: Vec<String>,
     setup_notes: Vec<String>,
     proof_commands: Vec<String>,
+    smoke_commands: Vec<String>,
     health_commands: Vec<String>,
     manual_notes: Vec<String>,
     slice_notes: Vec<String>,
@@ -1930,7 +1929,10 @@ fn implementation_candidates(
             let settled_follow_on_ready = lane.template != WorkflowTemplate::Implementation
                 && lane.program_manifest.is_none()
                 && lane_artifacts_satisfied(blueprint, &lane_key_text, target_repo)
-                && !lane.produces.iter().any(|artifact_id| artifact_id == "validation_plan");
+                && !lane
+                    .produces
+                    .iter()
+                    .any(|artifact_id| artifact_id == "validation_plan");
             if review_says_implementation_blocked(&text)
                 || (!review_ready && !settled_follow_on_ready)
             {
@@ -1997,7 +1999,7 @@ fn implementation_blueprint_for_candidate(
     let promotion_path = join_relative(&artifact_dir, "promotion.md");
     let integration_path = join_relative(&artifact_dir, "integration.md");
     let evidence = implementation_evidence(unit, lane, target_repo);
-    let verify_command = implementation_verify_command(&evidence);
+    let verify_command = implementation_verify_command(lane, &evidence);
     let program_id = candidate
         .program_manifest
         .file_stem()
@@ -2023,6 +2025,7 @@ fn implementation_blueprint_for_candidate(
             &review_path,
             &quality_path,
             &promotion_path,
+            &integration_path,
         ),
         managed_milestone: "merge_ready".to_string(),
         dependencies: vec![raspberry_supervisor::manifest::LaneDependency {
@@ -2051,6 +2054,7 @@ fn implementation_blueprint_for_candidate(
             &verification_path,
             &quality_path,
             &promotion_path,
+            &integration_path,
             &evidence,
         )),
         verify_command: Some(verify_command),
@@ -2165,10 +2169,7 @@ fn lane_named_artifact_path_for_follow_on(
                 .find(|artifact| artifact.id == *artifact_id)
                 .filter(|artifact| {
                     artifact.id != "review"
-                        && artifact
-                            .path
-                            .file_name()
-                            .and_then(|name| name.to_str())
+                        && artifact.path.file_name().and_then(|name| name.to_str())
                             != Some("review.md")
                 })
                 .map(|artifact| artifact.path.clone())
@@ -2791,9 +2792,10 @@ fn implementation_goal(
     review_path: &Path,
     quality_path: &Path,
     promotion_path: &Path,
+    integration_path: &Path,
 ) -> String {
     format!(
-        "Implement the next approved `{}` slice.\n\nInputs:\n- `{}`\n- `{}`\n\nScope:\n- work only inside the smallest next approved implementation slice\n- treat the reviewed lane artifacts as the source of truth\n- keep changes aligned with the owned surfaces for `{}`\n\nRequired curated artifacts:\n- `{}`\n- `{}`\n- `{}`\n- `{}`",
+        "Implement the next approved `{}` slice.\n\nInputs:\n- `{}`\n- `{}`\n\nScope:\n- work only inside the smallest next approved implementation slice\n- treat the reviewed lane artifacts as the source of truth\n- keep changes aligned with the owned surfaces for `{}`\n\nRequired curated artifacts:\n- `{}`\n- `{}`\n- `{}`\n- `{}`\n- `{}`",
         lane_key(&unit.id, &lane.id),
         spec_path.display(),
         review_path.display(),
@@ -2802,6 +2804,7 @@ fn implementation_goal(
         join_relative(&lane_artifact_dir(unit, lane), "verification.md").display(),
         quality_path.display(),
         promotion_path.display(),
+        integration_path.display(),
     )
 }
 
@@ -2812,16 +2815,18 @@ fn implementation_prompt_context(
     verification_path: &Path,
     quality_path: &Path,
     promotion_path: &Path,
+    integration_path: &Path,
     evidence: &ImplementationEvidence,
 ) -> String {
     let mut context = format!(
-        "Use `{}` and `{}` as the approved contract. Implement only the smallest honest next slice, write what changed to `{}`, write proof results plus remaining risk to `{}`, rely on the machine-generated quality evidence in `{}`, and write the merge/promotion verdict to `{}`.",
+        "Use `{}` and `{}` as the approved contract. Implement only the smallest honest next slice, write what changed to `{}`, write proof results plus remaining risk to `{}`, rely on the machine-generated quality evidence in `{}`, write the merge/promotion verdict to `{}`, and ensure the required integration artifact exists at `{}` before the lane is considered complete.",
         spec_path.display(),
         review_path.display(),
         implementation_path.display(),
         verification_path.display(),
         quality_path.display(),
         promotion_path.display(),
+        integration_path.display(),
     );
 
     if let Some(first_slice) = &evidence.first_slice {
@@ -2849,6 +2854,11 @@ fn implementation_prompt_context(
     if let Some(first_proof_gate) = &evidence.first_proof_gate {
         context.push_str("\n\nFirst proof gate:");
         context.push_str(&format!("\n- `{first_proof_gate}`"));
+    }
+
+    if let Some(first_smoke_gate) = &evidence.first_smoke_gate {
+        context.push_str("\n\nFirst smoke gate:");
+        context.push_str(&format!("\n- `{first_smoke_gate}`"));
     }
 
     let execution_guidance = execution_guidance_from_slice_notes(&evidence.slice_notes);
@@ -2945,6 +2955,14 @@ fn implementation_health_command(evidence: &ImplementationEvidence) -> Option<St
     } else {
         Some(format!("set -e\n{}", evidence.health_commands.join("\n")))
     }
+}
+
+fn lane_is_user_visible(lane: &BlueprintLane) -> bool {
+    matches!(
+        lane.kind,
+        raspberry_supervisor::manifest::LaneKind::Interface
+            | raspberry_supervisor::manifest::LaneKind::Service
+    )
 }
 
 fn implementation_checks(
@@ -3092,12 +3110,132 @@ fn dedupe_checks(
     deduped
 }
 
-fn implementation_verify_command(evidence: &ImplementationEvidence) -> String {
-    if evidence.proof_commands.is_empty() {
+fn implementation_verify_command(
+    lane: &BlueprintLane,
+    evidence: &ImplementationEvidence,
+) -> String {
+    let mut commands = evidence.proof_commands.clone();
+    if lane_is_user_visible(lane) {
+        for command in &evidence.smoke_commands {
+            if !commands.contains(command) {
+                commands.push(command.clone());
+            }
+        }
+    }
+    if commands.is_empty() {
         return "true".to_string();
     }
+    commands = normalize_verify_commands(lane, commands);
 
-    format!("set -e\n{}", evidence.proof_commands.join("\n"))
+    format!("set -e\n{}", commands.join("\n"))
+}
+
+fn normalize_verify_commands(lane: &BlueprintLane, commands: Vec<String>) -> Vec<String> {
+    if !lane_is_user_visible(lane) {
+        return dedupe_commands(commands);
+    }
+
+    let mut normalized = commands;
+    let pair_clients = normalized
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| pair_command_client(command).map(|client| (index, client)))
+        .collect::<Vec<_>>();
+    let control_clients = normalized
+        .iter()
+        .filter_map(|command| control_command_client(command))
+        .collect::<BTreeSet<_>>();
+
+    if pair_clients
+        .iter()
+        .any(|(_, client)| client == "alice-phone")
+    {
+        for command in &mut normalized {
+            if is_default_bootstrap_home_miner_command(command) {
+                *command = format!("DEVICE_NAME=bootstrap-phone {command}");
+            }
+        }
+    }
+
+    for client in control_clients {
+        if let Some((index, _)) = pair_clients.iter().find(|(_, paired)| paired == &client) {
+            normalized[*index] = ensure_pair_command_has_control(&normalized[*index]);
+            continue;
+        }
+        if let Some(index) = normalized
+            .iter()
+            .position(|command| control_command_client(command).as_deref() == Some(client.as_str()))
+        {
+            normalized.insert(
+                index,
+                format!(
+                    "./scripts/pair_gateway_client.sh --client {} --capabilities observe,control",
+                    client
+                ),
+            );
+        }
+    }
+
+    dedupe_commands(normalized)
+}
+
+fn dedupe_commands(commands: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for command in commands {
+        if seen.insert(command.clone()) {
+            deduped.push(command);
+        }
+    }
+    deduped
+}
+
+fn is_default_bootstrap_home_miner_command(command: &str) -> bool {
+    command.contains("./scripts/bootstrap_home_miner.sh") && !command.contains("DEVICE_NAME=")
+}
+
+fn pair_command_client(command: &str) -> Option<String> {
+    if !command.contains("pair_gateway_client.sh") {
+        return None;
+    }
+    command_flag_value(command, "--client")
+}
+
+fn control_command_client(command: &str) -> Option<String> {
+    if command.contains("set_mining_mode.sh") {
+        return command_flag_value(command, "--client");
+    }
+    if command.contains("cli.py control") {
+        return command_flag_value(command, "--client");
+    }
+    None
+}
+
+fn ensure_pair_command_has_control(command: &str) -> String {
+    if !command.contains("pair_gateway_client.sh") {
+        return command.to_string();
+    }
+    if let Some(capabilities) = command_flag_value(command, "--capabilities") {
+        if capabilities
+            .split(',')
+            .any(|capability| capability.trim() == "control")
+        {
+            return command.to_string();
+        }
+        return command.replacen(
+            &format!("--capabilities {capabilities}"),
+            "--capabilities observe,control",
+            1,
+        );
+    }
+    format!("{command} --capabilities observe,control")
+}
+
+fn command_flag_value(command: &str, flag: &str) -> Option<String> {
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    tokens
+        .windows(2)
+        .find_map(|window| (window[0] == flag).then(|| window[1].to_string()))
 }
 
 fn implementation_evidence(
@@ -3124,6 +3262,16 @@ fn implementation_evidence(
                 .filter(|commands| !commands.is_empty())
         })
         .unwrap_or_default();
+    let smoke_commands = review
+        .as_deref()
+        .map(smoke_commands_from_markdown)
+        .filter(|commands| !commands.is_empty())
+        .or_else(|| {
+            spec.as_deref()
+                .map(smoke_commands_from_markdown)
+                .filter(|commands| !commands.is_empty())
+        })
+        .unwrap_or_default();
 
     ImplementationEvidence {
         first_slice: spec
@@ -3142,12 +3290,17 @@ fn implementation_evidence(
             .as_deref()
             .and_then(first_proof_gate_from_markdown)
             .or_else(|| review.as_deref().and_then(first_proof_gate_from_markdown)),
+        first_smoke_gate: review
+            .as_deref()
+            .and_then(first_smoke_gate_from_markdown)
+            .or_else(|| spec.as_deref().and_then(first_smoke_gate_from_markdown)),
         first_health_gate: review.as_deref().and_then(first_health_gate_from_markdown),
         setup_notes: spec
             .as_deref()
             .map(setup_notes_from_markdown)
             .unwrap_or_default(),
         proof_commands,
+        smoke_commands,
         health_commands: review
             .as_deref()
             .map(health_commands_from_markdown)
@@ -3184,6 +3337,10 @@ fn first_health_gate_from_markdown(text: &str) -> Option<String> {
     None
 }
 
+fn first_smoke_gate_from_markdown(text: &str) -> Option<String> {
+    smoke_commands_from_markdown(text).into_iter().next()
+}
+
 fn proof_commands_from_markdown(text: &str) -> Vec<String> {
     let mut commands = Vec::new();
     let mut in_fence = false;
@@ -3213,6 +3370,31 @@ fn proof_commands_from_markdown(text: &str) -> Vec<String> {
         let trimmed = line.trim();
         if let Some(command) = inline_proof_command(trimmed) {
             commands.push(command);
+        }
+    }
+
+    commands
+}
+
+fn smoke_commands_from_markdown(text: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if !(lower.contains("smoke") || lower.contains("runtime check")) {
+            continue;
+        }
+        if let Some(command) = extract_backticked_command(trimmed) {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+            continue;
+        }
+        if let Some(command) = inline_smoke_command(trimmed) {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
         }
     }
 
@@ -3570,6 +3752,26 @@ fn inline_proof_command(line: &str) -> Option<String> {
     None
 }
 
+fn inline_smoke_command(line: &str) -> Option<String> {
+    for marker in [
+        "**Smoke**:",
+        "**Smoke gate**:",
+        "Smoke:",
+        "Smoke gate:",
+        "**Runtime check**:",
+        "Runtime check:",
+    ] {
+        let Some(rest) = line.strip_prefix(marker) else {
+            continue;
+        };
+        let candidate = rest.trim().trim_matches('`').trim();
+        if looks_like_shell_command(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
 fn looks_like_shell_command(line: &str) -> bool {
     ["cargo ", "git ", "./", "test ", "fabro ", "myosu-", "curl "]
         .iter()
@@ -3786,23 +3988,25 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::blueprint::{
-        BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram, ProgramBlueprint,
-        WorkflowTemplate,
+        BlueprintArtifact, BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram,
+        BlueprintUnit, ProgramBlueprint, WorkflowTemplate,
     };
 
     use super::{
         apply_blocker_contract_tightening, augment_with_implementation_follow_on_units,
-        backticked_segments, blocked_review_refs, implementation_blueprint_for_candidate,
-        implementation_candidates,
-        blocker_milestone_refinement_recommendations, execution_guidance_from_slice_notes,
-        extract_requirement_detail, first_code_surface_from_markdown,
-        first_health_gate_from_markdown, first_proof_gate_from_markdown, first_slice_from_markdown,
-        first_slice_work_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
-        inline_proof_command, looks_like_shell_command, manual_notes_from_markdown,
-        observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
-        raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
-        review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
-        slice_notes_from_markdown, trim_list_prefix, LaneCatalogEntry, ReviewStageRequirement,
+        backticked_segments, blocked_review_refs, blocker_milestone_refinement_recommendations,
+        execution_guidance_from_slice_notes, extract_requirement_detail,
+        first_code_surface_from_markdown, first_health_gate_from_markdown,
+        first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
+        first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
+        implementation_blueprint_for_candidate, implementation_candidates, implementation_goal,
+        implementation_quality_command, implementation_verify_command, inline_proof_command,
+        looks_like_shell_command, manual_notes_from_markdown, observability_notes_from_markdown,
+        prompt_context_block, proof_commands_from_markdown, raw_lane_refs, render_prompt,
+        render_run_config, render_workflow_graph, review_blocker_lane_refs,
+        review_stage_requirements, setup_notes_from_markdown, slice_notes_from_markdown,
+        smoke_commands_from_markdown, trim_list_prefix, ImplementationEvidence, LaneCatalogEntry,
+        ReviewStageRequirement,
     };
 
     #[test]
@@ -3926,8 +4130,7 @@ Required before validator:oracle implementation-family workflow:
         std::fs::create_dir_all(temp.path().join("outputs/private-control-plane"))
             .expect("outputs dir");
         std::fs::write(
-            temp.path()
-                .join("outputs/private-control-plane/review.md"),
+            temp.path().join("outputs/private-control-plane/review.md"),
             "implementation lane can begin\n",
         )
         .expect("review artifact");
@@ -3958,10 +4161,7 @@ Required before validator:oracle implementation-family workflow:
                 ],
                 milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
                     id: "reviewed".to_string(),
-                    requires: vec![
-                        "control_plane_contract".to_string(),
-                        "review".to_string(),
-                    ],
+                    requires: vec!["control_plane_contract".to_string(), "review".to_string()],
                 }],
                 lanes: vec![BlueprintLane {
                     id: "private-control-plane".to_string(),
@@ -3974,10 +4174,7 @@ Required before validator:oracle implementation-family workflow:
                     goal: "Bootstrap the private control plane.".to_string(),
                     managed_milestone: "reviewed".to_string(),
                     dependencies: Vec::new(),
-                    produces: vec![
-                        "control_plane_contract".to_string(),
-                        "review".to_string(),
-                    ],
+                    produces: vec!["control_plane_contract".to_string(), "review".to_string()],
                     proof_profile: None,
                     proof_state_path: None,
                     program_manifest: None,
@@ -4004,10 +4201,7 @@ Required before validator:oracle implementation-family workflow:
             .iter()
             .find(|unit| unit.id == "private-control-plane-implementation")
             .expect("program unit exists");
-        let program_lane = program_unit
-            .lanes
-            .first()
-            .expect("program lane exists");
+        let program_lane = program_unit.lanes.first().expect("program lane exists");
         assert_eq!(program_lane.template, WorkflowTemplate::Orchestration);
         assert_eq!(
             program_lane.program_manifest.as_deref(),
@@ -4020,12 +4214,9 @@ Required before validator:oracle implementation-family workflow:
             .into_iter()
             .find(|candidate| candidate.lane_key == "private-control-plane:private-control-plane")
             .expect("candidate exists");
-        let implementation_blueprint = implementation_blueprint_for_candidate(
-            &evolved,
-            &candidate,
-            temp.path(),
-        )
-        .expect("implementation blueprint");
+        let implementation_blueprint =
+            implementation_blueprint_for_candidate(&evolved, &candidate, temp.path())
+                .expect("implementation blueprint");
         let unit = implementation_blueprint
             .units
             .first()
@@ -4035,7 +4226,10 @@ Required before validator:oracle implementation-family workflow:
             .iter()
             .find(|artifact| artifact.id == "spec")
             .expect("spec artifact exists");
-        assert_eq!(spec_artifact.path, PathBuf::from("control-plane-contract.md"));
+        assert_eq!(
+            spec_artifact.path,
+            PathBuf::from("control-plane-contract.md")
+        );
     }
 
     #[test]
@@ -4044,8 +4238,7 @@ Required before validator:oracle implementation-family workflow:
         std::fs::create_dir_all(temp.path().join("outputs/private-control-plane"))
             .expect("outputs dir");
         std::fs::write(
-            temp.path()
-                .join("outputs/private-control-plane/review.md"),
+            temp.path().join("outputs/private-control-plane/review.md"),
             "bootstrap slice reviewed\n",
         )
         .expect("review artifact");
@@ -4082,10 +4275,7 @@ Required before validator:oracle implementation-family workflow:
                 ],
                 milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
                     id: "reviewed".to_string(),
-                    requires: vec![
-                        "control_plane_contract".to_string(),
-                        "review".to_string(),
-                    ],
+                    requires: vec!["control_plane_contract".to_string(), "review".to_string()],
                 }],
                 lanes: vec![BlueprintLane {
                     id: "private-control-plane".to_string(),
@@ -4098,10 +4288,7 @@ Required before validator:oracle implementation-family workflow:
                     goal: "Bootstrap the private control plane.".to_string(),
                     managed_milestone: "reviewed".to_string(),
                     dependencies: Vec::new(),
-                    produces: vec![
-                        "control_plane_contract".to_string(),
-                        "review".to_string(),
-                    ],
+                    produces: vec!["control_plane_contract".to_string(), "review".to_string()],
                     proof_profile: None,
                     proof_state_path: None,
                     program_manifest: None,
@@ -4386,6 +4573,277 @@ The validator binary should emit structured log lines.
         let text = "**Health check**: `GET /health` must include `training_active: bool`.";
         let gate = first_health_gate_from_markdown(text).expect("gate");
         assert_eq!(gate, "GET /health");
+    }
+
+    #[test]
+    fn smoke_commands_from_markdown_extracts_inline_smoke_gate() {
+        let text = "**Smoke gate**: `myosu-play --train --rounds 1` renders one hand.";
+        let commands = smoke_commands_from_markdown(text);
+        assert_eq!(commands, vec!["myosu-play --train --rounds 1".to_string()]);
+        let gate = first_smoke_gate_from_markdown(text).expect("smoke gate");
+        assert_eq!(gate, "myosu-play --train --rounds 1");
+    }
+
+    #[test]
+    fn implementation_verify_command_appends_smoke_for_user_visible_lane() {
+        let lane = BlueprintLane {
+            id: "play-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Play Implement".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("play".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "implement".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec!["cargo test -p myosu-play".to_string()],
+            smoke_commands: vec!["myosu-play --train --rounds 1".to_string()],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert!(command.contains("cargo test -p myosu-play"));
+        assert!(command.contains("myosu-play --train --rounds 1"));
+    }
+
+    #[test]
+    fn implementation_verify_command_ignores_smoke_for_platform_lane() {
+        let lane = BlueprintLane {
+            id: "sdk-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "SDK Implement".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("sdk".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "implement".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec!["cargo test -p myosu-sdk".to_string()],
+            smoke_commands: vec!["myosu-play --train --rounds 1".to_string()],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert!(command.contains("cargo test -p myosu-sdk"));
+        assert!(!command.contains("myosu-play --train --rounds 1"));
+    }
+
+    #[test]
+    fn implementation_verify_command_normalizes_bootstrap_pair_and_control_flow() {
+        let lane = BlueprintLane {
+            id: "command-center-client-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Command Center Client Implementation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("command-center-client".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "implement".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec![
+                "./scripts/bootstrap_home_miner.sh".to_string(),
+                "./scripts/pair_gateway_client.sh --client alice-phone".to_string(),
+                "./scripts/read_miner_status.sh --client alice-phone".to_string(),
+                "./scripts/set_mining_mode.sh --client alice-phone --mode balanced".to_string(),
+            ],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert!(command.contains("DEVICE_NAME=bootstrap-phone ./scripts/bootstrap_home_miner.sh"));
+        assert!(command.contains(
+            "./scripts/pair_gateway_client.sh --client alice-phone --capabilities observe,control"
+        ));
+        assert!(
+            command.contains("./scripts/set_mining_mode.sh --client alice-phone --mode balanced")
+        );
+    }
+
+    #[test]
+    fn implementation_goal_lists_integration_artifact() {
+        let unit = BlueprintUnit {
+            id: "hermes-adapter".to_string(),
+            title: "Hermes Adapter".to_string(),
+            output_root: PathBuf::from("outputs/hermes-adapter"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+                BlueprintArtifact {
+                    id: "promotion".to_string(),
+                    path: PathBuf::from("promotion.md"),
+                },
+                BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: PathBuf::from("integration.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "hermes-adapter".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Artifact,
+            title: "Hermes Adapter Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("hermes-adapter".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: String::new(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+                "integration".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let goal = implementation_goal(
+            &unit,
+            &lane,
+            Path::new("agent-adapter.md"),
+            Path::new("review.md"),
+            Path::new("outputs/hermes-adapter/quality.md"),
+            Path::new("outputs/hermes-adapter/promotion.md"),
+            Path::new("outputs/hermes-adapter/integration.md"),
+        );
+
+        assert!(goal.contains("outputs/hermes-adapter/integration.md"));
+    }
+
+    #[test]
+    fn implementation_quality_command_does_not_treat_future_slice_wording_as_artifact_mismatch() {
+        let unit = BlueprintUnit {
+            id: "home-miner-service".to_string(),
+            title: "Home Miner Service".to_string(),
+            output_root: PathBuf::from("outputs/home-miner-service"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "home-miner-service".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "Home Miner Service Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("home-miner-service".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: String::new(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "zend-home-miner-service-home-miner-service-implementation".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+        };
+
+        let command = implementation_quality_command(&blueprint, "home-miner-service", &lane);
+
+        assert!(!command.contains("future slice"));
     }
 
     #[test]

@@ -732,6 +732,11 @@ async fn main_inner() -> (String, Result<()>) {
         },
         Command::Paperclip(args) => match args.command {
             commands::paperclip::PaperclipCommand::Bootstrap(_) => "paperclip bootstrap",
+            commands::paperclip::PaperclipCommand::Refresh(_) => "paperclip refresh",
+            commands::paperclip::PaperclipCommand::Start(_) => "paperclip start",
+            commands::paperclip::PaperclipCommand::Stop(_) => "paperclip stop",
+            commands::paperclip::PaperclipCommand::Status(_) => "paperclip status",
+            commands::paperclip::PaperclipCommand::Logs(_) => "paperclip logs",
         },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
@@ -1104,6 +1109,21 @@ async fn main_inner() -> (String, Result<()>) {
             Command::Paperclip(args) => match args.command {
                 commands::paperclip::PaperclipCommand::Bootstrap(args) => {
                     commands::paperclip::bootstrap_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Refresh(args) => {
+                    commands::paperclip::refresh_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Start(args) => {
+                    commands::paperclip::start_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Stop(args) => {
+                    commands::paperclip::stop_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Status(args) => {
+                    commands::paperclip::status_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Logs(args) => {
+                    commands::paperclip::logs_command(&args).await?;
                 }
             },
             Command::Skill { command } => match command {

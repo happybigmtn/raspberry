@@ -14,6 +14,7 @@ use crate::program_state::{
     mark_lane_dispatch_failed, mark_lane_finished, mark_lane_started, mark_lane_submitted,
     ProgramRuntimeState, ProgramStateError,
 };
+use crate::resource_lease;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchOutcome {
@@ -62,6 +63,8 @@ pub enum DispatchError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to prepare leased resources for lane `{lane}`: {message}")]
+    Lease { lane: String, message: String },
     #[error("worker thread panicked while dispatching lane `{lane}`")]
     WorkerPanicked { lane: String },
     #[error("fabro detach for lane `{lane}` exited successfully but returned no run id")]
@@ -328,12 +331,28 @@ fn run_fabro(
         });
     }
 
-    let command = format!(
-        "export CARGO_TARGET_DIR={}; exec {} --no-upgrade-check run --detach {}",
+    let leased_env = resource_lease::env_for_run_config(target_repo, lane_key, run_config)
+        .map_err(|error| DispatchError::Lease {
+            lane: lane_key.to_string(),
+            message: error.to_string(),
+        })?;
+
+    let mut command = format!(
+        "export CARGO_TARGET_DIR={}; ",
         shell_escape(&autodev_cargo_target_dir(target_repo).display().to_string()),
+    );
+    if let Some(env) = leased_env.as_ref() {
+        let mut entries = env.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, value) in entries {
+            command.push_str(&format!("{key}={}; export {key}; ", shell_escape(value)));
+        }
+    }
+    command.push_str(&format!(
+        "exec {} --no-upgrade-check run --detach {}",
         shell_escape(&fabro_bin.display().to_string()),
         shell_escape(&run_config.display().to_string()),
-    );
+    ));
 
     let output = Command::new("bash")
         .current_dir(target_repo)
@@ -345,6 +364,10 @@ fn run_fabro(
             path: run_config.to_path_buf(),
             source,
         })?;
+
+    if output.status.code().unwrap_or(-1) != 0 {
+        let _ = resource_lease::release_for_lane(target_repo, lane_key);
+    }
 
     Ok(DispatchOutcome {
         lane_key: lane_key.to_string(),

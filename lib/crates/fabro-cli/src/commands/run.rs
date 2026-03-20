@@ -1268,6 +1268,7 @@ pub async fn run_command(
 
     // Mint a GitHub App IAT and inject as GITHUB_TOKEN if [github] permissions are declared
     let mut sandbox_env = sandbox_env;
+    sandbox_env.extend(passthrough_env_from_host()?);
     let github_permissions = run_cfg
         .as_ref()
         .and_then(|c| c.github.as_ref())
@@ -1864,6 +1865,24 @@ pub async fn run_command(
             std::process::exit(1);
         }
     }
+}
+
+fn passthrough_env_from_host() -> anyhow::Result<HashMap<String, String>> {
+    let mut env = HashMap::new();
+    let Some(raw) = std::env::var_os("FABRO_PASSTHROUGH_ENV") else {
+        return Ok(env);
+    };
+    let raw = raw.to_string_lossy();
+    for name in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let value = std::env::var(name)
+            .with_context(|| format!("FABRO_PASSTHROUGH_ENV requested host env {name:?}"))?;
+        env.insert(name.to_string(), value);
+    }
+    Ok(env)
 }
 
 /// Set up a git worktree for an isolated workflow run.
@@ -2925,6 +2944,25 @@ mod tests {
     fn resolve_cli_goal_none() {
         let result = resolve_cli_goal(&None, &None).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn passthrough_env_from_host_uses_allowlist() {
+        std::env::set_var("FABRO_PASSTHROUGH_ENV", "ZEND_BIND_PORT,ZEND_DAEMON_URL");
+        std::env::set_var("ZEND_BIND_PORT", "18080");
+        std::env::set_var("ZEND_DAEMON_URL", "http://127.0.0.1:18080");
+
+        let env = passthrough_env_from_host().expect("passthrough env");
+
+        assert_eq!(env.get("ZEND_BIND_PORT").map(String::as_str), Some("18080"));
+        assert_eq!(
+            env.get("ZEND_DAEMON_URL").map(String::as_str),
+            Some("http://127.0.0.1:18080")
+        );
+
+        std::env::remove_var("FABRO_PASSTHROUGH_ENV");
+        std::env::remove_var("ZEND_BIND_PORT");
+        std::env::remove_var("ZEND_DAEMON_URL");
     }
 
     #[test]

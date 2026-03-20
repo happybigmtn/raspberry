@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::autodev::sync_autodev_report_with_program;
+use crate::failure::{FailureKind, FailureRecoveryAction};
 use crate::manifest::{
     LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
     LaneManifest, ProgramManifest,
@@ -75,6 +76,8 @@ pub struct EvaluatedLane {
     pub last_finished_at: Option<DateTime<Utc>>,
     pub last_exit_status: Option<i32>,
     pub last_error: Option<String>,
+    pub failure_kind: Option<FailureKind>,
+    pub recovery_action: Option<FailureRecoveryAction>,
     pub last_completed_stage_label: Option<String>,
     pub last_stage_duration_ms: Option<u64>,
     pub last_usage_summary: Option<String>,
@@ -175,6 +178,10 @@ pub enum EvaluateError {
 
 pub fn evaluate_program(manifest_path: &Path) -> Result<EvaluatedProgram, EvaluateError> {
     evaluate_program_internal(manifest_path, true)
+}
+
+pub fn evaluate_program_local(manifest_path: &Path) -> Result<EvaluatedProgram, EvaluateError> {
+    evaluate_program_internal(manifest_path, false)
 }
 
 pub(crate) fn evaluate_program_internal(
@@ -309,6 +316,9 @@ pub fn render_grouped_summary(program: &EvaluatedProgram) -> String {
             if let Some(operational_state) = lane.operational_state {
                 line.push_str(&format!(" | operational={operational_state}"));
             }
+            if let Some(recovery_action) = lane.recovery_action {
+                line.push_str(&format!(" | recovery={recovery_action}"));
+            }
             lines.push(line);
         }
     }
@@ -366,6 +376,9 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         }
         if let Some(operational_state) = lane.operational_state {
             line.push_str(&format!(" | operational={operational_state}"));
+        }
+        if let Some(recovery_action) = lane.recovery_action {
+            line.push_str(&format!(" | recovery={recovery_action}"));
         }
         if let Some(stage) = &lane.current_stage {
             line.push_str(&format!(" | stage={stage}"));
@@ -531,6 +544,8 @@ fn evaluate_lane(
         last_finished_at: runtime_record.and_then(|record| record.last_finished_at),
         last_exit_status: runtime_record.and_then(|record| record.last_exit_status),
         last_error: runtime_record.and_then(|record| record.last_error.clone()),
+        failure_kind: runtime_record.and_then(|record| record.failure_kind),
+        recovery_action: runtime_record.and_then(|record| record.recovery_action),
         last_completed_stage_label: runtime_record
             .and_then(|record| record.last_completed_stage_label.clone()),
         last_stage_duration_ms: runtime_record.and_then(|record| record.last_stage_duration_ms),
@@ -892,8 +907,20 @@ fn lane_detail(
             .clone()
             .or_else(|| {
                 runtime_record
+                    .and_then(|record| record.failure_kind)
+                    .map(|kind| format!("failure_kind={kind}"))
+            })
+            .or_else(|| {
+                runtime_record
                     .and_then(|record| record.last_stderr_snippet.clone())
                     .filter(|text| !text.trim().is_empty())
+            })
+            .map(|summary| {
+                let recovery = runtime_record
+                    .and_then(|record| record.recovery_action)
+                    .map(|action| format!(" | next_action={action}"))
+                    .unwrap_or_default();
+                format!("{summary}{recovery}")
             })
             .unwrap_or_else(|| "most recent run failed".to_string()),
         LaneExecutionStatus::Blocked => {
@@ -1469,7 +1496,7 @@ mod tests {
         );
         assert_eq!(
             statuses.get("p2p:chapter"),
-            Some(&LaneExecutionStatus::Running)
+            Some(&LaneExecutionStatus::Failed)
         );
     }
 
@@ -1505,7 +1532,7 @@ mod tests {
         );
         assert_eq!(
             statuses.get("miner:service"),
-            Some(&LaneExecutionStatus::Running)
+            Some(&LaneExecutionStatus::Failed)
         );
         assert_eq!(
             statuses.get("operations:scorecard"),
@@ -1522,7 +1549,7 @@ mod tests {
             .iter()
             .find(|lane| lane.lane_key == "miner:service")
             .expect("miner lane should exist");
-        assert_eq!(miner.operational_state, Some(LaneOperationalState::Healthy));
+        assert_eq!(miner.operational_state, None);
         let operations = program
             .lanes
             .iter()
@@ -1732,6 +1759,8 @@ units:
             last_finished_at: None,
             last_exit_status: None,
             last_error: None,
+            failure_kind: None,
+            recovery_action: None,
             last_completed_stage_label: None,
             last_stage_duration_ms: None,
             last_usage_summary: None,

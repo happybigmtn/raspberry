@@ -11,7 +11,11 @@ use thiserror::Error;
 
 use crate::evaluate::EvaluatedProgram;
 use crate::evaluate::{evaluate_program_internal, LaneExecutionStatus};
+use crate::failure::{
+    classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction,
+};
 use crate::manifest::ProgramManifest;
+use crate::resource_lease;
 
 const PROGRAM_STATE_SCHEMA_VERSION: &str = "raspberry.program.v2";
 const STALE_RUNNING_GRACE_SECS: i64 = 30;
@@ -47,6 +51,10 @@ pub struct LaneRuntimeRecord {
     pub last_exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FailureKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<FailureRecoveryAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_completed_stage_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,13 +162,14 @@ pub fn ensure_lane_record<'a>(
     lane_key: &str,
     run_config: &Path,
 ) -> &'a mut LaneRuntimeRecord {
-    state
+    let normalized_run_config = normalize_path_lexically(run_config);
+    let record = state
         .lanes
         .entry(lane_key.to_string())
         .or_insert_with(|| LaneRuntimeRecord {
             lane_key: lane_key.to_string(),
             status: LaneExecutionStatus::Blocked,
-            run_config: Some(run_config.to_path_buf()),
+            run_config: Some(normalized_run_config.clone()),
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage_label: None,
@@ -169,6 +178,8 @@ pub fn ensure_lane_record<'a>(
             last_finished_at: None,
             last_exit_status: None,
             last_error: None,
+            failure_kind: None,
+            recovery_action: None,
             last_completed_stage_label: None,
             last_stage_duration_ms: None,
             last_usage_summary: None,
@@ -176,7 +187,11 @@ pub fn ensure_lane_record<'a>(
             last_files_written: Vec::new(),
             last_stdout_snippet: None,
             last_stderr_snippet: None,
-        })
+        });
+    if record.run_config.as_ref() != Some(&normalized_run_config) {
+        record.run_config = Some(normalized_run_config);
+    }
+    record
 }
 
 pub fn mark_lane_submitted(
@@ -196,6 +211,8 @@ pub fn mark_lane_submitted(
     record.last_finished_at = None;
     record.last_exit_status = None;
     record.last_error = None;
+    record.failure_kind = None;
+    record.recovery_action = None;
     record.last_completed_stage_label = None;
     record.last_stage_duration_ms = None;
     record.last_usage_summary = None;
@@ -216,6 +233,8 @@ pub fn mark_lane_started(state: &mut ProgramRuntimeState, lane_key: &str, run_co
     record.last_finished_at = None;
     record.last_exit_status = None;
     record.last_error = None;
+    record.failure_kind = None;
+    record.recovery_action = None;
     record.last_completed_stage_label = None;
     record.last_stage_duration_ms = None;
     record.last_usage_summary = None;
@@ -245,6 +264,12 @@ pub fn mark_lane_dispatch_failed(
     record.last_finished_at = Some(now);
     record.last_exit_status = Some(outcome.exit_status);
     record.last_error = Some(summarize_failure(outcome));
+    record.failure_kind = classify_failure(
+        record.last_error.as_deref(),
+        Some(&outcome.stderr),
+        Some(&outcome.stdout),
+    );
+    record.recovery_action = record.failure_kind.map(default_recovery_action);
     record.last_usage_summary = Some(operator_summary(outcome));
     record.last_files_read = Vec::new();
     record.last_files_written = Vec::new();
@@ -284,6 +309,16 @@ pub fn mark_lane_finished(
     } else {
         Some(summarize_failure(outcome))
     };
+    record.failure_kind = if outcome.exit_status == 0 {
+        None
+    } else {
+        classify_failure(
+            record.last_error.as_deref(),
+            Some(&outcome.stderr),
+            Some(&outcome.stdout),
+        )
+    };
+    record.recovery_action = record.failure_kind.map(default_recovery_action);
     record.last_usage_summary = Some(operator_summary(outcome));
     record.last_files_read = Vec::new();
     record.last_files_written = Vec::new();
@@ -307,10 +342,17 @@ pub fn refresh_program_state(
                 .resolve_lane_run_config(manifest_path, unit_id, lane_id)
                 .unwrap_or_else(|| lane.run_config.clone());
             let record = ensure_lane_record(state, &lane_key, &run_config);
+            let mut lane_changed = assign_opt(
+                &mut record.run_config,
+                Some(normalize_path_lexically(&run_config)),
+            );
             if let Some(child_manifest) =
                 manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id)
             {
                 if sync_child_program_runtime_record(record, &child_manifest) {
+                    changed = true;
+                }
+                if lane_changed {
                     changed = true;
                 }
                 continue;
@@ -330,8 +372,6 @@ pub fn refresh_program_state(
             let Some(mut progress) = progress else {
                 continue;
             };
-            let mut lane_changed = false;
-
             lane_changed |= assign_opt(
                 &mut record.current_fabro_run_id,
                 progress.fabro_run_id.clone(),
@@ -355,6 +395,14 @@ pub fn refresh_program_state(
                 progress.last_usage_summary.clone(),
             );
             lane_changed |= assign_opt(&mut record.last_error, progress.last_failure.clone());
+            lane_changed |= assign_opt(
+                &mut record.failure_kind,
+                classify_failure(record.last_error.as_deref(), None, None),
+            );
+            lane_changed |= assign_opt(
+                &mut record.recovery_action,
+                record.failure_kind.map(default_recovery_action),
+            );
             lane_changed |= assign_opt(&mut record.last_finished_at, progress.finished_at);
             if stale_active_progress(&progress, record.last_started_at) {
                 if record.status != LaneExecutionStatus::Failed {
@@ -366,6 +414,14 @@ pub fn refresh_program_state(
                         "tracked run remained active after its worker process disappeared"
                             .to_string(),
                     );
+                    lane_changed = true;
+                }
+                if record.failure_kind != Some(FailureKind::Unknown) {
+                    record.failure_kind = Some(FailureKind::Unknown);
+                    lane_changed = true;
+                }
+                if record.recovery_action != Some(FailureRecoveryAction::SurfaceBlocked) {
+                    record.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
                     lane_changed = true;
                 }
                 let finished_at = progress.updated_at.unwrap_or_else(Utc::now);
@@ -405,6 +461,12 @@ pub fn refresh_program_state(
                     if record.last_finished_at.take().is_some() {
                         lane_changed = true;
                     }
+                    if record.failure_kind.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.recovery_action.take().is_some() {
+                        lane_changed = true;
+                    }
                 }
                 Some(RunStatus::Succeeded) => {
                     if record.status == LaneExecutionStatus::Running {
@@ -424,6 +486,12 @@ pub fn refresh_program_state(
                         record.last_exit_status = Some(0);
                         lane_changed = true;
                     }
+                    if record.failure_kind.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.recovery_action.take().is_some() {
+                        lane_changed = true;
+                    }
                 }
                 Some(RunStatus::Failed | RunStatus::Dead) => {
                     if record.status != LaneExecutionStatus::Failed {
@@ -437,6 +505,17 @@ pub fn refresh_program_state(
                         lane_changed = true;
                     }
                     if record.current_fabro_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
+                    let next_failure_kind =
+                        classify_failure(record.last_error.as_deref(), None, None);
+                    if record.failure_kind != next_failure_kind {
+                        record.failure_kind = next_failure_kind;
+                        lane_changed = true;
+                    }
+                    let next_recovery_action = record.failure_kind.map(default_recovery_action);
+                    if record.recovery_action != next_recovery_action {
+                        record.recovery_action = next_recovery_action;
                         lane_changed = true;
                     }
                 }
@@ -455,8 +534,26 @@ pub fn refresh_program_state(
         }
     }
     let original_len = state.lanes.len();
-    state.lanes.retain(|lane_key, _| expected_lane_keys.contains(lane_key));
+    state
+        .lanes
+        .retain(|lane_key, _| expected_lane_keys.contains(lane_key));
     if state.lanes.len() != original_len {
+        changed = true;
+    }
+    let running_lane_keys = state
+        .lanes
+        .iter()
+        .filter(|(_, record)| record.status == LaneExecutionStatus::Running)
+        .map(|(lane_key, _)| lane_key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if resource_lease::cleanup_leases(
+        &manifest.resolved_target_repo(manifest_path),
+        &running_lane_keys,
+    )
+    .map_err(|error| ProgramStateError::Read {
+        path: manifest.resolved_target_repo(manifest_path),
+        source: std::io::Error::other(error.to_string()),
+    })? {
         changed = true;
     }
     if changed {
@@ -472,6 +569,10 @@ pub fn sync_program_state_with_evaluated(
     let mut changed = false;
     for lane in &program.lanes {
         let record = ensure_lane_record(state, &lane.lane_key, &lane.run_config);
+        changed |= assign_opt(
+            &mut record.run_config,
+            Some(normalize_path_lexically(&lane.run_config)),
+        );
         changed |= assign_value(&mut record.status, lane.status);
         changed |= assign_opt(&mut record.current_run_id, lane.current_run_id.clone());
         changed |= assign_opt(
@@ -484,6 +585,8 @@ pub fn sync_program_state_with_evaluated(
         changed |= assign_opt(&mut record.last_finished_at, lane.last_finished_at);
         changed |= assign_opt(&mut record.last_exit_status, lane.last_exit_status);
         changed |= assign_opt(&mut record.last_error, lane.last_error.clone());
+        changed |= assign_opt(&mut record.failure_kind, lane.failure_kind);
+        changed |= assign_opt(&mut record.recovery_action, lane.recovery_action);
         changed |= assign_opt(
             &mut record.last_completed_stage_label,
             lane.last_completed_stage_label.clone(),
@@ -526,6 +629,11 @@ fn sync_child_program_runtime_record(
     let mut child_has_ready = false;
     let mut child_has_running = false;
     let mut child_has_failed = false;
+    let mut child_total = 0usize;
+    let mut child_ready = 0usize;
+    let mut child_running = 0usize;
+    let mut child_failed = 0usize;
+    let mut child_complete = 0usize;
     let mut child_running_record: Option<LaneRuntimeRecord> = None;
     let mut child_failed_record: Option<LaneRuntimeRecord> = None;
     let mut latest_started_at: Option<DateTime<Utc>> = None;
@@ -542,6 +650,7 @@ fn sync_child_program_runtime_record(
                     let _ = child_state.save(&state_path);
                 }
             }
+            child_total = child_state.lanes.len();
             child_has_running = child_state.lanes.values().any(|lane| {
                 lane.status == LaneExecutionStatus::Running && lane.last_finished_at.is_none()
             });
@@ -553,6 +662,15 @@ fn sync_child_program_runtime_record(
                 .lanes
                 .values()
                 .any(|lane| lane.status == LaneExecutionStatus::Failed);
+            for lane in child_state.lanes.values() {
+                match lane.status {
+                    LaneExecutionStatus::Ready => child_ready += 1,
+                    LaneExecutionStatus::Running => child_running += 1,
+                    LaneExecutionStatus::Failed => child_failed += 1,
+                    LaneExecutionStatus::Complete => child_complete += 1,
+                    LaneExecutionStatus::Blocked => {}
+                }
+            }
             child_running_record = child_state
                 .lanes
                 .values()
@@ -579,32 +697,34 @@ fn sync_child_program_runtime_record(
                 .max();
         }
     }
-    let Ok(program) = evaluate_program_internal(child_manifest, false) else {
-        return false;
-    };
-    let mut ready = 0usize;
-    let mut running = 0usize;
-    let mut failed = 0usize;
-    let mut complete = 0usize;
-    for lane in &program.lanes {
-        match lane.status {
-            LaneExecutionStatus::Ready => ready += 1,
-            LaneExecutionStatus::Running => running += 1,
-            LaneExecutionStatus::Failed => failed += 1,
-            LaneExecutionStatus::Complete => complete += 1,
-            LaneExecutionStatus::Blocked => {}
+    if child_total == 0 {
+        let Ok(program) = evaluate_program_internal(child_manifest, false) else {
+            return false;
+        };
+        child_total = program.lanes.len();
+        for lane in &program.lanes {
+            match lane.status {
+                LaneExecutionStatus::Ready => child_ready += 1,
+                LaneExecutionStatus::Running => child_running += 1,
+                LaneExecutionStatus::Failed => child_failed += 1,
+                LaneExecutionStatus::Complete => child_complete += 1,
+                LaneExecutionStatus::Blocked => {}
+            }
         }
+        child_has_ready = child_ready > 0;
+        child_has_running = child_running > 0;
+        child_has_failed = child_failed > 0;
     }
 
-    let next_status = if child_has_running || running > 0 {
+    let next_status = if child_has_running || child_running > 0 {
         LaneExecutionStatus::Running
-    } else if child_has_failed || failed > 0 {
+    } else if child_has_failed || child_failed > 0 {
         LaneExecutionStatus::Failed
     } else if child_has_ready {
         LaneExecutionStatus::Ready
-    } else if complete == program.lanes.len() && !program.lanes.is_empty() {
+    } else if child_complete == child_total && child_total > 0 {
         LaneExecutionStatus::Complete
-    } else if ready > 0 {
+    } else if child_ready > 0 {
         LaneExecutionStatus::Ready
     } else {
         LaneExecutionStatus::Blocked
@@ -643,6 +763,12 @@ fn sync_child_program_runtime_record(
         if record.last_error.take().is_some() {
             changed = true;
         }
+        if record.failure_kind.take().is_some() {
+            changed = true;
+        }
+        if record.recovery_action.take().is_some() {
+            changed = true;
+        }
         if record.last_exit_status.take().is_some() {
             changed = true;
         }
@@ -653,7 +779,8 @@ fn sync_child_program_runtime_record(
         if record.current_fabro_run_id.take().is_some() {
             changed = true;
         }
-        if next_status != LaneExecutionStatus::Running && record.current_stage_label.take().is_some()
+        if next_status != LaneExecutionStatus::Running
+            && record.current_stage_label.take().is_some()
         {
             changed = true;
         }
@@ -661,6 +788,8 @@ fn sync_child_program_runtime_record(
     }
     if let Some(child) = child_failed_record.as_ref() {
         changed |= assign_opt(&mut record.last_error, child.last_error.clone());
+        changed |= assign_opt(&mut record.failure_kind, child.failure_kind);
+        changed |= assign_opt(&mut record.recovery_action, child.recovery_action);
         changed |= assign_opt(&mut record.last_finished_at, child.last_finished_at);
         changed |= assign_opt(&mut record.last_exit_status, child.last_exit_status);
         changed |= assign_opt(
@@ -677,6 +806,12 @@ fn sync_child_program_runtime_record(
         );
     } else {
         if next_status != LaneExecutionStatus::Failed && record.last_error.take().is_some() {
+            changed = true;
+        }
+        if next_status != LaneExecutionStatus::Failed && record.failure_kind.take().is_some() {
+            changed = true;
+        }
+        if next_status != LaneExecutionStatus::Failed && record.recovery_action.take().is_some() {
             changed = true;
         }
         if next_status == LaneExecutionStatus::Complete {
@@ -717,6 +852,45 @@ fn assign_value<T: PartialEq>(slot: &mut T, next: T) -> bool {
     }
 }
 
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    let mut saw_root = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => {
+                normalized.push(component.as_os_str());
+                saw_root = true;
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = normalized.components().next_back() {
+                    match last {
+                        Component::Normal(_) => {
+                            normalized.pop();
+                        }
+                        Component::ParentDir => normalized.push(component.as_os_str()),
+                        Component::RootDir | Component::Prefix(_) => {}
+                        Component::CurDir => {}
+                    }
+                } else if !saw_root {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
 fn tracked_run_id(record: &LaneRuntimeRecord) -> Option<&str> {
     record
         .current_fabro_run_id
@@ -730,6 +904,9 @@ fn read_live_lane_progress_for_run_id(
 ) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
     let base = fabro_workflows::run_lookup::default_runs_base();
     if let Ok(inspection) = inspect_run(&base, run_id) {
+        if let Ok(Some(progress)) = read_live_lane_progress(&inspection.run_dir) {
+            return Ok(Some(progress));
+        }
         return Ok(Some(live_lane_progress_from_inspection(&inspection)));
     }
     let Ok(run_dir) = fabro_workflows::run_lookup::find_run_by_prefix(&base, run_id) else {
@@ -769,10 +946,18 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         last_completed_stage_label: run_state
             .as_ref()
             .and_then(|state| state.last_completed_stage_label.clone()),
-        last_failure: run_state
-            .as_ref()
-            .and_then(|state| state.last_failure.clone()),
-        updated_at: max_datetime(run_state.as_ref().map(|state| state.updated_at), cli_activity_at),
+        last_failure: merge_failure_detail(
+            run_state
+                .as_ref()
+                .and_then(|state| state.last_failure.clone()),
+            conclusion
+                .as_ref()
+                .and_then(|conclusion| conclusion.failure_reason.clone()),
+        ),
+        updated_at: max_datetime(
+            run_state.as_ref().map(|state| state.updated_at),
+            cli_activity_at,
+        ),
         finished_at: conclusion.as_ref().map(|conclusion| conclusion.timestamp),
         ..LiveLaneProgress::default()
     };
@@ -813,18 +998,18 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
                 progress.last_usage_summary = summarize_event_usage(&value);
                 progress.current_stage_label = None;
             }
+            "StageFailed" => {
+                progress.last_failure = merge_failure_detail(
+                    progress.last_failure.take(),
+                    extract_failure_text(&value),
+                );
+            }
             "WorkflowRunFailed" => {
                 progress.workflow_status = Some(RunStatus::Failed);
-                progress.last_failure = value
-                    .get("error")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned)
-                    .or_else(|| {
-                        value
-                            .get("failure_reason")
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    });
+                progress.last_failure = merge_failure_detail(
+                    progress.last_failure.take(),
+                    extract_failure_text(&value),
+                );
                 progress.current_stage_label = None;
             }
             _ => {}
@@ -960,17 +1145,60 @@ fn live_lane_progress_from_inspection(inspection: &RunInspection) -> LiveLanePro
             .latest_event
             .clone()
             .or_else(|| state.and_then(|state| state.last_event.clone())),
-        last_failure: state
-            .and_then(|state| state.last_failure.clone())
-            .or_else(|| {
-                inspection
-                    .conclusion
-                    .as_ref()
-                    .and_then(|conclusion| conclusion.failure_reason.clone())
-            }),
+        last_failure: merge_failure_detail(
+            state.and_then(|state| state.last_failure.clone()),
+            inspection
+                .conclusion
+                .as_ref()
+                .and_then(|conclusion| conclusion.failure_reason.clone()),
+        ),
         updated_at: state.map(|state| state.updated_at),
         finished_at: finished_at(inspection),
     }
+}
+
+fn extract_failure_text(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("error")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            value
+                .get("failure_reason")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn merge_failure_detail(current: Option<String>, candidate: Option<String>) -> Option<String> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => {
+            if (is_generic_failure(&current) || is_cycle_collapse_failure(&current))
+                && !is_generic_failure(&candidate)
+            {
+                Some(candidate)
+            } else {
+                Some(current)
+            }
+        }
+        (Some(current), None) => Some(current),
+        (None, Some(candidate)) => Some(candidate),
+        (None, None) => None,
+    }
+}
+
+fn is_generic_failure(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "Script failed with exit code: 1"
+        || (trimmed.starts_with("Script failed with exit code:") && !trimmed.contains('\n'))
+        || trimmed == "fabro run failed"
+}
+
+fn is_cycle_collapse_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("run is stuck in a cycle")
+        || lower.contains("visited 3 times")
+        || lower.contains("node limit 3")
 }
 
 fn parse_string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
@@ -1122,6 +1350,8 @@ mod tests {
                 last_finished_at: None,
                 last_exit_status: None,
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1158,6 +1388,8 @@ mod tests {
                 last_finished_at: None,
                 last_exit_status: None,
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1181,6 +1413,8 @@ mod tests {
                 last_finished_at: None,
                 last_exit_status: None,
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1260,6 +1494,8 @@ mod tests {
                 last_finished_at: Some(Utc::now()),
                 last_exit_status: Some(0),
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: Some("Exit".to_string()),
                 last_stage_duration_ms: Some(0),
                 last_usage_summary: None,
@@ -1303,6 +1539,8 @@ mod tests {
                 last_finished_at: None,
                 last_exit_status: None,
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1377,6 +1615,8 @@ mod tests {
                 last_finished_at: Some(Utc::now()),
                 last_exit_status: Some(1),
                 last_error: Some("stale child failure".to_string()),
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1404,7 +1644,10 @@ mod tests {
             Some("01KMCHILDRUN000000000000000")
         );
         assert_eq!(record.current_stage_label.as_deref(), Some("Implement"));
-        assert_eq!(record.last_completed_stage_label.as_deref(), Some("Preflight"));
+        assert_eq!(
+            record.last_completed_stage_label.as_deref(),
+            Some("Preflight")
+        );
         assert_eq!(record.last_stage_duration_ms, Some(1234));
         assert_eq!(
             record.last_usage_summary.as_deref(),
@@ -1434,6 +1677,8 @@ mod tests {
                 last_finished_at: None,
                 last_exit_status: None,
                 last_error: None,
+                failure_kind: None,
+                recovery_action: None,
                 last_completed_stage_label: None,
                 last_stage_duration_ms: None,
                 last_usage_summary: None,
@@ -1449,6 +1694,95 @@ mod tests {
 
         assert!(changed);
         assert!(!state.lanes.contains_key("removed:lane"));
+    }
+
+    #[test]
+    fn refresh_program_state_uses_child_state_without_running_child_checks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("fabro/.raspberry")).expect("state dir");
+        let marker_path = temp.path().join("child-check-ran.txt");
+        let parent_manifest_path = temp.path().join("fabro/programs/parent.yaml");
+        let child_manifest_path = temp.path().join("fabro/programs/child.yaml");
+
+        std::fs::write(
+            &parent_manifest_path,
+            r#"
+version: 1
+program: parent
+target_repo: ../..
+state_path: ../../.raspberry/parent-state.json
+units:
+  - id: child
+    title: Child
+    output_root: outputs/child
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Child Program
+        run_config: ../run-configs/orchestrate/child.toml
+        program_manifest: child.yaml
+        managed_milestone: coordinated
+"#,
+        )
+        .expect("parent manifest");
+        std::fs::write(
+            &child_manifest_path,
+            format!(
+                r#"
+version: 1
+program: child
+target_repo: ../..
+state_path: ../../.raspberry/child-state.json
+units:
+  - id: work
+    title: Work
+    output_root: outputs/work
+    lanes:
+      - id: lane
+        kind: platform
+        title: Work Lane
+        run_config: ../run-configs/bootstrap/work.toml
+        managed_milestone: reviewed
+        checks:
+          - label: should_not_run
+            kind: precondition
+            scope: ready
+            type: command_succeeds
+            command: \"python -c \\\"from pathlib import Path; Path(r'{}').write_text('ran')\\\"\"
+"#,
+                marker_path.display()
+            ),
+        )
+        .expect("child manifest");
+        std::fs::write(
+            temp.path().join("fabro/.raspberry/child-state.json"),
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "child",
+                "updated_at": Utc::now(),
+                "lanes": {
+                    "work:lane": {
+                        "lane_key": "work:lane",
+                        "status": "ready",
+                        "run_config": "run-configs/bootstrap/work.toml"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("child state");
+
+        let manifest = ProgramManifest::load(&parent_manifest_path).expect("manifest loads");
+        let mut state = ProgramRuntimeState::new("parent");
+
+        refresh_program_state(&parent_manifest_path, &manifest, &mut state).expect("refresh");
+
+        assert!(state.lanes.contains_key("child:program"));
+        assert!(
+            !marker_path.exists(),
+            "child checks should not run during parent refresh"
+        );
     }
 
     #[test]
@@ -1471,10 +1805,68 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let run_root = temp.path();
         std::fs::create_dir_all(run_root.join("nodes/specify")).expect("nodes dir");
-        std::fs::write(run_root.join("nodes/specify/cli_stdout.log"), "hello")
-            .expect("write log");
+        std::fs::write(run_root.join("nodes/specify/cli_stdout.log"), "hello").expect("write log");
 
         let activity = latest_cli_activity_at(run_root).expect("activity timestamp");
         assert!(activity <= Utc::now());
+    }
+
+    #[test]
+    fn ensure_lane_record_normalizes_bloated_run_config_paths() {
+        let mut state = ProgramRuntimeState::new("demo");
+
+        let record = ensure_lane_record(
+            &mut state,
+            "demo:lane",
+            Path::new(
+                "/home/r/coding/zend/fabro/programs/../../fabro/programs/../../fabro/run-configs/implement/demo.toml",
+            ),
+        );
+
+        assert_eq!(
+            record.run_config.as_deref(),
+            Some(Path::new(
+                "/home/r/coding/zend/fabro/run-configs/implement/demo.toml"
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_failure_detail_prefers_richer_stage_failure() {
+        let merged = merge_failure_detail(
+            Some("Script failed with exit code: 1".to_string()),
+            Some("OSError: [Errno 98] Address already in use".to_string()),
+        );
+
+        assert_eq!(
+            merged.as_deref(),
+            Some("OSError: [Errno 98] Address already in use")
+        );
+    }
+
+    #[test]
+    fn merge_failure_detail_keeps_existing_specific_failure() {
+        let merged = merge_failure_detail(
+            Some("Engine error: deterministic failure cycle detected".to_string()),
+            Some("Script failed with exit code: 1".to_string()),
+        );
+
+        assert_eq!(
+            merged.as_deref(),
+            Some("Engine error: deterministic failure cycle detected")
+        );
+    }
+
+    #[test]
+    fn merge_failure_detail_prefers_underlying_stage_failure_over_cycle_wrapper() {
+        let merged = merge_failure_detail(
+            Some("Engine error: node \"fixup\" visited 3 times (node limit 3); run is stuck in a cycle".to_string()),
+            Some("OSError: [Errno 98] Address already in use".to_string()),
+        );
+
+        assert_eq!(
+            merged.as_deref(),
+            Some("OSError: [Errno 98] Address already in use")
+        );
     }
 }

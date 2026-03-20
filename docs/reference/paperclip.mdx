@@ -1,0 +1,293 @@
+---
+title: "Paperclip Coordination"
+description: "Bootstrap a repo-local Paperclip company from a Fabro and Raspberry package"
+---
+
+`fabro paperclip bootstrap` turns a repo's checked-in Fabro package into a
+repo-local Paperclip company. It adds a coordination layer on top of Raspberry.
+Paperclip handles planning, review, triage, and handoff. Raspberry remains the
+execution source of truth.
+
+<Note>
+  Use Paperclip to coordinate work. Let Raspberry evaluate and advance the
+  frontier. The generated agents and synchronized issues are built around that
+  split.
+</Note>
+
+## What bootstrap creates
+
+When you run `fabro paperclip bootstrap`, Fabro:
+
+- writes an importable Paperclip bundle under `fabro/paperclip/<program>/`
+- generates a mission CEO, a Raspberry orchestrator, and one lane agent per frontier lane
+- ensures a repo-local Paperclip data dir under `.paperclip/` by default
+- imports or updates the Paperclip company and agent roster
+- creates or updates the company goal, project, and primary repo workspace
+- mirrors the Raspberry frontier into deterministic Paperclip issues
+- records stable ids and sync metadata in `bootstrap-state.json`
+
+## Before you start
+
+You need:
+
+1. A target repo.
+2. A checked-in `fabro/` package, or enough planning/spec material for Fabro to
+   author the first blueprint and render the package.
+3. A Paperclip CLI on your `PATH`, or an explicit `--paperclip-cmd`.
+4. Working model credentials for the generated local agents. The bundle declares
+   `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.
+
+If your repo does not have a clear `fabro/` package yet and you want more
+control over the synthesis step, start with
+[From Specs To Blueprints](/guides/from-specs-to-blueprint).
+
+## Quick start
+
+### 1. Preview the bundle without touching Paperclip
+
+```bash
+fabro paperclip bootstrap \
+  --target-repo /path/to/repo \
+  --program my-program \
+  --apply false
+```
+
+This writes the bundle under `fabro/paperclip/<program>/` and stops. It does
+not start a Paperclip server or import anything.
+
+### 2. Apply the live bootstrap
+
+```bash
+fabro paperclip bootstrap \
+  --target-repo /path/to/repo \
+  --program my-program
+```
+
+With `--apply true` (the default), Fabro will:
+
+1. load or author the current blueprint
+2. render the `fabro/` package if needed
+3. seed or reuse the repo-local Paperclip instance
+4. start or reuse the local Paperclip server at `http://127.0.0.1:3100`
+5. import or update the company bundle
+6. sync the goal, project, workspace, and frontier issues
+7. write local agent env exports under `.paperclip/local-cli/`
+
+### 3. Use refresh for normal reruns
+
+After the first live bootstrap, the normal resync path is:
+
+```bash
+fabro paperclip refresh \
+  --target-repo /path/to/repo \
+  --program my-program
+```
+
+Use `refresh` after frontier movement, blueprint changes, or issue drift.
+
+### 4. Open the local Paperclip instance
+
+After a successful apply run, the repo-local server should already be running on
+the configured base URL. By default that is:
+
+```text
+http://127.0.0.1:3100
+```
+
+If you want to launch the same repo-owned instance manually, use the generated
+script:
+
+```bash
+bash fabro/paperclip/my-program/scripts/run-paperclip.sh
+```
+
+### 5. Use the lifecycle commands when you need server visibility
+
+```bash
+fabro paperclip start --target-repo /path/to/repo --program my-program
+fabro paperclip status --target-repo /path/to/repo --program my-program
+fabro paperclip logs --target-repo /path/to/repo --program my-program --lines 120
+fabro paperclip stop --target-repo /path/to/repo --program my-program
+```
+
+`status` reports:
+
+- server health
+- managed pid state
+- current frontier summary
+- last bootstrap/refresh sync time
+- whether `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are present
+- how many local CLI export files were generated
+
+## How to use it day to day
+
+### Use the operator loop
+
+The normal loop after initial bootstrap is:
+
+1. Check the current local Paperclip and frontier state with
+   `fabro paperclip status`.
+2. Coordinate in Paperclip.
+3. Let Raspberry advance the frontier through the generated orchestrator route.
+4. Run `fabro paperclip refresh` to resync Paperclip to repo truth.
+
+If you only remember one thing, remember this:
+
+```text
+bootstrap once
+status to inspect
+route through Raspberry
+refresh to resync
+```
+
+### Use the generated agents for the right jobs
+
+- **Mission CEO** owns the company-level mission and prioritization.
+- **Raspberry Orchestrator** is the execution bridge. It runs the repo-local
+  route script:
+  `bash fabro/paperclip/<program>/scripts/raspberry-orchestrator.sh`
+- **Lane agents** mirror the synthesized frontier lanes. Use them to triage,
+  review, explain blockers, and coordinate next moves for their lane.
+
+The orchestrator route script runs one bounded Raspberry cycle. It is the
+intended way to advance the frontier from Paperclip.
+
+### Treat Paperclip issues as a mirror of the frontier
+
+Bootstrap creates a deterministic issue family:
+
+- one root issue for the program frontier
+- child issues for frontier lanes
+
+Those issues track ready, running, blocked, failed, and completed work as the
+frontier changes. Re-running bootstrap updates the same issue family instead of
+creating duplicates.
+
+Each mirrored lane issue now includes:
+
+- current lane state and detail
+- current or last run ids when available
+- artifact truth as `present:` or `missing:`
+- dependency keys
+- a concrete next operator move
+- direct `fabro inspect` and `fabro logs` commands when a run id exists
+- recent stdout or stderr snippets when Raspberry has them
+
+### Refresh when the source of truth changes
+
+Run `fabro paperclip refresh` when:
+
+- the blueprint changed
+- the Raspberry frontier moved
+- lane summaries or blockers changed
+- you want to refresh Paperclip after issue drift or agent drift
+
+The refresh path is designed to be re-run. It reuses the same company, goal,
+project, workspace, and synchronized issue ids when it can.
+
+## Generated files
+
+The most important outputs live in two places.
+
+### Bundle files in the repo
+
+```text
+fabro/paperclip/<program>/
+├── COMPANY.md
+├── paperclip.manifest.json
+├── bootstrap-state.json            # written after --apply true
+├── agents/
+│   ├── mission-ceo/AGENTS.md
+│   ├── raspberry-orchestrator/AGENTS.md
+│   ├── <unit>/AGENTS.md
+│   └── <unit>--<lane>/AGENTS.md    # when a unit has multiple lanes
+└── scripts/
+    ├── raspberry-orchestrator.sh
+    └── run-paperclip.sh
+```
+
+These files are the portable Paperclip bundle plus the repo-local route scripts.
+
+### Repo-local Paperclip data dir
+
+By default the data dir is:
+
+```text
+<repo>/.paperclip/
+```
+
+Fabro seeds and maintains files like:
+
+```text
+.paperclip/
+├── .gitignore
+├── server.log
+├── server.pid
+├── local-cli/
+│   └── *.env
+└── instances/default/
+    ├── config.json
+    ├── .env
+    └── secrets/master.key
+```
+
+If the data dir lives inside the repo, Fabro writes a `.gitignore` so secrets
+and local state stay out of git.
+
+## Important defaults
+
+| Setting | Default |
+|---|---|
+| program id | repo directory name |
+| company name | humanized program id |
+| data dir | `<repo>/.paperclip` |
+| API base | `http://127.0.0.1:3100` |
+| apply mode | `true` |
+
+Use these flags when you need to override the defaults:
+
+| Flag | What it changes |
+|---|---|
+| `--program` | Which `fabro/programs/<program>.yaml` and bundle path to use |
+| `--company-name` | The Paperclip company identity |
+| `--data-dir` | Where the repo-local Paperclip instance stores data |
+| `--api-base` | Which Paperclip server to target |
+| `--paperclip-cmd` | Which Paperclip CLI command to run |
+| `--apply false` | Bundle-only preview mode |
+
+`refresh`, `start`, `stop`, `status`, and `logs` use the same repo-selection
+flags except for `--apply`, which is bootstrap-only.
+
+## What stays stable across reruns
+
+Bootstrap persists a `bootstrap-state.json` file in the bundle directory. That
+state records:
+
+- company id
+- goal id
+- project id
+- workspace id
+- frontier sync metadata
+- synchronized issue ids
+
+Fabro uses that state as a hint on the next run. If a saved company id goes
+stale, bootstrap falls back to matching by company name instead of assuming the
+old id is still valid.
+
+## Relationship to Raspberry
+
+The intended mental model is:
+
+```text
+Fabro package = checked-in control plane
+Raspberry     = evaluation and execution truth
+Paperclip     = coordination layer on top
+```
+
+Paperclip should not become a second execution system. The generated prompts,
+route scripts, workspace metadata, and synchronized issues all push work back
+through Raspberry.
+
+For the command flags, see [CLI Reference](/reference/cli). For the execution
+model underneath this layer, see
+[Raspberry Supervisory Plane](/reference/raspberry).

@@ -1,95 +1,123 @@
-# Theory: Raspberry Run Observer TUI
+# Theory: Keep Fabro and Raspberry Continuously Generating Work
 
 ## Problem
 
-Raspberry can already explain a program in plain text through `plan`, `status`,
-and `watch`, but the operator experience breaks down once someone needs to
-compare lane state, curated artifacts, and best-effort Fabro run detail at the
-same time. The current information is present in
-`lib/crates/raspberry-supervisor/`, but it is spread across text tables, JSON
-state files, and output directories. The missing piece is not another source of
-truth. It is a read-only terminal surface that composes the existing sources
-honestly.
+Fabro and Raspberry were still capable of looking "done" or "stuck" for the
+wrong reasons. The first bug was frontier exhaustion: once the currently
+rendered manifest ran out of runnable lanes, the system could go idle even when
+repo doctrine still described obvious unfinished work. The second bug was truth
+loss: the operator-facing state could collapse real failure causes into generic
+messages like "script failed with exit code: 1" or accidentally trigger deeper
+work just to render a status table.
+
+Zend and Myosu make the distinction concrete. Zend needed to keep moving past
+bootstrap and to classify implementation-child failures into meaningful next
+actions. Myosu needed read-only top-level status to stay fast and truthful
+without silently evaluating child programs deeply enough to look like a hidden
+scheduler.
 
 ## Operating Theory
 
-The core leverage point is the split that already exists between
-`raspberry-cli` and `raspberry-supervisor`. The supervisor crate already knows
-how to load a manifest, evaluate lane state, resolve run metadata, and read the
-program runtime state. That means the TUI should stay thin on domain logic and
-focus on presentation, navigation, and file inspection. The only supervisor
-helper that turned out to be necessary was
-`ProgramManifest::resolve_lane_artifacts()`, which keeps the artifact lookup
-rules in the manifest layer instead of duplicating them in the TUI.
+The no-idle loop only works if authorship, orchestration, and truth all reinforce
+each other.
 
-The TUI itself should treat the selected lane as the center of the world. Once a
-lane is selected, every other pane can derive from it: summary state from
-`EvaluatedLane`, curated files from the manifest's produced artifacts, and live
-detail from the lane's run metadata. This keeps the rendering model stable even
-when live run truth is partial or stale. That theory held up in the finished
-implementation: the app state is mostly selection, focus, folding, and filter
-state, while the data model remains owned by the supervisor crate.
+Authorship lives in `fabro-synthesis`. `author_blueprint_for_evolve(...)` must
+be able to materialize missing parent-program work from doctrine instead of only
+re-importing the current package. The parent program remains the roadmap, while
+implementation child programs remain execution fronts inside that roadmap.
+
+Orchestration lives in `raspberry-supervisor::autodev`. Spare capacity and
+doctrine deltas should be reasons to search for more work, but only inside an
+explicit frontier budget. Otherwise a single empty slot turns into unbounded
+frontier spam.
+
+Truth lives in `program_state.rs` and `evaluate.rs`. Those surfaces must be
+child-state-authoritative when child state already exists, because read-only
+commands like `raspberry status` should not become implicit work runners. The
+same surfaces also need richer failure extraction than the final top-level
+workflow error alone, because the actionable cause often appears earlier in the
+run history than the final collapse message.
 
 ## Strategy
 
-The implementation has now landed in the same layered shape that the initial
-theory predicted. `raspberry-cli` owns parsing and handoff. `raspberry-tui`
-owns the interaction model, rendering, and artifact previewing. The supervisor
-crate remains the source of truth for manifests, evaluated lanes, and resolved
-artifact paths. The key strategic choice was to keep the observer read-only and
-additive, which made it possible to prove real operator value without inventing
-new execution or mutation surfaces.
+The strategy is to deepen the existing seams rather than create a new control
+plane.
 
-The constraint to keep in view is honesty around live data. If a lane is not
-actively running, the TUI should present the run section as stale or unavailable
-rather than pretending it is current. The finished detail pane follows that
-rule directly: it always shows the selected artifact preview first, adds a
-dedicated completed-result block for finished lanes, and then renders a live
-section labeled `live`, `stale`, or `unavailable`. It now also adds a
-best-effort "Recent successful runs" section by matching a lane's curated
-artifact paths against historical `progress.jsonl` writes from recent succeeded
-Fabro runs.
+In `planning.rs`, evolve now reuses doctrine-derived create-time authorship to
+merge missing parent units while leaving implementation child programs scoped to
+their own reviewed contract.
+
+In `autodev.rs`, the loop now uses per-program doctrine fingerprints and a
+bounded frontier budget. Doctrine-triggered evolve only happens when the
+frontier is settled or genuinely starved, not when ready work is already queued.
+
+In `program_state.rs`, child-program refresh now prefers existing child runtime
+state over recursive child evaluation. That keeps parent truth fast enough for
+read-only commands. The same file also now merges failure evidence more
+carefully: generic wrapper failures yield to richer stage failures, and cycle
+wrapper messages yield to concrete underlying stage errors when those exist.
+It also normalizes persisted paths during refresh so the state files themselves
+do not accumulate pathological relative-path chains over repeated evaluations.
+
+In `failure.rs` and `evaluate.rs`, the shared failure kind plus recovery action
+now flow all the way to operator output. The point is not taxonomy for its own
+sake; it is to let the status surface answer "what happened?" and "what should
+happen next?" from the same source of truth.
+
+The newest execution step extends that into actual remediation for one concrete
+resource family. Zend-style service/interface runs already know how to honor
+`ZEND_BIND_PORT` and `ZEND_DAEMON_URL`, so Raspberry can lease a daemon port,
+pass those env vars through `fabro run`, and restart the active project loops
+on the updated binaries instead of leaving resource-collision handling as a
+future note.
 
 ## Key Discoveries
 
-Initially the likely risk was that the observer would need a large new adapter
-layer in `raspberry-supervisor`, but the implementation proved that one narrow
-helper was enough. `evaluate.rs`, `manifest.rs`, and `program_state.rs` already
-contained the necessary status, proof, orchestration, operational, and run
-fields, so the TUI could stay presentation-focused.
+The first spare-capacity evolve pass was too eager. Treating any doctrine delta
+as permission to evolve even when ready work already existed created churn
+instead of forward motion. The trigger had to be tightened to starvation or
+settlement.
 
-Another important discovery is that the Myosu fixture already exercises the
-interesting cases the TUI needs: present artifacts, missing artifacts, a running
-service lane, a blocked orchestration lane, and a failed interface lane with a
-recorded error. That makes fixture-backed testing realistic without introducing
-new fake data.
+The live Myosu repo exposed that parent status was still too expensive even
+after the main no-idle changes. The culprit was not the status table itself; it
+was parent runtime refresh falling through to deep child evaluation. Splitting a
+local evaluation path for read-only CLI surfaces and preferring stored child
+state fixed that.
 
-A third discovery is that keeping the detail pane additive is better than
-mode-switching. Showing the selected artifact and the run section together made
-the first read-only observer easier to understand and easier to test.
+The live Zend child runs showed that the final workflow failure is often not the
+best explanation. Hermes was really an integration conflict, private control
+plane was really a stall watchdog, and command-center-client was really an
+environment collision repeatedly wrapped in later cycle-collapse messages. The
+right fix was better failure extraction plus better classification ordering, not
+more generic labels.
 
-Another discovery is that finished work still needs explicit narration. Artifact
-preview alone does not tell the operator what completed, so the detail pane now
-spells out the satisfied milestone and the durable outputs for complete lanes.
+Another useful discovery is that user-visible implementation lanes need more
+than proof commands. Reviewed slice docs often already contain explicit smoke
+gates, and carrying those into generated verify commands makes settlement more
+honest for interface and service work.
 
-One more discovery came from the real `01KM…` runs: Fabro's ordinary inspection
-summary is too lossy for this observer use case because the final successful
-stages often write no files. Matching lanes to runs therefore has to read the
-full `progress.jsonl` history, not just the last progress snapshot.
+One more operational discovery is that structural truth matters alongside
+semantic truth. The live Zend child state eventually exposed absurd repeated
+`../../` chains in persisted `run_config` paths. That was not just ugly output;
+it was a sign that state refresh was not rewriting normalized path truth back to
+disk. Fixing that keeps the durable state readable and prevents future tooling
+from inheriting junk paths.
 
-A final implementation discovery is that the repo's lint bar matters to the
-shape of the work. Making the new TUI crate clippy-clean also required cleaning
-older Raspberry lint findings, which improved the local baseline and reduced the
-chance that the observer would ship on top of avoidable technical debt.
+Another discovery is that the current active Zend failures did not actually need
+a full general-purpose resource scheduler to improve. The repo-level scripts had
+already been written to accept leased daemon env, which meant the framework only
+needed one small bridge: resource lease allocation in Raspberry plus host-env
+passthrough in `fabro run`.
 
 ## Open Questions
 
-The biggest remaining question is not architectural anymore. It is how far to
-push operator ergonomics in the next slice: better search behavior, more
-intentional scrolling, and perhaps a stronger notion of selected detail modes if
-the combined artifact-plus-live pane becomes crowded in larger programs.
+The main remaining open question is the live proving strategy. The watchdog
+loops on Zend and Myosu are active, so there is still a coordination question
+around how to run explicit bounded proving passes without colliding with the
+existing overnight controllers.
 
-The other open question sits outside the TUI crate. The current live section is
-honest, but it is still only as good as the existing Fabro-to-Raspberry bridge.
-Once a stronger inspection surface exists, the TUI should adopt it without
-changing the interaction model it now has.
+The other open question is how far to push failure extraction beyond the current
+run-history heuristics. The present approach is already much better than the
+generic wrapper messages, but some future cases may need even more structured
+engine output if we want classification to stay honest without pattern-matching
+ever-larger error strings.

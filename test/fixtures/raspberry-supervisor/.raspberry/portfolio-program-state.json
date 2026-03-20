@@ -1,12 +1,13 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "portfolio-demo",
-  "updated_at": "2026-03-19T18:49:05.286388240Z",
+  "updated_at": "2026-03-20T16:54:14.707797854Z",
   "lanes": {
     "complete:program": {
       "lane_key": "complete:program",
       "status": "complete",
-      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/complete-program.yaml"
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/complete-program.yaml",
+      "last_exit_status": 0
     },
     "ready:program": {
       "lane_key": "ready:program",

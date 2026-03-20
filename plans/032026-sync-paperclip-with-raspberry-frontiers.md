@@ -29,16 +29,17 @@ and refresh should keep that company aligned to the current program frontier.
 - [x] (2026-03-20 16:42Z) Split Paperclip work out of the no-idle autonomy plan
   so it can be designed as its own control-plane overlay instead of being mixed
   into the scheduler slice.
-- [ ] Define a stable frontier-export shape from Raspberry runtime state into a
-  Paperclip synchronization model.
-- [ ] Extend `paperclip bootstrap` with a refresh path that keeps goals,
-  project workspace metadata, and generated agents aligned to the current
-  frontier.
-- [ ] Add synchronization for coordination issues or task families per active
-  program unit or child program.
-- [ ] Ensure generated Paperclip agents route execution back through Raspberry
-  instead of bypassing it.
-- [ ] Prove the flow on a repo-local Zend Paperclip instance.
+- [x] (2026-03-20 17:18Z) Define a stable frontier-export shape from Raspberry
+  runtime state into a Paperclip synchronization model.
+- [x] (2026-03-20 17:18Z) Extend `paperclip bootstrap` with a refresh path
+  that keeps goals, project workspace metadata, and generated agents aligned
+  to the current frontier.
+- [x] (2026-03-20 17:18Z) Add synchronization for coordination issues or task
+  families per active program unit or child program.
+- [x] (2026-03-20 17:18Z) Ensure generated Paperclip agents route execution
+  back through Raspberry instead of bypassing it.
+- [x] (2026-03-20 17:18Z) Prove the flow on a repo-local Zend Paperclip
+  instance.
 
 ## What Already Exists
 
@@ -85,6 +86,25 @@ This plan intentionally does not include:
   the missing step is keeping those agents aligned to the live frontier rather
   than inventing a new agent taxonomy.
 
+- Observation: repo-local Paperclip boot now needs a seeded config before
+  `paperclipai run` can start non-interactively.
+  Evidence: the first Zend proof failed with `No config found and terminal is
+  non-interactive`, so bootstrap had to seed the same quickstart-style config,
+  env secret, and local master key that onboarding normally writes.
+
+- Observation: saved Paperclip ids are only hints, not durable truth, across
+  fresh local homes.
+  Evidence: after the new local Paperclip instance came up, the old
+  `bootstrap-state.json` company id pointed at a company that no longer
+  existed, so refresh needed to validate the id against the live instance and
+  fall back to name matching.
+
+- Observation: the local Paperclip CLI wrapper is not the right durable
+  background process for repo-local bootstrap.
+  Evidence: the API stayed alive during import but died after bootstrap
+  returned until the start path was changed to launch the TSX-backed server
+  entrypoint directly and record the real server pid.
+
 ## Decision Log
 
 - Decision: Paperclip will be an overlay, not an alternative control plane.
@@ -111,6 +131,19 @@ keep inside the main no-idle autonomy slice. Splitting it out improved both
 plans: the main loop can now focus on continuous frontier generation, and this
 plan can focus on how humans and agents coordinate around that frontier without
 creating a rival scheduler.
+
+The finished slice now behaves like a real overlay instead of a one-shot
+bootstrap. `fabro paperclip bootstrap` reads Raspberry frontier truth
+read-only, refreshes goal narration and workspace metadata, regenerates agent
+instructions with explicit Raspberry-only execution routes, synchronizes a
+deterministic frontier issue family, and records the sync map in
+`bootstrap-state.json`.
+
+The Zend proof also shook out two recovery behaviors that are now part of the
+implementation instead of tribal knowledge: bootstrap seeds a repo-local
+Paperclip quickstart config when the target home has never been onboarded, and
+saved company ids are revalidated against the current instance before import
+tries to replace anything in place.
 
 ## Context and Orientation
 

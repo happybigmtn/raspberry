@@ -32,6 +32,7 @@ fabro-ssh = { path = "../fabro-ssh" }
 fabro-git-storage = { path = "../fabro-git-storage" }
 fabro-graphviz = { path = "../fabro-graphviz" }
 fabro-synthesis = { path = "../fabro-synthesis" }
+raspberry-supervisor = { path = "../raspberry-supervisor" }
 fabro-validate = { path = "../fabro-validate" }
 fabro-workflows = { path = "../fabro-workflows" }
 fabro-api = { path = "../fabro-api", optional = true }

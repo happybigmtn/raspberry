@@ -45,21 +45,54 @@ behavior instead of leaving the operator to infer what to do from opaque state.
 - [x] (2026-03-20 16:55Z) Incorporated the architecture-review recommendations:
   explicit frontier budgeting, deterministic doctrine-derived candidate
   identity, and per-program doctrine-delta state.
-- [ ] Deepen `author_blueprint_for_evolve` so doctrine files author missing
-  frontier work instead of only reconciling the current package.
-- [ ] Keep parent programs as living roadmaps that continue to emit follow-on
-  child programs after each settled frontier.
-- [ ] Let autodev use spare worker capacity to trigger evolve and dispatch more
-  work instead of waiting for full local settlement.
-- [ ] Persist doctrine-delta state under `.raspberry/` so plan or spec changes
-  force fresh frontier generation.
-- [ ] Make runtime truth canonical and child-authoritative so parent state is
-  directly actionable.
-- [ ] Add typed recovery policies that route deterministic failures to the
-  correct replay behavior.
-- [ ] Strengthen quality and verification contracts enough that "new work
-  generated" and "work honestly settled" stay aligned.
+- [x] (2026-03-20 16:56Z) Deepened
+  `author_blueprint_for_evolve(...)` so parent programs merge missing
+  doctrine-derived frontier units during evolve, while implementation child
+  programs stay scoped to their own delivery contract.
+- [x] (2026-03-20 16:56Z) Kept parent programs as living roadmaps by combining
+  doctrine-derived parent-unit merge in `planning.rs` with the existing
+  implementation follow-on child-program expansion in `render.rs`.
+- [x] (2026-03-20 16:56Z) Let autodev use spare worker capacity to trigger
+  bounded evolve, using explicit `frontier_budget` accounting instead of
+  settle-only gating.
+- [x] (2026-03-20 16:56Z) Persisted per-program doctrine-delta state under
+  `.raspberry/` so README/spec/plan changes force a fresh evolve pass without
+  one repo-global fingerprint file.
+- [x] (2026-03-20 16:56Z) Made runtime truth more child-authoritative by
+  preferring stored child-program state during parent refresh, surfacing shared
+  recovery actions in status output, and splitting a local evaluation path for
+  read-only CLI surfaces.
+- [x] (2026-03-20 16:56Z) Added shared typed failure classification and routed
+  replay policy through it so recovery is no longer driven only by ad hoc text
+  matching.
+- [x] (2026-03-20 16:56Z) Strengthened synthesis verification contracts by
+  carrying explicit smoke gates from reviewed slice doctrine into
+  user-visible implementation verify commands instead of relying on proof-only
+  checks.
+- [x] (2026-03-20 16:56Z) Tightened failure extraction so live run history keeps
+  more actionable stage failures instead of collapsing everything into generic
+  wrapper messages or late cycle-collapse summaries.
+- [x] (2026-03-20 16:56Z) Taught autodev to honor typed `backoff_retry` and
+  `refresh_from_trunk` actions as cooldown-based same-lane retries instead of
+  surfacing those actions passively with no scheduler behavior behind them.
+- [x] (2026-03-20 16:56Z) Normalized persisted `run_config` paths during state
+  refresh so live `.raspberry/*-state.json` files stop accumulating absurd
+  repeated `../../` chains over time.
+- [x] (2026-03-20 16:56Z) Added the first automatic resource-leasing path for
+  Zend-style daemon ports by leasing a port in Raspberry, passing it through to
+  `fabro run`, and restarting the live Zend/Myosu controllers on the rebuilt
+  binaries.
+- [x] (2026-03-20 20:00Z) Audited the live Zend/Myosu proving-ground failures
+  against the actual recurring-lane contracts and confirmed the current
+  "operations" style lanes are report-only bootstrap lanes, not scheduler-owned
+  recovery workers.
+- [x] (2026-03-20 20:00Z) Identified the next missing Fabro/Raspberry behavior:
+  blocked failures need a framework-owned recovery-dispatch path instead of
+  stopping at `surface_blocked` and expecting repo-local recurring review lanes
+  to unblock them by implication.
 - [ ] Prove the result on Zend and Myosu with bounded five-worker runs.
+  Note: read-only proving succeeded on both repos, but I did not start an extra
+  bounded autodev run while the live watchdog loops were already active.
 
 ## What Already Exists
 
@@ -91,9 +124,9 @@ overnight runs exposed it as important.
 - Merge-conflict preflight and automatic trunk-refresh repair for direct
   integration. That is a real next problem, but it is not required to prove
   continuous frontier generation.
-- Host-level resource leasing such as port reservation for proof daemons. The
-  Zend `Errno 98` failure is real, but it should land after the no-idle core is
-  working.
+- Broad host-level resource leasing beyond the first Zend daemon-port path. The
+  initial Zend-style leased-port flow is now in scope, but a more general
+  multi-resource leasing model still remains deferred.
 - A new scheduler, a new state store, or a new synthesis pipeline. The goal is
   to deepen the existing seams, not replace them.
 
@@ -130,6 +163,80 @@ overnight runs exposed it as important.
   frequency, so duplicate child programs and frontier explosion become likely
   unless the plan explicitly constrains them.
 
+- Observation: doctrine deltas should not preempt already-ready work.
+  Evidence: the first spare-capacity implementation caused the CLI autodev
+  tests to dispatch extra work because any doctrine change forced evolve even
+  when ready lanes were already queued. Tightening that trigger fixed the churn.
+
+- Observation: several fixture tests were still assuming that stale active runs
+  should present as `running`.
+  Evidence: the current supervisor truth surfaces mark the `p2p:chapter` and
+  `miner:service` fixtures as failed stale runs, so the evaluation tests had to
+  be updated to match the more honest runtime model.
+
+- Observation: parent runtime refresh was still expensive enough to make live
+  Myosu `status` unusable.
+  Evidence: the first read-only Myosu status attempt timed out because parent
+  refresh was falling through to full child-program evaluation. Making
+  `sync_child_program_runtime_record(...)` prefer existing child state and
+  routing the CLI through local evaluation restored fast top-level status.
+
+- Observation: proof commands alone are not enough to keep user-visible
+  implementation fronts honest.
+  Evidence: `render.rs` already understood proof and health gates, but it still
+  ignored explicit smoke commands in reviewed slice docs. Carrying those smoke
+  gates into interface/service verify commands closes that gap.
+
+- Observation: the final workflow failure message is often less actionable than
+  the earlier stage-failure evidence in `progress.jsonl`.
+  Evidence: the Zend command-center child ultimately reported a cycle wrapper,
+  but the earlier verify-stage failures clearly showed `Errno 98`. Preferring
+  richer stage failures during runtime extraction made the child status route to
+  `backoff_retry` instead of generic `surface_blocked`.
+
+- Observation: recovery labels are only half useful if autodev still treats
+  them as inert metadata.
+  Evidence: until this pass, `refresh_from_trunk` and `backoff_retry` rendered
+  correctly in status output but never re-entered the replay queue. Adding
+  cooldown-based lane replay closed that gap for the currently supported
+  actions.
+
+- Observation: runtime truth can also decay structurally even when the status is
+  otherwise correct.
+  Evidence: the live Zend child state had a `run_config` path that repeated
+  `../../fabro/programs/` dozens of times. Normalizing and writing back the
+  path during refresh fixed the state file without changing the manifest.
+
+- Observation: the active Zend service/interface failures were already prepared
+  to consume leased runtime env.
+  Evidence: the relevant scripts honor `ZEND_BIND_PORT` and `ZEND_DAEMON_URL`,
+  so the framework could address the current port-collision family without
+  repo-specific surgery.
+
+- Observation: the current recurring oversight lanes are not broken; they are
+  simply not wired into recovery.
+  Evidence: Myosu's `operations:scorecard` workflow only authors and verifies
+  `spec.md` plus `review.md`, and Zend currently has no recurring oversight
+  program at all. Neither repo has a lane that mutates scheduler state,
+  synthesizes recovery work, or consumes `failure_kind` plus `recovery_action`
+  as machine input.
+
+- Observation: `surface_blocked` still means "stop" rather than "author the
+  next unblock step."
+  Evidence: `default_recovery_action(...)` currently routes
+  `deterministic_verify_cycle`, `proof_script_failure`,
+  `provider_policy_mismatch`, and `unknown` to `surface_blocked`, and
+  `replay_target_lane(...)` turns `surface_blocked` into `None`, so autodev
+  never replays or dispatches follow-on work for those families.
+
+- Observation: the current Zend implementation wave is exposing contract drift
+  more than generic scheduler weakness.
+  Evidence: the latest command-center verify failure is not `Errno 98`; it is a
+  capability mismatch where `alice-phone` is paired as observe-only but the
+  verify script then asks it to issue a control command. Hermes also proved that
+  workflow audit contracts can drift from settle outputs when `integration.md`
+  is required by audit but not declared in the lane's required artifacts.
+
 ## Decision Log
 
 - Decision: this plan now represents the Phase 1B slice from the engineering
@@ -163,6 +270,13 @@ overnight runs exposed it as important.
   proving continuous doctrine-driven frontier generation.
   Date/Author: 2026-03-20 / Codex
 
+- Decision: the first Zend daemon-port leasing path is now in scope despite the
+  earlier deferral.
+  Rationale: the later directive to finish the milestone and restart the active
+  projects made it worth landing the smallest real automatic remediation path
+  instead of only describing it in theory.
+  Date/Author: 2026-03-20 / User + Codex
+
 - Decision: spare-capacity evolve must use an explicit frontier budget even
   though an earlier review reply accepted the looser option.
   Rationale: the later instruction to "implement all your recommendations"
@@ -185,14 +299,40 @@ overnight runs exposed it as important.
   programs trip over each other and produce spurious evolve churn.
   Date/Author: 2026-03-20 / Codex
 
+- Decision: doctrine-triggered evolve must not jump ahead of already-ready
+  lanes.
+  Rationale: doctrine changes are a reason to mint new work when the frontier is
+  settled or starved, not a reason to re-author while dispatchable work is
+  already waiting.
+  Date/Author: 2026-03-20 / Codex
+
+- Decision: read-only CLI surfaces must use local evaluation instead of parent
+  propagation.
+  Rationale: `status`, `plan`, and `watch` are truth surfaces. They should not
+  silently trigger deeper repo-wide parent refresh when the operator only asked
+  for a local view of one manifest.
+  Date/Author: 2026-03-20 / Codex
+
+- Decision: recurring oversight lanes remain report surfaces, while blocked-run
+  recovery becomes a Fabro/Raspberry framework responsibility.
+  Rationale: report lanes can describe stale doctrine and missing evidence, but
+  they are not the right place to own scheduler behavior. Recovery policy must
+  be consistent across repos, consume typed runtime evidence directly, and be
+  able to dispatch new work without waiting for a repo-local human-oriented
+  review lane to be interpreted by hand.
+  Date/Author: 2026-03-20 / User + Codex
+
 ## Outcomes & Retrospective
 
-This plan now has a cleaner shape than the first draft. The earlier version was
-useful as a landscape map, but it mixed the immediate execution loop with later
-control-plane coordination and environment hardening. The revised version keeps
-the core promise intact: the system should continuously derive and run the next
-truthful work frontier, surface honest state, and route failures to the correct
-next action.
+This plan is now partially executed rather than only reviewed. The no-idle core
+loop is in place: evolve can merge missing doctrine-derived parent frontier
+units, autodev now uses a bounded spare-capacity evolve policy with per-program
+doctrine state, and failure recovery surfaces a shared typed classification.
+The newest runtime-truth work also removed a real operator footgun: parent
+status no longer needs to fall through into expensive child evaluation when
+child state already exists. The remaining high-value work is live bounded
+proving on Zend/Myosu, plus continuing the quality-gate hardening from the same
+theory.
 
 ## Context and Orientation
 
@@ -311,6 +451,26 @@ not live as ad hoc string matching in three different places. One shared
 classification type should feed `autodev.rs`, `program_state.rs`, and
 `evaluate.rs` so execution policy and operator-facing truth cannot drift apart.
 
+This milestone now needs one additional step: blocked failures cannot terminate
+at metadata. Add a framework-owned recovery-dispatch path so the supervisor can
+turn selected blocked failures into actionable Fabro work. That path should be
+responsible for authoring or replaying the smallest truthful remediation slice,
+for example:
+
+- proof-scope drift, where verify still targets the wrong package or wrong
+  capability contract
+- artifact-contract drift, where audit requires outputs the workflow never
+  declared
+- resource-lease conflicts that need a leased port, daemon URL, or similar
+  runtime input rather than another repo-local patch loop
+- idempotency gaps where bootstrap/pair/control scripts cannot be rerun
+  truthfully inside one worktree
+
+The important boundary is that repo-local recurring lanes may still report these
+problems, but Fabro/Raspberry should own the decision to dispatch recovery work.
+Otherwise every repo needs to reinvent a bespoke operations lane that only a
+human can interpret.
+
 ### Milestone 4: Honest Quality and Verification
 
 Strengthen the synthesis-generated quality and verify contracts in
@@ -320,6 +480,19 @@ placeholder debt and mismatches between artifacts and code. The verify contract
 should bias toward runnable smoke behavior when the planned feature is
 user-visible. The goal is that new frontier generation and honest settlement do
 not drift apart.
+
+This milestone should also absorb the currently observed proving-ground issue
+families:
+
+- capability-contract mismatch, where generated verify scripts ask an
+  observe-only client to perform control actions
+- artifact-contract mismatch, where audit expects `integration.md` or
+  `merge_ready: yes` without the workflow declaring or owning that contract
+- over-eager artifact heuristics, where legitimate slice notes like "future
+  slice" are treated as hard artifact inconsistency instead of scoped work
+  boundaries
+- stale proof bundles, where generated verify commands still include packages or
+  commands outside the active slice
 
 ## Concrete Steps
 
@@ -457,19 +630,75 @@ resets.
 The current Zend state proves the need for continuous frontier generation and
 typed recovery:
 
-    command-center-client-implementation:program -> failed at Verify
-    hermes-adapter-implementation:program -> failed during direct integration
-    home-miner-service-implementation:program -> failed with Errno 98
-    private-control-plane-implementation:program -> running
+    command-center-client-implementation:program -> verify/fixup loop on capability-contract drift
+    hermes-adapter-implementation:program -> settle/audit contract drift around integration artifacts
+    home-miner-service-implementation:program -> replayed after quality/artifact mismatch and now re-running
+    private-control-plane-implementation:program -> failed after verify/fixup could not converge truthfully
 
 The current Myosu state proves the need for canonical truth and typed replay:
 
     games-multi-game-implementation:program -> failed after deterministic cycle detection
-    games-poker-engine-implementation:program -> failed at Verify
+    games-poker-engine-implementation:program -> failed after slice progress and quality/audit drift
     play-tui-implementation:program -> complete
 
 These are the concrete proving-ground inputs for this plan, not hypothetical
 edge cases.
+
+### Current Live Issues (2026-03-20)
+
+Zend is no longer idling at bootstrap, but the implementation wave is still
+exposing framework-level recovery gaps:
+
+- `command-center-client-implementation:program`
+  - currently back in `fixup` after a deterministic verify failure
+  - practical issue: the latest failure is a capability-contract mismatch, not
+    a port collision
+  - reproduced evidence: `bootstrap_home_miner.sh` pairs `alice-phone` with
+    `observe`, then verify runs `set_mining_mode.sh --client alice-phone`, which
+    fails with `GatewayUnauthorized`
+- `hermes-adapter-implementation:program`
+  - currently in `settle`
+  - practical issue: the lane already proved a workflow-contract drift where
+    audit required `integration.md` even though settle did not declare it
+- `home-miner-service-implementation:program`
+  - auto-replayed and is currently back in `implement`
+  - practical issue: the last failed run first hit environment-collision noise,
+    then later failed its quality gate because the artifact heuristic treated
+    "future slice" wording as a hard inconsistency
+  - adjacent issue: the generated workflow still contains a malformed verify
+    command sequence, so contract drift remains likely even after the current
+    rerun
+- `private-control-plane-implementation:program`
+  - currently failed
+  - practical issue: repeated verify/fixup passes hit daemon lifecycle and proof
+    drift, but the final state still collapsed to `surface_blocked`, so no
+    framework-owned recovery work was authored
+
+Myosu is also settled-failed rather than actively running:
+
+- `bootstrap:program`
+  - failed with a cycle-collapse summary because child implementation programs
+    failed and the parent orchestration loop exhausted itself
+- `games-multi-game-implementation:program`
+  - classified as `deterministic_verify_cycle`
+  - current action: `surface_blocked`
+  - practical issue: the implementation loop is repeating a deterministic
+    verify/fixup pattern because the generated verify contract drifted beyond
+    the active slice and still referenced packages such as `myosu-play`
+- `games-poker-engine-implementation:program`
+  - currently failed under the same bootstrap frontier
+  - practical issue: direct package tests pass, but quality/audit semantics are
+    still mismatched with slice-scoped progress, so the lane collapses instead
+    of settling truthfully
+
+Current control-plane diagnosis:
+
+- repo-local recurring lanes are not the missing automation
+- the real missing automation is a Fabro/Raspberry recovery-dispatch path for
+  blocked failures that are currently classified, surfaced, and then abandoned
+
+These repo-specific failures should be treated as the next proving-ground
+remediation queue once the control-plane work is sufficiently stable.
 
 ## Interfaces and Dependencies
 

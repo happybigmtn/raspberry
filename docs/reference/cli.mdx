@@ -512,6 +512,103 @@ The generated company is layered on top of Raspberry rather than bypassing it:
 the Raspberry orchestrator agent is a process adapter that runs the repo-local
 control plane, and lane workers are derived from the synthesized package.
 
+For the operating model, generated files, and rerun behavior, see
+[Paperclip Coordination](/reference/paperclip).
+
+## `fabro paperclip refresh`
+
+Refresh the generated bundle plus the live Paperclip company, workspace, and
+deterministic frontier issues without using bootstrap as the rerun entrypoint.
+
+```bash
+fabro paperclip refresh --target-repo /home/r/coding/zend --program zend
+```
+
+Use this after Raspberry advances, after the blueprint changes, or whenever you
+want to resync Paperclip to the current frontier.
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the current Fabro package and Paperclip bundle. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+
+## `fabro paperclip start`
+
+Start or reuse the repo-local Paperclip server.
+
+```bash
+fabro paperclip start --target-repo /home/r/coding/zend --program zend
+```
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the repo-local Paperclip data dir. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+
+## `fabro paperclip status`
+
+Show repo-local Paperclip health and frontier sync status.
+
+```bash
+fabro paperclip status --target-repo /home/r/coding/zend --program zend
+```
+
+This reports server readiness, the managed pid, last sync time, frontier
+summary, detected local-cli exports, and whether `OPENAI_API_KEY` and
+`ANTHROPIC_API_KEY` are present in the environment.
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the repo-local Paperclip data dir. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+
+## `fabro paperclip logs`
+
+Print recent lines from the repo-local Paperclip server log.
+
+```bash
+fabro paperclip logs --target-repo /home/r/coding/zend --program zend --lines 120
+```
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the repo-local Paperclip data dir. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+| `--lines <N>` | Number of trailing log lines to print. Defaults to `80`. |
+
+## `fabro paperclip stop`
+
+Stop the repo-local Paperclip server managed for this repo.
+
+```bash
+fabro paperclip stop --target-repo /home/r/coding/zend --program zend
+```
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the repo-local Paperclip data dir. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+
 ## `fabro rewind`
 
 Rewind a workflow run to an earlier checkpoint. This resets both the run branch and metadata branch refs so that `fabro run --run-branch` resumes from the target checkpoint.

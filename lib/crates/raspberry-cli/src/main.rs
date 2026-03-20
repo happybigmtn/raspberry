@@ -5,9 +5,9 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use raspberry_supervisor::{
-    evaluate_program, execute_selected_lanes, orchestrate_program, render_grouped_summary,
-    render_status_table, sync_autodev_report_with_program, AutodevSettings, AutodevStopReason,
-    DispatchSettings, LaneExecutionStatus, ProgramManifest,
+    evaluate_program, evaluate_program_local, execute_selected_lanes, orchestrate_program,
+    render_grouped_summary, render_status_table, sync_autodev_report_with_program, AutodevSettings,
+    AutodevStopReason, DispatchSettings, LaneExecutionStatus, ProgramManifest,
 };
 
 #[derive(Debug, Parser)]
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
 
 fn run_plan(manifest_path: &Path) -> Result<()> {
     let manifest = ProgramManifest::load(manifest_path)?;
-    let program = evaluate_program(manifest_path)?;
+    let program = evaluate_program_local(manifest_path)?;
     sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
     println!("{}", render_grouped_summary(&program));
     Ok(())
@@ -107,7 +107,7 @@ fn run_plan(manifest_path: &Path) -> Result<()> {
 
 fn run_status(manifest_path: &Path) -> Result<()> {
     let manifest = ProgramManifest::load(manifest_path)?;
-    let program = evaluate_program(manifest_path)?;
+    let program = evaluate_program_local(manifest_path)?;
     sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
     println!("{}", render_status_table(&program));
     Ok(())
@@ -123,7 +123,7 @@ fn run_watch(args: WatchArgs) -> Result<()> {
 
     for index in 0..total_iterations {
         let manifest = ProgramManifest::load(&args.manifest)?;
-        let program = evaluate_program(&args.manifest)?;
+        let program = evaluate_program_local(&args.manifest)?;
         sync_autodev_report_with_program(&args.manifest, &manifest, &program)?;
         println!("Iteration {}:", index + 1);
         println!("{}", render_status_table(&program));

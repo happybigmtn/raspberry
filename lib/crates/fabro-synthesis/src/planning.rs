@@ -192,7 +192,11 @@ fn merge_missing_doctrine_units(
 ) -> Vec<String> {
     let mut added_units = Vec::new();
     for unit in &authored.units {
-        if blueprint.units.iter().any(|existing| existing.id == unit.id) {
+        if blueprint
+            .units
+            .iter()
+            .any(|existing| existing.id == unit.id)
+        {
             continue;
         }
         blueprint.units.push(unit.clone());
@@ -1628,7 +1632,8 @@ units:
         .expect("plan");
         fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
         fs::write(
-            temp.path().join("fabro/programs/zend-private-control-plane-implementation.yaml"),
+            temp.path()
+                .join("fabro/programs/zend-private-control-plane-implementation.yaml"),
             r#"
 version: 1
 program: zend-private-control-plane-implementation

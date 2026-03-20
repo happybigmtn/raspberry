@@ -240,8 +240,9 @@ fn synth_evolve_updates_existing_package() {
         "update-myosu/current/fabro/prompts/bootstrap/poker/polish.md",
     ))
     .expect("original polish prompt exists");
-    let preview_polish = fs::read_to_string(preview.join("fabro/prompts/bootstrap/poker/polish.md"))
-        .expect("preview polish prompt exists");
+    let preview_polish =
+        fs::read_to_string(preview.join("fabro/prompts/bootstrap/poker/polish.md"))
+            .expect("preview polish prompt exists");
     assert_eq!(preview_polish, original_polish);
 }
 
