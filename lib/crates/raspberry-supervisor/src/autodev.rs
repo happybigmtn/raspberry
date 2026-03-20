@@ -410,13 +410,22 @@ pub fn orchestrate_program(
             .lanes
             .iter()
             .any(|lane| lane.status == LaneExecutionStatus::Running);
-        if !has_ready && !has_running {
-            if advance_child_programs(&manifest_path, &manifest, settings)? {
+        let spare_child_slots = max_parallel.saturating_sub(running_after);
+        if spare_child_slots > 0 {
+            if advance_child_programs(
+                &manifest_path,
+                &manifest,
+                settings,
+                &program_after,
+                spare_child_slots,
+            )? {
                 if cycle_number < max_cycles {
                     thread::sleep(poll_interval);
                     continue;
                 }
             }
+        }
+        if !has_ready && !has_running {
             report.stop_reason = AutodevStopReason::Settled;
             report.current = Some(current_snapshot(&program_after));
             report.updated_at = Utc::now();
@@ -489,57 +498,71 @@ fn advance_child_programs(
     manifest_path: &Path,
     manifest: &ProgramManifest,
     settings: &AutodevSettings,
+    program: &crate::evaluate::EvaluatedProgram,
+    max_advances: usize,
 ) -> Result<bool, AutodevError> {
+    if max_advances == 0 {
+        return Ok(false);
+    }
+    let child_manifests =
+        child_program_manifests_to_advance(manifest_path, manifest, program, max_advances);
     let mut advanced = false;
-    for (unit_id, unit) in &manifest.units {
-        for lane_id in unit.lanes.keys() {
-            let Some(child_manifest) =
-                manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id)
-            else {
-                continue;
-            };
-            let child_program = evaluate_program(&child_manifest)?;
-            let child_has_ready = child_program
-                .lanes
-                .iter()
-                .any(|lane| lane.status == LaneExecutionStatus::Ready);
-            let child_has_running = child_program
-                .lanes
-                .iter()
-                .any(|lane| lane.status == LaneExecutionStatus::Running);
-            if child_has_ready || child_has_running {
-                continue;
-            }
-
-            let child_manifest_spec = ProgramManifest::load(&child_manifest)?;
-            let preview_evolve_root = settings
-                .preview_evolve_root
-                .as_ref()
-                .map(|root| root.join(&child_manifest_spec.program));
-            let _ = orchestrate_program(
-                &child_manifest,
-                &AutodevSettings {
-                    fabro_bin: settings.fabro_bin.clone(),
-                    max_parallel_override: None,
-                    frontier_budget: settings.frontier_budget,
-                    max_cycles: 1,
-                    poll_interval_ms: 1,
-                    evolve_every_seconds: 0,
-                    doctrine_files: settings.doctrine_files.clone(),
-                    evidence_paths: settings.evidence_paths.clone(),
-                    preview_evolve_root,
-                    manifest_stack: settings
-                        .manifest_stack
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(manifest_path.to_path_buf()))
-                        .collect(),
-                },
-            )?;
-            advanced = true;
-        }
+    for child_manifest in child_manifests {
+        let child_manifest_spec = ProgramManifest::load(&child_manifest)?;
+        let preview_evolve_root = settings
+            .preview_evolve_root
+            .as_ref()
+            .map(|root| root.join(&child_manifest_spec.program));
+        let _ = orchestrate_program(
+            &child_manifest,
+            &AutodevSettings {
+                fabro_bin: settings.fabro_bin.clone(),
+                max_parallel_override: None,
+                frontier_budget: settings.frontier_budget,
+                max_cycles: 1,
+                poll_interval_ms: 1,
+                evolve_every_seconds: 0,
+                doctrine_files: settings.doctrine_files.clone(),
+                evidence_paths: settings.evidence_paths.clone(),
+                preview_evolve_root,
+                manifest_stack: settings
+                    .manifest_stack
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(manifest_path.to_path_buf()))
+                    .collect(),
+            },
+        )?;
+        advanced = true;
     }
     Ok(advanced)
+}
+
+fn child_program_manifests_to_advance(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    program: &crate::evaluate::EvaluatedProgram,
+    max_advances: usize,
+) -> Vec<PathBuf> {
+    let mut manifests = Vec::new();
+    for lane in &program.lanes {
+        if manifests.len() >= max_advances {
+            break;
+        }
+        if lane.status != LaneExecutionStatus::Failed {
+            continue;
+        }
+        if lane.recovery_action.is_none() {
+            continue;
+        }
+        let Some(child_manifest) =
+            manifest.resolve_lane_program_manifest(manifest_path, &lane.unit_id, &lane.lane_id)
+        else {
+            continue;
+        };
+        manifests.push(child_manifest);
+    }
+    manifests
 }
 
 fn should_evolve(last_evolve_at: Option<Instant>, evolve_every: Duration) -> bool {
@@ -1325,6 +1348,190 @@ mod tests {
         let lanes = dispatchable_failed_lanes(&manifest, &program, true);
 
         assert_eq!(lanes, vec!["broken:lane".to_string()]);
+    }
+
+    #[test]
+    fn child_program_manifests_to_advance_uses_spare_slots_for_failed_children() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+max_parallel: 5
+units:
+  - id: alpha
+    title: Alpha
+    output_root: out/alpha
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Alpha Program
+        run_config: fabro/programs/alpha.yaml
+        managed_milestone: coordinated
+        program_manifest: fabro/programs/alpha.yaml
+  - id: beta
+    title: Beta
+    output_root: out/beta
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Beta Program
+        run_config: fabro/programs/beta.yaml
+        managed_milestone: coordinated
+        program_manifest: fabro/programs/beta.yaml
+  - id: gamma
+    title: Gamma
+    output_root: out/gamma
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Gamma Program
+        run_config: fabro/programs/gamma.yaml
+        managed_milestone: coordinated
+        program_manifest: fabro/programs/gamma.yaml
+"#,
+        )
+        .expect("manifest written");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 5,
+            lanes: vec![
+                EvaluatedLane {
+                    lane_key: "alpha:program".to_string(),
+                    unit_id: "alpha".to_string(),
+                    unit_title: "Alpha".to_string(),
+                    lane_id: "program".to_string(),
+                    lane_title: "Alpha Program".to_string(),
+                    lane_kind: LaneKind::Orchestration,
+                    status: LaneExecutionStatus::Failed,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: String::new(),
+                    managed_milestone: "coordinated".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("fabro/programs/alpha.yaml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_error: Some("deterministic failure cycle detected".to_string()),
+                    failure_kind: Some(FailureKind::DeterministicVerifyCycle),
+                    recovery_action: Some(FailureRecoveryAction::RegenerateLane),
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                },
+                EvaluatedLane {
+                    lane_key: "beta:program".to_string(),
+                    unit_id: "beta".to_string(),
+                    unit_title: "Beta".to_string(),
+                    lane_id: "program".to_string(),
+                    lane_title: "Beta Program".to_string(),
+                    lane_kind: LaneKind::Orchestration,
+                    status: LaneExecutionStatus::Failed,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: String::new(),
+                    managed_milestone: "coordinated".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("fabro/programs/beta.yaml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_error: Some("deterministic failure cycle detected".to_string()),
+                    failure_kind: Some(FailureKind::DeterministicVerifyCycle),
+                    recovery_action: Some(FailureRecoveryAction::RegenerateLane),
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                },
+                EvaluatedLane {
+                    lane_key: "gamma:program".to_string(),
+                    unit_id: "gamma".to_string(),
+                    unit_title: "Gamma".to_string(),
+                    lane_id: "program".to_string(),
+                    lane_title: "Gamma Program".to_string(),
+                    lane_kind: LaneKind::Orchestration,
+                    status: LaneExecutionStatus::Running,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: String::new(),
+                    managed_milestone: "coordinated".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("fabro/programs/gamma.yaml"),
+                    run_id: None,
+                    current_run_id: Some("01RUNNING".to_string()),
+                    current_fabro_run_id: Some("01RUNNING".to_string()),
+                    current_stage: Some("Implement".to_string()),
+                    last_run_id: Some("01RUNNING".to_string()),
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: None,
+                    last_error: None,
+                    failure_kind: None,
+                    recovery_action: None,
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                },
+            ],
+        };
+
+        let manifests = child_program_manifests_to_advance(&manifest_path, &manifest, &program, 1);
+
+        assert_eq!(manifests.len(), 1);
+        assert!(manifests[0].ends_with("fabro/programs/alpha.yaml"));
     }
 
     #[test]

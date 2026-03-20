@@ -615,6 +615,23 @@ pub fn sync_program_state_with_evaluated(
             &mut record.last_stderr_snippet,
             lane.last_stderr_snippet.clone(),
         );
+        if lane.status != LaneExecutionStatus::Failed && lane.last_error.is_none() {
+            if record.last_error.take().is_some() {
+                changed = true;
+            }
+            if record.failure_kind.take().is_some() {
+                changed = true;
+            }
+            if record.recovery_action.take().is_some() {
+                changed = true;
+            }
+            if record.last_stdout_snippet.take().is_some() {
+                changed = true;
+            }
+            if record.last_stderr_snippet.take().is_some() {
+                changed = true;
+            }
+        }
     }
     if changed {
         state.updated_at = Utc::now();
@@ -1664,6 +1681,94 @@ mod tests {
         );
         assert!(record.last_error.is_none());
         assert!(record.last_exit_status.is_none());
+        assert!(record.last_stdout_snippet.is_none());
+        assert!(record.last_stderr_snippet.is_none());
+    }
+
+    #[test]
+    fn sync_program_state_with_evaluated_clears_stale_failure_residue_for_ready_lane() {
+        let mut state = ProgramRuntimeState::new("demo");
+        state.lanes.insert(
+            "foundations:foundations".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "foundations:foundations".to_string(),
+                status: LaneExecutionStatus::Failed,
+                run_config: Some(PathBuf::from("run-configs/bootstrap/foundations.toml")),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: None,
+                last_run_id: Some("01FAILED".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some("merge failed".to_string()),
+                failure_kind: Some(crate::failure::FailureKind::IntegrationConflict),
+                recovery_action: Some(crate::failure::FailureRecoveryAction::RefreshFromTrunk),
+                last_completed_stage_label: Some("Exit".to_string()),
+                last_stage_duration_ms: Some(0),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: Some("stdout".to_string()),
+                last_stderr_snippet: Some("stderr".to_string()),
+            },
+        );
+
+        let program = EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "foundations:foundations".to_string(),
+                unit_id: "foundations".to_string(),
+                unit_title: "Foundations".to_string(),
+                lane_id: "foundations".to_string(),
+                lane_title: "Foundations Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Platform,
+                status: LaneExecutionStatus::Ready,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "dependencies satisfied".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("run-configs/bootstrap/foundations.toml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: Some("01READY".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(0),
+                last_error: None,
+                failure_kind: None,
+                recovery_action: None,
+                last_completed_stage_label: Some("Exit".to_string()),
+                last_stage_duration_ms: Some(0),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
+        };
+
+        let changed = sync_program_state_with_evaluated(&mut state, &program);
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("foundations:foundations")
+            .expect("lane record");
+        assert_eq!(record.status, LaneExecutionStatus::Ready);
+        assert!(record.last_error.is_none());
+        assert!(record.failure_kind.is_none());
+        assert!(record.recovery_action.is_none());
         assert!(record.last_stdout_snippet.is_none());
         assert!(record.last_stderr_snippet.is_none());
     }
