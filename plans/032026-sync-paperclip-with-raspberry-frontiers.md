@@ -22,6 +22,16 @@ for delegation, review, escalation, and heartbeat coordination while Raspberry
 continues to own execution. Bootstrap should create the initial company cleanly,
 and refresh should keep that company aligned to the current program frontier.
 
+The next expansion of this plan is to stop treating synchronized issues as
+fancy descriptions and start using more of Paperclip's native control-plane
+surfaces. The immediate goals are:
+
+- store synchronized frontier guidance in first-class issue documents
+- trigger the orchestrator and generated agents through Paperclip heartbeat
+  invocation instead of only direct shell routes
+- move generated local adapter credentials into Paperclip secrets and
+  secret-backed adapter config instead of ambient shell-only env
+
 ## Progress
 
 - [x] (2026-03-20 16:10Z) Re-read the existing Paperclip bootstrap code and the
@@ -40,6 +50,12 @@ and refresh should keep that company aligned to the current program frontier.
   back through Raspberry instead of bypassing it.
 - [x] (2026-03-20 17:18Z) Prove the flow on a repo-local Zend Paperclip
   instance.
+- [ ] Expand the synchronized issue model to write first-class issue documents
+  for root and lane coordination issues.
+- [ ] Add a Paperclip-native wake path for the Raspberry orchestrator and
+  generated agents.
+- [ ] Create or update Paperclip company secrets from available local model
+  credentials and wire generated local agents to `secret_ref` env config.
 
 ## What Already Exists
 
@@ -80,6 +96,19 @@ This plan intentionally does not include:
   Evidence: both systems can talk about work, but only Raspberry currently owns
   manifest evaluation and run dispatch. If Paperclip starts making execution
   decisions independently, the two surfaces will drift.
+
+- Observation: Paperclip's own agent skill expects issue documents, incremental
+  heartbeat context, and explicit heartbeat wakes instead of description-only
+  issue mirrors.
+  Evidence: `skills/paperclip/SKILL.md` directs agents to use
+  `GET /api/agents/me/inbox-lite`, `GET /api/issues/:id/heartbeat-context`,
+  incremental comment fetches, and `PUT /api/issues/:id/documents/plan`.
+
+- Observation: local model auth is still split between repo shell env and
+  Paperclip control-plane state.
+  Evidence: bootstrap currently declares required secrets and reports env
+  presence, but generated local agents still depend on ambient server env
+  instead of company secrets plus `secret_ref` adapter config.
 
 - Observation: generated agent markdown already captures the right topology.
   Evidence: `paperclip.rs` derives unit-aligned agents from the blueprint, so
@@ -245,6 +274,23 @@ as inspecting the current frontier, asking Raspberry to evaluate or refresh,
 posting review or blocker notes, and escalating issues. They should not silently
 create parallel execution flows that mutate repo state independently of
 Raspberry.
+
+### Milestone 5: Native Paperclip Work Objects
+
+Move synchronized frontier guidance into first-class issue documents so the
+Paperclip UI, skills, and future plugins can treat it as structured work
+product rather than only rendered description text. Root and lane issues should
+carry a `plan` document that mirrors the current frontier state, operator loop,
+and execution commands.
+
+### Milestone 6: Control-Plane Wake and Secret Wiring
+
+Add a Paperclip-native wake command that invokes the orchestrator or a generated
+agent through `/api/agents/:id/heartbeat/invoke`, using the imported agent ids
+already recorded in `bootstrap-state.json`. Also create or update company
+secrets from available local model credentials and patch generated local agents
+to use `secret_ref` env bindings so local heartbeats do not rely only on the
+server shell environment.
 
 ## Concrete Steps
 
