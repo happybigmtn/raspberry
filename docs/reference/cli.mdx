@@ -23,12 +23,13 @@ CLI defaults can be set in `~/.fabro/cli.toml` so you don't have to pass common 
 ```toml title="cli.toml"
 [exec]
 provider = "anthropic"
-model = "claude-opus-4-6"
+model = "MiniMax-M2.7-highspeed"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
-model = "claude-sonnet-4-5"
+provider = "anthropic"
+model = "MiniMax-M2.7-highspeed"
 ```
 
 CLI flags always override `cli.toml` values, which override hardcoded defaults.
@@ -403,20 +404,28 @@ fabro skill install --for user --dir claude
 
 ## `fabro synth create`
 
-Create a checked-in `fabro/` package from a blueprint file.
+Create a checked-in `fabro/` package from a blueprint file, or author a first
+blueprint from the repo's planning corpus when `--blueprint` is omitted.
 
 ```bash
 fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
+
+# Or let Fabro author the first blueprint from README/SPEC/specs/plans
+fabro synth create --target-repo /home/r/coding/zend --program zend
 ```
 
 | Flag | Description |
 |---|---|
-| `--blueprint <FILE>` | Path to the blueprint YAML file. |
+| `--blueprint <FILE>` | Optional path to the blueprint YAML file. |
 | `--target-repo <DIR>` | Target repository root where the `fabro/` package should be written. |
+| `--program <ID>` | Optional program id override when Fabro is authoring the blueprint itself. |
+| `--output-blueprint <FILE>` | Optional path where an authored blueprint should be saved. Defaults to `fabro/blueprints/<program>.yaml`. |
 
-Use this after a skill-guided create pass has produced a blueprint and you want
-the full executable package: manifests, run configs, workflow graphs, prompts,
-and checks.
+Use this either after a skill-guided create pass has produced a blueprint, or
+as the built-in bootstrap path for a planning-only repo. In authoring mode,
+Fabro inspects repo doctrine and planning docs, saves the generated blueprint,
+then renders the full executable package: manifests, run configs, workflow
+graphs, prompts, and checks.
 
 ## `fabro synth import`
 
@@ -437,26 +446,71 @@ skill-guided evolve pass.
 
 ## `fabro synth evolve`
 
-Evolve an existing checked-in `fabro/` package from a revised blueprint.
+Evolve an existing checked-in `fabro/` package from a revised blueprint, or
+let Fabro import and refine the current package when `--blueprint` is omitted.
 
 ```bash
 fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu
 
 # Review-first: write the evolved package into a separate tree
 fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu --preview-root /tmp/myosu-preview
+
+# Or import the current package and reconcile without hand-authoring a blueprint first
+fabro synth evolve --target-repo /home/r/coding/myosu --program myosu-platform --preview-root /tmp/myosu-preview
 ```
 
 | Flag | Description |
 |---|---|
-| `--blueprint <FILE>` | Path to the revised blueprint YAML file. |
+| `--blueprint <FILE>` | Optional path to the revised blueprint YAML file. |
 | `--target-repo <DIR>` | Target repository root containing the current `fabro/` package. |
 | `--preview-root <DIR>` | Optional alternate root where the evolved package should be written. Use this for review-first iteration. |
+| `--program <ID>` | Optional program id override when Fabro is importing the current package itself. |
+| `--output-blueprint <FILE>` | Optional path where an imported or refined blueprint should be saved. Defaults to `fabro/blueprints/<program>.yaml`. |
 
-Use this after a skill-guided evolve pass has imported the current package,
-read doctrine and run evidence, and produced a revised blueprint that should be
-be applied deterministically to the full workflow package. When `--preview-root`
-is supplied, findings are computed against `--target-repo` but files are written
-to the preview tree instead of mutating the live repo.
+Use this after a skill-guided evolve pass has produced a revised blueprint, or
+as a built-in import-and-reconcile path for an existing repo. When
+`--preview-root` is supplied, findings are computed against `--target-repo` but
+files are written to the preview tree instead of mutating the live repo.
+
+## `fabro paperclip bootstrap`
+
+Bootstrap a repo-local, headless Paperclip company on top of the current
+Fabro package. This writes an importable Paperclip company bundle under
+`fabro/paperclip/<program>/`, stands up a repo-owned Paperclip data dir under
+`.paperclip/` by default, imports or updates the company, creates the top-level
+company goal plus project workspace, and writes local agent env exports under
+`.paperclip/local-cli/`.
+
+```bash
+# Dry-run bundle generation only
+fabro paperclip bootstrap --target-repo /home/r/coding/zend --apply false
+
+# End-to-end local bootstrap
+fabro paperclip bootstrap --target-repo /home/r/coding/zend
+```
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the current or authorable Fabro package. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+| `--apply <BOOL>` | Whether to run the live import/bootstrap flow. Defaults to `true`; pass `false` for bundle-only dry-runs. |
+
+When `--apply` is `true`, Fabro will:
+
+1. author or load the current blueprint and render the Fabro package if needed
+2. emit a deterministic Paperclip portability bundle from that package
+3. start or reuse a repo-local Paperclip instance
+4. import or update the company and tailored agent roster
+5. ensure the company goal and repo workspace project exist
+6. write agent-specific local-cli env exports under `.paperclip/local-cli/`
+
+The generated company is layered on top of Raspberry rather than bypassing it:
+the Raspberry orchestrator agent is a process adapter that runs the repo-local
+control plane, and lane workers are derived from the synthesized package.
 
 ## `fabro rewind`
 

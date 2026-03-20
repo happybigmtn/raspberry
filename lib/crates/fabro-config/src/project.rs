@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::hook::HookDefinition;
 use crate::mcp::McpServerEntry;
 use crate::run::{
-    AssetsConfig, CheckpointConfig, GitHubConfig, LlmConfig, PullRequestConfig, RunDefaults,
-    SetupConfig,
+    AssetsConfig, CheckpointConfig, GitHubConfig, IntegrationConfig, LlmConfig, PullRequestConfig,
+    RunDefaults, SetupConfig,
 };
 use crate::sandbox::SandboxConfig;
 
@@ -33,6 +33,7 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
     pub pull_request: Option<PullRequestConfig>,
+    pub integration: Option<IntegrationConfig>,
     pub assets: Option<AssetsConfig>,
     #[serde(default)]
     pub hooks: Vec<HookDefinition>,
@@ -52,6 +53,7 @@ impl ProjectConfig {
             vars: self.vars,
             checkpoint: self.checkpoint,
             pull_request: self.pull_request,
+            integration: self.integration,
             assets: self.assets,
             hooks: self.hooks,
             mcp_servers: self.mcp_servers,
@@ -429,6 +431,23 @@ mod tests {
                 draft: false,
                 auto_merge: false,
                 merge_strategy: MergeStrategy::Squash,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_integration_config() {
+        let config = parse_project_config(
+            "version = 1\n\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"main\"\nartifact_path = \"outputs/demo/integration.md\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.integration,
+            Some(crate::run::IntegrationConfig {
+                enabled: true,
+                strategy: MergeStrategy::Squash,
+                target_branch: "main".to_string(),
+                artifact_path: Some(PathBuf::from("outputs/demo/integration.md")),
             })
         );
     }

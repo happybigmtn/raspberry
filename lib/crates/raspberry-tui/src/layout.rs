@@ -118,8 +118,8 @@ pub fn split_screen(area: Rect, focus: Pane, collapsed: CollapseState) -> PaneRe
 }
 
 fn split_dashboard(area: Rect) -> BTreeMap<Pane, Rect> {
-    let [left, right] = Layout::horizontal([Constraint::Ratio(34, 100), Constraint::Ratio(66, 100)])
-        .areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Ratio(34, 100), Constraint::Ratio(66, 100)]).areas(area);
     let [state, lower] =
         Layout::vertical([Constraint::Ratio(38, 100), Constraint::Ratio(62, 100)]).areas(right);
     let [artifacts, detail] =

@@ -1,14 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
 use serde::Serialize;
 use serde_json::Value;
-use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
 
 use crate::blueprint::{
     validate_blueprint, BlueprintLane, BlueprintUnit, ProgramBlueprint, WorkflowTemplate,
 };
 use crate::error::RenderError;
+
+const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
+const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
+const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimax.io/anthropic";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -45,6 +49,14 @@ pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderEr
     validate_blueprint(Path::new("<render>"), req.blueprint)?;
     let layout = PackageLayout::new(req.blueprint, req.target_repo);
     let mut written_files = Vec::new();
+    if layout.manifest_path().exists() {
+        if let Ok(current) = crate::blueprint::import_existing_package(ImportRequest {
+            target_repo: req.target_repo,
+            program: &req.blueprint.program.id,
+        }) {
+            remove_obsolete_lane_files(&current, req.blueprint, req.target_repo)?;
+        }
+    }
 
     for unit in &req.blueprint.units {
         for lane in &unit.lanes {
@@ -57,12 +69,21 @@ pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderEr
     Ok(RenderReport { written_files })
 }
 
+pub fn cleanup_obsolete_package_files(
+    previous: &ProgramBlueprint,
+    desired: &ProgramBlueprint,
+    target_repo: &Path,
+) -> Result<(), RenderError> {
+    remove_obsolete_lane_files(previous, desired, target_repo)
+}
+
 pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport, RenderError> {
     let current = crate::blueprint::import_existing_package(ImportRequest {
         target_repo: req.current_repo,
         program: &req.blueprint.program.id,
     })?;
     let evolved = refine_blueprint_from_evidence(req.blueprint, req.current_repo);
+    let evolved = augment_with_implementation_follow_on_units(evolved, req.current_repo)?;
 
     let mut findings = diff_blueprints(&current, &evolved);
     findings.extend(input_findings(&evolved, req.current_repo));
@@ -81,8 +102,7 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
     ));
 
     let recommendations = evolve_recommendations(&evolved, req.current_repo, &findings);
-    let mut report =
-        render_evolved_blueprint(&evolved, &current, req.current_repo, req.output_repo)?;
+    let mut report = render_evolved_blueprint(&evolved, &current, req.output_repo)?;
     report
         .written_files
         .extend(render_implementation_follow_ons(
@@ -95,6 +115,98 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
         recommendations,
         written_files: report.written_files,
     })
+}
+
+fn augment_with_implementation_follow_on_units(
+    mut blueprint: ProgramBlueprint,
+    target_repo: &Path,
+) -> Result<ProgramBlueprint, RenderError> {
+    let candidates = implementation_candidates(&blueprint, target_repo);
+    if candidates.is_empty() {
+        return Ok(blueprint);
+    }
+
+    let known_unit_ids = blueprint
+        .units
+        .iter()
+        .map(|unit| unit.id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for candidate in candidates {
+        let dependency_milestone = source_lane_managed_milestone(
+            &blueprint,
+            &candidate.unit_id,
+            &candidate.lane_id,
+        );
+        let manifest_relative = candidate
+            .program_manifest
+            .strip_prefix(target_repo)
+            .map(PathBuf::from)
+            .map_err(|_| {
+                RenderError::Blueprint(crate::error::BlueprintError::Invalid {
+                    path: candidate.program_manifest.clone(),
+                    message: format!(
+                        "implementation program manifest `{}` is not inside target repo `{}`",
+                        candidate.program_manifest.display(),
+                        target_repo.display()
+                    ),
+                })
+            })?;
+        let unit_id = implementation_follow_on_unit_id(&candidate);
+        if known_unit_ids.contains(&unit_id)
+            || blueprint.units.iter().any(|unit| unit.id == unit_id)
+        {
+            continue;
+        }
+        blueprint.units.push(BlueprintUnit {
+            id: unit_id,
+            title: implementation_follow_on_title(&candidate),
+            output_root: PathBuf::from(format!(
+                ".raspberry/portfolio/{}",
+                implementation_follow_on_slug(&candidate)
+            )),
+            artifacts: Vec::new(),
+            milestones: Vec::new(),
+            lanes: vec![BlueprintLane {
+                id: "program".to_string(),
+                kind: raspberry_supervisor::manifest::LaneKind::Orchestration,
+                title: format!("{} Program", implementation_follow_on_title(&candidate)),
+                family: "program".to_string(),
+                workflow_family: None,
+                slug: Some(
+                    manifest_relative
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("implementation")
+                        .to_string(),
+                ),
+                template: WorkflowTemplate::Orchestration,
+                goal: format!(
+                    "Coordinate the implementation follow-on program for `{}`.",
+                    candidate.lane_key
+                ),
+                managed_milestone: "coordinated".to_string(),
+                dependencies: vec![raspberry_supervisor::manifest::LaneDependency {
+                    unit: candidate.unit_id.clone(),
+                    lane: None,
+                    milestone: Some(dependency_milestone),
+                }],
+                produces: Vec::new(),
+                proof_profile: None,
+                proof_state_path: None,
+                program_manifest: Some(manifest_relative),
+                service_state_path: None,
+                orchestration_state_path: None,
+                checks: Vec::new(),
+                run_dir: None,
+                prompt_context: None,
+                verify_command: None,
+                health_command: None,
+            }],
+        });
+    }
+
+    Ok(blueprint)
 }
 
 fn refine_blueprint_from_evidence(
@@ -143,10 +255,7 @@ fn refine_blueprint_from_evidence(
     evolved
 }
 
-fn augment_with_discovered_program_manifests(
-    blueprint: &mut ProgramBlueprint,
-    target_repo: &Path,
-) {
+fn augment_with_discovered_program_manifests(blueprint: &mut ProgramBlueprint, target_repo: &Path) {
     if !blueprint
         .units
         .iter()
@@ -192,7 +301,9 @@ fn augment_with_discovered_program_manifests(
             .unwrap_or(manifest.program.as_str())
             .to_string();
         if blueprint.units.iter().any(|unit| unit.id == unit_id)
-            || additions.iter().any(|unit: &BlueprintUnit| unit.id == unit_id)
+            || additions
+                .iter()
+                .any(|unit: &BlueprintUnit| unit.id == unit_id)
         {
             continue;
         }
@@ -209,7 +320,7 @@ fn augment_with_discovered_program_manifests(
                 family: "program".to_string(),
                 workflow_family: None,
                 slug: Some(manifest.program.clone()),
-                template: WorkflowTemplate::Bootstrap,
+                template: WorkflowTemplate::Orchestration,
                 goal: format!("Coordinate the child program `{}`.", manifest.program),
                 managed_milestone: "coordinated".to_string(),
                 dependencies: Vec::new(),
@@ -255,7 +366,6 @@ fn discovered_program_title(program: &str) -> String {
 fn render_evolved_blueprint(
     desired: &ProgramBlueprint,
     current: &ProgramBlueprint,
-    current_repo: &Path,
     output_repo: &Path,
 ) -> Result<RenderReport, RenderError> {
     validate_blueprint(Path::new("<render>"), desired)?;
@@ -274,7 +384,7 @@ fn render_evolved_blueprint(
                 .and_then(|unit| unit.lanes.iter().find(|candidate| candidate.id == lane.id));
             if let Some(current_lane) = current_lane {
                 if lane_equivalent(current_lane, lane) {
-                    let files = copy_existing_lane_package(current_repo, &layout, current_lane)?;
+                    let files = render_lane(desired, &layout, &unit.id, lane)?;
                     written_files.extend(files);
                     continue;
                 }
@@ -287,6 +397,64 @@ fn render_evolved_blueprint(
 
     written_files.push(write_manifest(desired, &layout)?);
     Ok(RenderReport { written_files })
+}
+
+fn remove_obsolete_lane_files(
+    current: &ProgramBlueprint,
+    desired: &ProgramBlueprint,
+    target_repo: &Path,
+) -> Result<(), RenderError> {
+    let current_layout = PackageLayout::new(current, target_repo);
+    let desired_units = desired
+        .units
+        .iter()
+        .map(|unit| (&unit.id, unit))
+        .collect::<BTreeMap<_, _>>();
+
+    for current_unit in &current.units {
+        let desired_unit = desired_units.get(&current_unit.id);
+        for current_lane in &current_unit.lanes {
+            let desired_lane = desired_unit.and_then(|unit| {
+                unit.lanes
+                    .iter()
+                    .find(|candidate| candidate.id == current_lane.id)
+            });
+            let keep = desired_lane.is_some_and(|desired_lane| {
+                current_lane.family == desired_lane.family
+                    && current_lane.workflow_family() == desired_lane.workflow_family()
+                    && current_lane.slug() == desired_lane.slug()
+                    && current_lane.template == desired_lane.template
+            });
+            if keep || current_lane.program_manifest.is_some() {
+                continue;
+            }
+            remove_file_if_exists(&current_layout.run_config_path(current_lane))?;
+            remove_file_if_exists(&current_layout.workflow_path(current_lane))?;
+            remove_dir_if_exists(&current_layout.prompt_dir(current_lane))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), RenderError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(|source| RenderError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<(), RenderError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(path).map_err(|source| RenderError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn render_implementation_follow_ons(
@@ -327,32 +495,54 @@ fn render_lane(
         .health_command
         .clone()
         .unwrap_or_else(|| "true".to_string());
-    let audit_command = implementation_audit_command(blueprint, unit_id, lane);
+    let promotion_command = implementation_promotion_command(blueprint, unit_id, lane);
+    let audit_command = implementation_audit_command(blueprint, unit_id, lane, &promotion_command);
+    let quality_command = implementation_quality_command(blueprint, unit_id, lane);
 
-    let graph = render_workflow_graph(lane, &verify_command, &health_command, &audit_command);
-    let run_config = render_run_config(lane);
-    let plan_prompt = render_prompt("plan", lane);
-    let review_prompt = render_prompt("review", lane);
-    let polish_prompt = render_prompt("polish", lane);
-
+    let graph = render_workflow_graph(
+        lane,
+        &verify_command,
+        &health_command,
+        &audit_command,
+        &quality_command,
+    );
+    let integration_artifact_path = if lane.template == WorkflowTemplate::Implementation {
+        lane_named_artifact_path_relative(blueprint, unit_id, lane, "integration")
+    } else {
+        None
+    };
+    let run_config = render_run_config(lane, integration_artifact_path.as_deref());
     let mut written_files = Vec::new();
     write_file(&workflow_path, &graph, &mut written_files)?;
     write_file(&run_config_path, &run_config, &mut written_files)?;
-    write_file(
-        &prompt_dir.join("plan.md"),
-        &plan_prompt,
-        &mut written_files,
-    )?;
-    write_file(
-        &prompt_dir.join("review.md"),
-        &review_prompt,
-        &mut written_files,
-    )?;
-    write_file(
-        &prompt_dir.join("polish.md"),
-        &polish_prompt,
-        &mut written_files,
-    )?;
+    if lane.template != WorkflowTemplate::Integration {
+        let plan_prompt = render_prompt("plan", lane);
+        let review_prompt = render_prompt("review", lane);
+        let promote_prompt = render_prompt("promote", lane);
+        let polish_prompt = render_prompt("polish", lane);
+        write_file(
+            &prompt_dir.join("plan.md"),
+            &plan_prompt,
+            &mut written_files,
+        )?;
+        write_file(
+            &prompt_dir.join("review.md"),
+            &review_prompt,
+            &mut written_files,
+        )?;
+        if lane.template == WorkflowTemplate::Implementation {
+            write_file(
+                &prompt_dir.join("promote.md"),
+                &promote_prompt,
+                &mut written_files,
+            )?;
+        }
+        write_file(
+            &prompt_dir.join("polish.md"),
+            &polish_prompt,
+            &mut written_files,
+        )?;
+    }
     Ok(written_files)
 }
 
@@ -383,6 +573,7 @@ fn render_workflow_graph(
     verify_command: &str,
     health_command: &str,
     audit_command: &str,
+    quality_command: &str,
 ) -> String {
     let prompt_path = |name: &str| -> String {
         format!(
@@ -425,38 +616,234 @@ fn render_workflow_graph(
                 String::new()
             };
             let success_edges = if service_health {
-                "    verify -> health [condition=\"outcome=success\"]\n    health -> review [condition=\"outcome=success\"]\n    health -> fixup\n"
+                "    verify -> health [condition=\"outcome=success\"]\n    health -> quality [condition=\"outcome=success\"]\n    health -> fixup\n"
             } else {
-                "    verify -> review [condition=\"outcome=success\"]\n"
+                "    verify -> quality [condition=\"outcome=success\"]\n"
             };
             format!(
-                "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: api; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{} 2>&1 || true\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits=3]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    fixup -> verify\n    review -> audit -> exit\n}}\n",
+                "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #settle {{ backend: cli; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits=3]\n    settle [label=\"Settle\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> settle [condition=\"outcome=success\"]\n    quality -> fixup\n    settle -> audit [condition=\"outcome=success\"]\n    settle -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
-                escape_graph_attr(verify_command),
+                escape_graph_attr(&preflight_command(verify_command)),
                 prompt_path("plan"),
                 escape_graph_attr(verify_command),
                 health_node,
+                escape_graph_attr(quality_command),
                 prompt_path("polish"),
-                prompt_path("review"),
+                prompt_path("promote"),
                 escape_graph_attr(audit_command),
                 success_edges,
             )
         }
+        WorkflowTemplate::Integration => format!(
+            "digraph {} {{\n    graph [goal=\"{}\"]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    unsupported [label=\"Supervisor Only\", shape=parallelogram, script=\"printf 'integration lanes are executed directly by raspberry supervisor\\n' >&2; exit 1\", max_retries=0]\n    exit [shape=Msquare, label=\"Exit\"]\n\n    start -> unsupported -> exit\n}}\n",
+            graph_name(lane),
+            goal,
+        ),
+        WorkflowTemplate::Orchestration => format!(
+            "digraph {} {{\n    graph [goal=\"{}\"]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    unsupported [label=\"Supervisor Orchestration\", shape=parallelogram, script=\"printf 'repo-level orchestration lanes are executed directly by raspberry supervisor\\n' >&2; exit 1\", max_retries=0]\n    exit [shape=Msquare, label=\"Exit\"]\n\n    start -> unsupported -> exit\n}}\n",
+            graph_name(lane),
+            goal,
+        ),
     }
 }
 
-fn render_run_config(lane: &BlueprintLane) -> String {
+fn preflight_command(verify_command: &str) -> String {
+    let trimmed = verify_command.trim_start();
+    let body = if let Some(rest) = trimmed.strip_prefix("set -e\n") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("set -e\r\n") {
+        rest
+    } else {
+        trimmed
+    };
+    format!("set +e\n{}\ntrue", body)
+}
+
+fn implementation_promotion_command(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane: &BlueprintLane,
+) -> String {
+    let quality_path = implementation_quality_path(blueprint, unit_id, lane);
+    let promotion_path = implementation_promotion_path(blueprint, unit_id, lane);
+    format!(
+        "grep -Eq '^merge_ready: yes$' {} && grep -Eq '^manual_proof_pending: no$' {} && grep -Eq '^quality_ready: yes$' {} && grep -Eq '^placeholder_debt: no$' {} && grep -Eq '^warning_debt: no$' {} && grep -Eq '^artifact_mismatch_risk: no$' {} && grep -Eq '^manual_followup_required: no$' {}",
+        promotion_path.display(),
+        promotion_path.display(),
+        quality_path.display(),
+        quality_path.display(),
+        quality_path.display(),
+        quality_path.display(),
+        quality_path.display()
+    )
+}
+
+fn implementation_quality_path(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane: &BlueprintLane,
+) -> PathBuf {
+    lane_artifact_paths_relative(blueprint, unit_id, lane)
+        .into_iter()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("quality.md"))
+        .unwrap_or_else(|| PathBuf::from("quality.md"))
+}
+
+fn implementation_quality_command(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane: &BlueprintLane,
+) -> String {
+    let Some(unit) = blueprint
+        .units
+        .iter()
+        .find(|candidate| candidate.id == unit_id)
+    else {
+        return "true".to_string();
+    };
+    let quality_path = implementation_quality_path(blueprint, unit_id, lane);
+    let implementation_path = join_relative(
+        &unit.output_root,
+        &lane_named_artifact_path(unit, lane, "implementation")
+            .display()
+            .to_string(),
+    );
+    let verification_path = join_relative(
+        &unit.output_root,
+        &lane_named_artifact_path(unit, lane, "verification")
+            .display()
+            .to_string(),
+    );
+    let touch_first = lane
+        .prompt_context
+        .as_deref()
+        .map(|context| prompt_context_block(context, "Touch first:"))
+        .unwrap_or_default();
+    let touched_surfaces = touch_first
+        .iter()
+        .map(|line| normalize_prompt_path_item(line))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let touched_surface_section = if touched_surfaces.is_empty() {
+        "- (none declared)\n".to_string()
+    } else {
+        touched_surfaces
+            .iter()
+            .map(|surface| format!("- {surface}\n"))
+            .collect::<String>()
+    };
+    let mut surface_scan_lines = Vec::new();
+    for surface in &touched_surfaces {
+        surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
+    }
+    if surface_scan_lines.is_empty() {
+        surface_scan_lines.push("true".to_string());
+    }
+
+    format!(
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|future slice|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|future slice|compile-only|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        quality_path = shell_single_quote(&quality_path.display().to_string()),
+        implementation_path = shell_single_quote(&implementation_path.display().to_string()),
+        verification_path = shell_single_quote(&verification_path.display().to_string()),
+        surface_scan = surface_scan_lines.join("\n"),
+        touched_surface_section = touched_surface_section,
+    )
+}
+
+fn implementation_promotion_path(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane: &BlueprintLane,
+) -> PathBuf {
+    let promotion_path = lane_artifact_paths_relative(blueprint, unit_id, lane)
+        .into_iter()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("promotion.md"))
+        .unwrap_or_else(|| PathBuf::from("promotion.md"));
+    promotion_path
+}
+
+fn normalize_prompt_path_item(line: &str) -> String {
+    line.trim()
+        .trim_start_matches("- ")
+        .trim()
+        .trim_matches('`')
+        .trim()
+        .to_string()
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+fn template_supports_direct_integration(template: WorkflowTemplate) -> bool {
+    matches!(
+        template,
+        WorkflowTemplate::Bootstrap
+            | WorkflowTemplate::ServiceBootstrap
+            | WorkflowTemplate::Implementation
+    )
+}
+
+fn render_run_config(lane: &BlueprintLane, integration_artifact_path: Option<&Path>) -> String {
     let graph_rel = format!(
         "../../workflows/{}/{}.fabro",
         lane.workflow_family(),
         lane.slug()
     );
-    format!(
-        "version = 1\ngraph = \"{}\"\ngoal = \"\"\"\n{}\n\"\"\"\ndirectory = \"../../..\"\n\n[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"clean\"\n",
+    let worktree_mode = if lane.template == WorkflowTemplate::Implementation {
+        "always"
+    } else {
+        "clean"
+    };
+    let llm_config = if matches!(
+        lane.template,
+        WorkflowTemplate::Bootstrap
+            | WorkflowTemplate::RecurringReport
+            | WorkflowTemplate::ServiceBootstrap
+            | WorkflowTemplate::Implementation
+    ) {
+        format!(
+            "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n\n",
+            DEFAULT_WRITE_PROVIDER, DEFAULT_WRITE_MODEL
+        )
+    } else {
+        String::new()
+    };
+    let sandbox_env = if matches!(
+        lane.template,
+        WorkflowTemplate::Bootstrap
+            | WorkflowTemplate::RecurringReport
+            | WorkflowTemplate::ServiceBootstrap
+            | WorkflowTemplate::Implementation
+    ) {
+        format!(
+            "\n[sandbox.env]\nANTHROPIC_BASE_URL = \"{}\"\nANTHROPIC_AUTH_TOKEN = \"${{env.MINIMAX_API_KEY}}\"\nANTHROPIC_MODEL = \"{}\"\n",
+            DEFAULT_MINIMAX_BASE_URL, DEFAULT_WRITE_MODEL
+        )
+    } else {
+        String::new()
+    };
+    let mut config = format!(
+        "version = 1\ngraph = \"{}\"\ngoal = \"\"\"\n{}\n\"\"\"\ndirectory = \"../../..\"\n\n{}[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"{}\"\n{}",
         graph_rel,
-        lane.goal.trim_end()
-    )
+        lane.goal.trim_end(),
+        llm_config,
+        worktree_mode,
+        sandbox_env,
+    );
+    if template_supports_direct_integration(lane.template) {
+        config.push_str(
+            "\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"origin/HEAD\"\n",
+        );
+        if let Some(path) = integration_artifact_path {
+            config.push_str(&format!(
+                "artifact_path = \"{}\"\n",
+                run_config_relative_string(path)
+            ));
+        }
+    }
+    config
 }
 
 fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
@@ -527,6 +914,18 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
                 &observability_surfaces,
                 &implementation_artifact_expectations,
                 &verification_artifact_expectations,
+            ),
+            "promote" => render_implementation_promotion_prompt(
+                lane,
+                context,
+                &implement_now,
+                &touch_first,
+                &build_slice,
+                &setup_first,
+                &first_proof_gate,
+                &first_health_gate,
+                &execution_guidance,
+                &manual_notes,
             ),
             "polish" => render_implementation_fixup_prompt(
                 lane,
@@ -632,6 +1031,9 @@ fn render_implementation_plan_prompt(
         "Verification artifact must cover",
         verification_artifact_expectations,
         false,
+    );
+    output.push_str(
+        "\n\nStage ownership:\n- do not write `promotion.md` during Plan/Implement\n- do not hand-author `quality.md`; it is regenerated by the Quality Gate\n- `promotion.md` is owned by the Settle stage only\n- keep source edits inside the named slice and touched surfaces\n",
     );
     if !has_structured_sections {
         output.push_str(&format!("\n\nCurrent Slice Contract:\n{}\n", context));
@@ -750,6 +1152,9 @@ fn render_implementation_review_prompt(
     output.push_str(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
+    output.push_str(
+        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
+    );
     output
 }
 
@@ -822,8 +1227,59 @@ fn render_implementation_fixup_prompt(
         false,
     );
     output.push_str(
-        "\n\nPriorities:\n- unblock the active slice's first proof gate\n- stay within the named slice and touched surfaces\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n",
+        "\n\nPriorities:\n- unblock the active slice's first proof gate\n- stay within the named slice and touched surfaces\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Settle stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
     );
+    output
+}
+
+fn render_implementation_promotion_prompt(
+    lane: &BlueprintLane,
+    context: &str,
+    implement_now: &[String],
+    touch_first: &[String],
+    build_slice: &[String],
+    setup_first: &[String],
+    first_proof_gate: &[String],
+    first_health_gate: &[String],
+    execution_guidance: &[String],
+    manual_notes: &[String],
+) -> String {
+    let mut output = format!(
+        "# {} — Promotion\n\nDecide whether `{}` is truly merge-ready.\n",
+        lane.title, lane.id
+    );
+    append_prompt_section(&mut output, "Current slice", implement_now, false);
+    append_prompt_section(&mut output, "Touched surfaces", touch_first, true);
+    append_prompt_section(&mut output, "Slice work", build_slice, false);
+    append_prompt_section(&mut output, "Setup checks", setup_first, false);
+    append_prompt_section(&mut output, "First proof gate", first_proof_gate, true);
+    append_prompt_section(&mut output, "First health gate", first_health_gate, true);
+    append_prompt_section(&mut output, "Execution guidance", execution_guidance, false);
+    append_prompt_section(
+        &mut output,
+        "Manual proof still required",
+        manual_notes,
+        false,
+    );
+    output.push_str(
+        "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
+merge_ready: yes|no\n\
+manual_proof_pending: yes|no\n\
+reason: <one sentence>\n\
+next_action: <one sentence>\n\n\
+Only set `merge_ready: yes` when:\n\
+- `quality.md` says `quality_ready: yes`\n\
+- automated proof is sufficient for this slice\n\
+- any required manual proof has actually been performed\n\
+- no unresolved warnings or stale failures undermine confidence\n\
+- the implementation and verification artifacts match the real code.\n",
+    );
+    output.push_str(
+        "\nSettle stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- prefer not to modify source code here unless a tiny correction is required to make the settlement judgment truthful\n",
+    );
+    if implement_now.is_empty() && touch_first.is_empty() && build_slice.is_empty() {
+        output.push_str(&format!("\nCurrent Slice Contract:\n{}\n", context));
+    }
     output
 }
 
@@ -1327,13 +1783,23 @@ fn evolve_recommendations(
         ));
 
         for candidate in &implementation_candidates {
-            recommendations.push(format!(
-                "add implementation program `{}` plus an implementation-family package for `{}` using `{}` and `{}`",
-                candidate.program_manifest.display(),
-                candidate.lane_key,
-                candidate.run_config.display(),
-                candidate.workflow.display()
-            ));
+            if candidate.package_missing {
+                recommendations.push(format!(
+                    "add implementation program `{}` plus an implementation-family package for `{}` using `{}` and `{}`",
+                    candidate.program_manifest.display(),
+                    candidate.lane_key,
+                    candidate.run_config.display(),
+                    candidate.workflow.display()
+                ));
+            } else {
+                recommendations.push(format!(
+                    "refresh implementation program `{}` and its implementation-family package for `{}` using `{}` and `{}`",
+                    candidate.program_manifest.display(),
+                    candidate.lane_key,
+                    candidate.run_config.display(),
+                    candidate.workflow.display()
+                ));
+            }
         }
     }
 
@@ -1393,6 +1859,34 @@ struct ImplementationCandidate {
     program_manifest: PathBuf,
     run_config: PathBuf,
     workflow: PathBuf,
+    package_missing: bool,
+}
+
+fn implementation_follow_on_unit_id(candidate: &ImplementationCandidate) -> String {
+    if candidate.unit_id == candidate.lane_id {
+        format!("{}-implementation", candidate.lane_id)
+    } else {
+        format!("{}-{}-implementation", candidate.unit_id, candidate.lane_id)
+    }
+}
+
+fn implementation_follow_on_slug(candidate: &ImplementationCandidate) -> String {
+    implementation_follow_on_unit_id(candidate)
+}
+
+fn implementation_follow_on_title(candidate: &ImplementationCandidate) -> String {
+    implementation_follow_on_unit_id(candidate)
+        .split('-')
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            format!("{}{}", first.to_uppercase(), chars.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1431,16 +1925,20 @@ fn implementation_candidates(
                 continue;
             };
             let text = contents.to_lowercase();
-            if review_says_implementation_blocked(&text) || !review_says_implementation_ready(&text)
+            let lane_key_text = lane_key(&unit.id, &lane.id);
+            let review_ready = review_says_implementation_ready(&text);
+            let settled_follow_on_ready = lane.template != WorkflowTemplate::Implementation
+                && lane.program_manifest.is_none()
+                && lane_artifacts_satisfied(blueprint, &lane_key_text, target_repo)
+                && !lane.produces.iter().any(|artifact_id| artifact_id == "validation_plan");
+            if review_says_implementation_blocked(&text)
+                || (!review_ready && !settled_follow_on_ready)
             {
                 continue;
             }
-            let Some((run_config, workflow)) = missing_implementation_package(target_repo, lane)
-            else {
-                continue;
-            };
+            let (run_config, workflow) = implementation_package_paths(target_repo, lane);
             candidates.push(ImplementationCandidate {
-                lane_key: lane_key(&unit.id, &lane.id),
+                lane_key: lane_key_text,
                 unit_id: unit.id.clone(),
                 lane_id: lane.id.clone(),
                 program_manifest: implementation_program_manifest_path(
@@ -1451,6 +1949,7 @@ fn implementation_candidates(
                 ),
                 run_config,
                 workflow,
+                package_missing: missing_implementation_package(target_repo, lane).is_some(),
             });
         }
     }
@@ -1489,11 +1988,14 @@ fn implementation_blueprint_for_candidate(
         ));
     };
 
-    let spec_path = lane_named_artifact_path(unit, lane, "spec");
+    let spec_path = lane_named_artifact_path_for_follow_on(unit, lane, "spec");
     let review_path = lane_named_artifact_path(unit, lane, "review");
     let artifact_dir = lane_artifact_dir(unit, lane);
     let implementation_path = join_relative(&artifact_dir, "implementation.md");
     let verification_path = join_relative(&artifact_dir, "verification.md");
+    let quality_path = join_relative(&artifact_dir, "quality.md");
+    let promotion_path = join_relative(&artifact_dir, "promotion.md");
+    let integration_path = join_relative(&artifact_dir, "integration.md");
     let evidence = implementation_evidence(unit, lane, target_repo);
     let verify_command = implementation_verify_command(&evidence);
     let program_id = candidate
@@ -1514,14 +2016,27 @@ fn implementation_blueprint_for_candidate(
         workflow_family: Some("implement".to_string()),
         slug: Some(lane.slug().to_string()),
         template: WorkflowTemplate::Implementation,
-        goal: implementation_goal(unit, lane, &spec_path, &review_path),
-        managed_milestone: "verified".to_string(),
+        goal: implementation_goal(
+            unit,
+            lane,
+            &spec_path,
+            &review_path,
+            &quality_path,
+            &promotion_path,
+        ),
+        managed_milestone: "merge_ready".to_string(),
         dependencies: vec![raspberry_supervisor::manifest::LaneDependency {
             unit: unit.id.clone(),
             lane: None,
             milestone: Some("reviewed".to_string()),
         }],
-        produces: vec!["implementation".to_string(), "verification".to_string()],
+        produces: vec![
+            "implementation".to_string(),
+            "verification".to_string(),
+            "quality".to_string(),
+            "promotion".to_string(),
+            "integration".to_string(),
+        ],
         proof_profile: Some(implementation_proof_profile(lane)),
         proof_state_path: None,
         program_manifest: None,
@@ -1534,6 +2049,8 @@ fn implementation_blueprint_for_candidate(
             &review_path,
             &implementation_path,
             &verification_path,
+            &quality_path,
+            &promotion_path,
             &evidence,
         )),
         verify_command: Some(verify_command),
@@ -1571,6 +2088,18 @@ fn implementation_blueprint_for_candidate(
                     id: "verification".to_string(),
                     path: verification_path,
                 },
+                crate::blueprint::BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: quality_path,
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "promotion".to_string(),
+                    path: promotion_path,
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: integration_path,
+                },
             ],
             milestones: vec![
                 raspberry_supervisor::manifest::MilestoneManifest {
@@ -1592,12 +2121,62 @@ fn implementation_blueprint_for_candidate(
                         "review".to_string(),
                         "implementation".to_string(),
                         "verification".to_string(),
+                        "quality".to_string(),
                     ],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "merge_ready".to_string(),
+                    requires: vec![
+                        "spec".to_string(),
+                        "review".to_string(),
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "integrated".to_string(),
+                    requires: vec!["integration".to_string()],
                 },
             ],
             lanes: vec![implementation_lane],
         }],
     })
+}
+
+fn lane_named_artifact_path_for_follow_on(
+    unit: &BlueprintUnit,
+    lane: &BlueprintLane,
+    kind: &str,
+) -> PathBuf {
+    if kind == "spec" {
+        let artifact_ids = if lane.produces.is_empty() {
+            unit.artifacts
+                .iter()
+                .map(|artifact| artifact.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            lane.produces.clone()
+        };
+        if let Some(path) = artifact_ids.iter().find_map(|artifact_id| {
+            unit.artifacts
+                .iter()
+                .find(|artifact| artifact.id == *artifact_id)
+                .filter(|artifact| {
+                    artifact.id != "review"
+                        && artifact
+                            .path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            != Some("review.md")
+                })
+                .map(|artifact| artifact.path.clone())
+        }) {
+            return path;
+        }
+    }
+    lane_named_artifact_path(unit, lane, kind)
 }
 
 fn blocked_review_requirement_findings(
@@ -2074,17 +2653,20 @@ fn implementation_audit_command(
     blueprint: &ProgramBlueprint,
     unit_id: &str,
     lane: &BlueprintLane,
+    promotion_command: &str,
 ) -> String {
     let paths = lane_artifact_paths_relative(blueprint, unit_id, lane);
     if paths.is_empty() {
         return "true".to_string();
     }
 
-    paths
+    let artifact_checks = paths
         .iter()
         .map(|path| format!("test -f {}", path.display()))
         .collect::<Vec<_>>()
-        .join(" && ")
+        .join(" && ");
+
+    format!("{artifact_checks} && {promotion_command}")
 }
 
 fn lane_review_artifact_path(
@@ -2148,6 +2730,19 @@ fn lane_named_artifact_path(unit: &BlueprintUnit, lane: &BlueprintLane, kind: &s
         .unwrap_or_else(|| join_relative(&lane_artifact_dir(unit, lane), &format!("{kind}.md")))
 }
 
+fn lane_named_artifact_path_relative(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane: &BlueprintLane,
+    kind: &str,
+) -> Option<PathBuf> {
+    blueprint
+        .units
+        .iter()
+        .find(|unit| unit.id == unit_id)
+        .map(|unit| lane_named_artifact_path(unit, lane, kind))
+}
+
 fn lane_artifact_dir(unit: &BlueprintUnit, lane: &BlueprintLane) -> PathBuf {
     let artifact_ids = if lane.produces.is_empty() {
         unit.artifacts
@@ -2185,20 +2780,28 @@ fn join_relative(prefix: &Path, file_name: &str) -> PathBuf {
     }
 }
 
+fn run_config_relative_string(path: &Path) -> String {
+    repo_relative_string(path, 3)
+}
+
 fn implementation_goal(
     unit: &BlueprintUnit,
     lane: &BlueprintLane,
     spec_path: &Path,
     review_path: &Path,
+    quality_path: &Path,
+    promotion_path: &Path,
 ) -> String {
     format!(
-        "Implement the next approved `{}` slice.\n\nInputs:\n- `{}`\n- `{}`\n\nScope:\n- work only inside the smallest next approved implementation slice\n- treat the reviewed lane artifacts as the source of truth\n- keep changes aligned with the owned surfaces for `{}`\n\nRequired curated artifacts:\n- `{}`\n- `{}`",
+        "Implement the next approved `{}` slice.\n\nInputs:\n- `{}`\n- `{}`\n\nScope:\n- work only inside the smallest next approved implementation slice\n- treat the reviewed lane artifacts as the source of truth\n- keep changes aligned with the owned surfaces for `{}`\n\nRequired curated artifacts:\n- `{}`\n- `{}`\n- `{}`\n- `{}`",
         lane_key(&unit.id, &lane.id),
         spec_path.display(),
         review_path.display(),
         lane_key(&unit.id, &lane.id),
         join_relative(&lane_artifact_dir(unit, lane), "implementation.md").display(),
         join_relative(&lane_artifact_dir(unit, lane), "verification.md").display(),
+        quality_path.display(),
+        promotion_path.display(),
     )
 }
 
@@ -2207,14 +2810,18 @@ fn implementation_prompt_context(
     review_path: &Path,
     implementation_path: &Path,
     verification_path: &Path,
+    quality_path: &Path,
+    promotion_path: &Path,
     evidence: &ImplementationEvidence,
 ) -> String {
     let mut context = format!(
-        "Use `{}` and `{}` as the approved contract. Implement only the smallest honest next slice, write what changed to `{}`, and write proof results plus remaining risk to `{}`.",
+        "Use `{}` and `{}` as the approved contract. Implement only the smallest honest next slice, write what changed to `{}`, write proof results plus remaining risk to `{}`, rely on the machine-generated quality evidence in `{}`, and write the merge/promotion verdict to `{}`.",
         spec_path.display(),
         review_path.display(),
         implementation_path.display(),
         verification_path.display(),
+        quality_path.display(),
+        promotion_path.display(),
     );
 
     if let Some(first_slice) = &evidence.first_slice {
@@ -2973,6 +3580,15 @@ fn missing_implementation_package(
     target_repo: &Path,
     lane: &BlueprintLane,
 ) -> Option<(PathBuf, PathBuf)> {
+    let (run_config, workflow) = implementation_package_paths(target_repo, lane);
+    if run_config.exists() && workflow.exists() {
+        None
+    } else {
+        Some((run_config, workflow))
+    }
+}
+
+fn implementation_package_paths(target_repo: &Path, lane: &BlueprintLane) -> (PathBuf, PathBuf) {
     let run_config = target_repo
         .join("fabro")
         .join("run-configs")
@@ -2983,11 +3599,7 @@ fn missing_implementation_package(
         .join("workflows")
         .join("implement")
         .join(format!("{}.fabro", lane.slug()));
-    if run_config.exists() && workflow.exists() {
-        None
-    } else {
-        Some((run_config, workflow))
-    }
+    (run_config, workflow)
 }
 
 fn lane_artifacts_satisfied(
@@ -3034,6 +3646,20 @@ fn check_satisfied(check: &raspberry_supervisor::manifest::LaneCheck, target_rep
 
 fn lane_key(unit_id: &str, lane_id: &str) -> String {
     format!("{unit_id}:{lane_id}")
+}
+
+fn source_lane_managed_milestone(
+    blueprint: &ProgramBlueprint,
+    unit_id: &str,
+    lane_id: &str,
+) -> String {
+    blueprint
+        .units
+        .iter()
+        .find(|unit| unit.id == unit_id)
+        .and_then(|unit| unit.lanes.iter().find(|lane| lane.id == lane_id))
+        .map(|lane| lane.managed_milestone.clone())
+        .unwrap_or_else(|| "reviewed".to_string())
 }
 
 fn review_says_implementation_ready(text: &str) -> bool {
@@ -3157,7 +3783,7 @@ fn extract_requirement_detail(line: &str, blocker: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use crate::blueprint::{
         BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram, ProgramBlueprint,
@@ -3165,16 +3791,18 @@ mod tests {
     };
 
     use super::{
-        apply_blocker_contract_tightening, backticked_segments, blocked_review_refs,
+        apply_blocker_contract_tightening, augment_with_implementation_follow_on_units,
+        backticked_segments, blocked_review_refs, implementation_blueprint_for_candidate,
+        implementation_candidates,
         blocker_milestone_refinement_recommendations, execution_guidance_from_slice_notes,
         extract_requirement_detail, first_code_surface_from_markdown,
         first_health_gate_from_markdown, first_proof_gate_from_markdown, first_slice_from_markdown,
         first_slice_work_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
         inline_proof_command, looks_like_shell_command, manual_notes_from_markdown,
         observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
-        raw_lane_refs, render_prompt, render_workflow_graph, review_blocker_lane_refs,
-        review_stage_requirements, setup_notes_from_markdown, slice_notes_from_markdown,
-        trim_list_prefix, LaneCatalogEntry, ReviewStageRequirement,
+        raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
+        review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
+        slice_notes_from_markdown, trim_list_prefix, LaneCatalogEntry, ReviewStageRequirement,
     };
 
     #[test]
@@ -3290,6 +3918,211 @@ Required before validator:oracle implementation-family workflow:
         assert!(recommendations[0].contains("games:poker-engine"));
         assert!(recommendations[0].contains("poker_engine_reviewed"));
         assert!(recommendations[0].contains("Slice 5 (exploitability)"));
+    }
+
+    #[test]
+    fn augment_with_implementation_follow_on_units_adds_child_program_lane() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("outputs/private-control-plane"))
+            .expect("outputs dir");
+        std::fs::write(
+            temp.path()
+                .join("outputs/private-control-plane/review.md"),
+            "implementation lane can begin\n",
+        )
+        .expect("review artifact");
+
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "zend".to_string(),
+                max_parallel: 1,
+                state_path: Some(PathBuf::from(".raspberry/zend-state.json")),
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![crate::blueprint::BlueprintUnit {
+                id: "private-control-plane".to_string(),
+                title: "Private Control Plane".to_string(),
+                output_root: PathBuf::from("outputs/private-control-plane"),
+                artifacts: vec![
+                    crate::blueprint::BlueprintArtifact {
+                        id: "control_plane_contract".to_string(),
+                        path: PathBuf::from("control-plane-contract.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "review".to_string(),
+                        path: PathBuf::from("review.md"),
+                    },
+                ],
+                milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "reviewed".to_string(),
+                    requires: vec![
+                        "control_plane_contract".to_string(),
+                        "review".to_string(),
+                    ],
+                }],
+                lanes: vec![BlueprintLane {
+                    id: "private-control-plane".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Private Control Plane Lane".to_string(),
+                    family: "bootstrap".to_string(),
+                    workflow_family: Some("bootstrap".to_string()),
+                    slug: Some("private-control-plane".to_string()),
+                    template: WorkflowTemplate::Bootstrap,
+                    goal: "Bootstrap the private control plane.".to_string(),
+                    managed_milestone: "reviewed".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "control_plane_contract".to_string(),
+                        "review".to_string(),
+                    ],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let evolved =
+            augment_with_implementation_follow_on_units(blueprint, temp.path()).expect("augment");
+
+        assert!(evolved
+            .units
+            .iter()
+            .any(|unit| unit.id == "private-control-plane-implementation"));
+        let program_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "private-control-plane-implementation")
+            .expect("program unit exists");
+        let program_lane = program_unit
+            .lanes
+            .first()
+            .expect("program lane exists");
+        assert_eq!(program_lane.template, WorkflowTemplate::Orchestration);
+        assert_eq!(
+            program_lane.program_manifest.as_deref(),
+            Some(Path::new(
+                "fabro/programs/zend-private-control-plane-private-control-plane-implementation.yaml"
+            ))
+        );
+
+        let candidate = implementation_candidates(&evolved, temp.path())
+            .into_iter()
+            .find(|candidate| candidate.lane_key == "private-control-plane:private-control-plane")
+            .expect("candidate exists");
+        let implementation_blueprint = implementation_blueprint_for_candidate(
+            &evolved,
+            &candidate,
+            temp.path(),
+        )
+        .expect("implementation blueprint");
+        let unit = implementation_blueprint
+            .units
+            .first()
+            .expect("implementation unit exists");
+        let spec_artifact = unit
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "spec")
+            .expect("spec artifact exists");
+        assert_eq!(spec_artifact.path, PathBuf::from("control-plane-contract.md"));
+    }
+
+    #[test]
+    fn augment_with_implementation_follow_on_units_uses_settled_bootstrap_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("outputs/private-control-plane"))
+            .expect("outputs dir");
+        std::fs::write(
+            temp.path()
+                .join("outputs/private-control-plane/review.md"),
+            "bootstrap slice reviewed\n",
+        )
+        .expect("review artifact");
+        std::fs::write(
+            temp.path()
+                .join("outputs/private-control-plane/control-plane-contract.md"),
+            "contract\n",
+        )
+        .expect("primary artifact");
+
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "zend".to_string(),
+                max_parallel: 1,
+                state_path: Some(PathBuf::from(".raspberry/zend-state.json")),
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![crate::blueprint::BlueprintUnit {
+                id: "private-control-plane".to_string(),
+                title: "Private Control Plane".to_string(),
+                output_root: PathBuf::from("outputs/private-control-plane"),
+                artifacts: vec![
+                    crate::blueprint::BlueprintArtifact {
+                        id: "control_plane_contract".to_string(),
+                        path: PathBuf::from("control-plane-contract.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "review".to_string(),
+                        path: PathBuf::from("review.md"),
+                    },
+                ],
+                milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "reviewed".to_string(),
+                    requires: vec![
+                        "control_plane_contract".to_string(),
+                        "review".to_string(),
+                    ],
+                }],
+                lanes: vec![BlueprintLane {
+                    id: "private-control-plane".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Private Control Plane Lane".to_string(),
+                    family: "bootstrap".to_string(),
+                    workflow_family: Some("bootstrap".to_string()),
+                    slug: Some("private-control-plane".to_string()),
+                    template: WorkflowTemplate::Bootstrap,
+                    goal: "Bootstrap the private control plane.".to_string(),
+                    managed_milestone: "reviewed".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "control_plane_contract".to_string(),
+                        "review".to_string(),
+                    ],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let evolved =
+            augment_with_implementation_follow_on_units(blueprint, temp.path()).expect("augment");
+
+        assert!(evolved
+            .units
+            .iter()
+            .any(|unit| unit.id == "private-control-plane-implementation"));
     }
 
     #[test]
@@ -3726,9 +4559,12 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(plan.contains("Implementation artifact must cover"));
         assert!(plan.contains("Verification artifact must cover"));
+        assert!(plan.contains("do not hand-author `quality.md`"));
         assert!(review.contains("Review only the current slice"));
+        assert!(review.contains("treat `quality.md` as machine-generated truth"));
         assert!(review.contains("Current slice"));
         assert!(polish.contains("# Gameplay TUI Implementation Lane — Fixup"));
+        assert!(polish.contains("do not hand-author `quality.md`"));
         assert!(polish.contains("stay within the named slice and touched surfaces"));
     }
 
@@ -3775,12 +4611,138 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             &lane,
             "cargo test -p myosu-miner -- --test-threads=1",
             "set -e\ncurl http://{ip}:{port}/health",
-            "test -f outputs/miner/service/implementation.md && test -f outputs/miner/service/verification.md",
+            "test -f outputs/miner/service/implementation.md && test -f outputs/miner/service/verification.md && test -f outputs/miner/service/quality.md && grep -Eq '^merge_ready: yes$' outputs/miner/service/promotion.md",
+            "test -f outputs/miner/service/quality.md",
         );
 
         assert!(graph.contains("label=\"Health\""));
+        assert!(graph.contains("label=\"Quality Gate\""));
         assert!(graph.contains("verify -> health"));
-        assert!(graph.contains("health -> review"));
+        assert!(graph.contains("health -> quality"));
+        assert!(graph.contains("quality -> settle [condition=\"outcome=success\"]"));
+        assert!(graph.contains("settle -> audit [condition=\"outcome=success\"]"));
+        assert!(graph.contains("settle -> fixup"));
+        assert!(graph.contains("audit -> fixup"));
+        assert!(!graph.contains("promotion_check"));
+    }
+
+    #[test]
+    fn implementation_run_config_enables_direct_integration() {
+        let lane = BlueprintLane {
+            id: "tui-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Gameplay TUI Implementation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("play-tui".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement the next approved `play:tui` slice.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let run_config =
+            render_run_config(&lane, Some(Path::new("outputs/play/tui/integration.md")));
+        assert!(run_config.contains("worktree_mode = \"always\""));
+        assert!(run_config.contains("[llm]"));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("[sandbox.env]"));
+        assert!(run_config.contains("ANTHROPIC_BASE_URL = \"https://api.minimax.io/anthropic\""));
+        assert!(run_config.contains("ANTHROPIC_AUTH_TOKEN = \"${env.MINIMAX_API_KEY}\""));
+        assert!(run_config.contains("[integration]"));
+        assert!(run_config.contains("enabled = true"));
+        assert!(run_config.contains("artifact_path = \"../../../outputs/play/tui/integration.md\""));
+    }
+
+    #[test]
+    fn bootstrap_run_config_uses_minimax_defaults_and_direct_integration() {
+        let lane = BlueprintLane {
+            id: "private-control-plane".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Private Control Plane".to_string(),
+            family: "bootstrap".to_string(),
+            workflow_family: Some("bootstrap".to_string()),
+            slug: Some("private-control-plane".to_string()),
+            template: WorkflowTemplate::Bootstrap,
+            goal: "Bootstrap the private control plane.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let run_config = render_run_config(&lane, None);
+
+        assert!(run_config.contains("[llm]"));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("[sandbox.env]"));
+        assert!(run_config.contains("ANTHROPIC_AUTH_TOKEN = \"${env.MINIMAX_API_KEY}\""));
+        assert!(run_config.contains("worktree_mode = \"clean\""));
+        assert!(run_config.contains("[integration]"));
+        assert!(run_config.contains("enabled = true"));
+        assert!(!run_config.contains("artifact_path = "));
+    }
+
+    #[test]
+    fn service_bootstrap_run_config_enables_direct_integration() {
+        let lane = BlueprintLane {
+            id: "home-miner-service".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "Home Miner Service".to_string(),
+            family: "service_bootstrap".to_string(),
+            workflow_family: Some("service_bootstrap".to_string()),
+            slug: Some("home-miner-service".to_string()),
+            template: WorkflowTemplate::ServiceBootstrap,
+            goal: "Bootstrap the home miner service.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let run_config = render_run_config(&lane, None);
+
+        assert!(run_config.contains("[llm]"));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("[integration]"));
+        assert!(run_config.contains("enabled = true"));
+        assert!(!run_config.contains("artifact_path = "));
     }
 }
 
@@ -3874,66 +4836,6 @@ fn write_file(
     Ok(())
 }
 
-fn copy_existing_lane_package(
-    current_repo: &Path,
-    output_layout: &PackageLayout<'_>,
-    lane: &BlueprintLane,
-) -> Result<Vec<PathBuf>, RenderError> {
-    let current_layout = CurrentPackageLayout::new(current_repo);
-    let mut written_files = Vec::new();
-
-    copy_file(
-        &current_layout.workflow_path(lane),
-        &output_layout.workflow_path(lane),
-        &mut written_files,
-    )?;
-    copy_file(
-        &current_layout.run_config_path(lane),
-        &output_layout.run_config_path(lane),
-        &mut written_files,
-    )?;
-
-    let current_prompt_dir = current_layout.prompt_dir(lane);
-    if current_prompt_dir.exists() {
-        for entry in walkdir::WalkDir::new(&current_prompt_dir)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            if entry.file_type().is_dir() {
-                continue;
-            }
-            let relative = entry
-                .path()
-                .strip_prefix(&current_prompt_dir)
-                .unwrap_or(entry.path());
-            let destination = output_layout.prompt_dir(lane).join(relative);
-            copy_file(entry.path(), &destination, &mut written_files)?;
-        }
-    }
-
-    Ok(written_files)
-}
-
-fn copy_file(
-    source: &Path,
-    destination: &Path,
-    written_files: &mut Vec<PathBuf>,
-) -> Result<(), RenderError> {
-    if !source.exists() {
-        return Ok(());
-    }
-    if source == destination {
-        return Ok(());
-    }
-    ensure_parent(destination)?;
-    std::fs::copy(source, destination).map_err(|source_err| RenderError::Write {
-        path: destination.to_path_buf(),
-        source: source_err,
-    })?;
-    written_files.push(destination.to_path_buf());
-    Ok(())
-}
-
 fn ensure_parent(path: &Path) -> Result<(), RenderError> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -3949,41 +4851,6 @@ fn escape_graph_attr(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
-}
-
-struct CurrentPackageLayout<'a> {
-    target_repo: &'a Path,
-}
-
-impl<'a> CurrentPackageLayout<'a> {
-    fn new(target_repo: &'a Path) -> Self {
-        Self { target_repo }
-    }
-
-    fn fabro_root(&self) -> PathBuf {
-        self.target_repo.join("fabro")
-    }
-
-    fn run_config_path(&self, lane: &BlueprintLane) -> PathBuf {
-        self.fabro_root()
-            .join("run-configs")
-            .join(&lane.family)
-            .join(format!("{}.toml", lane.slug()))
-    }
-
-    fn workflow_path(&self, lane: &BlueprintLane) -> PathBuf {
-        self.fabro_root()
-            .join("workflows")
-            .join(lane.workflow_family())
-            .join(format!("{}.fabro", lane.slug()))
-    }
-
-    fn prompt_dir(&self, lane: &BlueprintLane) -> PathBuf {
-        self.fabro_root()
-            .join("prompts")
-            .join(lane.workflow_family())
-            .join(lane.slug())
-    }
 }
 
 struct PackageLayout<'a> {
@@ -4165,11 +5032,7 @@ impl ManifestLaneOut {
                 .orchestration_state_path
                 .as_ref()
                 .map(|path| repo_relative_string(path, 2)),
-            checks: lane
-                .checks
-                .iter()
-                .map(manifest_check)
-                .collect(),
+            checks: lane.checks.iter().map(manifest_check).collect(),
             run_dir: lane
                 .run_dir
                 .as_ref()
@@ -4183,7 +5046,11 @@ fn manifest_check(check: &LaneCheck) -> LaneCheck {
         LaneCheckProbe::FileExists { path } => LaneCheckProbe::FileExists {
             path: PathBuf::from(repo_relative_string(path, 2)),
         },
-        LaneCheckProbe::JsonFieldEquals { path, field, equals } => LaneCheckProbe::JsonFieldEquals {
+        LaneCheckProbe::JsonFieldEquals {
+            path,
+            field,
+            equals,
+        } => LaneCheckProbe::JsonFieldEquals {
             path: PathBuf::from(repo_relative_string(path, 2)),
             field: field.clone(),
             equals: equals.clone(),

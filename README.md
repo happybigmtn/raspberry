@@ -56,6 +56,88 @@ curl -fsSL https://fabro.sh/install.sh | bash
 
 ---
 
+## Raspberry Supervisory Plane
+
+This repository now contains two layers:
+
+- **Fabro** — the workflow execution substrate
+- **Raspberry** — the supervisory plane above it
+
+Fabro runs individual staged workflows. Raspberry supervises whole repository
+programs made of units, lanes, milestones, proof checks, child programs, and
+autonomous execution loops.
+
+If you are trying to understand "what all the new control-plane work does", the
+short version is:
+
+- `fabro/programs/*.yaml` declares supervised programs
+- Raspberry evaluates lane readiness from dependencies, checks, and durable artifacts
+- `raspberry execute` dispatches ready work
+- `raspberry autodev` runs bounded autonomous cycles over a real repo/worktree
+- `raspberry tui` gives you a read-only operator dashboard
+- `fabro synth import/create/evolve` now manages repo-shaped `fabro/` packages
+- implementation-family lanes now use deterministic `quality.md` and
+  `promotion.md` gates instead of trusting prose-only completion
+
+The main operator commands are:
+
+```bash
+raspberry plan --manifest fabro/programs/myosu.yaml
+raspberry status --manifest fabro/programs/myosu.yaml
+raspberry watch --manifest fabro/programs/myosu.yaml
+raspberry execute --manifest fabro/programs/myosu.yaml
+raspberry autodev --manifest fabro/programs/myosu.yaml
+raspberry tui --manifest fabro/programs/myosu.yaml
+```
+
+The main synthesis commands are:
+
+```bash
+fabro synth import --target-repo /path/to/repo --program myosu --output /tmp/myosu.yaml
+fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
+fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /path/to/repo
+```
+
+### What Raspberry Adds
+
+| Capability | What it means |
+| --- | --- |
+| Program manifests | One repo can be modeled as units, lanes, artifacts, milestones, and child programs |
+| Lane readiness | Raspberry decides what is blocked, ready, running, failed, or complete |
+| Durable operator truth | `.raspberry/*-state.json` and `*-autodev.json` record program-level state over time |
+| Bounded autodev | Autonomous cycles dispatch ready work, evolve the package when appropriate, and stop cleanly |
+| Blueprint-first synthesis | Repo workflow trees are imported, created, and evolved through deterministic blueprints |
+| Implementation quality gates | `quality.md` records placeholder debt, warning debt, artifact mismatch risk, and manual follow-up before promotion |
+| Operator TUI | A grouped, filterable terminal dashboard with lane state, artifacts, detail panes, and cached narration |
+
+### The Mental Model
+
+```text
+requirements/specs/doctrine
+        |
+        v
+  blueprint (synth import/create/evolve)
+        |
+        v
+checked-in fabro/ package
+        |
+        v
+ raspberry supervisor
+        |
+        +--> outputs/**/*
+        +--> .raspberry/*-state.json
+        +--> .raspberry/*-autodev.json
+        +--> ~/.fabro/runs/<run-id>
+```
+
+For the full walkthrough, read:
+
+- [From Specs to Blueprints](https://docs.fabro.sh/guides/from-specs-to-blueprint)
+- [Raspberry Supervisory Plane](https://docs.fabro.sh/reference/raspberry)
+- [Raspberry Operator Runbook](https://docs.fabro.sh/guides/raspberry-operator-runbook)
+
+---
+
 ## Example Workflow
 
 A plan-approve-implement workflow where a human reviews the plan before the agent writes code:

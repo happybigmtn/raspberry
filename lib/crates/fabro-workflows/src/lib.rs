@@ -141,6 +141,7 @@ pub mod condition;
 pub mod context;
 pub mod cost;
 pub mod devcontainer_bridge;
+pub mod direct_integration;
 pub mod engine;
 pub mod error;
 pub mod event;

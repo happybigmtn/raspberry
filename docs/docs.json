@@ -105,6 +105,7 @@
               "reference/dot-language",
               "reference/cli",
               "reference/cli-configuration",
+              "reference/raspberry",
               "reference/run-directory",
               "reference/sdk",
               "reference/architecture",
@@ -124,7 +125,10 @@
           {
             "group": "Overview",
             "icon": "compass",
-            "pages": []
+            "pages": [
+              "guides/from-specs-to-blueprint",
+              "guides/raspberry-operator-runbook"
+            ]
           },
           {
             "group": "Workflow Tutorials",

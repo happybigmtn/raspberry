@@ -19,12 +19,10 @@ const REF_PROGRAM_SYNTHESIS: &str =
     include_str!("../../../../skills/fabro-create-workflow/references/program-synthesis.md");
 const REF_PROGRAM_INTERVIEW: &str =
     include_str!("../../../../skills/fabro-create-workflow/references/program-interview.md");
-const REF_PROGRAM_BLUEPRINT_SCHEMA: &str = include_str!(
-    "../../../../skills/fabro-create-workflow/references/program-blueprint-schema.md"
-);
-const REF_PROGRAM_EVOLUTION: &str = include_str!(
-    "../../../../skills/fabro-create-workflow/references/program-evolution.md"
-);
+const REF_PROGRAM_BLUEPRINT_SCHEMA: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/program-blueprint-schema.md");
+const REF_PROGRAM_EVOLUTION: &str =
+    include_str!("../../../../skills/fabro-create-workflow/references/program-evolution.md");
 
 const SKILL_FILES: &[(&str, &str)] = &[
     ("SKILL.md", SKILL_MD),
@@ -39,10 +37,7 @@ const SKILL_FILES: &[(&str, &str)] = &[
         "references/program-blueprint-schema.md",
         REF_PROGRAM_BLUEPRINT_SCHEMA,
     ),
-    (
-        "references/program-evolution.md",
-        REF_PROGRAM_EVOLUTION,
-    ),
+    ("references/program-evolution.md", REF_PROGRAM_EVOLUTION),
 ];
 
 #[derive(Clone, ValueEnum)]

@@ -9,10 +9,12 @@ use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::evaluate::LaneExecutionStatus;
+use crate::evaluate::EvaluatedProgram;
+use crate::evaluate::{evaluate_program_internal, LaneExecutionStatus};
 use crate::manifest::ProgramManifest;
 
 const PROGRAM_STATE_SCHEMA_VERSION: &str = "raspberry.program.v2";
+const STALE_RUNNING_GRACE_SECS: i64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramRuntimeState {
@@ -65,6 +67,7 @@ pub struct LaneRuntimeRecord {
 pub struct LiveLaneProgress {
     pub fabro_run_id: Option<String>,
     pub workflow_status: Option<RunStatus>,
+    pub worker_alive: Option<bool>,
     pub current_stage_label: Option<String>,
     pub last_completed_stage_label: Option<String>,
     pub last_stage_duration_ms: Option<u64>,
@@ -203,11 +206,7 @@ pub fn mark_lane_submitted(
     state.updated_at = now;
 }
 
-pub fn mark_lane_started(
-    state: &mut ProgramRuntimeState,
-    lane_key: &str,
-    run_config: &Path,
-) {
+pub fn mark_lane_started(state: &mut ProgramRuntimeState, lane_key: &str, run_config: &Path) {
     let now = Utc::now();
     let record = ensure_lane_record(state, lane_key, run_config);
     record.status = LaneExecutionStatus::Running;
@@ -254,29 +253,81 @@ pub fn mark_lane_dispatch_failed(
     state.updated_at = now;
 }
 
+pub fn mark_lane_finished(
+    state: &mut ProgramRuntimeState,
+    lane_key: &str,
+    run_config: &Path,
+    outcome: &crate::dispatch::DispatchOutcome,
+) {
+    let now = Utc::now();
+    let record = ensure_lane_record(state, lane_key, run_config);
+    record.status = if outcome.exit_status == 0 {
+        LaneExecutionStatus::Complete
+    } else {
+        LaneExecutionStatus::Failed
+    };
+    record.current_run_id = None;
+    record.current_fabro_run_id = outcome.fabro_run_id.clone();
+    record.current_stage_label = None;
+    if outcome.fabro_run_id.is_some() {
+        record.last_run_id = outcome.fabro_run_id.clone();
+    }
+    if record.last_started_at.is_none() {
+        record.last_started_at = Some(now);
+    }
+    record.last_finished_at = Some(now);
+    record.last_exit_status = Some(outcome.exit_status);
+    record.last_completed_stage_label = None;
+    record.last_stage_duration_ms = None;
+    record.last_error = if outcome.exit_status == 0 {
+        None
+    } else {
+        Some(summarize_failure(outcome))
+    };
+    record.last_usage_summary = Some(operator_summary(outcome));
+    record.last_files_read = Vec::new();
+    record.last_files_written = Vec::new();
+    record.last_stdout_snippet = non_empty_snippet(&outcome.stdout);
+    record.last_stderr_snippet = non_empty_snippet(&outcome.stderr);
+    state.updated_at = now;
+}
+
 pub fn refresh_program_state(
     manifest_path: &Path,
     manifest: &ProgramManifest,
     state: &mut ProgramRuntimeState,
 ) -> Result<bool, ProgramStateError> {
     let mut changed = false;
+    let mut expected_lane_keys = std::collections::BTreeSet::new();
     for (unit_id, unit) in &manifest.units {
         for (lane_id, lane) in &unit.lanes {
             let lane_key = format!("{unit_id}:{lane_id}");
+            expected_lane_keys.insert(lane_key.clone());
             let run_config = manifest
                 .resolve_lane_run_config(manifest_path, unit_id, lane_id)
                 .unwrap_or_else(|| lane.run_config.clone());
             let record = ensure_lane_record(state, &lane_key, &run_config);
-            let progress = if let Some(run_id) = tracked_run_id(record) {
-                read_live_lane_progress_for_run_id(run_id)?
-            } else if let Some(run_dir) =
-                manifest.resolve_lane_run_dir(manifest_path, unit_id, lane_id)
+            if let Some(child_manifest) =
+                manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id)
             {
-                read_live_lane_progress(&run_dir)?
+                if sync_child_program_runtime_record(record, &child_manifest) {
+                    changed = true;
+                }
+                continue;
+            }
+            let resolved_run_dir = manifest.resolve_lane_run_dir(manifest_path, unit_id, lane_id);
+            let progress = if let Some(run_id) = tracked_run_id(record) {
+                read_live_lane_progress_for_run_id(run_id)?.or_else(|| {
+                    resolved_run_dir
+                        .as_ref()
+                        .and_then(|run_dir| read_live_lane_progress(run_dir).ok().flatten())
+                })
+            } else if let Some(run_dir) = resolved_run_dir.as_ref() {
+                read_live_lane_progress(run_dir)?
             } else {
                 None
             };
-            let Some(progress) = progress else {
+            let Some(mut progress) = progress else {
                 continue;
             };
             let mut lane_changed = false;
@@ -305,6 +356,38 @@ pub fn refresh_program_state(
             );
             lane_changed |= assign_opt(&mut record.last_error, progress.last_failure.clone());
             lane_changed |= assign_opt(&mut record.last_finished_at, progress.finished_at);
+            if stale_active_progress(&progress, record.last_started_at) {
+                if record.status != LaneExecutionStatus::Failed {
+                    record.status = LaneExecutionStatus::Failed;
+                    lane_changed = true;
+                }
+                if record.last_error.is_none() {
+                    record.last_error = Some(
+                        "tracked run remained active after its worker process disappeared"
+                            .to_string(),
+                    );
+                    lane_changed = true;
+                }
+                let finished_at = progress.updated_at.unwrap_or_else(Utc::now);
+                if record.last_finished_at != Some(finished_at) {
+                    record.last_finished_at = Some(finished_at);
+                    lane_changed = true;
+                }
+                if record.last_exit_status != Some(1) {
+                    record.last_exit_status = Some(1);
+                    lane_changed = true;
+                }
+                if record.current_stage_label.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_fabro_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                progress.workflow_status = Some(RunStatus::Failed);
+            }
             if record.last_files_read != progress.last_files_read {
                 record.last_files_read = progress.last_files_read.clone();
                 lane_changed = true;
@@ -328,6 +411,15 @@ pub fn refresh_program_state(
                         record.status = LaneExecutionStatus::Ready;
                         lane_changed = true;
                     }
+                    if record.current_stage_label.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_fabro_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
                     if record.last_exit_status != Some(0) {
                         record.last_exit_status = Some(0);
                         lane_changed = true;
@@ -336,6 +428,15 @@ pub fn refresh_program_state(
                 Some(RunStatus::Failed | RunStatus::Dead) => {
                     if record.status != LaneExecutionStatus::Failed {
                         record.status = LaneExecutionStatus::Failed;
+                        lane_changed = true;
+                    }
+                    if record.current_stage_label.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_fabro_run_id.take().is_some() {
                         lane_changed = true;
                     }
                 }
@@ -353,13 +454,261 @@ pub fn refresh_program_state(
             }
         }
     }
+    let original_len = state.lanes.len();
+    state.lanes.retain(|lane_key, _| expected_lane_keys.contains(lane_key));
+    if state.lanes.len() != original_len {
+        changed = true;
+    }
     if changed {
         state.updated_at = Utc::now();
     }
     Ok(changed)
 }
 
+pub fn sync_program_state_with_evaluated(
+    state: &mut ProgramRuntimeState,
+    program: &EvaluatedProgram,
+) -> bool {
+    let mut changed = false;
+    for lane in &program.lanes {
+        let record = ensure_lane_record(state, &lane.lane_key, &lane.run_config);
+        changed |= assign_value(&mut record.status, lane.status);
+        changed |= assign_opt(&mut record.current_run_id, lane.current_run_id.clone());
+        changed |= assign_opt(
+            &mut record.current_fabro_run_id,
+            lane.current_fabro_run_id.clone(),
+        );
+        changed |= assign_opt(&mut record.current_stage_label, lane.current_stage.clone());
+        changed |= assign_opt(&mut record.last_run_id, lane.last_run_id.clone());
+        changed |= assign_opt(&mut record.last_started_at, lane.last_started_at);
+        changed |= assign_opt(&mut record.last_finished_at, lane.last_finished_at);
+        changed |= assign_opt(&mut record.last_exit_status, lane.last_exit_status);
+        changed |= assign_opt(&mut record.last_error, lane.last_error.clone());
+        changed |= assign_opt(
+            &mut record.last_completed_stage_label,
+            lane.last_completed_stage_label.clone(),
+        );
+        changed |= assign_opt(
+            &mut record.last_stage_duration_ms,
+            lane.last_stage_duration_ms,
+        );
+        changed |= assign_opt(
+            &mut record.last_usage_summary,
+            lane.last_usage_summary.clone(),
+        );
+        if record.last_files_read != lane.last_files_read {
+            record.last_files_read = lane.last_files_read.clone();
+            changed = true;
+        }
+        if record.last_files_written != lane.last_files_written {
+            record.last_files_written = lane.last_files_written.clone();
+            changed = true;
+        }
+        changed |= assign_opt(
+            &mut record.last_stdout_snippet,
+            lane.last_stdout_snippet.clone(),
+        );
+        changed |= assign_opt(
+            &mut record.last_stderr_snippet,
+            lane.last_stderr_snippet.clone(),
+        );
+    }
+    if changed {
+        state.updated_at = Utc::now();
+    }
+    changed
+}
+
+fn sync_child_program_runtime_record(
+    record: &mut LaneRuntimeRecord,
+    child_manifest: &Path,
+) -> bool {
+    let mut child_has_ready = false;
+    let mut child_has_running = false;
+    let mut child_has_failed = false;
+    let mut child_running_record: Option<LaneRuntimeRecord> = None;
+    let mut child_failed_record: Option<LaneRuntimeRecord> = None;
+    let mut latest_started_at: Option<DateTime<Utc>> = None;
+    let mut latest_finished_at: Option<DateTime<Utc>> = None;
+    if let Ok(child_manifest_spec) = ProgramManifest::load(child_manifest) {
+        let state_path = child_manifest_spec.resolved_state_path(child_manifest);
+        if let Ok(child_state) = ProgramRuntimeState::load_optional(&state_path) {
+            let mut child_state = child_state
+                .unwrap_or_else(|| ProgramRuntimeState::new(child_manifest_spec.program.clone()));
+            if let Ok(changed) =
+                refresh_program_state(child_manifest, &child_manifest_spec, &mut child_state)
+            {
+                if changed {
+                    let _ = child_state.save(&state_path);
+                }
+            }
+            child_has_running = child_state.lanes.values().any(|lane| {
+                lane.status == LaneExecutionStatus::Running && lane.last_finished_at.is_none()
+            });
+            child_has_ready = child_state
+                .lanes
+                .values()
+                .any(|lane| lane.status == LaneExecutionStatus::Ready);
+            child_has_failed = child_state
+                .lanes
+                .values()
+                .any(|lane| lane.status == LaneExecutionStatus::Failed);
+            child_running_record = child_state
+                .lanes
+                .values()
+                .filter(|lane| {
+                    lane.status == LaneExecutionStatus::Running && lane.last_finished_at.is_none()
+                })
+                .max_by_key(|lane| lane.last_started_at)
+                .cloned();
+            child_failed_record = child_state
+                .lanes
+                .values()
+                .filter(|lane| lane.status == LaneExecutionStatus::Failed)
+                .max_by_key(|lane| lane.last_finished_at.or(lane.last_started_at))
+                .cloned();
+            latest_started_at = child_state
+                .lanes
+                .values()
+                .filter_map(|lane| lane.last_started_at)
+                .max();
+            latest_finished_at = child_state
+                .lanes
+                .values()
+                .filter_map(|lane| lane.last_finished_at)
+                .max();
+        }
+    }
+    let Ok(program) = evaluate_program_internal(child_manifest, false) else {
+        return false;
+    };
+    let mut ready = 0usize;
+    let mut running = 0usize;
+    let mut failed = 0usize;
+    let mut complete = 0usize;
+    for lane in &program.lanes {
+        match lane.status {
+            LaneExecutionStatus::Ready => ready += 1,
+            LaneExecutionStatus::Running => running += 1,
+            LaneExecutionStatus::Failed => failed += 1,
+            LaneExecutionStatus::Complete => complete += 1,
+            LaneExecutionStatus::Blocked => {}
+        }
+    }
+
+    let next_status = if child_has_running || running > 0 {
+        LaneExecutionStatus::Running
+    } else if child_has_failed || failed > 0 {
+        LaneExecutionStatus::Failed
+    } else if child_has_ready {
+        LaneExecutionStatus::Ready
+    } else if complete == program.lanes.len() && !program.lanes.is_empty() {
+        LaneExecutionStatus::Complete
+    } else if ready > 0 {
+        LaneExecutionStatus::Ready
+    } else {
+        LaneExecutionStatus::Blocked
+    };
+
+    let was_running = record.status == LaneExecutionStatus::Running;
+    let mut changed = false;
+    if record.status != next_status {
+        record.status = next_status;
+        changed = true;
+    }
+    if let Some(child) = child_running_record.as_ref() {
+        changed |= assign_opt(&mut record.current_run_id, child.current_run_id.clone());
+        changed |= assign_opt(
+            &mut record.current_fabro_run_id,
+            child.current_fabro_run_id.clone(),
+        );
+        changed |= assign_opt(
+            &mut record.current_stage_label,
+            child.current_stage_label.clone(),
+        );
+        changed |= assign_opt(&mut record.last_started_at, child.last_started_at);
+        changed |= assign_opt(&mut record.last_run_id, child.last_run_id.clone());
+        changed |= assign_opt(
+            &mut record.last_completed_stage_label,
+            child.last_completed_stage_label.clone(),
+        );
+        changed |= assign_opt(
+            &mut record.last_stage_duration_ms,
+            child.last_stage_duration_ms,
+        );
+        changed |= assign_opt(
+            &mut record.last_usage_summary,
+            child.last_usage_summary.clone(),
+        );
+        if record.last_error.take().is_some() {
+            changed = true;
+        }
+        if record.last_exit_status.take().is_some() {
+            changed = true;
+        }
+    } else {
+        if record.current_run_id.take().is_some() {
+            changed = true;
+        }
+        if record.current_fabro_run_id.take().is_some() {
+            changed = true;
+        }
+        if next_status != LaneExecutionStatus::Running && record.current_stage_label.take().is_some()
+        {
+            changed = true;
+        }
+        changed |= assign_opt(&mut record.last_started_at, latest_started_at);
+    }
+    if let Some(child) = child_failed_record.as_ref() {
+        changed |= assign_opt(&mut record.last_error, child.last_error.clone());
+        changed |= assign_opt(&mut record.last_finished_at, child.last_finished_at);
+        changed |= assign_opt(&mut record.last_exit_status, child.last_exit_status);
+        changed |= assign_opt(
+            &mut record.last_completed_stage_label,
+            child.last_completed_stage_label.clone(),
+        );
+        changed |= assign_opt(
+            &mut record.last_stage_duration_ms,
+            child.last_stage_duration_ms,
+        );
+        changed |= assign_opt(
+            &mut record.last_usage_summary,
+            child.last_usage_summary.clone(),
+        );
+    } else {
+        if next_status != LaneExecutionStatus::Failed && record.last_error.take().is_some() {
+            changed = true;
+        }
+        if next_status == LaneExecutionStatus::Complete {
+            changed |= assign_opt(&mut record.last_exit_status, Some(0));
+        }
+        if next_status != LaneExecutionStatus::Running {
+            changed |= assign_opt(&mut record.last_finished_at, latest_finished_at);
+        }
+    }
+    if was_running
+        && next_status != LaneExecutionStatus::Running
+        && record.last_finished_at.is_none()
+    {
+        record.last_finished_at = Some(Utc::now());
+        changed = true;
+    }
+    if next_status == LaneExecutionStatus::Running && record.last_finished_at.take().is_some() {
+        changed = true;
+    }
+    changed
+}
+
 fn assign_opt<T: PartialEq>(slot: &mut Option<T>, next: Option<T>) -> bool {
+    if *slot != next {
+        *slot = next;
+        true
+    } else {
+        false
+    }
+}
+
+fn assign_value<T: PartialEq>(slot: &mut T, next: T) -> bool {
     if *slot != next {
         *slot = next;
         true
@@ -380,11 +729,13 @@ fn read_live_lane_progress_for_run_id(
     run_id: &str,
 ) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
     let base = fabro_workflows::run_lookup::default_runs_base();
-    let inspection = match inspect_run(&base, run_id) {
-        Ok(inspection) => inspection,
-        Err(_) => return Ok(None),
+    if let Ok(inspection) = inspect_run(&base, run_id) {
+        return Ok(Some(live_lane_progress_from_inspection(&inspection)));
+    }
+    let Ok(run_dir) = fabro_workflows::run_lookup::find_run_by_prefix(&base, run_id) else {
+        return Ok(None);
     };
-    Ok(Some(live_lane_progress_from_inspection(&inspection)))
+    read_live_lane_progress(&run_dir)
 }
 
 fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
@@ -392,6 +743,7 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
     let run_state = RunLiveState::load(&state_path).ok();
     let run_status = RunStatusRecord::load(&run_root.join("status.json")).ok();
     let conclusion = Conclusion::load(&run_root.join("conclusion.json")).ok();
+    let cli_activity_at = latest_cli_activity_at(run_root);
     let progress_path = run_root.join("progress.jsonl");
     let contents = match std::fs::read_to_string(&progress_path) {
         Ok(contents) => contents,
@@ -410,6 +762,7 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
             .as_ref()
             .map(|state| state.status)
             .or_else(|| run_status.as_ref().map(|status| status.status)),
+        worker_alive: worker_process_alive(run_root),
         current_stage_label: run_state
             .as_ref()
             .and_then(|state| state.current_stage_label.clone()),
@@ -419,7 +772,7 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         last_failure: run_state
             .as_ref()
             .and_then(|state| state.last_failure.clone()),
-        updated_at: run_state.as_ref().map(|state| state.updated_at),
+        updated_at: max_datetime(run_state.as_ref().map(|state| state.updated_at), cli_activity_at),
         finished_at: conclusion.as_ref().map(|conclusion| conclusion.timestamp),
         ..LiveLaneProgress::default()
     };
@@ -494,11 +847,88 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
     Ok(Some(progress))
 }
 
+fn worker_process_alive(run_root: &Path) -> Option<bool> {
+    let pid = match std::fs::read_to_string(run_root.join("run.pid")) {
+        Ok(pid) => pid,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+    };
+    let pid = pid.trim();
+    if pid.is_empty() {
+        return Some(false);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return Some(Path::new("/proc").join(pid).exists());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        Some(false)
+    }
+}
+
+fn latest_cli_activity_at(run_root: &Path) -> Option<DateTime<Utc>> {
+    let nodes_dir = run_root.join("nodes");
+    let entries = std::fs::read_dir(nodes_dir).ok()?;
+    let mut latest = None;
+    for entry in entries.filter_map(Result::ok) {
+        let node_dir = entry.path();
+        if !node_dir.is_dir() {
+            continue;
+        }
+        for file_name in ["cli_stdout.log", "cli_stderr.log"] {
+            let path = node_dir.join(file_name);
+            let Ok(metadata) = std::fs::metadata(path) else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let modified = DateTime::<Utc>::from(modified);
+            latest = max_datetime(latest, Some(modified));
+        }
+    }
+    latest
+}
+
+fn max_datetime(
+    left: Option<DateTime<Utc>>,
+    right: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(std::cmp::max(left, right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn stale_active_progress(
+    progress: &LiveLaneProgress,
+    last_started_at: Option<DateTime<Utc>>,
+) -> bool {
+    let Some(status) = progress.workflow_status else {
+        return false;
+    };
+    if !status.is_active() {
+        return false;
+    }
+    if progress.worker_alive != Some(false) {
+        return false;
+    }
+    let Some(started_at) = last_started_at.or(progress.updated_at) else {
+        return false;
+    };
+    (Utc::now() - started_at).num_seconds() >= STALE_RUNNING_GRACE_SECS
+}
+
 fn live_lane_progress_from_inspection(inspection: &RunInspection) -> LiveLaneProgress {
     let state = inspection.state.as_ref();
     LiveLaneProgress {
         fabro_run_id: Some(inspection.run_id.clone()),
         workflow_status: Some(inspection.status),
+        worker_alive: worker_process_alive(&inspection.run_dir),
         current_stage_label: inspection
             .progress
             .current_stage_label
@@ -630,6 +1060,41 @@ fn write_atomic(path: &Path, contents: &str) -> Result<(), std::io::Error> {
 mod tests {
     use super::*;
 
+    fn copy_dir(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+        for entry in walk(source)? {
+            let relative = entry.strip_prefix(source).expect("prefix");
+            let destination = target.join(relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&destination)?;
+                continue;
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&entry, &destination)?;
+        }
+        Ok(())
+    }
+
+    fn walk(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+        let mut paths = Vec::new();
+        visit(root, &mut paths)?;
+        Ok(paths)
+    }
+
+    fn visit(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        paths.push(root.to_path_buf());
+        if !root.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            visit(&entry.path(), paths)?;
+        }
+        Ok(())
+    }
+    use crate::manifest::ProgramManifest;
+
     #[test]
     fn load_optional_returns_none_for_missing_state() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -671,5 +1136,345 @@ mod tests {
         let loaded = ProgramRuntimeState::load(&path).expect("load should succeed");
         assert_eq!(loaded.program, "demo");
         assert!(loaded.lanes.contains_key("runtime:page"));
+    }
+
+    #[test]
+    fn refresh_program_state_syncs_child_program_lane_statuses() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor/portfolio-program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let mut state = ProgramRuntimeState::new("portfolio-demo");
+        state.lanes.insert(
+            "ready:program".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "ready:program".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("ready-program.yaml")),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: Some("Implement".to_string()),
+                last_run_id: None,
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+        state.lanes.insert(
+            "complete:program".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "complete:program".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("complete-program.yaml")),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: Some("Review".to_string()),
+                last_run_id: None,
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        assert_eq!(
+            state.lanes.get("ready:program").map(|record| record.status),
+            Some(LaneExecutionStatus::Ready)
+        );
+        assert_eq!(
+            state
+                .lanes
+                .get("complete:program")
+                .map(|record| record.status),
+            Some(LaneExecutionStatus::Complete)
+        );
+        assert!(state
+            .lanes
+            .get("ready:program")
+            .and_then(|record| record.current_stage_label.as_ref())
+            .is_none());
+        assert!(state
+            .lanes
+            .get("complete:program")
+            .and_then(|record| record.last_finished_at)
+            .is_some());
+    }
+
+    #[test]
+    fn refresh_program_state_prefers_child_runtime_state_over_artifact_completion() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor");
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+        let manifest_path = temp.path().join("portfolio-program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        std::fs::write(
+            temp.path().join(".raspberry/complete-program-state.json"),
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "complete-program",
+                "updated_at": Utc::now(),
+                "lanes": {
+                    "docs:default": {
+                        "lane_key": "docs:default",
+                        "status": "ready",
+                        "run_config": "run-configs/runtime-page.toml"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write child state");
+
+        let mut state = ProgramRuntimeState::new("portfolio-demo");
+        state.lanes.insert(
+            "complete:program".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "complete:program".to_string(),
+                status: LaneExecutionStatus::Complete,
+                run_config: Some(PathBuf::from("complete-program.yaml")),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: None,
+                last_run_id: None,
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(0),
+                last_error: None,
+                last_completed_stage_label: Some("Exit".to_string()),
+                last_stage_duration_ms: Some(0),
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        assert_eq!(
+            state
+                .lanes
+                .get("complete:program")
+                .map(|record| record.status),
+            Some(LaneExecutionStatus::Ready)
+        );
+    }
+
+    #[test]
+    fn refresh_program_state_clears_current_fields_for_failed_run() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor/program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let mut state = ProgramRuntimeState::new("raspberry-demo");
+        state.lanes.insert(
+            "consensus:chapter".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "consensus:chapter".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
+                current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_stage_label: Some("Review".to_string()),
+                last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("consensus:chapter")
+            .expect("consensus record exists");
+        assert_eq!(record.status, LaneExecutionStatus::Failed);
+        assert!(record.current_run_id.is_none());
+        assert!(record.current_fabro_run_id.is_none());
+        assert!(record.current_stage_label.is_none());
+    }
+
+    #[test]
+    fn refresh_program_state_propagates_child_running_runtime_details() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor");
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+        let manifest_path = temp.path().join("portfolio-program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        std::fs::write(
+            temp.path().join(".raspberry/ready-program-state.json"),
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "ready-program",
+                "updated_at": Utc::now(),
+                "lanes": {
+                    "docs:default": {
+                        "lane_key": "docs:default",
+                        "status": "running",
+                        "run_config": "run-configs/runtime-page.toml",
+                        "current_run_id": "01KMCHILDRUN000000000000000",
+                        "current_fabro_run_id": "01KMCHILDRUN000000000000000",
+                        "current_stage_label": "Implement",
+                        "last_run_id": "01KMCHILDRUN000000000000000",
+                        "last_started_at": Utc::now(),
+                        "last_completed_stage_label": "Preflight",
+                        "last_stage_duration_ms": 1234,
+                        "last_usage_summary": "anthropic: 10 in / 20 out"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write child state");
+
+        let mut state = ProgramRuntimeState::new("portfolio-demo");
+        state.lanes.insert(
+            "ready:program".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "ready:program".to_string(),
+                status: LaneExecutionStatus::Failed,
+                run_config: Some(PathBuf::from("ready-program.yaml")),
+                current_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
+                current_fabro_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
+                current_stage_label: Some("Review".to_string()),
+                last_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some("stale child failure".to_string()),
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("ready:program")
+            .expect("ready program record exists");
+        assert_eq!(record.status, LaneExecutionStatus::Running);
+        assert_eq!(
+            record.current_run_id.as_deref(),
+            Some("01KMCHILDRUN000000000000000")
+        );
+        assert_eq!(
+            record.current_fabro_run_id.as_deref(),
+            Some("01KMCHILDRUN000000000000000")
+        );
+        assert_eq!(record.current_stage_label.as_deref(), Some("Implement"));
+        assert_eq!(record.last_completed_stage_label.as_deref(), Some("Preflight"));
+        assert_eq!(record.last_stage_duration_ms, Some(1234));
+        assert_eq!(
+            record.last_usage_summary.as_deref(),
+            Some("anthropic: 10 in / 20 out")
+        );
+        assert!(record.last_error.is_none());
+        assert!(record.last_exit_status.is_none());
+    }
+
+    #[test]
+    fn refresh_program_state_prunes_removed_lanes() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor/portfolio-program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let mut state = ProgramRuntimeState::new("portfolio-demo");
+        state.lanes.insert(
+            "removed:lane".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "removed:lane".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("removed.toml")),
+                current_run_id: Some("01KMREMOVED0000000000000000".to_string()),
+                current_fabro_run_id: Some("01KMREMOVED0000000000000000".to_string()),
+                current_stage_label: Some("Specify".to_string()),
+                last_run_id: Some("01KMREMOVED0000000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        assert!(!state.lanes.contains_key("removed:lane"));
+    }
+
+    #[test]
+    fn stale_active_progress_marks_run_as_stale() {
+        let progress = LiveLaneProgress {
+            workflow_status: Some(RunStatus::Submitted),
+            worker_alive: Some(false),
+            updated_at: Some(Utc::now()),
+            ..LiveLaneProgress::default()
+        };
+
+        assert!(stale_active_progress(
+            &progress,
+            Some(Utc::now() - chrono::Duration::seconds(STALE_RUNNING_GRACE_SECS + 1)),
+        ));
+    }
+
+    #[test]
+    fn latest_cli_activity_at_prefers_recent_stage_logs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_root = temp.path();
+        std::fs::create_dir_all(run_root.join("nodes/specify")).expect("nodes dir");
+        std::fs::write(run_root.join("nodes/specify/cli_stdout.log"), "hello")
+            .expect("write log");
+
+        let activity = latest_cli_activity_at(run_root).expect("activity timestamp");
+        assert!(activity <= Utc::now());
     }
 }

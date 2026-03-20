@@ -2,11 +2,13 @@ pub mod app;
 pub mod files;
 pub mod keys;
 pub mod layout;
+mod narration;
 pub mod render;
 mod runs;
 
 use std::io::{self, IsTerminal};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyEventKind};
@@ -31,16 +33,19 @@ pub fn run(manifest_path: &Path) -> Result<()> {
     let mut app = App::load(manifest_path)?;
 
     loop {
+        app.tick();
         terminal
             .draw(|frame| render::render(frame, &app))
             .context("failed to render Raspberry TUI")?;
         if app.should_quit() {
             break;
         }
-        match event::read().context("failed to read terminal event")? {
-            Event::Key(key) if should_handle_key(key.kind) => app.handle_key_event(key)?,
-            Event::Resize(_, _) => {}
-            _ => {}
+        if event::poll(Duration::from_millis(100)).context("failed to poll terminal events")? {
+            match event::read().context("failed to read terminal event")? {
+                Event::Key(key) if should_handle_key(key.kind) => app.handle_key_event(key)?,
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
         }
     }
 

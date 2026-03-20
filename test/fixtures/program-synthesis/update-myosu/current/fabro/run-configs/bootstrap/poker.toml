@@ -6,8 +6,22 @@ expectations.
 """
 directory = "../../.."
 
+[llm]
+provider = "anthropic"
+model = "MiniMax-M2.7-highspeed"
+
 [sandbox]
 provider = "local"
 
 [sandbox.local]
 worktree_mode = "clean"
+
+[sandbox.env]
+ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic"
+ANTHROPIC_AUTH_TOKEN = "${env.MINIMAX_API_KEY}"
+ANTHROPIC_MODEL = "MiniMax-M2.7-highspeed"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

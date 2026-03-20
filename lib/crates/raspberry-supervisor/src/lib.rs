@@ -1,12 +1,14 @@
 pub mod autodev;
 pub mod dispatch;
 pub mod evaluate;
+mod integration;
 pub mod manifest;
 pub mod program_state;
 
 pub use autodev::{
-    autodev_report_path, load_optional_autodev_report, orchestrate_program, AutodevCycleReport,
-    AutodevError, AutodevReport, AutodevSettings, AutodevStopReason,
+    autodev_report_path, load_optional_autodev_report, orchestrate_program,
+    sync_autodev_report_with_program, AutodevCurrentSnapshot, AutodevCycleReport, AutodevError,
+    AutodevReport, AutodevSettings, AutodevStopReason,
 };
 pub use dispatch::{execute_selected_lanes, DispatchOutcome, DispatchSettings};
 pub use evaluate::{

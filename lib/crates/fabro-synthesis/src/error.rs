@@ -59,3 +59,26 @@ pub enum RenderError {
         source: serde_yaml::Error,
     },
 }
+
+#[derive(Debug, Error)]
+pub enum PlanningError {
+    #[error("failed to read planning input {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("repo {target_repo} does not contain any planning inputs")]
+    MissingPlanningCorpus { target_repo: PathBuf },
+    #[error("repo {target_repo} does not contain an existing Fabro program to evolve")]
+    MissingExistingProgram { target_repo: PathBuf },
+    #[error(
+        "repo {target_repo} contains multiple Fabro programs; pass --program to choose one ({programs:?})"
+    )]
+    AmbiguousExistingProgram {
+        target_repo: PathBuf,
+        programs: Vec<String>,
+    },
+    #[error(transparent)]
+    Blueprint(#[from] BlueprintError),
+}

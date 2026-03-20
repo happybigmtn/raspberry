@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use fabro_config::run::load_run_config;
 use raspberry_supervisor::manifest::{
-    LaneCheck, LaneDependency, LaneKind, MilestoneManifest, ProgramManifest,
+    LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
+    MilestoneManifest, ProgramManifest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +125,8 @@ pub enum WorkflowTemplate {
     Bootstrap,
     ServiceBootstrap,
     Implementation,
+    Integration,
+    Orchestration,
     RecurringReport,
 }
 
@@ -246,7 +249,10 @@ fn validate_unit(
     unit: &BlueprintUnit,
     all_units: &[BlueprintUnit],
 ) -> Result<(), BlueprintError> {
-    let program_only_unit = unit.lanes.iter().all(|lane| lane.program_manifest.is_some());
+    let program_only_unit = unit
+        .lanes
+        .iter()
+        .all(|lane| lane.program_manifest.is_some());
     if unit.title.trim().is_empty() {
         return Err(invalid(
             path,
@@ -377,7 +383,11 @@ fn validate_dependencies(
                 let milestone_known_on_lane = dependency
                     .lane
                     .as_ref()
-                    .and_then(|target_lane| unit.lanes.iter().find(|candidate| &candidate.id == target_lane))
+                    .and_then(|target_lane| {
+                        unit.lanes
+                            .iter()
+                            .find(|candidate| &candidate.id == target_lane)
+                    })
                     .map(|target_lane| target_lane.managed_milestone == *target_milestone)
                     .unwrap_or(false);
                 if !milestone_ids.contains(target_milestone) && !milestone_known_on_lane {
@@ -502,17 +512,21 @@ fn import_unit(
     let lanes = unit
         .lanes
         .iter()
-        .map(|(lane_id, lane)| import_lane(req, manifest, manifest_path, unit_id, lane_id, lane))
+        .map(|(lane_id, lane)| {
+            import_lane(req, manifest, manifest_path, unit_id, lane_id, unit, lane)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(BlueprintUnit {
+    let mut imported = BlueprintUnit {
         id: unit_id.to_string(),
         title: unit.title.clone(),
         output_root,
         artifacts,
         milestones: unit.milestones.clone(),
         lanes,
-    })
+    };
+    upgrade_implementation_unit(&mut imported);
+    Ok(imported)
 }
 
 fn import_lane(
@@ -521,6 +535,7 @@ fn import_lane(
     manifest_path: &Path,
     unit_id: &str,
     lane_id: &str,
+    unit: &raspberry_supervisor::manifest::UnitManifest,
     lane: &raspberry_supervisor::manifest::LaneManifest,
 ) -> Result<BlueprintLane, BlueprintError> {
     let program_manifest = manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id);
@@ -608,6 +623,9 @@ fn import_lane(
         .unwrap_or("bootstrap")
         .to_string();
 
+    let verify_command = imported_verify_command(&lane.checks);
+    let health_command = imported_health_command(&lane.checks);
+
     Ok(BlueprintLane {
         id: lane_id.to_string(),
         kind: lane.kind,
@@ -622,7 +640,7 @@ fn import_lane(
             .file_stem()
             .and_then(|stem| stem.to_str())
             .map(ToOwned::to_owned),
-        template: infer_template(lane.kind),
+        template: infer_template(unit, lane),
         goal: run_config_cfg
             .goal
             .unwrap_or_else(|| format!("Describe the `{lane_id}` lane goals.")),
@@ -686,8 +704,8 @@ fn import_lane(
             })
             .transpose()?,
         prompt_context: None,
-        verify_command: None,
-        health_command: None,
+        verify_command,
+        health_command,
     })
 }
 
@@ -703,12 +721,145 @@ const fn default_max_parallel() -> usize {
     1
 }
 
-fn infer_template(kind: LaneKind) -> WorkflowTemplate {
-    match kind {
+fn infer_template(
+    unit: &raspberry_supervisor::manifest::UnitManifest,
+    lane: &raspberry_supervisor::manifest::LaneManifest,
+) -> WorkflowTemplate {
+    if lane.kind == LaneKind::Integration {
+        return WorkflowTemplate::Integration;
+    }
+    if lane.kind == LaneKind::Orchestration || lane.program_manifest.is_some() {
+        return WorkflowTemplate::Orchestration;
+    }
+    let artifact_ids = unit
+        .artifacts
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let produced = lane
+        .produces
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let looks_like_implementation = artifact_ids.contains("implementation")
+        && artifact_ids.contains("verification")
+        && artifact_ids.contains("promotion")
+        && produced.contains("implementation")
+        && produced.contains("verification")
+        && produced.contains("promotion");
+    if looks_like_implementation || lane.managed_milestone == "merge_ready" {
+        return WorkflowTemplate::Implementation;
+    }
+
+    match lane.kind {
         LaneKind::Service => WorkflowTemplate::ServiceBootstrap,
         LaneKind::Recurring => WorkflowTemplate::RecurringReport,
+        LaneKind::Orchestration => WorkflowTemplate::Orchestration,
         _ => WorkflowTemplate::Bootstrap,
     }
+}
+
+fn upgrade_implementation_unit(unit: &mut BlueprintUnit) {
+    if !unit
+        .lanes
+        .iter()
+        .any(|lane| lane.template == WorkflowTemplate::Implementation)
+    {
+        return;
+    }
+
+    if !unit
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.id == "quality")
+    {
+        let quality_path = unit
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "implementation")
+            .map(|artifact| artifact.path.with_file_name("quality.md"))
+            .unwrap_or_else(|| PathBuf::from("quality.md"));
+        unit.artifacts.push(BlueprintArtifact {
+            id: "quality".to_string(),
+            path: quality_path,
+        });
+    }
+
+    if !unit
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.id == "integration")
+    {
+        let integration_path = unit
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "implementation")
+            .map(|artifact| artifact.path.with_file_name("integration.md"))
+            .unwrap_or_else(|| PathBuf::from("integration.md"));
+        unit.artifacts.push(BlueprintArtifact {
+            id: "integration".to_string(),
+            path: integration_path,
+        });
+    }
+
+    for milestone in &mut unit.milestones {
+        if matches!(milestone.id.as_str(), "verified" | "merge_ready")
+            && !milestone
+                .requires
+                .iter()
+                .any(|artifact| artifact == "quality")
+        {
+            if let Some(promotion_index) = milestone
+                .requires
+                .iter()
+                .position(|artifact| artifact == "promotion")
+            {
+                milestone
+                    .requires
+                    .insert(promotion_index, "quality".to_string());
+            } else {
+                milestone.requires.push("quality".to_string());
+            }
+        }
+    }
+
+    if !unit
+        .milestones
+        .iter()
+        .any(|milestone| milestone.id == "integrated")
+    {
+        unit.milestones.push(MilestoneManifest {
+            id: "integrated".to_string(),
+            requires: vec!["integration".to_string()],
+        });
+    }
+
+    for lane in &mut unit.lanes {
+        if lane.template != WorkflowTemplate::Implementation {
+            continue;
+        }
+        if !lane.produces.iter().any(|artifact| artifact == "quality") {
+            if let Some(promotion_index) = lane
+                .produces
+                .iter()
+                .position(|artifact| artifact == "promotion")
+            {
+                lane.produces.insert(promotion_index, "quality".to_string());
+            } else {
+                lane.produces.push("quality".to_string());
+            }
+        }
+        if !lane
+            .produces
+            .iter()
+            .any(|artifact| artifact == "integration")
+        {
+            lane.produces.push("integration".to_string());
+        }
+    }
+
+    unit.lanes
+        .retain(|lane| lane.template != WorkflowTemplate::Integration);
 }
 
 fn repo_relative(path: &Path, target_repo: &Path) -> Result<PathBuf, BlueprintError> {
@@ -786,9 +937,188 @@ fn normalize_check(
     })
 }
 
+fn imported_verify_command(checks: &[LaneCheck]) -> Option<String> {
+    checks.iter().find_map(|check| {
+        if check.kind != LaneCheckKind::Proof || check.scope != LaneCheckScope::Running {
+            return None;
+        }
+        match &check.probe {
+            LaneCheckProbe::CommandSucceeds { command }
+            | LaneCheckProbe::CommandStdoutContains { command, .. } => Some(command.clone()),
+            _ => None,
+        }
+    })
+}
+
+fn imported_health_command(checks: &[LaneCheck]) -> Option<String> {
+    checks.iter().find_map(|check| {
+        if check.kind != LaneCheckKind::Health || check.scope != LaneCheckScope::Running {
+            return None;
+        }
+        match &check.probe {
+            LaneCheckProbe::CommandSucceeds { command }
+            | LaneCheckProbe::CommandStdoutContains { command, .. } => Some(command.clone()),
+            _ => None,
+        }
+    })
+}
+
 fn invalid(path: &Path, message: impl Into<String>) -> BlueprintError {
     BlueprintError::Invalid {
         path: path.to_path_buf(),
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn import_existing_package_preserves_implementation_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        std::fs::create_dir_all(repo.join("fabro/programs")).expect("program dir");
+        std::fs::create_dir_all(repo.join("fabro/run-configs/implement")).expect("run-config dir");
+        std::fs::write(
+            repo.join("fabro/run-configs/implement/demo.toml"),
+            "version = 1\ngraph = \"../../workflows/implement/demo.fabro\"\ngoal = \"Implement demo\"\ndirectory = \"../../..\"\n\n[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"clean\"\n",
+        )
+        .expect("run config");
+        std::fs::write(
+            repo.join("fabro/programs/demo-implementation.yaml"),
+            r#"
+version: 1
+program: demo-implementation
+target_repo: ../..
+state_path: ../../.raspberry/demo-implementation-state.json
+max_parallel: 1
+units:
+  - id: demo
+    title: Demo Delivery
+    output_root: ../../outputs/demo
+    artifacts:
+      - id: implementation
+        path: implementation.md
+      - id: promotion
+        path: promotion.md
+      - id: review
+        path: review.md
+      - id: spec
+        path: spec.md
+      - id: verification
+        path: verification.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+      - id: implemented
+        requires: [spec, review, implementation]
+      - id: verified
+        requires: [spec, review, implementation, verification]
+      - id: merge_ready
+        requires: [spec, review, implementation, verification, promotion]
+    lanes:
+      - id: implement
+        kind: interface
+        title: Demo Implementation Lane
+        run_config: ../run-configs/implement/demo.toml
+        managed_milestone: merge_ready
+        produces: [implementation, verification, promotion]
+        checks:
+          - label: demo_proof
+            kind: proof
+            scope: running
+            type: command_succeeds
+            command: cargo test -p demo
+"#,
+        )
+        .expect("program manifest");
+
+        let blueprint = import_existing_package(ImportRequest {
+            target_repo: repo,
+            program: "demo-implementation",
+        })
+        .expect("blueprint imports");
+
+        assert_eq!(blueprint.units.len(), 1);
+        assert_eq!(blueprint.units[0].lanes.len(), 1);
+        assert_eq!(
+            blueprint.units[0].lanes[0].template,
+            WorkflowTemplate::Implementation
+        );
+        assert!(blueprint.units[0].artifacts.iter().any(
+            |artifact| artifact.id == "quality" && artifact.path == PathBuf::from("quality.md")
+        ));
+        assert!(blueprint.units[0]
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == "integration"
+                && artifact.path == PathBuf::from("integration.md")));
+        assert!(blueprint.units[0].milestones.iter().any(|milestone| {
+            milestone.id == "verified"
+                && milestone
+                    .requires
+                    .iter()
+                    .any(|artifact| artifact == "quality")
+        }));
+        assert!(blueprint.units[0].milestones.iter().any(|milestone| {
+            milestone.id == "merge_ready"
+                && milestone
+                    .requires
+                    .iter()
+                    .any(|artifact| artifact == "quality")
+        }));
+        assert!(blueprint.units[0].milestones.iter().any(|milestone| {
+            milestone.id == "integrated"
+                && milestone
+                    .requires
+                    .iter()
+                    .any(|artifact| artifact == "integration")
+        }));
+        assert!(blueprint.units[0].lanes[0]
+            .produces
+            .iter()
+            .any(|artifact| artifact == "quality"));
+        assert!(blueprint.units[0].lanes[0]
+            .produces
+            .iter()
+            .any(|artifact| artifact == "integration"));
+        assert_eq!(
+            blueprint.units[0].lanes[0].verify_command.as_deref(),
+            Some("cargo test -p demo")
+        );
+    }
+
+    #[test]
+    fn infer_template_prefers_orchestration_for_child_program_lanes() {
+        let unit = raspberry_supervisor::manifest::UnitManifest {
+            title: "Program".to_string(),
+            output_root: None,
+            artifacts: BTreeMap::new(),
+            milestones: Vec::new(),
+            lanes: BTreeMap::new(),
+        };
+        let lane = raspberry_supervisor::manifest::LaneManifest {
+            kind: LaneKind::Orchestration,
+            title: "Program Lane".to_string(),
+            run_config: PathBuf::from("fabro/run-configs/orchestrate/program.toml"),
+            managed_milestone: "coordinated".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: Some(PathBuf::from("fabro/programs/demo.yaml")),
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+        };
+
+        assert_eq!(
+            infer_template(&unit, &lane),
+            WorkflowTemplate::Orchestration
+        );
     }
 }

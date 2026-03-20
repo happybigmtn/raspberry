@@ -1,15 +1,28 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "myosu-bootstrap",
-  "updated_at": "2026-03-19T03:02:15.969603971Z",
+  "updated_at": "2026-03-20T16:48:09.726463590Z",
   "lanes": {
+    "chain:runtime": {
+      "lane_key": "chain:runtime",
+      "status": "complete",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-cli/../../../test/fixtures/raspberry-supervisor/run-configs/chain-runtime.toml"
+    },
+    "launch:devnet": {
+      "lane_key": "launch:devnet",
+      "status": "blocked",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-cli/../../../test/fixtures/raspberry-supervisor/run-configs/launch-devnet.toml"
+    },
     "miner:service": {
       "lane_key": "miner:service",
-      "status": "running",
+      "status": "failed",
       "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/miner-service.toml",
-      "current_fabro_run_id": "01MYOSUMINERRUN0000000000000",
       "current_stage_label": "Service Bringup",
+      "last_run_id": "01MYOSUMINERRUN0000000000000",
       "last_started_at": "2026-03-18T23:20:00Z",
+      "last_finished_at": "2026-03-18T23:20:00Z",
+      "last_exit_status": 1,
+      "last_error": "tracked run remained active after its worker process disappeared",
       "last_completed_stage_label": "Spec",
       "last_stage_duration_ms": 6400,
       "last_usage_summary": "gpt-5.4: 1400 in / 600 out",
@@ -20,11 +33,16 @@
         "myosu/outputs/miner/miner_spec.md"
       ]
     },
+    "operations:scorecard": {
+      "lane_key": "operations:scorecard",
+      "status": "blocked",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-cli/../../../test/fixtures/raspberry-supervisor/run-configs/operations-scorecard.toml"
+    },
     "play:tui": {
       "lane_key": "play:tui",
       "status": "failed",
       "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/play-tui.toml",
-      "current_fabro_run_id": "01MYOSUPLAYFAIL0000000000000",
+      "last_run_id": "01MYOSUPLAYFAIL0000000000000",
       "last_started_at": "2026-03-18T23:21:00Z",
       "last_error": "terminal snapshot mismatch",
       "last_completed_stage_label": "Layout",
@@ -36,6 +54,11 @@
       "last_files_written": [
         "crates/myosu-tui/src/shell.rs"
       ]
+    },
+    "validator:oracle": {
+      "lane_key": "validator:oracle",
+      "status": "complete",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-cli/../../../test/fixtures/raspberry-supervisor/run-configs/validator-oracle.toml"
     }
   }
 }

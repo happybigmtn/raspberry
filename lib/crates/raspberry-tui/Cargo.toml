@@ -9,10 +9,14 @@ description = "Read-only Raspberry run observer terminal UI"
 anyhow.workspace = true
 chrono.workspace = true
 crossterm.workspace = true
+fabro-config = { path = "../fabro-config" }
+fabro-llm = { path = "../fabro-llm" }
 fabro-workflows = { path = "../fabro-workflows" }
 ratatui.workspace = true
 raspberry-supervisor = { path = "../raspberry-supervisor" }
+serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 indoc = "2"

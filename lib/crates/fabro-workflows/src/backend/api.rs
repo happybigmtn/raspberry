@@ -153,13 +153,15 @@ impl AgentApiBackend {
 
     async fn create_session(
         &self,
+        model: &str,
+        provider: Provider,
         node: &Node,
         sandbox: &Arc<dyn Sandbox>,
         tool_hooks: Option<Arc<dyn fabro_agent::ToolHookCallback>>,
     ) -> Result<Session, FabroError> {
         Self::create_session_for(
-            &self.model,
-            self.provider,
+            model,
+            provider,
             node,
             sandbox,
             &self.env,
@@ -239,6 +241,19 @@ impl AgentApiBackend {
 
         Ok(session)
     }
+}
+
+fn resolved_model_provider(
+    node: &Node,
+    default_model: &str,
+    default_provider: Provider,
+) -> (String, Provider) {
+    let model = node.model().unwrap_or(default_model).to_string();
+    let provider = node
+        .provider()
+        .and_then(|value| value.parse::<Provider>().ok())
+        .unwrap_or(default_provider);
+    (model, provider)
 }
 
 #[async_trait]
@@ -411,6 +426,8 @@ impl CodergenBackend for AgentApiBackend {
         sandbox: &Arc<dyn Sandbox>,
         tool_hooks: Option<Arc<dyn fabro_agent::ToolHookCallback>>,
     ) -> Result<CodergenResult, FabroError> {
+        let (effective_model, effective_provider) =
+            resolved_model_provider(node, &self.model, self.provider);
         let fidelity = context.fidelity();
         let reuse_key = if fidelity == crate::context::keys::Fidelity::Full {
             thread_id.map(String::from)
@@ -425,15 +442,27 @@ impl CodergenBackend for AgentApiBackend {
                 (s, true)
             } else {
                 (
-                    self.create_session(node, sandbox, tool_hooks.clone())
-                        .await?,
+                    self.create_session(
+                        &effective_model,
+                        effective_provider,
+                        node,
+                        sandbox,
+                        tool_hooks.clone(),
+                    )
+                    .await?,
                     false,
                 )
             }
         } else {
             (
-                self.create_session(node, sandbox, tool_hooks.clone())
-                    .await?,
+                self.create_session(
+                    &effective_model,
+                    effective_provider,
+                    node,
+                    sandbox,
+                    tool_hooks.clone(),
+                )
+                .await?,
                 false,
             )
         };
@@ -478,11 +507,13 @@ impl CodergenBackend for AgentApiBackend {
         let result = match result {
             Ok(()) => Ok(()),
             Err(fabro_agent::AgentError::Llm(ref sdk_err))
-                if sdk_err.failover_eligible() && !self.fallback_chain.is_empty() =>
+                if sdk_err.failover_eligible()
+                    && !self.fallback_chain.is_empty()
+                    && node.provider().is_none() =>
             {
                 let error_msg = sdk_err.to_string();
-                let from_provider = self.provider.as_str().to_string();
-                let from_model = self.model.clone();
+                let from_provider = effective_provider.as_str().to_string();
+                let from_model = effective_model.clone();
 
                 let mut last_err = FabroError::Llm(sdk_err.clone());
                 let mut succeeded = false;
@@ -575,7 +606,7 @@ impl CodergenBackend for AgentApiBackend {
         }
 
         let mut stage_usage = StageUsage {
-            model: self.model.clone(),
+            model: effective_model.clone(),
             input_tokens: total_usage.input_tokens,
             output_tokens: total_usage.output_tokens,
             cache_read_tokens: total_usage.cache_read_tokens,
@@ -616,8 +647,8 @@ impl CodergenBackend for AgentApiBackend {
 
         let provider_used = serde_json::json!({
             "mode": "agent",
-            "provider": self.provider.as_str(),
-            "model": &self.model,
+            "provider": effective_provider.as_str(),
+            "model": &effective_model,
         });
         if let Ok(json) = serde_json::to_string_pretty(&provider_used) {
             let _ = std::fs::write(stage_dir.join("provider_used.json"), json);
@@ -643,6 +674,7 @@ impl CodergenBackend for AgentApiBackend {
 mod tests {
     use super::*;
     use fabro_agent::subagent::SessionFactory;
+    use fabro_graphviz::graph::AttrValue;
 
     #[test]
     fn agent_backend_stores_config() {
@@ -660,6 +692,21 @@ mod tests {
             Vec::new(),
         );
         assert!(backend.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolved_model_provider_prefers_node_overrides() {
+        let mut node = Node::new("review");
+        node.attrs
+            .insert("model".into(), AttrValue::String("gpt-5.4".into()));
+        node.attrs
+            .insert("provider".into(), AttrValue::String("openai".into()));
+
+        let (model, provider) =
+            resolved_model_provider(&node, "claude-opus-4-6", Provider::Anthropic);
+
+        assert_eq!(model, "gpt-5.4");
+        assert_eq!(provider, Provider::OpenAi);
     }
 
     fn new_file_tracking() -> FileTracking {

@@ -83,9 +83,11 @@ type = "sandbox"
 command = ["npx", "@playwright/mcp@latest", "--port", "3100", "--headless"]
 port = 3100
 
-[pull_request]
+[integration]
 enabled = true
-draft = false
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../outputs/demo/integration.md"
 
 [[hooks]]
 event = "stage_start"
@@ -341,6 +343,8 @@ The `sandbox` transport runs the MCP server inside the workflow's sandbox. This 
 
 Automatically open a GitHub pull request when the workflow run completes successfully. Requires a [GitHub App](/integrations/github) to be configured.
 
+Use this when you want a PR-backed delivery flow. If you want a run to land directly on trunk after it settles, use [`[integration]`](#integration) instead. A run config cannot enable both sections at once.
+
 ```toml title="run.toml"
 [pull_request]
 enabled = true
@@ -355,6 +359,27 @@ merge_strategy = "squash"
 | `draft` | When `true`, the PR is created as a draft pull request. Default: `true`. |
 | `auto_merge` | When `true`, enables GitHub auto-merge on the created PR. Implies `draft = false` since GitHub doesn't allow auto-merge on draft PRs. The repository must have auto-merge enabled in GitHub settings. Default: `false`. |
 | `merge_strategy` | Merge method when `auto_merge` is enabled: `squash` (default), `merge`, or `rebase`. |
+
+### `[integration]`
+
+Automatically land a successful branch-backed run directly onto trunk after the workflow completes. This is the lean delivery path for implementation-family runs that already do their real review and proof work inside the workflow itself.
+
+```toml title="run.toml"
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../outputs/demo/integration.md"
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | When `true`, Fabro performs direct post-run trunk integration after a successful run. Default: `false`. |
+| `strategy` | Integration strategy. `squash` is supported today and is the default. |
+| `target_branch` | Target trunk branch. Use `origin/HEAD` (default) to follow the remote default branch, or set an explicit branch such as `main`. |
+| `artifact_path` | Optional path to write an `integration.md` artifact after landing. Relative paths are resolved relative to the run config file. |
+
+Direct integration requires a branch-backed run. If the run does not have a durable `run_branch`, Fabro fails the post-run integration step and the lane should be replayed under branch-backed worktree settings.
 
 ### `[github]`
 
@@ -439,7 +464,7 @@ For model and provider specifically, the precedence is: CLI flags > TOML config 
 
 ### Project defaults (`fabro.toml`)
 
-The `fabro.toml` project config can set default values for `[llm]`, `[setup]`, `[sandbox]`, `[vars]`, `[checkpoint]`, `[pull_request]`, `[github]`, `[assets]`, `[[hooks]]`, and `[mcp_servers]`. These defaults apply to all runs in the project unless the run config overrides them:
+The `fabro.toml` project config can set default values for `[llm]`, `[setup]`, `[sandbox]`, `[vars]`, `[checkpoint]`, `[pull_request]`, `[integration]`, `[github]`, `[assets]`, `[[hooks]]`, and `[mcp_servers]`. These defaults apply to all runs in the project unless the run config overrides them:
 
 ```toml title="fabro.toml"
 version = 1

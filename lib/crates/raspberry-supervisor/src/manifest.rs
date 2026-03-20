@@ -67,6 +67,7 @@ pub enum LaneKind {
     Interface,
     Platform,
     Recurring,
+    Integration,
 }
 
 impl fmt::Display for LaneKind {
@@ -78,6 +79,7 @@ impl fmt::Display for LaneKind {
             Self::Interface => "interface",
             Self::Platform => "platform",
             Self::Recurring => "recurring",
+            Self::Integration => "integration",
         };
         f.write_str(value)
     }

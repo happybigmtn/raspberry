@@ -57,6 +57,32 @@ Two sub-modes exist:
 In both modes, the blueprint is the primary design artifact. Do not free-write
 the final `fabro/` tree first.
 
+When create mode starts from an accepted plan, prefer a deterministic workflow
+family selection instead of a broad topology brainstorm. The default selection
+order should be:
+
+1. `orchestration` if the lane supervises a child program
+2. `recurring_report` if the lane is recurring oversight or governance
+3. `service_bootstrap` if the first proof bar is a health surface
+4. `implementation` if the repo already has a reviewed slice and a real proof
+   command
+5. `bootstrap` otherwise
+
+Do not leave that choice implicit when the request is a one-command bootstrap
+for a repo.
+
+When the package includes implementation-family lanes, prefer the
+evidence-first contract that the current Raspberry control plane expects:
+
+- deterministic `preflight` and `verify` commands
+- a deterministic `quality` stage that writes `quality.md`
+- `review` and `promote` only after the quality gate passes
+- a deterministic `promotion_check`
+- a final artifact audit gate
+
+Do not synthesize implementation lanes that jump from `implement` straight to
+`promote`. Great code requires an evidence pack, not only agent prose.
+
 ## Plain Fabro Workflow Authoring
 
 Use the generic Fabro references when the user is building a standalone
@@ -131,6 +157,17 @@ For an evolve request, return:
 - For Raspberry lanes, the graph should write or update the durable artifacts
   that the lane's milestone requires. A lane is not ready just because the
   graph "did work".
+- For implementation-family lanes, default to four durable artifacts:
+  `implementation.md`, `verification.md`, `quality.md`, and `promotion.md`.
+- For implementation-family lanes, prefer this execution order unless there is
+  a concrete reason not to:
+  `preflight -> implement -> verify -> quality -> clear_promotion -> review -> promote -> promotion_check -> audit`
+- If a lane is security-sensitive, money-moving, auth-sensitive, or
+  trust-boundary heavy, prefer an explicit security review surface in the
+  workflow or in the lane checks rather than relying on a generic code review.
+- If review quality matters, borrow the parallel-review pattern deliberately:
+  independent security/architecture/quality passes should fan out and merge
+  when the lane is broad enough to justify it.
 
 ## References
 

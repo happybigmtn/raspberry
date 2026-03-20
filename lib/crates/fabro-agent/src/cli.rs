@@ -60,6 +60,9 @@ struct Cli {
 
 pub use fabro_config::cli::{OutputFormat, PermissionLevel};
 
+const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
+const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
+
 impl AgentArgs {
     /// Fill `None` fields from cli.toml values, then hardcoded defaults.
     pub fn apply_cli_defaults(
@@ -73,7 +76,7 @@ impl AgentArgs {
             .provider
             .take()
             .or_else(|| provider.map(String::from))
-            .or_else(|| Some("anthropic".to_string()));
+            .or_else(|| Some(DEFAULT_WRITE_PROVIDER.to_string()));
         self.model = self.model.take().or_else(|| model.map(String::from));
         self.permissions = self
             .permissions
@@ -386,9 +389,13 @@ pub async fn run_with_args_and_client(
 
     // Resolve model and build profile
     let model = args.model.unwrap_or_else(|| {
-        fabro_llm::catalog::default_model_for_provider(provider.as_str())
-            .map(|m| m.id)
-            .unwrap_or_else(|| provider.as_str().to_string())
+        if provider == Provider::Anthropic {
+            DEFAULT_WRITE_MODEL.to_string()
+        } else {
+            fabro_llm::catalog::default_model_for_provider(provider.as_str())
+                .map(|m| m.id)
+                .unwrap_or_else(|| provider.as_str().to_string())
+        }
     });
     eprintln!("{}", styles.dim.apply_to(format!("Using model: {model}")));
     let mut profile = build_profile(provider, &model, Some(client.clone()));
@@ -743,6 +750,26 @@ mod tests {
     fn build_profile_openai() {
         let profile = build_profile(Provider::OpenAi, "model", None);
         assert_eq!(profile.provider(), Provider::OpenAi);
+    }
+
+    #[test]
+    fn apply_cli_defaults_prefers_minimax_writing_path() {
+        let mut args = AgentArgs {
+            prompt: "test".to_string(),
+            provider: None,
+            model: None,
+            permissions: None,
+            auto_approve: false,
+            debug: false,
+            verbose: false,
+            skills_dir: None,
+            output_format: None,
+        };
+
+        args.apply_cli_defaults(None, None, None, None);
+
+        assert_eq!(args.provider.as_deref(), Some("anthropic"));
+        assert_eq!(args.model, None);
     }
 
     #[test]

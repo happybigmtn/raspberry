@@ -1294,3 +1294,28 @@ surface to `create` / `evolve` so it better matches the product goal of
 producing or updating full executable workflow packages. The plan still shifts
 from "build the substrate" to "deepen evolve with doctrine and run evidence so the eventual Myosu run is
 meaningful."
+
+Live Learning Note: the worktree-backed Myosu autodev run exposed that a
+generated implementation program can be artifact-complete without being
+trunk-worthy. The current synthesis follow-on hardening therefore now adds:
+
+- a `promotion.md` artifact to generated implementation-family programs
+- a `merge_ready` milestone above `verified`
+- a generated `promote.md` prompt and promotion gate
+
+This is the right direction for confidence: evolve should strengthen the
+definition of done itself when live runs reveal a false-positive completion,
+not rely on human memory of what “complete” ought to mean.
+
+Current policy note for generated implementation-family workflows:
+
+- `implement` / `fixup`: fast worker model is acceptable
+- `verify` / `audit` / `promotion_check`: deterministic commands
+- `review`: high-intelligence model (`gpt-5.4`)
+- `promote`: high-intelligence model (`gpt-5.4`)
+
+Rationale: deterministic verification can prove that named checks passed, but
+promotion still has to judge whether the slice is honestly merge-worthy,
+whether manual proof obligations were actually satisfied, and whether the
+artifacts match the real code/result. That is still a strong-reviewer problem,
+not just a MiniMax worker problem.

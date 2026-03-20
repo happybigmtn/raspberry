@@ -59,6 +59,13 @@ partial or stale.
   - switched the wide-screen layout to a dashboard split so state/detail panes
     have useful horizontal space
   - made state/detail sections more structured and less log-like
+- [ ] Add a deterministic nested child-program digest for orchestration lanes
+  so the state/detail panes can show what is actually running, ready, and
+  blocked inside a selected child program without requiring a second manifest
+  view.
+- [ ] Decide whether to add a cached MiniMax-generated plain-English narrator
+  over that structured child summary once the deterministic operator digest is
+  in place.
 
 ## Surprises & Discoveries
 
@@ -197,6 +204,14 @@ layout now emphasizes:
 - a wider state pane with explicit overview, selected-lane, and check sections
 - a detail pane that leads with operational summaries before dropping into raw
   artifact text
+
+The next dashboard step is now clear from live use against the Myosu autodev
+worktree: orchestration lanes still compress a whole child program into one
+summary line. The operator needs one more layer:
+
+- a deterministic child-program digest in the state/detail panes
+- optionally, later, a cached MiniMax narration layer over that structured
+  digest rather than an LLM in the render loop
 
 The most useful follow-on work is no longer basic rendering. It is refinement:
 better search ergonomics, deeper scrolling, and eventually replacing the
@@ -425,3 +440,21 @@ record the new `raspberry-tui` crate, the thin supervisor helper, the lint
 cleanup needed to satisfy `-D warnings`, the completed-result detail pane
 improvement, the recent successful-run matching behavior, and the exact
 verification evidence for the observer slice.
+
+Revision note (2026-03-19, later): The dashboard selection model now treats
+the grouped, filtered program list as the single source of truth for `j` / `k`
+navigation, top/bottom jumps, and selected-lane fallback. Added regression
+coverage for grouped-order navigation and filtered-order navigation with a stale
+hidden selection. Also gated plain-English narration refresh behind
+`RASPBERRY_TUI_ENABLE_NARRATION=1` so the TUI stays cache-first by default and
+test/manual startup does not block on live model calls. The child-program
+digest observer proof now uses the lightweight portfolio fixture instead of the
+live Myosu worktree so the `raspberry-tui` package tests stay deterministic and
+fast.
+
+Revision note (2026-03-19, async narration): When narration is enabled, the TUI
+now loads any cached operator summary immediately and refreshes it on a
+background worker. The main loop polls for completed narration results on a
+short tick rather than blocking inside `App::load` or the render path. This
+keeps startup responsive while still allowing lane-selection and manual-refresh
+driven summaries to converge in the background.

@@ -4199,6 +4199,7 @@ version = "0.174.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "fabro-config",
  "fabro-workflows",
  "serde",
  "serde_json",
@@ -4214,12 +4215,16 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossterm 0.28.1",
+ "fabro-config",
+ "fabro-llm",
  "fabro-workflows",
  "indoc",
  "raspberry-supervisor",
  "ratatui",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

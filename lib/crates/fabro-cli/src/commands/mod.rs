@@ -5,6 +5,7 @@ pub mod fork;
 pub mod graph;
 pub mod inspect;
 pub mod logs;
+pub mod paperclip;
 pub mod parse;
 pub mod pr;
 pub mod preview;

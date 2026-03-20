@@ -1,0 +1,542 @@
+---
+title: "From Specs To Blueprints"
+description: "How to go from a prompt, spec, or plan to a blueprint, a checked-in fabro package, and a runnable Raspberry program"
+---
+
+This is the missing bridge between the planning docs and the control plane.
+
+If all you have is:
+
+- a prompt
+- a product spec
+- one or more implementation plans
+
+this guide explains:
+
+1. what you do manually
+2. what the skill does
+3. what `fabro synth create` / `fabro synth evolve` do
+4. when Raspberry can start operating the repo
+
+The short version is:
+
+```text
+prompt / spec / plan
+        ->
+  blueprint
+        ->
+checked-in fabro/ package
+        ->
+raspberry plan/status/execute/autodev/tui
+```
+
+If all you have is a prompt, the missing step is simple:
+
+```text
+prompt
+  ->
+accepted spec
+  ->
+first live plan
+  ->
+blueprint
+  ->
+checked-in fabro/ package
+  ->
+Raspberry operation
+```
+
+## The Two Modes
+
+There are only two real authoring modes.
+
+### 1. Create mode
+
+Use create mode when the repo does **not** already have a useful checked-in
+`fabro/` package.
+
+Typical example:
+
+- a new repo like `coding/zend`
+- a repo with specs and plans, but no `fabro/programs/*.yaml`
+
+### 2. Evolve mode
+
+Use evolve mode when the repo **does** already have a checked-in `fabro/`
+package and you want to revise it from doctrine and run evidence.
+
+Typical example:
+
+- a repo like Myosu with existing `fabro/`, `outputs/`, and `.raspberry/`
+- a lane contract that turned out to be too weak or too optimistic
+
+## Current Behavior
+
+As of March 20, 2026, the CLI behavior is:
+
+- `fabro synth create`:
+  - if `--blueprint` is supplied, compile it
+  - otherwise inspect the repo, choose the active plan, author a first
+    blueprint, save it under `fabro/blueprints/`, then compile it
+- `fabro synth evolve`:
+  - if `--blueprint` is supplied, reconcile it
+  - otherwise import the current package, attach repo doctrine and evidence
+    inputs when present, save the generated blueprint under `fabro/blueprints/`,
+    then reconcile it
+
+That means blueprint authoring is now folded into `synth create` and
+`synth evolve` themselves rather than living only in skill guidance.
+
+The biggest remaining limitation is not the existence of an authoring step
+anymore. The remaining limitation is how smart and how broad the deterministic
+front half should become over time:
+
+- richer lane-intent decomposition
+- stronger family selection for multi-lane plans
+- tighter automatic recovery and observer truth after those packages begin
+  running
+
+## If You Only Have A Prompt
+
+If the repo has no accepted spec or live plan yet, do not jump straight to
+workflow generation.
+
+Do this first:
+
+1. turn the prompt into an accepted product or frontier spec
+2. turn the spec into the first live execution plan
+3. ask for a blueprint for that first frontier
+4. compile the blueprint into the checked-in package
+
+The practical rule is:
+
+- prompts are too ambiguous for direct long-lived supervision
+- specs define the durable product boundary
+- plans define the first executable slice
+- blueprints define the control plane
+
+For a brand-new repo, the minimum honest manual work is usually:
+
+```text
+prompt -> spec -> first plan
+```
+
+After that, the control-plane path can become mostly deterministic:
+
+```text
+blueprint -> synth create -> raspberry operate
+```
+
+## What A Blueprint Is
+
+A blueprint is the reviewable intermediate representation between high-level
+requirements and the final checked-in `fabro/` package.
+
+It is not the final workflow tree.
+
+It describes:
+
+- program identity
+- units
+- lanes
+- milestones
+- artifacts
+- dependencies
+- checks
+- workflow family choices
+- proof posture
+
+Think of it as the repo-level control-plane design document that a deterministic
+compiler can turn into:
+
+- `fabro/programs/*.yaml`
+- `fabro/run-configs/**/*.toml`
+- `fabro/workflows/**/*.fabro`
+- `fabro/prompts/**/*`
+
+## The Deterministic Workflow Catalog
+
+This is the narrowing that makes one-command bootstrap realistic.
+
+Create mode should not invent workflow shapes from scratch when a plan already
+exists. It should map each planned lane to one of a small number of workflow
+families.
+
+For now, the default catalog should be:
+
+1. `bootstrap`
+   Use when the plan is creating or restarting a surface and the repo does not
+   yet have enough trusted proof to justify implementation-family delivery.
+
+2. `service_bootstrap`
+   Use when the planned slice is a service or daemon and the first proof bar is
+   a health surface such as `/health`, a ready log line, or a stable RPC
+   method.
+
+3. `implementation`
+   Use when the repo already has a reviewed slice and a real deterministic
+   proof command. This is the evidence-gated pattern with
+   `implementation.md`, `verification.md`, `quality.md`, and `promotion.md`.
+
+4. `recurring_report`
+   Use for recurring oversight, audit, scorecard, or planning lanes that do not
+   own product implementation directly.
+
+5. `orchestration`
+   Use when a lane should supervise a child program rather than run a raw
+   workflow directly.
+
+The practical rule is:
+
+- do not synthesize a custom topology when one of these five fits
+- do not choose `implementation` just because the plan mentions future coding
+- do not choose `parallel review` as a top-level family; treat it as an
+  optional refinement inside `implementation` when the lane is broad enough
+
+## Manual vs Automatic
+
+This is the part that was previously too implicit.
+
+### What you still do manually
+
+You still need to provide the durable intent.
+
+That usually means some combination of:
+
+- a root `README.md`
+- `SPEC.md` / `PLANS.md` repo rules
+- one or more accepted specs in `specs/`
+- one or more live plans in `plans/`
+- optional doctrine like `AGENTS.md`, `CLAUDE.md`, `OS.md`
+
+You are also responsible for answering the few high-level questions the repo
+cannot infer safely yet, such as:
+
+- should the first slice be bootstrap, restart, or implementation?
+- what is the first real proof bar?
+- what should be deferred instead of generated now?
+
+That means Fabro and Raspberry are not replacing product judgment. They are
+replacing the repetitive work of turning accepted repo intent into a stable,
+reviewable control plane.
+
+### What the skill should do
+
+The built-in `fabro-create-workflow` skill should:
+
+1. inspect the repo first
+2. read the relevant specs/plans/doctrine
+3. ask only targeted follow-up questions
+4. write the blueprint
+
+The skill should **not** free-write the final `fabro/` tree first.
+It also should not free-invent workflow topology if the plan can already be
+mapped to the deterministic catalog above.
+
+### What `fabro synth create` does
+
+It deterministically compiles the blueprint into the checked-in package.
+
+It is responsible for:
+
+- stable path layout
+- manifest structure
+- run-config generation
+- workflow graph generation
+- prompt file generation
+- check skeleton generation
+
+### What `fabro synth evolve` does
+
+It deterministically reconciles an imported or revised blueprint against the
+current checked-in package.
+
+It is responsible for:
+
+- importing the current package into a blueprint-like model
+- comparing doctrine and run evidence against that model
+- rendering a deterministic patch back into the repo
+
+## The New-Repo Path
+
+This is the path for a repo like `coding/zend`.
+
+Current Zend state:
+
+- it has planning material:
+  - [README.md](/home/r/coding/zend/README.md)
+  - [SPEC.md](/home/r/coding/zend/SPEC.md)
+  - [Zend Product Spec](/home/r/coding/zend/specs/2026-03-19-zend-product-spec.md)
+  - [Gateway ExecPlan](/home/r/coding/zend/plans/2026-03-19-prove-zend-home-miner-gateway.md)
+- it does **not** yet have:
+  - `fabro/`
+  - `outputs/`
+  - `.raspberry/`
+
+That means Zend is a **create-mode** repo.
+
+### Step 1: Give the skill the durable inputs
+
+For Zend, the inputs are already good enough to start:
+
+- root repo description in `README.md`
+- durable product boundary in `specs/2026-03-19-zend-product-spec.md`
+- first implementation slice in `plans/2026-03-19-prove-zend-home-miner-gateway.md`
+
+### Step 2: Ask for a blueprint, not a pile of files
+
+Your request to the skill should sound like this:
+
+```text
+Create a blueprint-first Raspberry/Fabro package for this repo.
+Use README.md, SPEC.md, specs/2026-03-19-zend-product-spec.md, and
+plans/2026-03-19-prove-zend-home-miner-gateway.md.
+
+Start minimal. I want the smallest honest executable control-plane shape for
+the first gateway proof. Write the result to fabro/blueprints/zend.yaml.
+```
+
+The important phrase is:
+
+```text
+write the blueprint
+```
+
+not:
+
+```text
+write all the workflow files
+```
+
+### Step 3: Review the blueprint
+
+Before compiling it, review the blueprint for:
+
+- program id
+- units and lanes
+- milestone names
+- proof posture
+- whether the first frontier is truly minimal
+
+For Zend, a good first blueprint would probably create only the first few
+frontiers needed for the gateway proof, not every future inbox lane mentioned
+in the long-term product spec.
+
+It should also choose from the deterministic catalog above. In practice that
+means:
+
+- use `bootstrap` if the first Zend slice is still creating project surfaces
+- use `service_bootstrap` if the first proof is a stable gateway health surface
+- delay `implementation` until the repo has a reviewed slice and a real proof
+  command
+
+### Step 4: Compile it
+
+```bash
+cd /home/r/coding/zend
+fabro synth create --blueprint fabro/blueprints/zend.yaml --target-repo .
+```
+
+This should create the first checked-in package:
+
+```text
+fabro/programs/
+fabro/run-configs/
+fabro/workflows/
+fabro/prompts/
+```
+
+### Step 5: Start operating it with Raspberry
+
+Once the package exists:
+
+```bash
+raspberry plan --manifest fabro/programs/zend.yaml
+raspberry status --manifest fabro/programs/zend.yaml
+```
+
+If the package shape is good enough:
+
+```bash
+raspberry execute --manifest fabro/programs/zend.yaml
+```
+
+Later:
+
+```bash
+raspberry autodev --manifest fabro/programs/zend.yaml --fabro-bin /path/to/fabro
+```
+
+At that point the manual work changes:
+
+- before `fabro/` exists, you are still shaping intent
+- after `fabro/` exists, Raspberry can supervise execution
+
+## The Existing-Repo Path
+
+This is the path for a repo like Myosu.
+
+### Step 1: Import the current package
+
+```bash
+fabro synth import \
+  --target-repo /home/r/coding/myosu \
+  --program myosu \
+  --output /tmp/myosu.yaml
+```
+
+### Step 2: Revise the blueprint from doctrine and evidence
+
+Relevant evidence usually includes:
+
+- `outputs/**/*`
+- `.raspberry/*`
+- `~/.fabro/runs/*`
+- plans/specs/doctrine docs
+
+The skill should revise the imported blueprint, not rewrite the package blindly.
+
+### Step 3: Evolve the package
+
+```bash
+fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /home/r/coding/myosu
+```
+
+Use `--preview-root` if you want a review-first patch tree.
+
+## When A Repo Is Ready For `autodev`
+
+A brand-new repo is **not** ready for autonomous loops just because it has a
+spec and a plan.
+
+It is ready once all of these are true:
+
+1. the blueprint exists
+2. `fabro synth create` has produced a checked-in package
+3. the package has at least one real program manifest
+4. the first lanes have honest artifact and milestone contracts
+5. the proof commands point at real repo surfaces
+
+So for Zend, the answer today is:
+
+- ready for blueprint creation: **yes**
+- ready for checked-in package generation: **yes**
+- ready for end-to-end autonomous execution right now from plans/specs alone:
+  **not yet**
+
+Zend still needs its first generated `fabro/` package before Raspberry can do
+anything useful with it.
+
+## The Minimal Operator Checklist For A New Repo
+
+For a new repo like Zend:
+
+```text
+1. Write/accept the product spec
+2. Write the first live ExecPlan
+3. Ask the skill to write a blueprint
+4. Review the blueprint
+5. Run `fabro synth create`
+6. Inspect `raspberry plan` and `raspberry status`
+7. Only then start `execute` or `autodev`
+```
+
+## The Default Mapping From Plan To Workflow Family
+
+Given an accepted plan, create mode should follow this decision order:
+
+1. If the lane supervises another program, choose `orchestration`.
+2. If the lane is recurring governance, planning, audit, or reporting, choose
+   `recurring_report`.
+3. If the plan's first proof bar is a service health surface, choose
+   `service_bootstrap`.
+4. If the repo already has reviewed artifacts and a deterministic proof command
+   for the slice, choose `implementation`.
+5. Otherwise choose `bootstrap`.
+
+That is the narrowing we should optimize for. The bootstrap command should ask
+the user only when this decision order cannot resolve the lane honestly.
+
+## Common Mistakes
+
+### Mistake 1: Asking for final workflow files immediately
+
+Bad:
+
+```text
+Write all the .fabro and .toml files for this repo
+```
+
+Better:
+
+```text
+Inspect the repo and write a blueprint first
+```
+
+### Mistake 2: Generating every future lane up front
+
+Bad:
+
+- create every lane mentioned in a long product spec
+
+Better:
+
+- create the smallest honest first frontier
+- let evolve add more later
+
+### Mistake 3: Starting `autodev` before the package exists
+
+Bad:
+
+```bash
+raspberry autodev --manifest fabro/programs/zend.yaml
+```
+
+when `fabro/programs/zend.yaml` does not exist yet.
+
+Better:
+
+```bash
+fabro synth create ...
+raspberry plan ...
+raspberry status ...
+```
+
+first.
+
+### Mistake 4: Treating blueprints as optional
+
+They are not optional in broad repo-shaped create/evolve flows. They are the
+reviewable control-plane design artifact.
+
+## Recommended Prompts
+
+### New repo from specs/plans
+
+```text
+Use blueprint-first create mode.
+
+Inspect README.md, SPEC.md, PLANS.md, specs/, and plans/.
+Write the smallest honest Raspberry/Fabro blueprint for the repo to
+fabro/blueprints/<repo>.yaml.
+
+Do not generate every future lane. Start with the first executable frontier.
+```
+
+### Existing repo from evidence
+
+```text
+Use blueprint-first evolve mode.
+
+Import the current package, inspect doctrine and run evidence, explain the
+drift, and write the revised blueprint.
+
+Prefer tightening milestone/proof/quality contracts over freeform workflow
+rewrites.
+```
+
+## Related Reading
+
+- [Raspberry Supervisory Plane](/reference/raspberry)
+- [Raspberry Operator Runbook](/guides/raspberry-operator-runbook)
+- [CLI Reference](/reference/cli)

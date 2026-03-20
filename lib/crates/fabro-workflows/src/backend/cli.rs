@@ -1,11 +1,13 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
 use fabro_llm::provider::Provider;
+use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
 use crate::cost::compute_stage_cost;
@@ -51,6 +53,10 @@ impl AgentCli {
             Self::Gemini => "@anthropic-ai/gemini-cli",
         }
     }
+}
+
+fn inherit_host_provider_credentials(cli: AgentCli) -> bool {
+    !matches!(cli, AgentCli::Codex | AgentCli::Claude)
 }
 
 /// Ensure the CLI tool for the given provider is installed in the sandbox.
@@ -202,6 +208,7 @@ pub struct CliResponse {
     pub text: String,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub served_model: Option<String>,
 }
 
 /// Parse NDJSON output from Claude CLI (`--output-format stream-json`).
@@ -209,6 +216,7 @@ pub struct CliResponse {
 /// Looks for the last `{"type":"result",...}` line, extracts `result` text and `usage`.
 fn parse_claude_ndjson(output: &str) -> Option<CliResponse> {
     let mut last_result: Option<serde_json::Value> = None;
+    let mut served_model: Option<String> = None;
 
     for line in output.lines() {
         let line = line.trim();
@@ -216,6 +224,9 @@ fn parse_claude_ndjson(output: &str) -> Option<CliResponse> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(model) = value.get("model").and_then(|v| v.as_str()) {
+                served_model = Some(model.to_string());
+            }
             if value.get("type").and_then(|t| t.as_str()) == Some("result") {
                 last_result = Some(value);
             }
@@ -241,6 +252,7 @@ fn parse_claude_ndjson(output: &str) -> Option<CliResponse> {
         text,
         input_tokens,
         output_tokens,
+        served_model,
     })
 }
 
@@ -253,6 +265,7 @@ fn parse_codex_ndjson(output: &str) -> Option<CliResponse> {
     let mut input_tokens: i64 = 0;
     let mut output_tokens: i64 = 0;
     let mut found_anything = false;
+    let mut served_model: Option<String> = None;
 
     for line in output.lines() {
         let line = line.trim();
@@ -265,6 +278,9 @@ fn parse_codex_ndjson(output: &str) -> Option<CliResponse> {
         };
 
         let event_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if let Some(model) = value.get("model").and_then(|t| t.as_str()) {
+            served_model = Some(model.to_string());
+        }
 
         match event_type {
             "item.completed" => {
@@ -302,6 +318,7 @@ fn parse_codex_ndjson(output: &str) -> Option<CliResponse> {
         text: last_message_text,
         input_tokens,
         output_tokens,
+        served_model,
     })
 }
 
@@ -339,6 +356,10 @@ fn parse_gemini_json(output: &str) -> Option<CliResponse> {
         text,
         input_tokens,
         output_tokens,
+        served_model: value
+            .pointer("/stats/models")
+            .and_then(|m| m.as_object())
+            .and_then(|models| models.keys().next().cloned()),
     })
 }
 
@@ -358,6 +379,366 @@ pub fn parse_cli_response(provider: Provider, output: &str) -> Option<CliRespons
 /// Escape a value for safe embedding inside single quotes in a shell command.
 fn shell_escape(val: &str) -> String {
     val.replace('\'', "'\\''")
+}
+
+async fn write_provider_used_json(
+    stage_dir: &Path,
+    requested_provider: Provider,
+    requested_model: &str,
+    provider: Provider,
+    model: &str,
+    served_model: Option<&str>,
+    fallback_reason: Option<&str>,
+    codex_slot: Option<&CodexSlotSelection>,
+    command: &str,
+) {
+    let provider_used = serde_json::json!({
+        "mode": "cli",
+        "requested_provider": requested_provider.as_str(),
+        "requested_model": requested_model,
+        "provider": provider.as_str(),
+        "model": model,
+        "served_model": served_model,
+        "fallback_reason": fallback_reason,
+        "codex_slot": codex_slot.map(|slot| serde_json::json!({
+            "slot_name": slot.slot_name,
+            "codex_home": slot.codex_home,
+            "config_path": slot.config_path,
+            "state_path": slot.state_path,
+        })),
+        "command": command,
+    });
+    if let Ok(json) = serde_json::to_string_pretty(&provider_used) {
+        let _ = tokio::fs::write(stage_dir.join("provider_used.json"), json).await;
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexRotatorConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    selection_policy: Option<String>,
+    #[serde(default)]
+    cooldown_seconds: Option<u64>,
+    #[serde(default)]
+    state_path: Option<PathBuf>,
+    #[serde(default)]
+    shared_state_path: Option<PathBuf>,
+    #[serde(default)]
+    slots: Vec<CodexRotatorSlot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexRotatorSlot {
+    name: String,
+    codex_home: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexRotatorState {
+    #[serde(default)]
+    selected_slot: Option<String>,
+    #[serde(default)]
+    slots: HashMap<String, CodexRotatorSlotState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexRotatorSlotState {
+    #[serde(default)]
+    last_selected_at_ms: u64,
+    #[serde(default)]
+    cooldown_until_ms: u64,
+    #[serde(default)]
+    last_failure_reason: Option<String>,
+    #[serde(default)]
+    last_failure_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CodexRotator {
+    config_path: PathBuf,
+    state_path: PathBuf,
+    config: CodexRotatorConfig,
+    state: CodexRotatorState,
+}
+
+#[derive(Debug, Clone)]
+struct CodexSlotSelection {
+    slot_name: String,
+    codex_home: PathBuf,
+    config_path: PathBuf,
+    state_path: PathBuf,
+    cooldown_seconds: u64,
+}
+
+fn resolve_cli_target(
+    requested_provider: Provider,
+    requested_model: &str,
+    default_model: &str,
+    launch_env: &HashMap<String, String>,
+    codex_slots_available: bool,
+) -> (Provider, String, Option<String>) {
+    if requested_provider == Provider::OpenAi
+        && !launch_env.contains_key("OPENAI_API_KEY")
+        && !codex_slots_available
+        && (launch_env.contains_key("ANTHROPIC_API_KEY")
+            || launch_env.contains_key("ANTHROPIC_AUTH_TOKEN"))
+    {
+        let fallback_model = launch_env
+            .get("ANTHROPIC_MODEL")
+            .cloned()
+            .unwrap_or_else(|| default_model.to_string());
+        return (
+            Provider::Anthropic,
+            fallback_model,
+            Some(
+                "requested provider=openai but OPENAI_API_KEY is unavailable; using Anthropic/MiniMax CLI auth instead"
+                    .to_string(),
+            ),
+        );
+    }
+
+    (requested_provider, requested_model.to_string(), None)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn codex_rotator_config_paths() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(home);
+    vec![
+        home.join(".config/autonomy/codex-rotator.json"),
+        home.join(".config/rsociety/codex-rotator.json"),
+    ]
+}
+
+fn load_codex_rotator() -> Option<CodexRotator> {
+    for path in codex_rotator_config_paths() {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(config) = serde_json::from_str::<CodexRotatorConfig>(&raw) else {
+            continue;
+        };
+        if !config.enabled || config.slots.is_empty() {
+            continue;
+        }
+        let state_path = config
+            .state_path
+            .clone()
+            .or(config.shared_state_path.clone())?;
+        let state = std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+            .unwrap_or_default();
+        return Some(CodexRotator {
+            config_path: path,
+            state_path,
+            config,
+            state,
+        });
+    }
+    None
+}
+
+fn slot_key(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
+    let now = now_ms();
+    let cooldown_seconds = rotator.config.cooldown_seconds.unwrap_or(900);
+    let selection_policy = rotator
+        .config
+        .selection_policy
+        .as_deref()
+        .unwrap_or("sticky");
+
+    let mut healthy_slots = rotator
+        .config
+        .slots
+        .iter()
+        .filter(|slot| slot.codex_home.join("auth.json").exists())
+        .collect::<Vec<_>>();
+    if healthy_slots.is_empty() {
+        return None;
+    }
+
+    if selection_policy == "sticky" {
+        if let Some(selected) = rotator.state.selected_slot.as_ref() {
+            let selected_key = slot_key(selected);
+            if let Some(slot) = healthy_slots
+                .iter()
+                .find(|slot| slot_key(&slot.name) == selected_key)
+            {
+                let state = rotator
+                    .state
+                    .slots
+                    .iter()
+                    .find(|(name, _)| slot_key(name) == selected_key)
+                    .map(|(_, state)| state)
+                    .cloned()
+                    .unwrap_or_default();
+                if state.cooldown_until_ms <= now {
+                    return Some(CodexSlotSelection {
+                        slot_name: slot.name.clone(),
+                        codex_home: slot.codex_home.clone(),
+                        config_path: rotator.config_path.clone(),
+                        state_path: rotator.state_path.clone(),
+                        cooldown_seconds,
+                    });
+                }
+            }
+        }
+    }
+
+    healthy_slots.sort_by_key(|slot| {
+        rotator
+            .state
+            .slots
+            .iter()
+            .find(|(name, _)| slot_key(name) == slot_key(&slot.name))
+            .map(|(_, state)| {
+                if state.cooldown_until_ms > now {
+                    u64::MAX
+                } else {
+                    state.last_selected_at_ms
+                }
+            })
+            .unwrap_or(0)
+    });
+
+    let slot = healthy_slots.into_iter().find(|slot| {
+        rotator
+            .state
+            .slots
+            .iter()
+            .find(|(name, _)| slot_key(name) == slot_key(&slot.name))
+            .map(|(_, state)| state.cooldown_until_ms <= now)
+            .unwrap_or(true)
+    })?;
+
+    Some(CodexSlotSelection {
+        slot_name: slot.name.clone(),
+        codex_home: slot.codex_home.clone(),
+        config_path: rotator.config_path.clone(),
+        state_path: rotator.state_path.clone(),
+        cooldown_seconds,
+    })
+}
+
+fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return None;
+    };
+    let home = PathBuf::from(home);
+    let candidates = [
+        ("primary", home.join(".codex")),
+        ("slot1", home.join(".codex-slot1/.codex")),
+        ("slot2", home.join(".codex-slot2/.codex")),
+        ("slot3", home.join(".codex-slot3/.codex")),
+        ("slot4", home.join(".codex-slot4/.codex")),
+        ("slot5", home.join(".codex-slot5/.codex")),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|(_, codex_home)| codex_home.join("auth.json").exists())
+        .map(|(slot_name, codex_home)| CodexSlotSelection {
+            slot_name: slot_name.to_string(),
+            codex_home,
+            config_path: PathBuf::from("<fallback>"),
+            state_path: PathBuf::from("<fallback>"),
+            cooldown_seconds: 900,
+        })
+}
+
+fn save_codex_rotator_state(path: &Path, state: &CodexRotatorState) {
+    let Ok(json) = serde_json::to_string_pretty(state) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, json);
+}
+
+fn mark_codex_slot_selected(selection: &CodexSlotSelection) {
+    if selection.config_path == PathBuf::from("<fallback>") {
+        return;
+    }
+    let mut state = std::fs::read_to_string(&selection.state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+        .unwrap_or_default();
+    let now = now_ms();
+    state.selected_slot = Some(selection.slot_name.clone());
+    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+    entry.last_selected_at_ms = now;
+    save_codex_rotator_state(&selection.state_path, &state);
+}
+
+fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<String> {
+    let combined = format!("{stderr}\n{stdout}").to_ascii_lowercase();
+    let patterns = [
+        "429",
+        "rate limit",
+        "quota",
+        "limit_reached",
+        "insufficient permissions",
+        "api.responses.write",
+        "401 unauthorized",
+    ];
+    patterns
+        .iter()
+        .find(|pattern| combined.contains(**pattern))
+        .map(|pattern| format!("output matched `{pattern}`"))
+}
+
+fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
+    if selection.config_path == PathBuf::from("<fallback>") {
+        return;
+    }
+    let mut state = std::fs::read_to_string(&selection.state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+        .unwrap_or_default();
+    let now = now_ms();
+    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+    entry.last_failure_reason = Some(reason.to_string());
+    entry.last_failure_at_ms = Some(now);
+    entry.cooldown_until_ms = now.saturating_add(selection.cooldown_seconds.saturating_mul(1000));
+    save_codex_rotator_state(&selection.state_path, &state);
+}
+
+fn mark_codex_slot_succeeded(selection: &CodexSlotSelection) {
+    if selection.config_path == PathBuf::from("<fallback>") {
+        return;
+    }
+    let mut state = std::fs::read_to_string(&selection.state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+        .unwrap_or_default();
+    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+    entry.cooldown_until_ms = 0;
+    entry.last_failure_reason = None;
+    entry.last_failure_at_ms = None;
+    save_codex_rotator_state(&selection.state_path, &state);
 }
 
 /// CLI backend that invokes external CLI tools (claude, codex, gemini) via `exec_command()`.
@@ -472,46 +853,91 @@ impl CodergenBackend for AgentCliBackend {
             .map_err(|e| FabroError::handler(format!("Failed to write prompt file: {e}")))?;
 
         // 3. Build CLI command
-        let model = node.model().unwrap_or(&self.model);
-        let provider = node
+        let requested_model = node.model().unwrap_or(&self.model).to_string();
+        let requested_provider = node
             .provider()
             .and_then(|s| s.parse::<Provider>().ok())
             .unwrap_or(self.provider);
 
-        // Ensure the CLI tool is installed in the sandbox
-        let cli = AgentCli::for_provider(provider);
-        ensure_cli(cli, provider, sandbox, emitter).await?;
-
-        let command = cli_command_for_provider(provider, model, &prompt_path);
-
-        let _ = tokio::fs::create_dir_all(stage_dir).await;
-        let provider_used = serde_json::json!({
-            "mode": "cli",
-            "provider": provider.as_str(),
-            "model": model,
-            "command": &command,
-        });
-        if let Ok(json) = serde_json::to_string_pretty(&provider_used) {
-            let _ = tokio::fs::write(stage_dir.join("provider_used.json"), json).await;
-        }
-
-        // Forward provider API key and custom env vars so the CLI tool can authenticate.
+        // Forward custom env vars to the CLI tool. For local Codex and Claude
+        // runs, preserve each tool's own local-login/subscription auth by
+        // default; explicit API-key use still works when the key is provided
+        // through self.env.
+        //
         // Build a HashMap to pass via exec_command's env_vars parameter — this
         // prepends `export` statements directly into the base64-encoded command,
         // avoiding filesystem-to-process race conditions that can occur when
         // writing an env file via the fs API and sourcing it via the process API.
         let mut launch_env: HashMap<String, String> = HashMap::new();
-        for name in provider.api_key_env_vars() {
-            if let Ok(val) = std::env::var(name) {
-                launch_env.insert((*name).to_string(), val);
+        let requested_cli = AgentCli::for_provider(requested_provider);
+        if inherit_host_provider_credentials(requested_cli) {
+            for name in requested_provider.api_key_env_vars() {
+                if let Ok(val) = std::env::var(name) {
+                    launch_env.insert((*name).to_string(), val);
+                }
             }
         }
         for (name, val) in &self.env {
             launch_env.insert(name.clone(), val.clone());
         }
 
+        let codex_slot = if requested_provider == Provider::OpenAi {
+            load_codex_rotator()
+                .and_then(|rotator| choose_codex_slot(&rotator))
+                .or_else(fallback_codex_slot_selection)
+        } else {
+            None
+        };
+
+        let (provider, model, fallback_reason) = resolve_cli_target(
+            requested_provider,
+            &requested_model,
+            &self.model,
+            &launch_env,
+            codex_slot.is_some(),
+        );
+
+        if let Some(selection) = codex_slot.as_ref() {
+            launch_env.insert(
+                "CODEX_HOME".to_string(),
+                selection.codex_home.display().to_string(),
+            );
+            mark_codex_slot_selected(selection);
+        }
+
+        // Ensure the CLI tool is installed in the sandbox
+        let cli = AgentCli::for_provider(provider);
+        ensure_cli(cli, provider, sandbox, emitter).await?;
+
+        let command = cli_command_for_provider(provider, &model, &prompt_path);
+
+        let _ = tokio::fs::create_dir_all(stage_dir).await;
+        write_provider_used_json(
+            stage_dir,
+            requested_provider,
+            &requested_model,
+            provider,
+            &model,
+            None,
+            fallback_reason.as_deref(),
+            codex_slot.as_ref(),
+            &command,
+        )
+        .await;
+        if let Some(reason) = &fallback_reason {
+            tracing::warn!(
+                requested_provider = requested_provider.as_str(),
+                actual_provider = provider.as_str(),
+                requested_model = requested_model,
+                actual_model = model,
+                "{reason}"
+            );
+        }
+
         // Codex CLI requires `codex login --with-api-key` to store credentials;
         // it does not read OPENAI_API_KEY from the environment at runtime.
+        // This only runs when OPENAI_API_KEY was explicitly supplied for the
+        // current launch.
         if cli == AgentCli::Codex {
             if let Some(api_key) = launch_env.get("OPENAI_API_KEY") {
                 let login_cmd = format!(
@@ -626,6 +1052,15 @@ impl CodergenBackend for AgentCliBackend {
             duration_ms,
         };
 
+        if let Some(selection) = codex_slot.as_ref() {
+            if result.exit_code == 0 {
+                mark_codex_slot_succeeded(selection);
+            } else if let Some(reason) = classify_codex_slot_failure(&result.stderr, &result.stdout)
+            {
+                mark_codex_slot_failed(selection, &reason);
+            }
+        }
+
         // 3e. Cleanup temp files
         let _ = sandbox
             .exec_command(&format!("rm -f {tmp_prefix}_*"), 30_000, None, None, None)
@@ -670,6 +1105,18 @@ impl CodergenBackend for AgentCliBackend {
         // 4. Parse the CLI output
         let parsed = parse_cli_response(provider, &result.stdout)
             .ok_or_else(|| FabroError::handler("Failed to parse CLI output".to_string()))?;
+        write_provider_used_json(
+            stage_dir,
+            requested_provider,
+            &requested_model,
+            provider,
+            &model,
+            parsed.served_model.as_deref(),
+            fallback_reason.as_deref(),
+            codex_slot.as_ref(),
+            &command,
+        )
+        .await;
 
         // 5. Detect changed files
         let files_after = self.detect_changed_files(sandbox).await;
@@ -700,7 +1147,10 @@ impl CodergenBackend for AgentCliBackend {
         };
 
         let mut stage_usage = StageUsage {
-            model: model.to_string(),
+            model: parsed
+                .served_model
+                .clone()
+                .unwrap_or_else(|| model.to_string()),
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             cache_read_tokens: None,
@@ -825,10 +1275,199 @@ mod tests {
     }
 
     #[test]
+    fn host_provider_credentials_are_not_inherited_for_subscription_capable_clis() {
+        assert!(!inherit_host_provider_credentials(AgentCli::Claude));
+        assert!(!inherit_host_provider_credentials(AgentCli::Codex));
+        assert!(inherit_host_provider_credentials(AgentCli::Gemini));
+    }
+
+    #[test]
     fn agent_cli_npm_package() {
         assert_eq!(AgentCli::Claude.npm_package(), "@anthropic-ai/claude-code");
         assert_eq!(AgentCli::Codex.npm_package(), "@openai/codex");
         assert_eq!(AgentCli::Gemini.npm_package(), "@anthropic-ai/gemini-cli");
+    }
+
+    #[test]
+    fn resolve_cli_target_prefers_anthropic_when_openai_key_missing() {
+        let env = HashMap::from([
+            ("ANTHROPIC_API_KEY".to_string(), "test-key".to_string()),
+            (
+                "ANTHROPIC_MODEL".to_string(),
+                "MiniMax-M2.7-highspeed".to_string(),
+            ),
+        ]);
+
+        let (provider, model, reason) = resolve_cli_target(
+            Provider::OpenAi,
+            "gpt-5.4",
+            "MiniMax-M2.7-highspeed",
+            &env,
+            false,
+        );
+
+        assert_eq!(provider, Provider::Anthropic);
+        assert_eq!(model, "MiniMax-M2.7-highspeed");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn resolve_cli_target_keeps_openai_when_key_present() {
+        let env = HashMap::from([("OPENAI_API_KEY".to_string(), "test-openai-key".to_string())]);
+
+        let (provider, model, reason) = resolve_cli_target(
+            Provider::OpenAi,
+            "gpt-5.4",
+            "MiniMax-M2.7-highspeed",
+            &env,
+            false,
+        );
+
+        assert_eq!(provider, Provider::OpenAi);
+        assert_eq!(model, "gpt-5.4");
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn resolve_cli_target_keeps_openai_when_codex_slots_exist() {
+        let env = HashMap::from([(
+            "ANTHROPIC_API_KEY".to_string(),
+            "test-anthropic-key".to_string(),
+        )]);
+
+        let (provider, model, reason) = resolve_cli_target(
+            Provider::OpenAi,
+            "gpt-5.4",
+            "MiniMax-M2.7-highspeed",
+            &env,
+            true,
+        );
+
+        assert_eq!(provider, Provider::OpenAi);
+        assert_eq!(model, "gpt-5.4");
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn choose_codex_slot_prefers_sticky_selected_slot_when_healthy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home1 = temp.path().join("slot1");
+        let home2 = temp.path().join("slot2");
+        std::fs::create_dir_all(&home1).expect("slot1 dir");
+        std::fs::create_dir_all(&home2).expect("slot2 dir");
+        std::fs::write(home1.join("auth.json"), "{}").expect("slot1 auth");
+        std::fs::write(home2.join("auth.json"), "{}").expect("slot2 auth");
+
+        let rotator = CodexRotator {
+            config_path: temp.path().join("config.json"),
+            state_path: temp.path().join("state.json"),
+            config: CodexRotatorConfig {
+                enabled: true,
+                selection_policy: Some("sticky".to_string()),
+                cooldown_seconds: Some(900),
+                state_path: Some(temp.path().join("state.json")),
+                shared_state_path: None,
+                slots: vec![
+                    CodexRotatorSlot {
+                        name: "slot1".to_string(),
+                        codex_home: home1,
+                    },
+                    CodexRotatorSlot {
+                        name: "slot2".to_string(),
+                        codex_home: home2,
+                    },
+                ],
+            },
+            state: CodexRotatorState {
+                selected_slot: Some("slot2".to_string()),
+                slots: HashMap::new(),
+            },
+        };
+
+        let selected = choose_codex_slot(&rotator).expect("slot selected");
+        assert_eq!(selected.slot_name, "slot2");
+    }
+
+    #[test]
+    fn choose_codex_slot_skips_slots_on_cooldown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home1 = temp.path().join("slot1");
+        let home2 = temp.path().join("slot2");
+        std::fs::create_dir_all(&home1).expect("slot1 dir");
+        std::fs::create_dir_all(&home2).expect("slot2 dir");
+        std::fs::write(home1.join("auth.json"), "{}").expect("slot1 auth");
+        std::fs::write(home2.join("auth.json"), "{}").expect("slot2 auth");
+
+        let mut slots = HashMap::new();
+        slots.insert(
+            "slot1".to_string(),
+            CodexRotatorSlotState {
+                last_selected_at_ms: 1,
+                cooldown_until_ms: now_ms().saturating_add(60_000),
+                last_failure_reason: Some("quota".to_string()),
+                last_failure_at_ms: Some(now_ms()),
+            },
+        );
+
+        let rotator = CodexRotator {
+            config_path: temp.path().join("config.json"),
+            state_path: temp.path().join("state.json"),
+            config: CodexRotatorConfig {
+                enabled: true,
+                selection_policy: Some("sticky".to_string()),
+                cooldown_seconds: Some(900),
+                state_path: Some(temp.path().join("state.json")),
+                shared_state_path: None,
+                slots: vec![
+                    CodexRotatorSlot {
+                        name: "slot1".to_string(),
+                        codex_home: home1,
+                    },
+                    CodexRotatorSlot {
+                        name: "slot2".to_string(),
+                        codex_home: home2,
+                    },
+                ],
+            },
+            state: CodexRotatorState {
+                selected_slot: Some("slot1".to_string()),
+                slots,
+            },
+        };
+
+        let selected = choose_codex_slot(&rotator).expect("slot selected");
+        assert_eq!(selected.slot_name, "slot2");
+    }
+
+    #[test]
+    fn classify_codex_slot_failure_detects_scope_error() {
+        let reason = classify_codex_slot_failure(
+            "unexpected status 401 Unauthorized: Missing scopes: api.responses.write",
+            "",
+        )
+        .expect("retryable reason");
+
+        assert!(reason.contains("api.responses.write"));
+    }
+
+    #[test]
+    fn fallback_codex_slot_selection_picks_first_available_auth_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+
+        let slot3 = temp.path().join(".codex-slot3/.codex");
+        std::fs::create_dir_all(&slot3).expect("slot3 dir");
+        std::fs::write(slot3.join("auth.json"), "{}").expect("slot3 auth");
+
+        let selected = fallback_codex_slot_selection().expect("fallback slot");
+        assert_eq!(selected.slot_name, "slot3");
+        assert_eq!(selected.codex_home, slot3);
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     // -- ensure_cli --
@@ -1055,13 +1694,14 @@ mod tests {
 
     #[test]
     fn parse_claude_ndjson_extracts_text_and_usage() {
-        let output = r#"{"type":"system","message":"Claude CLI v1.0"}
+        let output = r#"{"type":"system","message":"Claude CLI v1.0","model":"MiniMax-M2.7-highspeed"}
 {"type":"assistant","message":{"content":"thinking..."}}
 {"type":"result","result":"Here is the implementation.","usage":{"input_tokens":100,"output_tokens":50}}"#;
         let response = parse_cli_response(Provider::Anthropic, output).unwrap();
         assert_eq!(response.text, "Here is the implementation.");
         assert_eq!(response.input_tokens, 100);
         assert_eq!(response.output_tokens, 50);
+        assert_eq!(response.served_model.as_deref(), Some("MiniMax-M2.7-highspeed"));
     }
 
     #[test]
@@ -1107,7 +1747,7 @@ mod tests {
 
     #[test]
     fn parse_codex_ndjson_extracts_text_and_usage() {
-        let output = r#"{"type":"thread.started","thread_id":"abc"}
+        let output = r#"{"type":"thread.started","thread_id":"abc","model":"gpt-5.4"}
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"thinking..."}}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Fixed the bug."}}
@@ -1116,6 +1756,7 @@ mod tests {
         assert_eq!(response.text, "Fixed the bug.");
         assert_eq!(response.input_tokens, 300);
         assert_eq!(response.output_tokens, 150);
+        assert_eq!(response.served_model.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]

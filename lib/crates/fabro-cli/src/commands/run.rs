@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -19,10 +19,12 @@ use fabro_workflows::backend::{AgentApiBackend, AgentCliBackend, BackendRouter};
 use fabro_workflows::checkpoint::Checkpoint;
 use fabro_workflows::cost::{compute_stage_cost, format_cost};
 use fabro_workflows::devcontainer_bridge;
+use fabro_workflows::direct_integration::{DirectIntegrationRecord, DirectIntegrationRequest};
 use fabro_workflows::engine::{RunConfig, WorkflowRunEngine};
 use fabro_workflows::event::EventEmitter;
 use fabro_workflows::handler::default_registry;
 use fabro_workflows::live_state::RunLiveState;
+use fabro_workflows::manifest::Manifest as RunManifest;
 use fabro_workflows::outcome::StageStatus;
 use fabro_workflows::sandbox_provider::SandboxProvider;
 use fabro_workflows::workflow::WorkflowBuilder;
@@ -34,6 +36,18 @@ use super::run_progress;
 use crate::commands::shared::{
     format_tokens_human, print_diagnostics, read_workflow_file, relative_path, tilde_path,
 };
+
+const DEFAULT_WRITE_PROVIDER: Provider = Provider::Anthropic;
+const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
+
+fn default_write_model_for_provider(provider: Provider) -> String {
+    if provider == Provider::Anthropic {
+        return DEFAULT_WRITE_MODEL.to_string();
+    }
+    fabro_llm::catalog::default_model_for_provider(provider.as_str())
+        .map(|model| model.id)
+        .unwrap_or_else(|| provider.as_str().to_string())
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliSandboxProvider {
@@ -210,16 +224,21 @@ fn resolve_model_provider(
             let provider_enum = provider
                 .as_deref()
                 .and_then(|s| s.parse::<Provider>().ok())
-                .unwrap_or(Provider::Anthropic);
-            fabro_llm::catalog::default_model_for_provider(provider_enum.as_str())
-                .map(|m| m.id)
-                .unwrap_or_else(|| provider_enum.as_str().to_string())
+                .unwrap_or(DEFAULT_WRITE_PROVIDER);
+            default_write_model_for_provider(provider_enum)
         });
 
     // Resolve model alias through catalog
     match fabro_llm::catalog::get_model_info(&model) {
         Some(info) => (info.id, provider.or(Some(info.provider))),
-        None => (model, provider),
+        None => {
+            let provider = if provider.is_none() && model == DEFAULT_WRITE_MODEL {
+                Some(DEFAULT_WRITE_PROVIDER.as_str().to_string())
+            } else {
+                provider
+            };
+            (model, provider)
+        }
     }
 }
 
@@ -278,6 +297,53 @@ fn resolve_worktree_mode(
                 .map(|l| l.worktree_mode)
                 .unwrap_or_default()
         })
+}
+
+fn should_create_worktree(
+    sandbox_provider: SandboxProvider,
+    worktree_mode: sandbox_config::WorktreeMode,
+    git_clean: bool,
+    require_branch_backed_run: bool,
+) -> bool {
+    if sandbox_provider.is_remote() {
+        return false;
+    }
+    if require_branch_backed_run {
+        return true;
+    }
+    match worktree_mode {
+        sandbox_config::WorktreeMode::Always => true,
+        sandbox_config::WorktreeMode::Clean => git_clean,
+        sandbox_config::WorktreeMode::Dirty => !git_clean,
+        sandbox_config::WorktreeMode::Never => false,
+    }
+}
+
+fn resolve_integration_config(
+    run_cfg: Option<&WorkflowRunConfig>,
+) -> Option<&run_config::IntegrationConfig> {
+    run_cfg
+        .and_then(|config| config.integration.as_ref())
+        .filter(|config| config.enabled)
+}
+
+fn validate_post_run_delivery_modes(run_cfg: Option<&WorkflowRunConfig>) -> anyhow::Result<()> {
+    let pull_request_enabled = run_cfg
+        .and_then(|config| config.pull_request.as_ref())
+        .is_some_and(|config| config.enabled);
+    let integration_enabled = resolve_integration_config(run_cfg).is_some();
+    if pull_request_enabled && integration_enabled {
+        bail!("run config cannot enable both [pull_request] and [integration]");
+    }
+    Ok(())
+}
+
+fn source_lane_name(config: &RunConfig, graph: &fabro_graphviz::graph::Graph) -> String {
+    config
+        .workflow_slug
+        .clone()
+        .or_else(|| (!graph.name.is_empty()).then(|| graph.name.clone()))
+        .unwrap_or_else(|| "workflow".to_string())
 }
 
 /// Resolve daytona config: TOML config > run defaults.
@@ -417,6 +483,7 @@ struct CostAccumulator {
 /// # Errors
 ///
 /// Returns an error if the workflow cannot be read, parsed, validated, or executed.
+#[allow(unreachable_patterns)]
 pub async fn run_command(
     args: RunArgs,
     mut run_defaults: RunDefaults,
@@ -437,11 +504,28 @@ pub async fn run_command(
 
     // Apply project-level config overrides (fabro.toml) on top of CLI defaults.
     // Precedence: workflow.toml > fabro.toml > cli.toml/server.toml
-    if let Some((_config_path, project_config)) =
+    if let Some((config_path, project_config)) =
         project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())?
     {
         tracing::debug!("Applying run defaults from fabro.toml");
         run_defaults.merge_overlay(project_config.into_run_defaults());
+        if let Some(path) = run_defaults
+            .integration
+            .as_mut()
+            .and_then(|integration| integration.artifact_path.as_mut())
+        {
+            if path.is_relative() {
+                let config_dir = config_path.parent().unwrap_or(Path::new("."));
+                *path = config_dir.join(&*path);
+            }
+        }
+        if let Some(env) = run_defaults
+            .sandbox
+            .as_mut()
+            .and_then(|sandbox| sandbox.env.as_mut())
+        {
+            run_config::resolve_env_refs(env)?;
+        }
     }
 
     // 0. Resolve workflow arg, load run config if TOML, resolve DOT path, apply defaults
@@ -455,6 +539,7 @@ pub async fn run_command(
             None => (dot, None),
         }
     };
+    validate_post_run_delivery_modes(run_cfg.as_ref())?;
     let dot_path = if dot_path.is_absolute() {
         dot_path
     } else {
@@ -753,20 +838,19 @@ pub async fn run_command(
     // Remote sandboxes (Daytona, Exe) clone into their own environment, so a local
     // worktree is unnecessary and wastes disk.
     let worktree_mode = resolve_worktree_mode(run_cfg.as_ref(), &run_defaults);
-    let should_create_worktree = if sandbox_provider.is_remote() {
-        false
-    } else {
-        match worktree_mode {
-            sandbox_config::WorktreeMode::Always => true,
-            sandbox_config::WorktreeMode::Clean => git_clean,
-            sandbox_config::WorktreeMode::Dirty => !git_clean,
-            sandbox_config::WorktreeMode::Never => false,
-        }
-    };
+    let require_branch_backed_run =
+        resolve_integration_config(run_cfg.as_ref()).is_some() && !args.dry_run;
+    let should_create_worktree = should_create_worktree(
+        sandbox_provider,
+        worktree_mode,
+        git_clean,
+        require_branch_backed_run,
+    );
     debug!(
         ?worktree_mode,
         ?sandbox_provider,
         git_clean,
+        require_branch_backed_run,
         should_create_worktree,
         "Resolved worktree mode"
     );
@@ -822,6 +906,11 @@ pub async fn run_command(
             match setup_worktree(&original_cwd, &run_dir, &run_id) {
                 Ok((wd, wt, branch, base)) => (Some(wd), Some(wt), Some(branch), Some(base)),
                 Err(e) => {
+                    if require_branch_backed_run {
+                        bail!(
+                            "direct integration requires a branch-backed run, but worktree setup failed: {e}"
+                        );
+                    }
                     eprintln!(
                         "{} Git worktree setup failed ({e}), running without worktree.",
                         styles.yellow.apply_to("Warning:"),
@@ -1103,6 +1192,8 @@ pub async fn run_command(
             }));
             Arc::new(env)
         }
+        #[cfg(not(feature = "exedev"))]
+        _ => unreachable!("exe sandbox requires the exedev feature"),
     };
 
     // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
@@ -1143,13 +1234,13 @@ pub async fn run_command(
         &graph,
     );
 
-    // Parse provider string to enum (defaults to Anthropic)
+    // Parse provider string to enum (defaults to Anthropic/MiniMax writing path)
     let provider_enum: Provider = provider
         .as_deref()
         .map(|s| s.parse::<Provider>())
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .unwrap_or(Provider::Anthropic);
+        .unwrap_or(DEFAULT_WRITE_PROVIDER);
 
     // Resolve fallback chain from config
     let fallback_chain = resolve_fallback_chain(provider_enum, &model, run_cfg.as_ref());
@@ -1162,6 +1253,9 @@ pub async fn run_command(
         } else {
             HashMap::new()
         };
+        if let Some(default_env) = run_defaults.sandbox.as_ref().and_then(|s| s.env.clone()) {
+            env.extend(default_env);
+        }
         if let Some(toml_env) = run_cfg
             .as_ref()
             .and_then(|c| c.sandbox.as_ref())
@@ -1347,18 +1441,94 @@ pub async fn run_command(
     // Restore cwd (worktree is kept for `fabro cp` access; pruned separately)
     let _ = std::env::set_current_dir(&original_cwd);
 
+    let mut direct_integration_record: Option<DirectIntegrationRecord> = None;
+    let mut direct_integration_failure: Option<String> = None;
+    if let Some(integration_cfg) = resolve_integration_config(run_cfg.as_ref()).cloned() {
+        if dry_run_mode {
+            debug!("Skipping direct integration: dry-run mode");
+        } else if let Err(error) = &engine_result {
+            debug!(
+                error = %error,
+                "Skipping direct integration: engine returned an error"
+            );
+        } else if let Ok(outcome) = &engine_result {
+            if !matches!(
+                outcome.status,
+                StageStatus::Success | StageStatus::PartialSuccess
+            ) {
+                debug!(
+                    status = ?outcome.status,
+                    "Skipping direct integration: run status is not success"
+                );
+            } else {
+                match RunManifest::load(&run_dir.join("manifest.json"))
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+                    .and_then(|manifest| {
+                        let request = DirectIntegrationRequest {
+                            source_lane: source_lane_name(&config, &graph),
+                            manifest,
+                            repo_fallback: original_cwd.clone(),
+                            target_branch: integration_cfg.target_branch.clone(),
+                            strategy: integration_cfg.strategy,
+                            artifact_path: integration_cfg.artifact_path.clone(),
+                        };
+                        fabro_workflows::direct_integration::integrate_run(&request)
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))
+                    }) {
+                    Ok(record) => {
+                        let record_path = run_dir.join("direct_integration.json");
+                        match serde_json::to_string_pretty(&record) {
+                            Ok(json) => {
+                                if let Err(error) = fabro_workflows::write_text_atomic(
+                                    &record_path,
+                                    &json,
+                                    "direct integration record",
+                                ) {
+                                    tracing::warn!(
+                                        path = %record_path.display(),
+                                        error = %error,
+                                        "Failed to persist direct integration record"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    path = %record_path.display(),
+                                    error = %error,
+                                    "Failed to serialize direct integration record"
+                                );
+                            }
+                        }
+                        direct_integration_record = Some(record);
+                    }
+                    Err(error) => {
+                        direct_integration_failure = Some(error.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     {
-        let (status, failure_reason) = match &engine_result {
-            Ok(ref o) => (o.status.clone(), o.failure_reason().map(String::from)),
-            Err(e) => (
+        let (status, failure_reason) = match (&engine_result, &direct_integration_failure) {
+            (_, Some(error)) => (
+                fabro_workflows::outcome::StageStatus::Fail,
+                Some(error.clone()),
+            ),
+            (Ok(ref o), None) => (o.status.clone(), o.failure_reason().map(String::from)),
+            (Err(e), None) => (
                 fabro_workflows::outcome::StageStatus::Fail,
                 Some(e.to_string()),
             ),
         };
 
         // Map engine result to RunStatus + StatusReason
-        let (run_status, status_reason) = match &engine_result {
-            Ok(ref o) => match o.status {
+        let (run_status, status_reason) = match (&engine_result, &direct_integration_failure) {
+            (_, Some(_)) => (
+                fabro_workflows::run_status::RunStatus::Failed,
+                Some(fabro_workflows::run_status::StatusReason::WorkflowError),
+            ),
+            (Ok(ref o), None) => match o.status {
                 StageStatus::Success | StageStatus::Skipped => (
                     fabro_workflows::run_status::RunStatus::Succeeded,
                     Some(fabro_workflows::run_status::StatusReason::Completed),
@@ -1372,11 +1542,11 @@ pub async fn run_command(
                     Some(fabro_workflows::run_status::StatusReason::WorkflowError),
                 ),
             },
-            Err(fabro_workflows::error::FabroError::Cancelled) => (
+            (Err(fabro_workflows::error::FabroError::Cancelled), None) => (
                 fabro_workflows::run_status::RunStatus::Failed,
                 Some(fabro_workflows::run_status::StatusReason::Cancelled),
             ),
-            Err(_) => (
+            (Err(_), None) => (
                 fabro_workflows::run_status::RunStatus::Failed,
                 Some(fabro_workflows::run_status::StatusReason::WorkflowError),
             ),
@@ -1435,10 +1605,11 @@ pub async fn run_command(
 
     // Auto-derive retro (always, cheap) and optionally run retro agent
     if !args.no_retro && project_config::is_retro_enabled() {
-        let failed = match &engine_result {
-            Ok(ref o) => o.status == StageStatus::Fail,
-            Err(_) => true,
-        };
+        let failed = direct_integration_failure.is_some()
+            || match &engine_result {
+                Ok(ref o) => o.status == StageStatus::Fail,
+                Err(_) => true,
+            };
         generate_retro(
             &config.run_id,
             &graph.name,
@@ -1467,7 +1638,11 @@ pub async fn run_command(
     let mut pushed_branch: Option<String> = None;
     let mut pr_url: Option<String> = None;
     if let Some(ref pr_cfg) = config.pull_request {
-        if dry_run_mode {
+        if resolve_integration_config(run_cfg.as_ref()).is_some() {
+            debug!("Skipping PR creation: direct integration enabled in config");
+        } else if direct_integration_failure.is_some() {
+            debug!("Skipping PR creation: direct integration failed");
+        } else if dry_run_mode {
             debug!("Skipping PR creation: dry-run mode");
         } else if let Err(ref e) = engine_result {
             debug!(error = %e, "Skipping PR creation: engine returned an error");
@@ -1554,13 +1729,21 @@ pub async fn run_command(
     }
 
     let outcome = engine_result?;
+    let display_status = if direct_integration_failure.is_some() {
+        StageStatus::Fail
+    } else {
+        outcome.status.clone()
+    };
+    let display_failure = direct_integration_failure
+        .clone()
+        .or_else(|| outcome.failure_reason().map(String::from));
 
     // 8. Print result
     eprintln!("\n{}", styles.bold.apply_to("=== Run Result ==="),);
 
     eprintln!("{}", styles.dim.apply_to(format!("Run:       {run_id}")));
-    let status_str = outcome.status.to_string().to_uppercase();
-    let status_color = match outcome.status {
+    let status_str = display_status.to_string().to_uppercase();
+    let status_color = match display_status {
         StageStatus::Success | StageStatus::PartialSuccess => &styles.bold_green,
         _ => &styles.bold_red,
     };
@@ -1620,17 +1803,25 @@ pub async fn run_command(
             .apply_to(format!("Run:       {}", tilde_path(&run_dir)))
     );
 
-    if let Some(failure) = outcome.failure_reason() {
+    if let Some(failure) = display_failure.as_deref() {
         eprintln!("Failure:   {}", styles.red.apply_to(failure));
     }
 
-    if pushed_branch.is_some() || pr_url.is_some() {
+    if pushed_branch.is_some() || pr_url.is_some() || direct_integration_record.is_some() {
         eprintln!();
         if let Some(ref branch) = pushed_branch {
             eprintln!("{} {branch}", styles.bold.apply_to("Pushed branch:"));
         }
         if let Some(ref url) = pr_url {
             eprintln!("{} {url}", styles.bold.apply_to("Pull request:"));
+        }
+        if let Some(ref record) = direct_integration_record {
+            eprintln!(
+                "{} {} ({})",
+                styles.bold.apply_to("Integrated:"),
+                record.target_branch,
+                record.commit_sha
+            );
         }
     }
 
@@ -1649,6 +1840,10 @@ pub async fn run_command(
         } else {
             eprintln!("\n{} sandbox preserved", styles.bold.apply_to("Info:"));
         }
+    }
+
+    if let Some(error) = direct_integration_failure {
+        return Err(anyhow::anyhow!(error));
     }
     if let Err(e) = engine
         .cleanup_sandbox(&run_id, &graph.name, preserve_sandbox)
@@ -1699,6 +1894,7 @@ fn setup_worktree(
 /// Reads the checkpoint, manifest, and graph DOT from the metadata branch
 /// (`fabro/meta/{run_id}`), re-attaches a worktree to the existing run branch,
 /// and resumes execution via `run_from_checkpoint()`.
+#[allow(unreachable_patterns)]
 async fn run_from_branch(
     args: RunArgs,
     run_branch: &str,
@@ -1843,6 +2039,8 @@ async fn run_from_branch(
             SandboxProvider::Daytona => {
                 bail!("--run-branch resume is not yet supported with --sandbox daytona");
             }
+            #[cfg(not(feature = "exedev"))]
+            _ => unreachable!("exe sandbox requires the exedev feature"),
         };
 
     // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
@@ -1872,14 +2070,16 @@ async fn run_from_branch(
             .map(|c| c.provider_names().is_empty())
             .unwrap_or(true);
 
-    let model = args.model.unwrap_or_else(|| "claude-opus-4-6".to_string());
+    let model = args
+        .model
+        .unwrap_or_else(|| DEFAULT_WRITE_MODEL.to_string());
     let provider_enum = args
         .provider
         .as_deref()
         .map(|s| s.parse::<fabro_llm::provider::Provider>())
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .unwrap_or(fabro_llm::provider::Provider::Anthropic);
+        .unwrap_or(DEFAULT_WRITE_PROVIDER);
 
     // No fallback config available for branch resume; use empty chain.
     let fallback_chain = Vec::new();
@@ -2064,6 +2264,7 @@ fn print_assets(run_dir: &std::path::Path, styles: &Styles) {
 /// resolves the model/provider through the full precedence chain, and prints
 /// a styled check report.
 #[allow(clippy::too_many_arguments)]
+#[allow(unreachable_patterns)]
 async fn run_preflight(
     graph: &fabro_graphviz::graph::Graph,
     run_cfg: &Option<run_config::WorkflowRunConfig>,
@@ -2191,6 +2392,8 @@ async fn run_preflight(
         SandboxProvider::Local => {
             Ok(Arc::new(LocalSandbox::new(original_cwd.clone())) as Arc<dyn Sandbox>)
         }
+        #[cfg(not(feature = "exedev"))]
+        _ => Err("exe sandbox requires the exedev feature".to_string()),
     };
 
     let sandbox_ok = match sandbox_result {
@@ -2729,8 +2932,7 @@ mod tests {
         let graph = fabro_graphviz::graph::Graph::new("test");
         let defaults = RunDefaults::default();
         let (model, provider) = resolve_model_provider(None, None, None, &defaults, &graph);
-        assert_eq!(model, "claude-opus-4-6");
-        // Catalog resolves anthropic as the provider for claude-opus-4-6
+        assert_eq!(model, "MiniMax-M2.7-highspeed");
         assert_eq!(provider, Some("anthropic".to_string()));
     }
 
@@ -2754,6 +2956,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -2799,6 +3002,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -2879,6 +3083,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -2906,6 +3111,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -2932,6 +3138,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -2976,6 +3183,28 @@ mod tests {
     }
 
     #[test]
+    fn integration_backed_local_runs_force_worktree_creation() {
+        assert!(should_create_worktree(
+            SandboxProvider::Local,
+            sandbox_config::WorktreeMode::Never,
+            true,
+            true,
+        ));
+        assert!(should_create_worktree(
+            SandboxProvider::Local,
+            sandbox_config::WorktreeMode::Clean,
+            false,
+            true,
+        ));
+        assert!(!should_create_worktree(
+            SandboxProvider::Daytona,
+            sandbox_config::WorktreeMode::Always,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
     fn resolve_worktree_mode_from_toml() {
         let cfg = run_config::WorkflowRunConfig {
             version: 1,
@@ -2997,6 +3226,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -3050,6 +3280,7 @@ mod tests {
             hooks: Vec::new(),
             checkpoint: Default::default(),
             pull_request: None,
+            integration: None,
             assets: None,
             mcp_servers: Default::default(),
             github: None,
@@ -3070,6 +3301,42 @@ mod tests {
             resolve_worktree_mode(Some(&cfg), &defaults),
             sandbox_config::WorktreeMode::Never
         );
+    }
+
+    #[test]
+    fn validate_post_run_delivery_modes_rejects_pr_and_integration_together() {
+        let cfg = run_config::WorkflowRunConfig {
+            version: 1,
+            goal: Some("test".into()),
+            graph: "w.fabro".into(),
+            work_dir: None,
+            llm: None,
+            setup: None,
+            sandbox: None,
+            vars: None,
+            hooks: Vec::new(),
+            checkpoint: Default::default(),
+            pull_request: Some(run_config::PullRequestConfig {
+                enabled: true,
+                draft: true,
+                auto_merge: false,
+                merge_strategy: run_config::MergeStrategy::Squash,
+            }),
+            integration: Some(run_config::IntegrationConfig {
+                enabled: true,
+                strategy: run_config::MergeStrategy::Squash,
+                target_branch: "origin/HEAD".to_string(),
+                artifact_path: None,
+            }),
+            assets: None,
+            mcp_servers: Default::default(),
+            github: None,
+        };
+
+        let error = validate_post_run_delivery_modes(Some(&cfg)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot enable both [pull_request] and [integration]"));
     }
 
     #[test]

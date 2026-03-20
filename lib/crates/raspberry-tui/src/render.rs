@@ -1,9 +1,9 @@
+use raspberry_supervisor::LaneExecutionStatus;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
-use raspberry_supervisor::LaneExecutionStatus;
 
 use crate::app::{App, Pane, ProgramRow, ProgramRowKind};
 use crate::layout::{split_screen, LayoutMode};
@@ -161,14 +161,18 @@ fn program_row_item(row: &ProgramRow) -> ListItem<'static> {
         ProgramRowKind::StatusHeader => ListItem::new(Line::styled(
             row.primary.clone(),
             Style::default()
-                .fg(status_color(row.status.unwrap_or(LaneExecutionStatus::Blocked)))
+                .fg(status_color(
+                    row.status.unwrap_or(LaneExecutionStatus::Blocked),
+                ))
                 .add_modifier(Modifier::BOLD),
         )),
         ProgramRowKind::Lane => ListItem::new(vec![
             Line::styled(
                 row.primary.clone(),
                 Style::default()
-                    .fg(status_color(row.status.unwrap_or(LaneExecutionStatus::Blocked)))
+                    .fg(status_color(
+                        row.status.unwrap_or(LaneExecutionStatus::Blocked),
+                    ))
                     .add_modifier(Modifier::BOLD),
             ),
             Line::styled(

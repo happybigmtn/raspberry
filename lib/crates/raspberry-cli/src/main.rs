@@ -6,8 +6,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use raspberry_supervisor::{
     evaluate_program, execute_selected_lanes, orchestrate_program, render_grouped_summary,
-    render_status_table, AutodevSettings, AutodevStopReason, DispatchSettings,
-    LaneExecutionStatus, ProgramManifest,
+    render_status_table, sync_autodev_report_with_program, AutodevSettings, AutodevStopReason,
+    DispatchSettings, LaneExecutionStatus, ProgramManifest,
 };
 
 #[derive(Debug, Parser)]
@@ -63,6 +63,8 @@ struct AutodevArgs {
     fabro_bin: PathBuf,
     #[arg(long)]
     max_parallel: Option<usize>,
+    #[arg(long)]
+    frontier_budget: Option<usize>,
     #[arg(long, default_value_t = 5)]
     max_cycles: usize,
     #[arg(long, default_value_t = 500)]
@@ -96,13 +98,17 @@ fn main() -> Result<()> {
 }
 
 fn run_plan(manifest_path: &Path) -> Result<()> {
+    let manifest = ProgramManifest::load(manifest_path)?;
     let program = evaluate_program(manifest_path)?;
+    sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
     println!("{}", render_grouped_summary(&program));
     Ok(())
 }
 
 fn run_status(manifest_path: &Path) -> Result<()> {
+    let manifest = ProgramManifest::load(manifest_path)?;
     let program = evaluate_program(manifest_path)?;
+    sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
     println!("{}", render_status_table(&program));
     Ok(())
 }
@@ -116,7 +122,9 @@ fn run_watch(args: WatchArgs) -> Result<()> {
     };
 
     for index in 0..total_iterations {
+        let manifest = ProgramManifest::load(&args.manifest)?;
         let program = evaluate_program(&args.manifest)?;
+        sync_autodev_report_with_program(&args.manifest, &manifest, &program)?;
         println!("Iteration {}:", index + 1);
         println!("{}", render_status_table(&program));
         if until_settled
@@ -195,6 +203,7 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
         &AutodevSettings {
             fabro_bin: args.fabro_bin.clone(),
             max_parallel_override: args.max_parallel,
+            frontier_budget: args.frontier_budget,
             max_cycles: args.max_cycles,
             poll_interval_ms: args.poll_interval_ms,
             evolve_every_seconds: args.evolve_every_seconds,

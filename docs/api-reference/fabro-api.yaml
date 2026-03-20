@@ -4295,6 +4295,8 @@ components:
           $ref: "#/components/schemas/CheckpointConfiguration"
         pull_request:
           $ref: "#/components/schemas/PullRequestConfiguration"
+        integration:
+          $ref: "#/components/schemas/IntegrationConfiguration"
         hooks:
           type: array
           items:
@@ -4396,6 +4398,24 @@ components:
           type: string
           enum: [squash, merge, rebase]
           description: Merge strategy for auto-merge.
+
+    IntegrationConfiguration:
+      description: Integration settings for syncing run outputs back to the target repo.
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether integration is enabled for this run.
+        strategy:
+          type: string
+          enum: [squash, merge, rebase]
+          description: Merge strategy for applying generated changes.
+        target_branch:
+          type: string
+          description: Branch to merge into after a successful run.
+        artifact_path:
+          type: string
+          description: Optional path for storing integration artifacts.
 
     WebConfiguration:
       description: Web UI configuration.

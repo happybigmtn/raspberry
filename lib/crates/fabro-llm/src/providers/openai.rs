@@ -414,7 +414,7 @@ fn build_api_request(request: &Request, stream: bool, codex_mode: bool) -> ApiRe
         text,
         stop: request.stop_sequences.clone(),
         metadata: request.metadata.clone(),
-        store: false,
+        store: true,
         stream,
     }
 }
@@ -437,6 +437,22 @@ fn build_request_body(request: &Request, stream: bool, codex_mode: bool) -> serd
     }
 
     body
+}
+
+fn set_store_flag(body: &mut serde_json::Value, store: bool) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("store".to_string(), serde_json::json!(store));
+    }
+}
+
+fn should_retry_with_store_false(error: &SdkError) -> bool {
+    matches!(
+        error,
+        SdkError::Provider {
+            kind: crate::error::ProviderErrorKind::InvalidRequest,
+            detail,
+        } if detail.message.to_lowercase().contains("store must be set to false")
+    )
 }
 
 /// Parse output items from the Responses API into content parts.
@@ -932,14 +948,25 @@ impl ProviderAdapter for Adapter {
         if let Some(tc) = &request.tool_choice {
             crate::provider::validate_tool_choice(self, tc)?;
         }
-        let request_body = build_request_body(request, false, false);
+        let mut request_body = build_request_body(request, false, false);
         let url = format!("{}/responses", self.http.base_url);
-
-        let mut req = self.build_request(&url).json(&request_body);
-        if let Some(t) = self.http.request_timeout {
-            req = req.timeout(t);
-        }
-        let (body, headers) = send_and_read_response(req, "openai", "type").await?;
+        let mut retried_with_store_false = false;
+        let (body, headers) = loop {
+            let mut req = self.build_request(&url).json(&request_body);
+            if let Some(t) = self.http.request_timeout {
+                req = req.timeout(t);
+            }
+            match send_and_read_response(req, "openai", "type").await {
+                Ok(result) => break result,
+                Err(error)
+                    if !retried_with_store_false && should_retry_with_store_false(&error) =>
+                {
+                    set_store_flag(&mut request_body, false);
+                    retried_with_store_false = true;
+                }
+                Err(error) => return Err(error),
+            }
+        };
 
         let api_resp: ApiResponse = serde_json::from_str(&body).map_err(|e| SdkError::Network {
             message: format!("failed to parse OpenAI response: {e}"),
@@ -988,34 +1015,43 @@ impl ProviderAdapter for Adapter {
         if let Some(tc) = &request.tool_choice {
             crate::provider::validate_tool_choice(self, tc)?;
         }
-        let request_body = build_request_body(request, true, self.codex_mode);
+        let mut request_body = build_request_body(request, true, self.codex_mode);
         let url = format!("{}/responses", self.http.base_url);
-
-        let http_resp = self
-            .build_request(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| SdkError::Network {
+        let mut retried_with_store_false = false;
+        let http_resp = loop {
+            let mut req = self.build_request(&url).json(&request_body);
+            if let Some(t) = self.http.request_timeout {
+                req = req.timeout(t);
+            }
+            let http_resp = req.send().await.map_err(|e| SdkError::Network {
                 message: e.to_string(),
             })?;
 
-        let status = http_resp.status();
-        if !status.is_success() {
+            let status = http_resp.status();
+            if status.is_success() {
+                break http_resp;
+            }
+
             let retry_after = parse_retry_after(http_resp.headers());
             let body = http_resp.text().await.map_err(|e| SdkError::Network {
                 message: e.to_string(),
             })?;
             let (msg, code, raw) = parse_error_body(&body, "type");
-            return Err(crate::error::error_from_status_code(
+            let error = crate::error::error_from_status_code(
                 status.as_u16(),
                 msg,
                 "openai".to_string(),
                 code,
                 raw,
                 retry_after,
-            ));
-        }
+            );
+            if !retried_with_store_false && should_retry_with_store_false(&error) {
+                set_store_flag(&mut request_body, false);
+                retried_with_store_false = true;
+                continue;
+            }
+            return Err(error);
+        };
 
         let model = request.model.clone();
         let rate_limit = parse_rate_limit_headers(http_resp.headers());
@@ -1175,6 +1211,23 @@ mod tests {
         let body = build_request_body(&request, false, false);
         assert_eq!(body["metadata"]["trace_id"], "t789");
         assert_eq!(body["store"], true);
+    }
+
+    #[test]
+    fn should_retry_with_store_false_matches_specific_invalid_request() {
+        let error = SdkError::Provider {
+            kind: crate::error::ProviderErrorKind::InvalidRequest,
+            detail: Box::new(crate::error::ProviderErrorDetail {
+                message: "Store must be set to false".to_string(),
+                provider: "openai".to_string(),
+                status_code: Some(400),
+                error_code: None,
+                retry_after: None,
+                raw: None,
+            }),
+        };
+
+        assert!(should_retry_with_store_false(&error));
     }
 
     #[test]

@@ -37,12 +37,17 @@ Each provider requires its own API key set via environment variable (e.g. `ANTHR
 
 ## Default models
 
-When no model is specified, the `fabro exec` command uses a default model based on the provider:
+When no model is specified for live writing paths, Fabro defaults to the
+Anthropic-compatible MiniMax path using `MiniMax-M2.7-highspeed`. Review-style
+nodes can still pin a different model explicitly, such as `gpt-5.4`.
+
+If a different provider is selected explicitly, Fabro uses that provider's
+default model unless the run config or workflow stylesheet pins a model.
 
 | Provider | Default model |
 |---|---|
 | `anthropic` | `claude-opus-4-6` |
-| `openai` | `gpt-5.2-codex` |
+| `openai` | `gpt-5.4` |
 | `gemini` | `gemini-3.1-pro-preview` |
 | `kimi` | `kimi-k2.5` |
 | `zai` | `glm-4.7` |

@@ -148,6 +148,8 @@ enum Command {
         #[command(subcommand)]
         command: commands::synth::SynthCommand,
     },
+    /// Bootstrap a repo-local Paperclip company and agent roster from the current Fabro package
+    Paperclip(commands::paperclip::PaperclipArgs),
     /// Open the Discord community in the browser
     Discord,
     /// Open the docs website in the browser
@@ -728,6 +730,9 @@ async fn main_inner() -> (String, Result<()>) {
             commands::synth::SynthCommand::Create(_) => "synth create",
             commands::synth::SynthCommand::Evolve(_) => "synth evolve",
         },
+        Command::Paperclip(args) => match args.command {
+            commands::paperclip::PaperclipCommand::Bootstrap(_) => "paperclip bootstrap",
+        },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
         },
@@ -1094,6 +1099,11 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 commands::synth::SynthCommand::Evolve(args) => {
                     commands::synth::evolve_command(&args)?;
+                }
+            },
+            Command::Paperclip(args) => match args.command {
+                commands::paperclip::PaperclipCommand::Bootstrap(args) => {
+                    commands::paperclip::bootstrap_command(&args).await?;
                 }
             },
             Command::Skill { command } => match command {

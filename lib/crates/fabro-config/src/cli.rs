@@ -138,21 +138,23 @@ mod tests {
         let toml = r#"
 [exec]
 provider = "anthropic"
-model = "claude-opus-4-6"
+model = "MiniMax-M2.7-highspeed"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
-model = "claude-sonnet-4-5"
+provider = "anthropic"
+model = "MiniMax-M2.7-highspeed"
 "#;
         let config: CliConfig = toml::from_str(toml).unwrap();
         let exec = config.exec.unwrap();
         assert_eq!(exec.provider.as_deref(), Some("anthropic"));
-        assert_eq!(exec.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(exec.model.as_deref(), Some("MiniMax-M2.7-highspeed"));
         assert_eq!(exec.permissions, Some(PermissionLevel::ReadWrite));
         assert_eq!(exec.output_format, Some(OutputFormat::Text));
         let llm = config.run_defaults.llm.unwrap();
-        assert_eq!(llm.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(llm.provider.as_deref(), Some("anthropic"));
+        assert_eq!(llm.model.as_deref(), Some("MiniMax-M2.7-highspeed"));
     }
 
     #[test]
@@ -309,6 +311,26 @@ enabled = true
     fn parse_pull_request_absent() {
         let config: CliConfig = toml::from_str("").unwrap();
         assert_eq!(config.run_defaults.pull_request, None);
+    }
+
+    #[test]
+    fn parse_integration_enabled() {
+        let toml = r#"
+[integration]
+enabled = true
+strategy = "squash"
+"#;
+        let config: CliConfig = toml::from_str(toml).unwrap();
+        let integration = config.run_defaults.integration.unwrap();
+        assert!(integration.enabled);
+        assert_eq!(integration.strategy, crate::run::MergeStrategy::Squash);
+        assert_eq!(integration.target_branch, "origin/HEAD");
+    }
+
+    #[test]
+    fn parse_integration_absent() {
+        let config: CliConfig = toml::from_str("").unwrap();
+        assert_eq!(config.run_defaults.integration, None);
     }
 
     #[test]

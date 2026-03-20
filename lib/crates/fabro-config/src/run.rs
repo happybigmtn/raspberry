@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,22 @@ pub struct PullRequestConfig {
     pub auto_merge: bool,
     #[serde(default)]
     pub merge_strategy: MergeStrategy,
+}
+
+fn default_target_branch() -> String {
+    "origin/HEAD".to_string()
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct IntegrationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub strategy: MergeStrategy,
+    #[serde(default = "default_target_branch")]
+    pub target_branch: String,
+    #[serde(default)]
+    pub artifact_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -77,6 +93,7 @@ pub struct WorkflowRunConfig {
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
     pub pull_request: Option<PullRequestConfig>,
+    pub integration: Option<IntegrationConfig>,
     pub assets: Option<AssetsConfig>,
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerEntry>,
@@ -111,6 +128,7 @@ pub struct RunDefaults {
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
     pub pull_request: Option<PullRequestConfig>,
+    pub integration: Option<IntegrationConfig>,
     pub assets: Option<AssetsConfig>,
     #[serde(default)]
     pub hooks: Vec<HookDefinition>,
@@ -136,6 +154,7 @@ impl WorkflowRunConfig {
             vars: self.vars.take(),
             checkpoint: std::mem::take(&mut self.checkpoint),
             pull_request: self.pull_request.take(),
+            integration: self.integration.take(),
             assets: self.assets.take(),
             hooks: std::mem::take(&mut self.hooks),
             mcp_servers: std::mem::take(&mut self.mcp_servers),
@@ -151,6 +170,7 @@ impl WorkflowRunConfig {
         self.vars = merged.vars;
         self.checkpoint = merged.checkpoint;
         self.pull_request = merged.pull_request;
+        self.integration = merged.integration;
         self.assets = merged.assets;
         self.hooks = merged.hooks;
         self.mcp_servers = merged.mcp_servers;
@@ -268,6 +288,10 @@ impl RunDefaults {
             self.pull_request = overlay.pull_request;
         }
 
+        if overlay.integration.is_some() {
+            self.integration = overlay.integration;
+        }
+
         if overlay.assets.is_some() {
             self.assets = overlay.assets;
         }
@@ -306,6 +330,7 @@ pub fn load_run_config(path: &Path) -> anyhow::Result<WorkflowRunConfig> {
 
     let config_dir = path.parent().unwrap_or(Path::new("."));
     resolve_work_dir(&mut config, config_dir);
+    resolve_integration_paths(&mut config, config_dir);
     resolve_dockerfile(&mut config, config_dir)?;
     resolve_sandbox_env(&mut config)?;
 
@@ -320,7 +345,35 @@ fn resolve_work_dir(config: &mut WorkflowRunConfig, config_dir: &Path) {
     if path.is_absolute() {
         return;
     }
-    config.work_dir = Some(config_dir.join(path).display().to_string());
+    config.work_dir = Some(normalize_path(config_dir.join(path)).display().to_string());
+}
+
+fn resolve_integration_paths(config: &mut WorkflowRunConfig, config_dir: &Path) {
+    let Some(path) = config
+        .integration
+        .as_mut()
+        .and_then(|integration| integration.artifact_path.as_mut())
+    else {
+        return;
+    };
+    if path.is_absolute() {
+        return;
+    }
+    *path = normalize_path(config_dir.join(&*path));
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Resolve `${env.VARNAME}` references in `[sandbox.env]` values.
@@ -421,6 +474,28 @@ mod tests {
         assert_eq!(
             config.work_dir,
             Some(dir.path().join("fabro").display().to_string())
+        );
+    }
+
+    #[test]
+    fn load_run_config_resolves_relative_integration_artifact_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("fabro/run-configs/implement");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("workflow.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ngraph = \"../../workflows/demo.fabro\"\n\n[integration]\nenabled = true\nartifact_path = \"../../../outputs/demo/integration.md\"\n",
+        )
+        .unwrap();
+
+        let config = load_run_config(&path).unwrap();
+        assert_eq!(
+            config
+                .integration
+                .and_then(|integration| integration.artifact_path)
+                .as_deref(),
+            Some(dir.path().join("outputs/demo/integration.md").as_path())
         );
     }
 }

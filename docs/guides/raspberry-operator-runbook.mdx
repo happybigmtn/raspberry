@@ -1,0 +1,546 @@
+---
+title: "Raspberry Operator Runbook"
+description: "Concrete commands, debugging flow, and Myosu-shaped examples for operating Raspberry day to day"
+---
+
+This runbook is the practical companion to
+[Raspberry Supervisory Plane](/reference/raspberry). That page explains the
+architecture. This page explains how to operate it without getting lost.
+
+If your repo does not have a checked-in `fabro/` package yet, stop here and
+start with [From Specs To Blueprints](/guides/from-specs-to-blueprint). This
+runbook assumes the package already exists and Raspberry is ready to supervise
+it.
+
+Use this when you are:
+
+- running a supervised repo for real
+- trying to understand what Raspberry is doing right now
+- debugging a stuck lane or suspicious promotion
+- evolving a repo's `fabro/` package from doctrine and run evidence
+
+The examples below use the Myosu proving ground because it exercises the full
+stack: child programs, implementation follow-ons, autodev, synthesis, and the
+observer TUI.
+
+## Before You Start
+
+You need three things:
+
+1. A checked-in `fabro/` package in the target repo
+2. At least one program manifest under `fabro/programs/*.yaml`
+3. Working model credentials for the providers your lanes actually use
+
+For Myosu, the relevant local setup looks like:
+
+```toml title="fabro.toml"
+[llm]
+provider = "anthropic"
+model = "MiniMax-M2.7-highspeed"
+
+[sandbox.env]
+ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic"
+ANTHROPIC_AUTH_TOKEN = "${env.MINIMAX_API_KEY}"
+```
+
+That means implementation stages can run on the Anthropic-compatible MiniMax
+path. Review and promotion stages may still use OpenAI/Codex depending on the
+workflow stylesheet for the lane.
+
+## The Fastest Mental Model
+
+If you only remember one thing, remember this:
+
+```text
+plan/status/watch/tui = observe
+execute               = dispatch ready work
+autodev               = bounded autonomous loop
+synth import/evolve   = change the checked-in control plane
+~/.fabro/runs         = run truth
+.raspberry/*.json     = program truth
+outputs/**/*          = milestone truth
+```
+
+When Raspberry feels confusing, identify which of those three truths you are
+actually asking about:
+
+- run truth
+- program truth
+- artifact truth
+
+## The Standard Operator Session
+
+### 1. Start with the top-level program
+
+```bash
+raspberry plan --manifest fabro/programs/myosu.yaml
+raspberry status --manifest fabro/programs/myosu.yaml
+```
+
+Use `plan` first when you want the grouped frontier:
+
+- what is running
+- what is ready
+- what is blocked
+- what is complete
+
+Use `status` when you want the lane-level explanation:
+
+- current status
+- lane kind
+- proof profile
+- run id / stage when known
+- last failure
+
+### 2. Watch a program settle
+
+```bash
+raspberry watch --manifest fabro/programs/myosu.yaml --interval-ms 500
+```
+
+This is the simplest live operator view when you do not need the TUI.
+
+### 3. Open the TUI for diagnosis
+
+```bash
+raspberry tui --manifest fabro/programs/myosu.yaml
+```
+
+Useful keys:
+
+- `j` / `k` move through the displayed list
+- `h` / `l` move focus between panes
+- `za` toggles the focused pane
+- `zM` closes secondary panes
+- `zR` opens all panes
+- `/` filters
+- `r` refreshes
+- `q` quits
+
+What the panes are good for:
+
+- **Program**: grouped lane frontier
+- **State**: current lane summary or child-program digest
+- **Artifacts**: curated artifact presence
+- **Detail**: artifact contents or run/autodev context
+
+### 4. Dispatch ready work explicitly
+
+```bash
+raspberry execute --manifest fabro/programs/myosu.yaml
+```
+
+Or dispatch a specific ready lane:
+
+```bash
+raspberry execute \
+  --manifest fabro/programs/myosu-play-tui-implementation.yaml \
+  --lane play:tui-implement
+```
+
+`execute` is the bounded operator-controlled path. Use it when you want to
+advance the frontier without starting the autonomous loop.
+
+### 5. Run bounded autonomy
+
+```bash
+raspberry autodev \
+  --manifest fabro/programs/myosu.yaml \
+  --fabro-bin /path/to/fabro \
+  --max-cycles 1 \
+  --poll-interval-ms 500 \
+  --evolve-every-seconds 1800
+```
+
+This is the core loop:
+
+1. evaluate the program
+2. dispatch ready work first
+3. optionally import/evolve the package
+4. persist a cycle report
+5. stop on settlement or cycle limit
+
+## The Files That Matter
+
+### Program truth
+
+These files tell you what Raspberry thinks is true at the program level:
+
+```text
+.raspberry/myosu-state.json
+.raspberry/myosu-autodev.json
+.raspberry/<child-program>-state.json
+.raspberry/<child-program>-autodev.json
+```
+
+Use them for:
+
+- current lane state
+- child program summaries
+- last dispatch time
+- last reported failures
+- autodev cycle summaries
+
+### Artifact truth
+
+These files tell you what milestone evidence actually exists:
+
+```text
+outputs/**/spec.md
+outputs/**/review.md
+outputs/**/implementation.md
+outputs/**/verification.md
+outputs/**/quality.md
+outputs/**/promotion.md
+```
+
+If a lane claims to be complete but the required artifacts are missing, artifact
+truth wins.
+
+### Run truth
+
+These directories tell you what the workflow engine actually did:
+
+```text
+~/.fabro/runs/<run-id>/
+```
+
+The most useful files are:
+
+| File | Why you care |
+|---|---|
+| `state.json` | Current run status and stage |
+| `progress.jsonl` | Full event stream |
+| `nodes/*/provider_used.json` | Which provider/model/backend actually ran |
+| `nodes/*/cli_stdout.log` / `cli_stderr.log` | Agent CLI output |
+| `nodes/*/status.json` | Per-stage result snapshot |
+| `graph.fabro` | The exact workflow graph that ran |
+| `run.toml` | The exact run config that ran |
+
+## Myosu Walkthrough
+
+The live Myosu top-level program currently looks like this:
+
+```text
+fabro/programs/myosu.yaml
+```
+
+It is not one flat workflow. It is a portfolio of child programs:
+
+- bootstrap
+- chain-core
+- product
+- platform
+- services
+- recurring
+- implementation follow-ons like `play-tui-implementation` and
+  `sdk-core-implementation`
+
+That means the normal operator flow is:
+
+```bash
+raspberry status --manifest fabro/programs/myosu.yaml
+raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
+raspberry status --manifest fabro/programs/myosu-sdk-core-implementation.yaml
+```
+
+Start top-down. Then drill into the child program that is actually stuck.
+
+## How To Read Common States
+
+### `ready`
+
+Meaning:
+
+- dependencies are satisfied
+- preconditions pass
+- nothing is currently running for that lane
+
+Typical next move:
+
+```bash
+raspberry execute --manifest <program>.yaml
+```
+
+### `running`
+
+Meaning:
+
+- the lane has an active Fabro run
+- look at the lane's current stage and recent event
+
+Typical next move:
+
+```bash
+cat ~/.fabro/runs/<run-id>/state.json
+tail -n 80 ~/.fabro/runs/<run-id>/progress.jsonl
+```
+
+### `failed`
+
+Meaning:
+
+- the most recent run ended unsuccessfully
+- the failure is persisted into program truth
+
+Typical next moves:
+
+1. inspect the run directory
+2. decide whether the failure is:
+   - code/content
+   - control-plane contract
+   - auth/provider/env
+3. rerun after fixing the real blocker
+
+### `complete`
+
+Meaning:
+
+- the lane's managed milestone is currently satisfied from the durable artifacts
+
+Important caveat:
+
+This does **not** mean the code is good. It means the current contract says the
+lane is done. If that contract is too weak, evolve the package — do not just
+trust the status.
+
+## How To Debug a Suspicious Lane
+
+Use this exact order.
+
+### 1. Inspect the child program
+
+```bash
+raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
+```
+
+### 2. Inspect current program truth
+
+```bash
+cat .raspberry/myosu-play-tui-implementation-state.json
+```
+
+### 3. Inspect the latest run
+
+```bash
+cat ~/.fabro/runs/<run-id>/state.json
+tail -n 120 ~/.fabro/runs/<run-id>/progress.jsonl
+```
+
+### 4. Inspect stage-specific metadata
+
+```bash
+cat ~/.fabro/runs/<run-id>/nodes/review/provider_used.json
+cat ~/.fabro/runs/<run-id>/nodes/review/cli_stderr.log
+```
+
+### 5. Inspect artifact truth
+
+```bash
+ls outputs/play/tui
+sed -n '1,220p' outputs/play/tui/verification.md
+sed -n '1,220p' outputs/play/tui/quality.md
+sed -n '1,220p' outputs/play/tui/promotion.md
+```
+
+This is the minimum loop that separates:
+
+- "the run failed"
+- "the control plane is lying"
+- "the artifacts are optimistic"
+
+## How To Evolve the Package
+
+When the structure is wrong, do not hand-edit five files in random order. Use
+the blueprint flow.
+
+### 1. Import the current package
+
+```bash
+fabro synth import \
+  --target-repo /home/r/coding/myosu \
+  --program myosu \
+  --output /tmp/myosu.yaml
+```
+
+### 2. Evolve it against doctrine and evidence
+
+```bash
+fabro synth evolve \
+  --blueprint /tmp/myosu.yaml \
+  --target-repo /home/r/coding/myosu
+```
+
+Use `--preview-root` if you want a review-first patch tree.
+
+### What evolve is good at
+
+- adding implementation follow-on programs
+- tightening dependencies and checks
+- adding stronger proof or health surfaces
+- adding `quality.md` and promotion hardening to implementation lanes
+- correcting stale over-optimistic lane contracts
+
+### When to evolve instead of rerun
+
+Evolve when the problem is structural:
+
+- milestone too weak
+- wrong produced artifacts
+- missing health gate
+- promotion too easy
+- repeated false-positive completion
+
+Rerun when the structure is fine and the current run just needs another attempt.
+
+## Implementation-Family Lanes
+
+The current preferred implementation-family pattern is:
+
+```text
+preflight
+  -> implement
+  -> verify
+  -> quality
+  -> clear_promotion
+  -> review
+  -> promote
+  -> promotion_check
+  -> audit
+```
+
+The key durable artifacts are:
+
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+
+### What `quality.md` means
+
+`quality.md` is the machine-generated evidence pack.
+
+It records:
+
+- `quality_ready`
+- `placeholder_debt`
+- `warning_debt`
+- `artifact_mismatch_risk`
+- `manual_followup_required`
+
+If `quality_ready: no`, the lane is not honestly merge-ready, even if it
+compiled and tests passed.
+
+## Common Failure Cases
+
+### 1. Review/promote auth failure
+
+Symptom:
+
+- `provider_used.json` says `provider=openai`
+- stage stderr shows `401 Unauthorized`
+- error mentions `api.responses.write`
+
+Meaning:
+
+- the Codex/OpenAI stage lacks usable auth/scopes for that run identity
+
+Current mitigation:
+
+- Fabro now supports native Codex slot selection through `CODEX_HOME`
+- if OpenAI API key is absent and Codex slots are unavailable, it can fall back
+  to the Anthropic/MiniMax CLI path
+
+### 2. Quality gate failure
+
+Symptom:
+
+- lane reaches `quality`
+- run moves to `fixup`
+- `quality.md` shows debt flags
+
+Meaning:
+
+- the stricter contract is working
+- do **not** patch around it by loosening the gate unless the signal is wrong
+
+### 3. Stale program state
+
+Symptom:
+
+- run truth says finished
+- top-level status still says `running`
+
+Meaning:
+
+- program truth is stale relative to child/run truth
+
+First move:
+
+```bash
+raspberry status --manifest <program>.yaml
+```
+
+That refresh is often enough to resync persisted state.
+
+### 4. Scaffold-only slice marked complete
+
+Symptom:
+
+- `complete` status
+- but code still contains obvious placeholders or non-running behavior
+
+Meaning:
+
+- the old contract was too weak
+
+First move:
+
+- inspect `quality.md`
+- inspect the implementation workflow contract
+- evolve the package if the lane still lacks the stronger implementation-family
+  shape
+
+## Suggested Daily Operator Loop
+
+```bash
+# 1. top-level frontier
+raspberry status --manifest fabro/programs/myosu.yaml
+
+# 2. open the TUI if anything is unclear
+raspberry tui --manifest fabro/programs/myosu.yaml
+
+# 3. drill into suspicious child programs
+raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
+raspberry status --manifest fabro/programs/myosu-sdk-core-implementation.yaml
+
+# 4. inspect the latest run when needed
+cat ~/.fabro/runs/<run-id>/state.json
+tail -n 120 ~/.fabro/runs/<run-id>/progress.jsonl
+
+# 5. evolve the package when the structure is wrong
+fabro synth import --target-repo /home/r/coding/myosu --program myosu --output /tmp/myosu.yaml
+fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /home/r/coding/myosu
+
+# 6. run bounded autonomy again
+raspberry autodev --manifest fabro/programs/myosu.yaml --fabro-bin /path/to/fabro --max-cycles 1
+```
+
+## Current Caveats
+
+These are the practical caveats to remember today:
+
+- the TUI is still read-only
+- explicit failed-lane reruns are still less ergonomic than they should be
+- OpenAI/Codex review/promote is still being proven live under the new slot
+  routing
+- implementation quality is improving because the contract is stricter, not
+  because the model suddenly became perfect
+
+## Related Reading
+
+- [Raspberry Supervisory Plane](/reference/raspberry)
+- [CLI Reference](/reference/cli)
+- [Observability](/execution/observability)
+- [Failures](/execution/failures)
+- [How Fabro Works](/core-concepts/how-fabro-works)

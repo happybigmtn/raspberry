@@ -1,0 +1,467 @@
+---
+title: "Raspberry Supervisory Plane"
+description: "Programs, lanes, autodev, synthesis, TUI, and the operator model built on top of Fabro"
+---
+
+Raspberry is the supervisory plane layered on top of Fabro's workflow engine.
+Fabro executes staged graphs. Raspberry decides what should run next, what
+counts as ready, what durable artifacts prove progress, and how a repository
+should evolve over repeated autonomous cycles.
+
+If your repo only has a prompt, spec, or plan right now, start with
+[From Specs To Blueprints](/guides/from-specs-to-blueprint) before trying to
+run Raspberry commands. Raspberry operates a checked-in `fabro/` package; it
+does not infer that package directly from raw planning docs on the fly.
+
+If you already understand `fabro run`, think of Raspberry as the repo-shaped
+layer above it:
+
+- Fabro executes one workflow run
+- Raspberry supervises many lanes across one program
+- `fabro synth import/create/evolve` manages the checked-in `fabro/` package
+- `raspberry plan/status/watch/execute/autodev/tui` operates that package
+
+## Why Raspberry Exists
+
+Fabro is very good at staged execution:
+
+- graphs
+- retries
+- checkpoints
+- run truth
+- agent and command handlers
+- CLI and API modes
+
+Raspberry adds the higher-level control plane that a long-lived repository
+needs:
+
+- program manifests
+- units, lanes, artifacts, and milestones
+- lane readiness and dependency evaluation
+- bounded dispatch over many lanes
+- durable runtime state
+- repo-level autonomous development loops
+- operator-facing TUI surfaces
+- blueprint-first synthesis for creating and evolving workflow trees
+
+## Mental Model
+
+```text
+requirements/specs/doctrine
+        |
+        v
+  blueprint (create/evolve)
+        |
+        v
+checked-in fabro/ package
+        |
+        +--> fabro/programs/*.yaml
+        +--> fabro/run-configs/**/*.toml
+        +--> fabro/workflows/**/*.fabro
+        +--> fabro/prompts/**/*
+        |
+        v
+  raspberry supervisor
+        |
+        +--> evaluate readiness
+        +--> dispatch ready lanes
+        +--> run bounded autodev cycles
+        +--> persist runtime truth
+        |
+        v
+  durable repo state
+        |
+        +--> outputs/**/*
+        +--> .raspberry/*-state.json
+        +--> .raspberry/*-autodev.json
+        +--> ~/.fabro/runs/<run-id>/**
+```
+
+## Core Objects
+
+### Program
+
+A Raspberry **program** is the supervised shape of a repository frontier. It is
+defined by a manifest such as:
+
+```text
+fabro/programs/myosu.yaml
+```
+
+A program owns:
+
+- `program` id
+- `target_repo`
+- `state_path`
+- `max_parallel`
+- units
+
+### Unit
+
+A **unit** groups related lanes and the durable artifacts they produce.
+
+Typical units are things like:
+
+- `play`
+- `games`
+- `services`
+- `sdk`
+
+Each unit defines:
+
+- an `output_root`
+- named artifacts such as `spec`, `review`, `implementation`, `verification`
+- milestones such as `reviewed`, `verified`, `merge_ready`
+
+### Lane
+
+A **lane** is one schedulable stream of work inside a unit.
+
+Each lane defines:
+
+- a kind (`interface`, `service`, `platform`, `recurring`, `orchestration`, etc.)
+- a run config or child program manifest
+- dependencies
+- produced artifacts
+- proof profile
+- checks
+- the milestone it manages
+
+### Artifact and Milestone
+
+Artifacts are durable files the supervisor can inspect. Milestones are declared
+artifact sets.
+
+Example:
+
+```text
+reviewed    = spec.md + review.md
+verified    = implementation.md + verification.md
+merge_ready = implementation.md + verification.md + quality.md + promotion.md
+```
+
+This is the key Raspberry idea: progress is based on durable repo evidence, not
+only on transient agent output.
+
+## Checked-In Package Layout
+
+Raspberry expects a repo-level `fabro/` package with stable paths:
+
+```text
+fabro/
+  programs/
+  run-configs/
+  workflows/
+  prompts/
+```
+
+At runtime, it also writes:
+
+```text
+outputs/
+.raspberry/
+~/.fabro/runs/
+```
+
+Use these surfaces for different kinds of truth:
+
+| Surface | Purpose |
+|---|---|
+| `fabro/programs/*.yaml` | Program supervision contract |
+| `fabro/run-configs/**/*.toml` | Fabro run configuration |
+| `fabro/workflows/**/*.fabro` | Graph execution logic |
+| `fabro/prompts/**/*` | Durable lane prompts |
+| `outputs/**/*` | Curated artifacts that prove milestones |
+| `.raspberry/*-state.json` | Program runtime truth |
+| `.raspberry/*-autodev.json` | Bounded autodev cycle reports |
+| `~/.fabro/runs/<id>` | Detailed Fabro run truth |
+
+## Starting From Specs Instead Of A Package
+
+If a repo already has `fabro/programs/*.yaml`, you can start with:
+
+```bash
+raspberry plan --manifest fabro/programs/<program>.yaml
+```
+
+If it does not, the correct path is:
+
+```text
+prompt/spec/plan -> blueprint -> fabro synth create -> raspberry operate
+```
+
+That create-mode bootstrap path is covered in
+[From Specs To Blueprints](/guides/from-specs-to-blueprint).
+
+## Command Surface
+
+Raspberry currently ships a read/write CLI around the supervisory plane:
+
+```bash
+raspberry plan --manifest fabro/programs/myosu.yaml
+raspberry status --manifest fabro/programs/myosu.yaml
+raspberry watch --manifest fabro/programs/myosu.yaml
+raspberry execute --manifest fabro/programs/myosu.yaml
+raspberry autodev --manifest fabro/programs/myosu.yaml
+raspberry tui --manifest fabro/programs/myosu.yaml
+```
+
+### `raspberry plan`
+
+Renders a grouped overview of the program frontier:
+
+- running
+- ready
+- blocked
+- failed
+- complete
+
+Use it when you want the clean operator summary.
+
+### `raspberry status`
+
+Renders a more detailed lane-by-lane status table, including:
+
+- lane kind
+- current state
+- proof profile
+- stage labels and failure details when known
+
+Use it when you need concrete lane truth.
+
+### `raspberry watch`
+
+Repeatedly refreshes `status` over time.
+
+Use it as the simplest operator monitor when you do not need the TUI.
+
+### `raspberry execute`
+
+Dispatches selected ready lanes using the checked-in run configs or child
+program manifests.
+
+Use it when you want bounded operator-controlled execution instead of an
+autonomous loop.
+
+### `raspberry autodev`
+
+Runs the bounded autonomous loop:
+
+1. evaluate current program state
+2. dispatch ready work first
+3. optionally run `fabro synth import` + `fabro synth evolve`
+4. persist a cycle report
+5. stop on settlement or cycle limit
+
+Important current behavior:
+
+- `autodev` now prefers consuming ready work before evolving again
+- it writes durable cycle reports under `.raspberry/*-autodev.json`
+- it supports doctrine and evidence injection into the evolve step
+- it can supervise child programs, not only raw lane run configs
+
+### `raspberry tui`
+
+Runs the read-only run observer TUI over a program manifest.
+
+The TUI currently supports:
+
+- grouped lane navigation
+- pane collapse/expand
+- state/artifact/detail panes
+- child-program digests for orchestration lanes
+- cached operator narration
+- background narration refresh with timeout handling
+
+The TUI is intentionally read-only today. It is for observation and diagnosis,
+not yet for dispatch control.
+
+## Autodev
+
+Raspberry `autodev` is the repo-level execution loop built for long-running
+autonomous development.
+
+### What it does
+
+```text
+evaluate -> dispatch ready work -> evolve package when appropriate -> persist report
+```
+
+### What it does not try to do
+
+- it is not an unbounded daemon by default
+- it does not blindly evolve on every cycle anymore
+- it does not treat in-flight child programs as invisible
+
+### Child programs
+
+Raspberry can supervise top-level programs whose lanes point to other program
+manifests. This lets a repo become a portfolio of child frontiers rather than a
+single flat lane list.
+
+This is how the Myosu proving ground now works:
+
+- one top-level `myosu.yaml`
+- multiple child programs for product, platform, services, recurring work, and
+  generated implementation frontiers
+
+## Blueprint-First Synthesis
+
+Raspberry-oriented authoring is now blueprint-first.
+
+Use:
+
+```bash
+fabro synth import --target-repo /path/to/repo --program myosu --output /tmp/myosu.yaml
+fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
+fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /path/to/repo
+```
+
+### `synth import`
+
+Imports an existing checked-in package into a structured blueprint.
+
+Use it before evolving an existing repository.
+
+### `synth create`
+
+Compiles a blueprint into a deterministic checked-in `fabro/` package.
+
+Use it for greenfield repo/package creation.
+
+### `synth evolve`
+
+Reconciles an imported or revised blueprint against doctrine and run evidence,
+then deterministically patches the checked-in package.
+
+Use it to make the control plane more honest over time.
+
+## Implementation-Family Pattern
+
+The current preferred implementation-family workflow shape is:
+
+```text
+preflight
+  -> implement
+  -> verify
+  -> quality
+  -> clear_promotion
+  -> review
+  -> promote
+  -> promotion_check
+  -> audit
+```
+
+The key idea is that merge-worthiness should not depend on prose alone.
+
+### Required artifacts
+
+Implementation-family lanes now normally produce:
+
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+
+### Why `quality.md` exists
+
+`quality.md` is the deterministic evidence pack that catches optimistic slices
+before review or promotion can bless them.
+
+It is used to record machine-checkable signals such as:
+
+- placeholder debt
+- warning debt
+- artifact mismatch risk
+- manual follow-up still required
+- overall `quality_ready`
+
+This means a slice can compile and still be rejected honestly when its durable
+artifacts or code reality show it is not actually merge-worthy.
+
+## Operator Truth and Run Truth
+
+Raspberry deliberately uses multiple layers of truth:
+
+### 1. Manifest truth
+
+What the program says should exist.
+
+### 2. Artifact truth
+
+What durable files actually exist under `outputs/`.
+
+### 3. Program runtime truth
+
+What `.raspberry/*-state.json` says about current lane state.
+
+### 4. Fabro run truth
+
+What `~/.fabro/runs/<run-id>/` says about the actual stage-by-stage execution.
+
+When these disagree, Raspberry should bias toward surfacing the disagreement,
+not hiding it.
+
+That is why recent work focused on:
+
+- parent/child runtime-state resync
+- stale-state detection
+- quality gates
+- clearer TUI summaries
+- durable autodev reports
+
+## Current Operator Features
+
+These are the most important Raspberry features currently implemented:
+
+| Area | What shipped |
+|---|---|
+| Program supervision | Programs, units, lanes, milestones, checks, and evaluated readiness |
+| Operator CLI | `plan`, `status`, `watch`, `execute`, `autodev`, `tui` |
+| Runtime state | Durable program state and child-program state synchronization |
+| Bounded autonomy | `autodev` with cycle limits, doctrine/evidence injection, and child-program dispatch |
+| Repo synthesis | `synth import/create/evolve` with deterministic package rendering |
+| Implementation follow-ons | Review-driven implementation child program generation |
+| Quality hardening | `quality.md`, deterministic quality gate, stricter promotion checks |
+| TUI | Grouped filtered navigation, child digests, artifacts/details, cached narration |
+| Cargo isolation | Dedicated `.raspberry/cargo-target` for autonomous runs |
+| Codex slot support | Native `CODEX_HOME` slot selection and cooldown in the Fabro CLI backend |
+
+## Current Caveats
+
+Raspberry is much more real than it was a few days ago, but it is still an
+actively hardening control plane.
+
+Important current caveats:
+
+- the TUI is still read-only
+- explicit failed-lane reruns through `raspberry execute --lane ...` still need
+  a friendlier operator path
+- OpenAI/Codex review/promote depends on valid Codex/OpenAI auth; Fabro now has
+  native slot selection, but live review-stage confirmation is still part of
+  the proving loop
+- some generated repository slices are still scaffold-heavy, which is why the
+  new quality contract matters so much
+
+## Recommended Reading
+
+For the underlying pieces, read:
+
+- [How Fabro Works](/core-concepts/how-fabro-works)
+- [Architecture](/reference/architecture)
+- [CLI Reference](/reference/cli)
+- [Run Configuration](/execution/run-configuration)
+- [Observability](/execution/observability)
+- [Stages and Nodes](/workflows/stages-and-nodes)
+
+For authoring:
+
+- `skills/fabro-create-workflow/SKILL.md`
+- `skills/fabro-create-workflow/references/program-synthesis.md`
+- `skills/fabro-create-workflow/references/program-evolution.md`
+
+For the original design intent:
+
+- `specs/031826-raspberry-malinka-control-plane-port.md`
+- `specs/031926-raspberry-run-observer-tui.md`
+- `specs/031926-skill-guided-program-synthesis.md`

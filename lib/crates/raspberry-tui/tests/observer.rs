@@ -16,6 +16,11 @@ fn myosu_manifest() -> PathBuf {
         .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml")
 }
 
+fn portfolio_manifest() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../test/fixtures/raspberry-supervisor/portfolio-program.yaml")
+}
+
 fn press_char(app: &mut App, character: char) -> Result<()> {
     let event = KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
     app.handle_key_event(event)
@@ -64,9 +69,8 @@ fn complete_lane_detail_surfaces_completed_result_summary() -> Result<()> {
 #[test]
 fn failed_lane_shows_missing_artifact_and_stale_detail() -> Result<()> {
     let mut app = App::load(&myosu_manifest())?;
-    while app.selected_lane_key() != "play:tui" {
-        press_char(&mut app, 'j')?;
-    }
+    press_char(&mut app, 'k')?;
+    assert_eq!(app.selected_lane_key(), "play:tui");
 
     assert!(app
         .artifact_rows()
@@ -100,11 +104,13 @@ fn detail_text_surfaces_autodev_summary_when_present() -> Result<()> {
         program: manifest.program.clone(),
         stop_reason: AutodevStopReason::CycleLimit,
         updated_at: chrono::Utc::now(),
+        current: None,
         cycles: vec![AutodevCycleReport {
             cycle: 1,
             evolved: true,
             evolve_target: Some("/tmp/preview".to_string()),
             ready_lanes: vec!["chain:runtime".to_string()],
+            replayed_lanes: vec![],
             dispatched: vec![DispatchOutcome {
                 lane_key: "chain:runtime".to_string(),
                 exit_status: 0,
@@ -127,6 +133,16 @@ fn detail_text_surfaces_autodev_summary_when_present() -> Result<()> {
     assert!(detail.contains("Selected lane was ready in the last autodev cycle."));
     assert!(detail.contains("run_id=01KM244VBG7TF9FB8D53BFTHX7"));
     assert!(state.contains("Autodev: cycles=1 stop=cycle_limit"));
+    Ok(())
+}
+
+#[test]
+fn state_text_surfaces_child_program_digest_for_orchestration_lane() -> Result<()> {
+    let app = App::load(&portfolio_manifest())?;
+    let state = app.state_text();
+
+    assert!(state.contains("Child program"));
+    assert!(state.contains("RUN"));
     Ok(())
 }
 

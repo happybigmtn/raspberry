@@ -78,6 +78,50 @@ fn synth_render_writes_package() {
 }
 
 #[test]
+fn synth_create_authors_blueprint_from_repo_docs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("zend");
+    fs::create_dir_all(target.join("plans")).expect("plans dir");
+    fs::create_dir_all(target.join("specs")).expect("specs dir");
+    fs::write(target.join("README.md"), "# Zend\n").expect("readme");
+    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(
+        target.join("plans/2026-03-19-build-home-command-center.md"),
+        "# Build the Zend Home Command Center\n\n- [ ] Create the first honest slice\n",
+    )
+    .expect("plan");
+    fs::write(
+        target.join("specs/2026-03-19-zend-product-spec.md"),
+        "# Zend Product Spec\n",
+    )
+    .expect("product spec");
+
+    fabro()
+        .args([
+            "synth",
+            "create",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--program",
+            "zend",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mode: create"))
+        .stdout(predicate::str::contains("Blueprint:"))
+        .stdout(predicate::str::contains(
+            "selected lane `home-command-center` -> `bootstrap`",
+        ))
+        .stdout(predicate::str::contains("fabro/programs/zend.yaml"));
+
+    let blueprint =
+        fs::read_to_string(target.join("fabro/blueprints/zend.yaml")).expect("blueprint exists");
+    assert!(blueprint.contains("id: zend"));
+    assert!(blueprint.contains("template: bootstrap"));
+    assert!(target.join("fabro/programs/zend.yaml").exists());
+}
+
+#[test]
 fn synth_import_writes_blueprint() {
     let temp = tempfile::tempdir().expect("tempdir");
     let output = temp.path().join("myosu-update.yaml");
@@ -192,12 +236,51 @@ fn synth_evolve_updates_existing_package() {
         fs::read_to_string(preview.join("fabro/workflows/bootstrap/poker.fabro"))
             .expect("preview workflow exists");
     assert_eq!(preview_workflow, original_workflow);
-    assert!(
-        !preview
-            .join("fabro/prompts/bootstrap/poker/polish.md")
-            .exists(),
-        "unchanged lane should preserve the current prompt set instead of generating new prompt files"
-    );
+    let original_polish = fs::read_to_string(fixture(
+        "update-myosu/current/fabro/prompts/bootstrap/poker/polish.md",
+    ))
+    .expect("original polish prompt exists");
+    let preview_polish = fs::read_to_string(preview.join("fabro/prompts/bootstrap/poker/polish.md"))
+        .expect("preview polish prompt exists");
+    assert_eq!(preview_polish, original_polish);
+}
+
+#[test]
+fn synth_evolve_can_import_current_package_without_blueprint_flag() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("repo");
+    copy_dir(&fixture("update-myosu/current"), &target).expect("copy current fixture");
+    copy_dir(&fixture("update-myosu/doctrine"), &target.join("doctrine"))
+        .expect("copy doctrine fixture");
+    copy_dir(&fixture("update-myosu/evidence"), &target.join("evidence"))
+        .expect("copy evidence fixture");
+    copy_dir(&fixture("update-myosu/runtime"), &target.join(".raspberry"))
+        .expect("copy runtime fixture");
+    copy_dir(&fixture("update-myosu/outputs"), &target.join("outputs"))
+        .expect("copy outputs fixture");
+    let preview = temp.path().join("preview");
+
+    fabro()
+        .args([
+            "synth",
+            "evolve",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--preview-root",
+            preview.to_str().expect("utf-8 preview path"),
+            "--program",
+            "myosu-update",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mode: evolve"))
+        .stdout(predicate::str::contains("Blueprint:"))
+        .stdout(predicate::str::contains(
+            "imported existing package for `myosu-update` without additional planning inputs",
+        ));
+
+    assert!(target.join("fabro/blueprints/myosu-update.yaml").exists());
+    assert!(preview.join("fabro/programs/myosu-update.yaml").exists());
 }
 
 #[test]

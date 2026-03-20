@@ -1,6 +1,7 @@
 //! Conformance tests: spec ↔ router ↔ Rust struct consistency.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -319,6 +320,12 @@ fn fully_populated_server_config() -> ServerConfig {
                 draft: false,
                 auto_merge: false,
                 merge_strategy: MergeStrategy::Squash,
+            }),
+            integration: Some(IntegrationConfig {
+                enabled: true,
+                strategy: MergeStrategy::Rebase,
+                target_branch: "origin/main".into(),
+                artifact_path: Some(PathBuf::from("artifacts/run.json")),
             }),
             assets: Some(AssetsConfig {
                 include: vec!["test-results/**".into()],

@@ -247,6 +247,166 @@ fn execute_updates_program_state_using_fake_fabro() {
 }
 
 #[test]
+fn execute_allows_explicit_rerun_of_failed_lane() {
+    let fixture_root = fixture_manifest()
+        .parent()
+        .expect("fixture manifest parent")
+        .to_path_buf();
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+    let fake_fabro = temp.path().join("fake-fabro-rerun-failed.sh");
+    fs::write(
+        &fake_fabro,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "if [ \"$1\" != \"--no-upgrade-check\" ]; then exit 4; fi\n",
+            "if [ \"$2\" != \"run\" ]; then exit 5; fi\n",
+            "if [ \"$3\" != \"--detach\" ]; then exit 6; fi\n",
+            "printf '%s\\n' '01KM244VBG7TF9FB8D53BFTHX7'\n",
+        ),
+    )
+    .expect("write fake fabro");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_fabro).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_fabro, perms).expect("chmod");
+    }
+
+    let manifest = temp.path().join("program.yaml");
+    raspberry()
+        .args([
+            "execute",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+            "--fabro-bin",
+            fake_fabro.to_str().expect("utf-8 fake fabro path"),
+            "--lane",
+            "consensus:chapter",
+        ])
+        .env("HOME", temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("consensus:chapter [submitted]"))
+        .stdout(predicate::str::contains(
+            "run_id=01KM244VBG7TF9FB8D53BFTHX7",
+        ));
+}
+
+#[test]
+fn execute_allows_explicit_rerun_of_complete_lane() {
+    let fixture_root = fixture_manifest()
+        .parent()
+        .expect("fixture manifest parent")
+        .to_path_buf();
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+    let fake_fabro = temp.path().join("fake-fabro-rerun-complete.sh");
+    fs::write(
+        &fake_fabro,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "if [ \"$1\" != \"--no-upgrade-check\" ]; then exit 4; fi\n",
+            "if [ \"$2\" != \"run\" ]; then exit 5; fi\n",
+            "if [ \"$3\" != \"--detach\" ]; then exit 6; fi\n",
+            "printf '%s\\n' '01KM244VBG7TF9FB8D53BFTHX8'\n",
+        ),
+    )
+    .expect("write fake fabro");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_fabro).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_fabro, perms).expect("chmod");
+    }
+
+    let manifest = temp.path().join("program.yaml");
+    raspberry()
+        .args([
+            "execute",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+            "--fabro-bin",
+            fake_fabro.to_str().expect("utf-8 fake fabro path"),
+            "--lane",
+            "runtime:chapter",
+        ])
+        .env("HOME", temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("runtime:chapter [submitted]"))
+        .stdout(predicate::str::contains(
+            "run_id=01KM244VBG7TF9FB8D53BFTHX8",
+        ));
+}
+
+#[test]
+fn execute_sets_dedicated_autodev_cargo_target_dir_for_fabro() {
+    let fixture_root = fixture_manifest()
+        .parent()
+        .expect("fixture manifest parent")
+        .to_path_buf();
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+    let fake_fabro = temp.path().join("fake-fabro-cargo-target.sh");
+    fs::write(
+        &fake_fabro,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "printf '%s\\n' \"${CARGO_TARGET_DIR:-unset}\" > \"$HOME/cargo-target-dir.log\"\n",
+            "if [ \"$1\" != \"--no-upgrade-check\" ]; then exit 4; fi\n",
+            "if [ \"$2\" != \"run\" ]; then exit 5; fi\n",
+            "if [ \"$3\" != \"--detach\" ]; then exit 6; fi\n",
+            "printf '%s\\n' '01KM244VBG7TF9FB8D53BFTHX7'\n",
+        ),
+    )
+    .expect("write fake fabro");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_fabro).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_fabro, perms).expect("chmod");
+    }
+
+    let manifest = temp.path().join("program.yaml");
+    raspberry()
+        .args([
+            "execute",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+            "--fabro-bin",
+            fake_fabro.to_str().expect("utf-8 fake fabro path"),
+            "--lane",
+            "runtime:page",
+        ])
+        .env("HOME", temp.path())
+        .assert()
+        .success();
+
+    let logged =
+        fs::read_to_string(temp.path().join("cargo-target-dir.log")).expect("cargo target log");
+    assert_eq!(
+        logged.trim(),
+        temp.path()
+            .join(".raspberry/cargo-target")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
 fn autodev_runs_synth_and_dispatch_cycle() {
     let fixture_root = fixture_manifest()
         .parent()
@@ -359,7 +519,7 @@ fn autodev_runs_synth_and_dispatch_cycle() {
         .success()
         .stdout(predicate::str::contains("Program: raspberry-demo"))
         .stdout(predicate::str::contains("Cycle 1:"))
-        .stdout(predicate::str::contains("evolve: applied"))
+        .stdout(predicate::str::contains("evolve: skipped"))
         .stdout(predicate::str::contains(
             "ready: runtime:page, runtime:proof",
         ))
@@ -368,10 +528,214 @@ fn autodev_runs_synth_and_dispatch_cycle() {
         .stdout(predicate::str::contains("Stop reason: cycle_limit"));
 
     let log = fs::read_to_string(temp.path().join("autodev-fabro.log")).expect("fabro log");
+    assert!(!log.contains("synth import"));
+    assert!(!log.contains("synth evolve"));
+    let run_count = log
+        .lines()
+        .filter(|line| line.contains("run --detach"))
+        .count();
+    assert_eq!(run_count, 2, "expected two dispatched runs");
+    assert!(!temp.path().join(".autodev-evolved").exists());
+}
+
+#[test]
+fn autodev_evolves_when_program_is_locally_settled() {
+    let fixture_root = fixture_manifest()
+        .parent()
+        .expect("fixture manifest parent")
+        .to_path_buf();
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+    let fake_fabro = temp.path().join("fake-fabro-autodev-settled.sh");
+    fs::write(
+        &fake_fabro,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "LOG=\"$HOME/autodev-settled.log\"\n",
+            "printf '%s\\n' \"$*\" >> \"$LOG\"\n",
+            "if [ \"$1\" = \"--no-upgrade-check\" ]; then shift; fi\n",
+            "case \"$1\" in\n",
+            "  synth)\n",
+            "    case \"$2\" in\n",
+            "      import)\n",
+            "        OUTPUT=\"\"\n",
+            "        PROGRAM=\"\"\n",
+            "        while [ $# -gt 0 ]; do\n",
+            "          case \"$1\" in\n",
+            "            --output) OUTPUT=\"$2\"; shift 2 ;;\n",
+            "            --program) PROGRAM=\"$2\"; shift 2 ;;\n",
+            "            *) shift ;;\n",
+            "          esac\n",
+            "        done\n",
+            "        cat > \"$OUTPUT\" <<EOF\n",
+            "version: 1\n",
+            "program:\n",
+            "  id: ${PROGRAM}\n",
+            "  max_parallel: 1\n",
+            "inputs:\n",
+            "  doctrine_files: []\n",
+            "  evidence_paths: []\n",
+            "package:\n",
+            "  fabro_root: fabro\n",
+            "units: []\n",
+            "EOF\n",
+            "        ;;\n",
+            "      evolve)\n",
+            "        TARGET=\"\"\n",
+            "        while [ $# -gt 0 ]; do\n",
+            "          case \"$1\" in\n",
+            "            --target-repo) TARGET=\"$2\"; shift 2 ;;\n",
+            "            --preview-root) shift 2 ;;\n",
+            "            *) shift ;;\n",
+            "          esac\n",
+            "        done\n",
+            "        touch \"$TARGET/.autodev-evolved\"\n",
+            "        ;;\n",
+            "      *) exit 21 ;;\n",
+            "    esac\n",
+            "    ;;\n",
+            "  run)\n",
+            "    exit 22\n",
+            "    ;;\n",
+            "  *) exit 23 ;;\n",
+            "esac\n",
+        ),
+    )
+    .expect("write fake fabro");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_fabro).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_fabro, perms).expect("chmod");
+    }
+
+    let manifest = temp.path().join("complete-program.yaml");
+    raspberry()
+        .args([
+            "autodev",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+            "--fabro-bin",
+            fake_fabro.to_str().expect("utf-8 fake fabro path"),
+            "--max-cycles",
+            "1",
+            "--poll-interval-ms",
+            "1",
+            "--evolve-every-seconds",
+            "0",
+        ])
+        .env("HOME", temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("evolve: applied"))
+        .stdout(predicate::str::contains("ready: none"));
+
+    let log = fs::read_to_string(temp.path().join("autodev-settled.log"))
+        .expect("fabro log should exist");
     assert!(log.contains("synth import"));
     assert!(log.contains("synth evolve"));
-    assert!(log.contains("run --detach"));
     assert!(temp.path().join(".autodev-evolved").exists());
+}
+
+#[test]
+fn autodev_respects_parallel_slots_when_dispatching_ready_lanes() {
+    let fixture_root = fixture_manifest()
+        .parent()
+        .expect("fixture manifest parent")
+        .to_path_buf();
+    let temp = tempfile::tempdir().expect("tempdir");
+    copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+    let fake_fabro = temp.path().join("fake-fabro-autodev-slots.sh");
+    fs::write(
+        &fake_fabro,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "LOG=\"$HOME/autodev-slots.log\"\n",
+            "printf '%s\\n' \"$*\" >> \"$LOG\"\n",
+            "if [ \"$1\" = \"--no-upgrade-check\" ]; then shift; fi\n",
+            "case \"$1\" in\n",
+            "  synth)\n",
+            "    case \"$2\" in\n",
+            "      import)\n",
+            "        OUTPUT=\"\"\n",
+            "        PROGRAM=\"\"\n",
+            "        while [ $# -gt 0 ]; do\n",
+            "          case \"$1\" in\n",
+            "            --output) OUTPUT=\"$2\"; shift 2 ;;\n",
+            "            --program) PROGRAM=\"$2\"; shift 2 ;;\n",
+            "            *) shift ;;\n",
+            "          esac\n",
+            "        done\n",
+            "        cat > \"$OUTPUT\" <<EOF\n",
+            "version: 1\n",
+            "program:\n",
+            "  id: ${PROGRAM}\n",
+            "  max_parallel: 2\n",
+            "inputs:\n",
+            "  doctrine_files: []\n",
+            "  evidence_paths: []\n",
+            "package:\n",
+            "  fabro_root: fabro\n",
+            "units: []\n",
+            "EOF\n",
+            "        ;;\n",
+            "      evolve)\n",
+            "        exit 0\n",
+            "        ;;\n",
+            "      *) exit 11 ;;\n",
+            "    esac\n",
+            "    ;;\n",
+            "  run)\n",
+            "    if [ \"$2\" != \"--detach\" ]; then exit 12; fi\n",
+            "    printf '%s\\n' '01KM244VBG7TF9FB8D53BFTHX7'\n",
+            "    ;;\n",
+            "  *) exit 13 ;;\n",
+            "esac\n",
+        ),
+    )
+    .expect("write fake fabro");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_fabro).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_fabro, perms).expect("chmod");
+    }
+
+    let manifest = temp.path().join("program.yaml");
+    raspberry()
+        .args([
+            "autodev",
+            "--manifest",
+            manifest.to_str().expect("utf-8 manifest path"),
+            "--fabro-bin",
+            fake_fabro.to_str().expect("utf-8 fake fabro path"),
+            "--max-cycles",
+            "1",
+            "--max-parallel",
+            "2",
+            "--poll-interval-ms",
+            "1",
+            "--evolve-every-seconds",
+            "0",
+        ])
+        .env("HOME", temp.path())
+        .assert()
+        .success();
+
+    let log = fs::read_to_string(temp.path().join("autodev-slots.log")).expect("fabro log");
+    let run_count = log
+        .lines()
+        .filter(|line| line.contains("run --detach"))
+        .count();
+    assert_eq!(run_count, 2, "expected both ready lanes to dispatch");
 }
 
 #[test]
@@ -478,11 +842,16 @@ fn execute_can_tick_a_child_program_lane() {
         .env("HOME", temp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("ready:program [running|orchestration]"))
+        .stdout(predicate::str::contains(
+            "ready:program [running|orchestration]",
+        ))
         .stdout(predicate::str::contains("child program `ready-program`"))
         .stdout(predicate::str::contains("running=1"));
 
-    assert!(temp.path().join(".raspberry/ready-program-autodev.json").exists());
+    assert!(temp
+        .path()
+        .join(".raspberry/ready-program-autodev.json")
+        .exists());
 }
 
 fn copy_dir(source: &Path, target: &Path) -> Result<(), std::io::Error> {

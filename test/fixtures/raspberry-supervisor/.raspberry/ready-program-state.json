@@ -1,0 +1,12 @@
+{
+  "schema_version": "raspberry.program.v2",
+  "program": "ready-program",
+  "updated_at": "2026-03-20T06:36:19.421063610Z",
+  "lanes": {
+    "docs:default": {
+      "lane_key": "docs:default",
+      "status": "ready",
+      "run_config": "/home/r/coding/fabro/lib/crates/raspberry-supervisor/../../../test/fixtures/raspberry-supervisor/run-configs/runtime-page.toml"
+    }
+  }
+}

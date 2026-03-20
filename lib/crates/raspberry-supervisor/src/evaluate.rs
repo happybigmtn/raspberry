@@ -9,12 +9,14 @@ use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::autodev::sync_autodev_report_with_program;
 use crate::manifest::{
     LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
     LaneManifest, ProgramManifest,
 };
 use crate::program_state::{
-    LaneRuntimeRecord, ProgramRuntimeState, ProgramStateError, refresh_program_state,
+    refresh_program_state, sync_program_state_with_evaluated, LaneRuntimeRecord,
+    ProgramRuntimeState, ProgramStateError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
@@ -159,6 +161,8 @@ struct ChildProgramSummary {
     blocked: usize,
     failed: usize,
     total: usize,
+    running_details: Vec<String>,
+    failed_details: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -170,14 +174,63 @@ pub enum EvaluateError {
 }
 
 pub fn evaluate_program(manifest_path: &Path) -> Result<EvaluatedProgram, EvaluateError> {
+    evaluate_program_internal(manifest_path, true)
+}
+
+pub(crate) fn evaluate_program_internal(
+    manifest_path: &Path,
+    propagate_parents: bool,
+) -> Result<EvaluatedProgram, EvaluateError> {
     let manifest = ProgramManifest::load(manifest_path)?;
     let state_path = manifest.resolved_state_path(manifest_path);
-    let mut program_state =
-        ProgramRuntimeState::load_optional(&state_path)?.unwrap_or_else(|| ProgramRuntimeState::new(&manifest.program));
+    let mut program_state = ProgramRuntimeState::load_optional(&state_path)?
+        .unwrap_or_else(|| ProgramRuntimeState::new(&manifest.program));
     if refresh_program_state(manifest_path, &manifest, &mut program_state)? {
         program_state.save(&state_path)?;
     }
-    Ok(evaluate_with_state(manifest_path, &manifest, Some(&program_state)))
+    let program = evaluate_with_state(manifest_path, &manifest, Some(&program_state));
+    if sync_program_state_with_evaluated(&mut program_state, &program) {
+        program_state.save(&state_path)?;
+    }
+    let _ = sync_autodev_report_with_program(manifest_path, &manifest, &program);
+    if propagate_parents {
+        refresh_parent_programs(manifest_path, &manifest)?;
+    }
+    Ok(program)
+}
+
+pub(crate) fn refresh_parent_programs(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+) -> Result<(), EvaluateError> {
+    let programs_dir = manifest
+        .resolved_target_repo(manifest_path)
+        .join("fabro")
+        .join("programs");
+    let Ok(entries) = std::fs::read_dir(&programs_dir) else {
+        return Ok(());
+    };
+    let mut manifests = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("yaml"))
+        .collect::<Vec<_>>();
+    manifests.sort();
+
+    for candidate in manifests {
+        if same_manifest_path(&candidate, manifest_path) {
+            continue;
+        }
+        let Ok(parent) = ProgramManifest::load(&candidate) else {
+            continue;
+        };
+        if !references_child_program(&candidate, &parent, manifest_path) {
+            continue;
+        }
+        let _ = evaluate_program_internal(&candidate, true)?;
+    }
+
+    Ok(())
 }
 
 pub fn evaluate_with_state(
@@ -187,12 +240,7 @@ pub fn evaluate_with_state(
 ) -> EvaluatedProgram {
     let runtime_records = runtime_record_map(program_state);
     let unit_statuses = build_unit_statuses(manifest_path, manifest);
-    let satisfied = satisfied_milestones(
-        manifest_path,
-        manifest,
-        &runtime_records,
-        &unit_statuses,
-    );
+    let satisfied = satisfied_milestones(manifest_path, manifest, &runtime_records, &unit_statuses);
     let mut lanes = Vec::new();
 
     for (unit_id, unit) in &manifest.units {
@@ -206,9 +254,7 @@ pub fn evaluate_with_state(
                 unit_statuses
                     .get(unit_id)
                     .expect("unit status should exist for every unit"),
-                runtime_records
-                    .get(&lane_key(unit_id, lane_id))
-                    .copied(),
+                runtime_records.get(&lane_key(unit_id, lane_id)).copied(),
             ));
         }
     }
@@ -244,7 +290,10 @@ pub fn render_grouped_summary(program: &EvaluatedProgram) -> String {
         };
         lines.push(format!("{}:", title_case(status)));
         for lane in lanes {
-            let mut line = format!("  - {} [{}] — {}", lane.lane_key, lane.lane_kind, lane.detail);
+            let mut line = format!(
+                "  - {} [{}] — {}",
+                lane.lane_key, lane.lane_kind, lane.detail
+            );
             if let Some(proof_profile) = &lane.proof_profile {
                 line.push_str(&format!(" | proof={proof_profile}"));
             }
@@ -276,11 +325,26 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         format!("Max parallel: {}", program.max_parallel),
         format!(
             "Counts: complete={} ready={} running={} blocked={} failed={}",
-            counts.get(&LaneExecutionStatus::Complete).copied().unwrap_or(0),
-            counts.get(&LaneExecutionStatus::Ready).copied().unwrap_or(0),
-            counts.get(&LaneExecutionStatus::Running).copied().unwrap_or(0),
-            counts.get(&LaneExecutionStatus::Blocked).copied().unwrap_or(0),
-            counts.get(&LaneExecutionStatus::Failed).copied().unwrap_or(0),
+            counts
+                .get(&LaneExecutionStatus::Complete)
+                .copied()
+                .unwrap_or(0),
+            counts
+                .get(&LaneExecutionStatus::Ready)
+                .copied()
+                .unwrap_or(0),
+            counts
+                .get(&LaneExecutionStatus::Running)
+                .copied()
+                .unwrap_or(0),
+            counts
+                .get(&LaneExecutionStatus::Blocked)
+                .copied()
+                .unwrap_or(0),
+            counts
+                .get(&LaneExecutionStatus::Failed)
+                .copied()
+                .unwrap_or(0),
         ),
     ];
     for lane in &program.lanes {
@@ -458,8 +522,7 @@ fn evaluate_lane(
             .and_then(|record| record.current_fabro_run_id.clone())
             .or_else(|| run_snapshot.run_id),
         current_run_id: runtime_record.and_then(|record| record.current_run_id.clone()),
-        current_fabro_run_id: runtime_record
-            .and_then(|record| record.current_fabro_run_id.clone()),
+        current_fabro_run_id: runtime_record.and_then(|record| record.current_fabro_run_id.clone()),
         current_stage: runtime_record
             .and_then(|record| record.current_stage_label.clone())
             .or(run_snapshot.current_stage),
@@ -536,12 +599,7 @@ fn build_unit_statuses(
     manifest
         .units
         .iter()
-        .map(|(unit_id, unit)| {
-            (
-                unit_id.clone(),
-                evaluate_unit_status(manifest_path, unit),
-            )
-        })
+        .map(|(unit_id, unit)| (unit_id.clone(), evaluate_unit_status(manifest_path, unit)))
         .collect()
 }
 
@@ -588,7 +646,11 @@ fn evaluate_unit_status(manifest_path: &Path, unit: &crate::manifest::UnitManife
     }
 }
 
-fn lifecycle_reached(unit: &crate::manifest::UnitManifest, status: &UnitStatus, target: &str) -> bool {
+fn lifecycle_reached(
+    unit: &crate::manifest::UnitManifest,
+    status: &UnitStatus,
+    target: &str,
+) -> bool {
     let Some(current_index) = unit
         .milestones
         .iter()
@@ -606,7 +668,11 @@ fn lifecycle_reached(unit: &crate::manifest::UnitManifest, status: &UnitStatus, 
     current_index >= target_index
 }
 
-fn artifact_path(manifest_path: &Path, unit: &crate::manifest::UnitManifest, path: &Path) -> PathBuf {
+fn artifact_path(
+    manifest_path: &Path,
+    unit: &crate::manifest::UnitManifest,
+    path: &Path,
+) -> PathBuf {
     if path.is_absolute() {
         return path.to_path_buf();
     }
@@ -627,9 +693,7 @@ fn artifact_path(manifest_path: &Path, unit: &crate::manifest::UnitManifest, pat
         .join(path)
 }
 
-fn runtime_record_map(
-    state: Option<&ProgramRuntimeState>,
-) -> BTreeMap<String, &LaneRuntimeRecord> {
+fn runtime_record_map(state: Option<&ProgramRuntimeState>) -> BTreeMap<String, &LaneRuntimeRecord> {
     state
         .map(|state| state.lanes.iter().map(|(k, v)| (k.clone(), v)).collect())
         .unwrap_or_default()
@@ -639,13 +703,19 @@ fn classify_lane(
     lane_key: &str,
     lane: &crate::manifest::LaneManifest,
     satisfied: &BTreeSet<String>,
-    unit_status: &UnitStatus,
+    _unit_status: &UnitStatus,
     runtime_record: Option<&LaneRuntimeRecord>,
     run_snapshot: &RunSnapshot,
     check_result: &LaneCheckResult,
     orchestration_state: Option<LaneOrchestrationState>,
     child_program: Option<&ChildProgramSummary>,
 ) -> LaneExecutionStatus {
+    if is_failed(run_snapshot, runtime_record) {
+        return LaneExecutionStatus::Failed;
+    }
+    if is_active(run_snapshot, runtime_record) {
+        return LaneExecutionStatus::Running;
+    }
     if let Some(child_program) = child_program {
         return classify_child_program_lane(
             lane,
@@ -655,17 +725,9 @@ fn classify_lane(
             child_program,
         );
     }
-    if runtime_record
-        .map(|record| record.status == LaneExecutionStatus::Complete)
-        .unwrap_or(false)
-        || satisfied.contains(&managed_milestone_key(lane_key, &lane.managed_milestone))
+    if !check_result.ready_precondition_failing.is_empty()
+        || !check_result.ready_proof_failing.is_empty()
     {
-        return LaneExecutionStatus::Complete;
-    }
-    if is_failed(run_snapshot, runtime_record) {
-        return LaneExecutionStatus::Failed;
-    }
-    if !check_result.ready_precondition_failing.is_empty() || !check_result.ready_proof_failing.is_empty() {
         return LaneExecutionStatus::Blocked;
     }
     if let Some(LaneOrchestrationState::Waiting | LaneOrchestrationState::Blocked) =
@@ -673,8 +735,12 @@ fn classify_lane(
     {
         return LaneExecutionStatus::Blocked;
     }
-    if is_active(run_snapshot, runtime_record) || produced_present(lane, unit_status) {
-        return LaneExecutionStatus::Running;
+    if runtime_record
+        .map(|record| record.status == LaneExecutionStatus::Complete)
+        .unwrap_or(false)
+        || satisfied.contains(&managed_milestone_key(lane_key, &lane.managed_milestone))
+    {
+        return LaneExecutionStatus::Complete;
     }
     if dependencies_satisfied(&lane.dependencies, satisfied) {
         return LaneExecutionStatus::Ready;
@@ -727,16 +793,15 @@ fn is_active(run_snapshot: &RunSnapshot, runtime_record: Option<&LaneRuntimeReco
 }
 
 fn is_failed(run_snapshot: &RunSnapshot, runtime_record: Option<&LaneRuntimeRecord>) -> bool {
-    matches!(run_snapshot.status, Some(RunStatus::Failed | RunStatus::Dead))
-        || runtime_record
-            .map(|record| record.status == LaneExecutionStatus::Failed)
-            .unwrap_or(false)
+    matches!(
+        run_snapshot.status,
+        Some(RunStatus::Failed | RunStatus::Dead)
+    ) || runtime_record
+        .map(|record| record.status == LaneExecutionStatus::Failed)
+        .unwrap_or(false)
 }
 
-fn dependencies_satisfied(
-    dependencies: &[LaneDependency],
-    satisfied: &BTreeSet<String>,
-) -> bool {
+fn dependencies_satisfied(dependencies: &[LaneDependency], satisfied: &BTreeSet<String>) -> bool {
     dependencies.iter().all(|dependency| {
         let key = dependency_key(dependency);
         satisfied.contains(&key)
@@ -771,7 +836,9 @@ fn lane_detail(
             format!("managed milestone `{}` satisfied", lane.managed_milestone)
         }
         LaneExecutionStatus::Ready => {
-            if !check_result.ready_proof_passing.is_empty() && !check_result.ready_precondition_passing.is_empty() {
+            if !check_result.ready_proof_passing.is_empty()
+                && !check_result.ready_precondition_passing.is_empty()
+            {
                 format!(
                     "dependencies, preconditions, and proof checks satisfied ({})",
                     check_result.ready_passing.join(", ")
@@ -829,13 +896,9 @@ fn lane_detail(
                     .filter(|text| !text.trim().is_empty())
             })
             .unwrap_or_else(|| "most recent run failed".to_string()),
-        LaneExecutionStatus::Blocked => blocked_detail(
-            lane_key,
-            lane,
-            satisfied,
-            check_result,
-            orchestration_state,
-        ),
+        LaneExecutionStatus::Blocked => {
+            blocked_detail(lane_key, lane, satisfied, check_result, orchestration_state)
+        }
     }
 }
 
@@ -848,7 +911,7 @@ fn child_program_detail(
     status: LaneExecutionStatus,
     child_program: &ChildProgramSummary,
 ) -> String {
-    let summary = format!(
+    let mut summary = format!(
         "child program `{}`: complete={} ready={} running={} blocked={} failed={}",
         child_program.program,
         child_program.complete,
@@ -857,6 +920,18 @@ fn child_program_detail(
         child_program.blocked,
         child_program.failed
     );
+    if !child_program.running_details.is_empty() {
+        summary.push_str(&format!(
+            " | running_lanes={}",
+            child_program.running_details.join(", ")
+        ));
+    }
+    if !child_program.failed_details.is_empty() {
+        summary.push_str(&format!(
+            " | failed_lanes={}",
+            child_program.failed_details.join(", ")
+        ));
+    }
     match status {
         LaneExecutionStatus::Complete => format!("{summary} | all child lanes complete"),
         LaneExecutionStatus::Ready => format!("{summary} | ready child work available"),
@@ -866,13 +941,7 @@ fn child_program_detail(
             if child_program.ready > 0 {
                 format!(
                     "{summary} | waiting on {}",
-                    blocked_detail(
-                        lane_key,
-                        lane,
-                        satisfied,
-                        check_result,
-                        orchestration_state,
-                    )
+                    blocked_detail(lane_key, lane, satisfied, check_result, orchestration_state,)
                 )
             } else {
                 format!("{summary} | no child lanes are currently ready")
@@ -912,14 +981,15 @@ fn blocked_detail(
         );
     }
     if !check_result.ready_failing.is_empty() {
-        return format!("waiting on checks: {}", check_result.ready_failing.join(", "));
+        return format!(
+            "waiting on checks: {}",
+            check_result.ready_failing.join(", ")
+        );
     }
     lane.dependencies
         .iter()
         .find(|dependency| !satisfied.contains(&dependency_key(dependency)))
-        .map(|dependency| {
-            dependency_display_key(dependency)
-        })
+        .map(|dependency| dependency_display_key(dependency))
         .unwrap_or_else(|| format!("lane `{lane_key}` is blocked"))
 }
 
@@ -932,6 +1002,9 @@ fn summarize_child_program(
     if program_manifest == manifest_path {
         return None;
     }
+    if let Some(summary) = summarize_child_program_from_state(&program_manifest) {
+        return Some(summary);
+    }
     let program = evaluate_program(&program_manifest).ok()?;
     let mut summary = ChildProgramSummary {
         program: program.program,
@@ -941,14 +1014,88 @@ fn summarize_child_program(
         blocked: 0,
         failed: 0,
         total: program.lanes.len(),
+        running_details: Vec::new(),
+        failed_details: Vec::new(),
     };
     for lane in program.lanes {
         match lane.status {
             LaneExecutionStatus::Complete => summary.complete += 1,
             LaneExecutionStatus::Ready => summary.ready += 1,
-            LaneExecutionStatus::Running => summary.running += 1,
+            LaneExecutionStatus::Running => {
+                summary.running += 1;
+                let detail = lane
+                    .current_stage
+                    .as_deref()
+                    .map(|stage| format!("{}@{}", lane.lane_key, stage))
+                    .unwrap_or(lane.lane_key);
+                summary.running_details.push(detail);
+            }
             LaneExecutionStatus::Blocked => summary.blocked += 1,
-            LaneExecutionStatus::Failed => summary.failed += 1,
+            LaneExecutionStatus::Failed => {
+                summary.failed += 1;
+                summary.failed_details.push(lane.lane_key);
+            }
+        }
+    }
+    Some(summary)
+}
+
+fn references_child_program(
+    parent_manifest_path: &Path,
+    parent: &ProgramManifest,
+    child_manifest_path: &Path,
+) -> bool {
+    parent.units.values().any(|unit| {
+        unit.lanes.values().any(|lane| {
+            lane.program_manifest.as_ref().is_some_and(|path| {
+                same_manifest_path(
+                    &resolve_check_path(parent_manifest_path, path),
+                    child_manifest_path,
+                )
+            })
+        })
+    })
+}
+
+fn same_manifest_path(left: &Path, right: &Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+fn summarize_child_program_from_state(program_manifest: &Path) -> Option<ChildProgramSummary> {
+    let manifest = ProgramManifest::load(program_manifest).ok()?;
+    let state_path = manifest.resolved_state_path(program_manifest);
+    let state = ProgramRuntimeState::load_optional(&state_path).ok()??;
+    let mut summary = ChildProgramSummary {
+        program: manifest.program,
+        complete: 0,
+        ready: 0,
+        running: 0,
+        blocked: 0,
+        failed: 0,
+        total: state.lanes.len(),
+        running_details: Vec::new(),
+        failed_details: Vec::new(),
+    };
+    for lane in state.lanes.values() {
+        match lane.status {
+            LaneExecutionStatus::Complete => summary.complete += 1,
+            LaneExecutionStatus::Ready => summary.ready += 1,
+            LaneExecutionStatus::Running => {
+                summary.running += 1;
+                let detail = lane
+                    .current_stage_label
+                    .as_deref()
+                    .map(|stage| format!("{}@{}", lane.lane_key, stage))
+                    .unwrap_or_else(|| lane.lane_key.clone());
+                summary.running_details.push(detail);
+            }
+            LaneExecutionStatus::Blocked => summary.blocked += 1,
+            LaneExecutionStatus::Failed => {
+                summary.failed += 1;
+                summary.failed_details.push(lane.lane_key.clone());
+            }
         }
     }
     Some(summary)
@@ -993,9 +1140,12 @@ fn dependency_display_key(dependency: &LaneDependency) -> String {
 }
 
 fn produced_present(lane: &crate::manifest::LaneManifest, unit_status: &UnitStatus) -> bool {
-    lane.produces
-        .iter()
-        .any(|artifact| unit_status.present_artifacts.iter().any(|present| present == artifact))
+    lane.produces.iter().any(|artifact| {
+        unit_status
+            .present_artifacts
+            .iter()
+            .any(|present| present == artifact)
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1159,7 +1309,11 @@ fn evaluate_probe(
 ) -> bool {
     match probe {
         LaneCheckProbe::FileExists { path } => resolve_check_path(manifest_path, path).is_file(),
-        LaneCheckProbe::JsonFieldEquals { path, field, equals } => {
+        LaneCheckProbe::JsonFieldEquals {
+            path,
+            field,
+            equals,
+        } => {
             let path = resolve_check_path(manifest_path, path);
             let Ok(raw) = std::fs::read_to_string(path) else {
                 return false;
@@ -1235,6 +1389,40 @@ fn title_case(status: LaneExecutionStatus) -> &'static str {
 mod tests {
     use super::*;
 
+    fn copy_dir(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+        for entry in walk(source)? {
+            let relative = entry.strip_prefix(source).expect("prefix");
+            let destination = target.join(relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&destination)?;
+                continue;
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&entry, &destination)?;
+        }
+        Ok(())
+    }
+
+    fn walk(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+        let mut paths = Vec::new();
+        visit(root, &mut paths)?;
+        Ok(paths)
+    }
+
+    fn visit(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        paths.push(root.to_path_buf());
+        if !root.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            visit(&entry.path(), paths)?;
+        }
+        Ok(())
+    }
+
     fn fixture_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../test/fixtures/raspberry-supervisor/program.yaml")
@@ -1299,18 +1487,34 @@ mod tests {
 
     #[test]
     fn evaluate_mysou_shaped_fixture_classifies_broad_repo_units() {
-        let program = evaluate_program(&myosu_fixture_path()).expect("myosu fixture should evaluate");
+        let program =
+            evaluate_program(&myosu_fixture_path()).expect("myosu fixture should evaluate");
         let statuses: BTreeMap<String, LaneExecutionStatus> = program
             .lanes
             .iter()
             .map(|lane| (lane.lane_key.clone(), lane.status))
             .collect();
 
-        assert_eq!(statuses.get("chain:runtime"), Some(&LaneExecutionStatus::Complete));
-        assert_eq!(statuses.get("validator:oracle"), Some(&LaneExecutionStatus::Complete));
-        assert_eq!(statuses.get("miner:service"), Some(&LaneExecutionStatus::Running));
-        assert_eq!(statuses.get("operations:scorecard"), Some(&LaneExecutionStatus::Blocked));
-        assert_eq!(statuses.get("launch:devnet"), Some(&LaneExecutionStatus::Blocked));
+        assert_eq!(
+            statuses.get("chain:runtime"),
+            Some(&LaneExecutionStatus::Complete)
+        );
+        assert_eq!(
+            statuses.get("validator:oracle"),
+            Some(&LaneExecutionStatus::Complete)
+        );
+        assert_eq!(
+            statuses.get("miner:service"),
+            Some(&LaneExecutionStatus::Running)
+        );
+        assert_eq!(
+            statuses.get("operations:scorecard"),
+            Some(&LaneExecutionStatus::Blocked)
+        );
+        assert_eq!(
+            statuses.get("launch:devnet"),
+            Some(&LaneExecutionStatus::Blocked)
+        );
         assert_eq!(statuses.get("play:tui"), Some(&LaneExecutionStatus::Failed));
 
         let miner = program
@@ -1330,7 +1534,10 @@ mod tests {
             .iter()
             .find(|lane| lane.lane_key == "launch:devnet")
             .expect("launch lane should exist");
-        assert_eq!(launch.orchestration_state, Some(LaneOrchestrationState::Waiting));
+        assert_eq!(
+            launch.orchestration_state,
+            Some(LaneOrchestrationState::Waiting)
+        );
     }
 
     #[test]
@@ -1343,7 +1550,10 @@ mod tests {
             .map(|lane| (lane.lane_key.clone(), lane.status))
             .collect();
 
-        assert_eq!(statuses.get("ready:program"), Some(&LaneExecutionStatus::Ready));
+        assert_eq!(
+            statuses.get("ready:program"),
+            Some(&LaneExecutionStatus::Ready)
+        );
         assert_eq!(
             statuses.get("complete:program"),
             Some(&LaneExecutionStatus::Complete)
@@ -1356,5 +1566,194 @@ mod tests {
             .expect("ready program lane should exist");
         assert!(ready.detail.contains("child program `ready-program`"));
         assert!(ready.detail.contains("ready=1"));
+        assert!(ready.detail.contains("ready child work available"));
+    }
+
+    #[test]
+    fn evaluate_portfolio_prefers_child_state_snapshot_when_present() {
+        let fixture_root = portfolio_fixture_path()
+            .parent()
+            .expect("fixture parent")
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+        let child_state_path = temp.path().join(".raspberry/complete-program-state.json");
+        std::fs::write(
+            &child_state_path,
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "complete-program",
+                "updated_at": chrono::Utc::now(),
+                "lanes": {
+                    "docs:default": {
+                        "lane_key": "docs:default",
+                        "status": "running",
+                        "run_config": "run-configs/runtime-page.toml"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write child state");
+
+        let program = evaluate_program(&temp.path().join("portfolio-program.yaml"))
+            .expect("portfolio evaluates");
+        let statuses: BTreeMap<String, LaneExecutionStatus> = program
+            .lanes
+            .iter()
+            .map(|lane| (lane.lane_key.clone(), lane.status))
+            .collect();
+
+        assert_eq!(
+            statuses.get("complete:program"),
+            Some(&LaneExecutionStatus::Running)
+        );
+        let complete = program
+            .lanes
+            .iter()
+            .find(|lane| lane.lane_key == "complete:program")
+            .expect("complete program lane should exist");
+        assert!(complete.detail.contains("running_lanes=docs:default"));
+    }
+
+    #[test]
+    fn evaluating_child_program_refreshes_parent_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        std::fs::create_dir_all(repo.join("fabro/programs")).expect("programs dir");
+        std::fs::create_dir_all(repo.join(".raspberry")).expect("state dir");
+
+        let child_manifest_path = repo.join("fabro/programs/child.yaml");
+        std::fs::write(
+            &child_manifest_path,
+            r#"
+version: 1
+program: child
+target_repo: ../..
+state_path: ../../.raspberry/child-state.json
+units:
+  - id: work
+    title: Child Work
+    output_root: ../../outputs/child
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: task
+        title: Child Task
+        kind: artifact
+        run_config: ../run-configs/bootstrap/task.toml
+        managed_milestone: reviewed
+        produces: [spec, review]
+"#,
+        )
+        .expect("child manifest");
+        std::fs::write(
+            repo.join(".raspberry/child-state.json"),
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "child",
+                "updated_at": chrono::Utc::now(),
+                "lanes": {
+                    "work:task": {
+                        "lane_key": "work:task",
+                        "status": "running",
+                        "run_config": "fabro/run-configs/bootstrap/task.toml",
+                        "current_run_id": "01KMCHILD000000000000000000"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("child state");
+
+        let parent_manifest_path = repo.join("fabro/programs/parent.yaml");
+        std::fs::write(
+            &parent_manifest_path,
+            r#"
+version: 1
+program: parent
+target_repo: ../..
+state_path: ../../.raspberry/parent-state.json
+units:
+  - id: child
+    title: Child Program
+    lanes:
+      - id: program
+        title: Child Program Lane
+        kind: orchestration
+        run_config: ../run-configs/orchestration/child.toml
+        program_manifest: child.yaml
+        managed_milestone: coordinated
+"#,
+        )
+        .expect("parent manifest");
+
+        evaluate_program(&child_manifest_path).expect("child evaluates");
+
+        let parent_state =
+            ProgramRuntimeState::load_optional(&repo.join(".raspberry/parent-state.json"))
+                .expect("parent state loads")
+                .expect("parent state exists");
+        assert_eq!(
+            parent_state
+                .lanes
+                .get("child:program")
+                .map(|record| record.status),
+            Some(LaneExecutionStatus::Running)
+        );
+    }
+
+    #[test]
+    fn active_runtime_wins_over_satisfied_milestone() {
+        let manifest = ProgramManifest::load(&portfolio_fixture_path()).expect("manifest loads");
+        let manifest_path = portfolio_fixture_path();
+        let unit = &manifest.units["complete"];
+        let lane = &unit.lanes["program"];
+        let satisfied = BTreeSet::from([managed_milestone_key(
+            "complete:program",
+            &lane.managed_milestone,
+        )]);
+        let runtime_record = LaneRuntimeRecord {
+            lane_key: "complete:program".to_string(),
+            status: LaneExecutionStatus::Running,
+            run_config: Some(PathBuf::from("fabro/programs/complete-program.yaml")),
+            current_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
+            current_fabro_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
+            current_stage_label: Some("Promote".to_string()),
+            last_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+        };
+        let unit_status = evaluate_unit_status(&manifest_path, unit);
+        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let status = classify_lane(
+            "complete:program",
+            lane,
+            &satisfied,
+            &unit_status,
+            Some(&runtime_record),
+            &RunSnapshot::default(),
+            &check_result,
+            lane_orchestration_state(&manifest_path, lane),
+            summarize_child_program(&manifest_path, lane).as_ref(),
+        );
+
+        assert_eq!(status, LaneExecutionStatus::Running);
     }
 }
