@@ -1,10 +1,10 @@
 ## Raspberry: Autodev Orchestrator
 
-This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro) and Paperclip.
+This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro) and [Paperclip](https://github.com/paperclipai/paperclip).
 We forked it because Fabro is already a strong workflow engine for individual
 agent runs, but we wanted to push it further into repo-level supervision:
 multi-lane frontier management, autonomous replay and recovery, and a live
-human dashboard for ongoing runs. Paperclip is a great agent orchestrator and command center. 
+human dashboard for ongoing runs. Paperclip is a great agent orchestrator and command center. If you combined both with a supervisory brain, great things can result. 
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE.md)
 
@@ -223,11 +223,7 @@ For the fork-specific surfaces, start with:
 
 ## Help or Feedback
 
-- [Bug reports](https://github.com/fabro-sh/fabro/issues) via GitHub Issues
-- [Feature requests](https://github.com/fabro-sh/fabro/discussions) via GitHub Discussions
-- Email [bryan@qlty.sh](mailto:bryan@qlty.sh) for questions
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and development workflow
-
+- Email [happygrandmtn@gmail.com](mailto:happygrandmtn@gmail.com) for questions
 ---
 
 ## License
