@@ -7,3 +7,8 @@ evals/swe-bench/repos/
 evals/swe-bench/results/
 evals/swe-bench/dockerfiles/
 __pycache__
+agents/
+botcoin*.py
+gen_payload*.py
+growth_*.py
+de_parser.py
