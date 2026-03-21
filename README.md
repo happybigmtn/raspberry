@@ -1,8 +1,4 @@
-<div align="left" id="top">
-<a href="https://docs.fabro.sh"><img alt="Fabro" src="docs/logo/dark.svg" height="75"></a>
-</div>
-
-## Fork of Fabro for repo-level autonomy
+## Raspberry: Autodev Orchestrator
 
 This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro).
 We forked it because Fabro is already a strong workflow engine for individual
