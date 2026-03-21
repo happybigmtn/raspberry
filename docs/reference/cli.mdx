@@ -411,7 +411,7 @@ blueprint from the repo's planning corpus when `--blueprint` is omitted.
 fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
 
 # Or let Fabro author the first blueprint from README/SPEC/specs/plans
-fabro synth create --target-repo /home/r/coding/zend --program zend
+fabro synth create --target-repo /path/to/repo --program my-program
 ```
 
 | Flag | Description |
@@ -432,7 +432,7 @@ graphs, prompts, and checks.
 Import an existing checked-in `fabro/` package into a blueprint file.
 
 ```bash
-fabro synth import --target-repo /home/r/coding/myosu --program myosu-platform --output /tmp/myosu-platform.yaml
+fabro synth import --target-repo /path/to/repo --program my-program --output /tmp/my-program.yaml
 ```
 
 | Flag | Description |
@@ -450,13 +450,13 @@ Evolve an existing checked-in `fabro/` package from a revised blueprint, or
 let Fabro import and refine the current package when `--blueprint` is omitted.
 
 ```bash
-fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu
+fabro synth evolve --blueprint fabro/blueprints/my-program.yaml --target-repo /path/to/repo
 
 # Review-first: write the evolved package into a separate tree
-fabro synth evolve --blueprint fabro/blueprints/myosu.yaml --target-repo /home/r/coding/myosu --preview-root /tmp/myosu-preview
+fabro synth evolve --blueprint fabro/blueprints/my-program.yaml --target-repo /path/to/repo --preview-root /tmp/my-program-preview
 
 # Or import the current package and reconcile without hand-authoring a blueprint first
-fabro synth evolve --target-repo /home/r/coding/myosu --program myosu-platform --preview-root /tmp/myosu-preview
+fabro synth evolve --target-repo /path/to/repo --program my-program --preview-root /tmp/my-program-preview
 ```
 
 | Flag | Description |
@@ -483,10 +483,10 @@ company goal plus project workspace, and writes local agent env exports under
 
 ```bash
 # Dry-run bundle generation only
-fabro paperclip bootstrap --target-repo /home/r/coding/zend --apply false
+fabro paperclip bootstrap --target-repo /path/to/repo --program my-program --apply false
 
 # End-to-end local bootstrap
-fabro paperclip bootstrap --target-repo /home/r/coding/zend
+fabro paperclip bootstrap --target-repo /path/to/repo --program my-program
 ```
 
 | Flag | Description |
@@ -510,8 +510,9 @@ When `--apply` is `true`, Fabro will:
 7. sync root and lane frontier artifacts into native issue work products when available
 8. bind synchronized issues to the primary project workspace for Paperclip-native heartbeats
 9. upload the root manifest and runtime state as native Paperclip attachments
-10. create or rotate Paperclip company secrets from available model env vars and
-    patch generated local agents to use `secret_ref` adapter env config
+10. create or rotate Paperclip company secrets for adapters that require
+    ambient credentials and point generated local Codex agents at dedicated
+    OAuth-backed `CODEX_HOME` slots
 11. write agent-specific local-cli env exports under `.paperclip/local-cli/`
 
 The synced root work products point at those attachment URLs, so the manifest
@@ -534,7 +535,7 @@ Refresh the generated bundle plus the live Paperclip company, workspace, and
 deterministic frontier issues without using bootstrap as the rerun entrypoint.
 
 ```bash
-fabro paperclip refresh --target-repo /home/r/coding/zend --program zend
+fabro paperclip refresh --target-repo /path/to/repo --program my-program
 ```
 
 Use this after Raspberry advances, after the blueprint changes, or whenever you
@@ -556,8 +557,11 @@ transition comments on the synchronized root and lane issues.
 Start or reuse the repo-local Paperclip server.
 
 ```bash
-fabro paperclip start --target-repo /home/r/coding/zend --program zend
+fabro paperclip start --target-repo /path/to/repo --program my-program
 ```
+
+After the server starts, open the Paperclip web UI at the reported base URL.
+By default that is `http://127.0.0.1:3100/`.
 
 | Flag | Description |
 |---|---|
@@ -573,14 +577,13 @@ fabro paperclip start --target-repo /home/r/coding/zend --program zend
 Show repo-local Paperclip health and frontier sync status.
 
 ```bash
-fabro paperclip status --target-repo /home/r/coding/zend --program zend
+fabro paperclip status --target-repo /path/to/repo --program my-program
 ```
 
 This reports server readiness, the managed pid, last sync time, frontier
-summary, detected local-cli exports, and whether `OPENAI_API_KEY` and
-`ANTHROPIC_API_KEY` are present in the environment. It also reports current
-company spend vs budget plus pending approvals and paused scope counts from the
-Paperclip control plane.
+summary, detected local-cli exports, and detected credential state for common
+local adapters. It also reports current company spend vs budget plus pending
+approvals and paused scope counts from the Paperclip control plane.
 
 | Flag | Description |
 |---|---|
@@ -596,7 +599,7 @@ Paperclip control plane.
 Print recent lines from the repo-local Paperclip server log.
 
 ```bash
-fabro paperclip logs --target-repo /home/r/coding/zend --program zend --lines 120
+fabro paperclip logs --target-repo /path/to/repo --program my-program --lines 120
 ```
 
 | Flag | Description |
@@ -615,7 +618,7 @@ Invoke a Paperclip heartbeat for the imported orchestrator or another generated
 agent.
 
 ```bash
-fabro paperclip wake --target-repo /home/r/coding/zend --program zend --agent raspberry-orchestrator
+fabro paperclip wake --target-repo /path/to/repo --program my-program --agent raspberry-orchestrator
 ```
 
 This is the preferred Paperclip-native way to ask the Raspberry Orchestrator to
@@ -636,7 +639,7 @@ advance the frontier. The direct shell route remains available as a fallback.
 Stop the repo-local Paperclip server managed for this repo.
 
 ```bash
-fabro paperclip stop --target-repo /home/r/coding/zend --program zend
+fabro paperclip stop --target-repo /path/to/repo --program my-program
 ```
 
 | Flag | Description |

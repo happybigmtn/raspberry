@@ -74,28 +74,41 @@ short version is:
 - Raspberry evaluates lane readiness from dependencies, checks, and durable artifacts
 - `raspberry execute` dispatches ready work
 - `raspberry autodev` runs bounded autonomous cycles over a real repo/worktree
-- `raspberry tui` gives you a read-only operator dashboard
+- Paperclip mirrors the live frontier into a browser-based coordination dashboard
+- `raspberry tui` remains available as an optional terminal observer
 - `fabro synth import/create/evolve` now manages repo-shaped `fabro/` packages
 - implementation-family lanes now use deterministic `quality.md` and
   `promotion.md` gates instead of trusting prose-only completion
 
-The main operator commands are:
+The main Raspberry operator commands are:
 
 ```bash
-raspberry plan --manifest fabro/programs/myosu.yaml
-raspberry status --manifest fabro/programs/myosu.yaml
-raspberry watch --manifest fabro/programs/myosu.yaml
-raspberry execute --manifest fabro/programs/myosu.yaml
-raspberry autodev --manifest fabro/programs/myosu.yaml
-raspberry tui --manifest fabro/programs/myosu.yaml
+raspberry plan --manifest fabro/programs/<program>.yaml
+raspberry status --manifest fabro/programs/<program>.yaml
+raspberry watch --manifest fabro/programs/<program>.yaml
+raspberry execute --manifest fabro/programs/<program>.yaml
+raspberry autodev --manifest fabro/programs/<program>.yaml
 ```
+
+The main Paperclip coordination commands are:
+
+```bash
+fabro paperclip bootstrap --target-repo /path/to/repo --program <program>
+fabro paperclip status --target-repo /path/to/repo --program <program>
+fabro paperclip wake --target-repo /path/to/repo --program <program> --agent raspberry-orchestrator
+fabro paperclip refresh --target-repo /path/to/repo --program <program>
+```
+
+The preferred human dashboard is the Paperclip web UI served by that local
+instance. By default it comes up on `http://127.0.0.1:3100/`, with the synced
+company dashboard mounted under its company prefix.
 
 The main synthesis commands are:
 
 ```bash
-fabro synth import --target-repo /path/to/repo --program myosu --output /tmp/myosu.yaml
+fabro synth import --target-repo /path/to/repo --program <program> --output /tmp/program.yaml
 fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
-fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /path/to/repo
+fabro synth evolve --blueprint /tmp/program.yaml --target-repo /path/to/repo
 ```
 
 ### What Raspberry Adds
@@ -108,7 +121,8 @@ fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /path/to/repo
 | Bounded autodev | Autonomous cycles dispatch ready work, evolve the package when appropriate, and stop cleanly |
 | Blueprint-first synthesis | Repo workflow trees are imported, created, and evolved through deterministic blueprints |
 | Implementation quality gates | `quality.md` records placeholder debt, warning debt, artifact mismatch risk, and manual follow-up before promotion |
-| Operator TUI | A grouped, filterable terminal dashboard with lane state, artifacts, detail panes, and cached narration |
+| Paperclip web dashboard | A synced browser UI for frontier status, coordination, wake/refresh loops, and artifact visibility |
+| Optional terminal observer | `raspberry tui` remains available for local lane/artifact diagnosis in the terminal |
 
 ### The Mental Model
 

@@ -1,6 +1,6 @@
 ---
 title: "Raspberry Operator Runbook"
-description: "Concrete commands, debugging flow, and Myosu-shaped examples for operating Raspberry day to day"
+description: "Concrete commands, debugging flow, and generic examples for operating Raspberry day to day"
 ---
 
 This runbook is the practical companion to
@@ -19,40 +19,32 @@ Use this when you are:
 - debugging a stuck lane or suspicious promotion
 - evolving a repo's `fabro/` package from doctrine and run evidence
 
-The examples below use the Myosu proving ground because it exercises the full
-stack: child programs, implementation follow-ons, autodev, synthesis, and the
-observer TUI.
+The examples below use generic program ids and paths so you can map them onto
+your own repo without translating someone else's local setup.
 
 ## Before You Start
 
-You need three things:
+You need four things:
 
 1. A checked-in `fabro/` package in the target repo
 2. At least one program manifest under `fabro/programs/*.yaml`
-3. Working model credentials for the providers your lanes actually use
+3. Working local auth for the providers your lanes actually use
+4. If you are using Paperclip as the human dashboard, a bootstrapped local
+   Paperclip instance for the repo
 
-For Myosu, the relevant local setup looks like:
+For day-to-day operation, the important split is:
 
-```toml title="fabro.toml"
-[llm]
-provider = "anthropic"
-model = "MiniMax-M2.7-highspeed"
-
-[sandbox.env]
-ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic"
-ANTHROPIC_AUTH_TOKEN = "${env.MINIMAX_API_KEY}"
-```
-
-That means implementation stages can run on the Anthropic-compatible MiniMax
-path. Review and promotion stages may still use OpenAI/Codex depending on the
-workflow stylesheet for the lane.
+- Raspberry evaluates and advances the frontier
+- Paperclip web is the preferred human dashboard
+- `raspberry tui` is the optional terminal fallback for local diagnosis
 
 ## The Fastest Mental Model
 
 If you only remember one thing, remember this:
 
 ```text
-plan/status/watch/tui = observe
+paperclip web         = human dashboard
+plan/status/watch     = terminal observation
 execute               = dispatch ready work
 autodev               = bounded autonomous loop
 synth import/evolve   = change the checked-in control plane
@@ -73,8 +65,8 @@ actually asking about:
 ### 1. Start with the top-level program
 
 ```bash
-raspberry plan --manifest fabro/programs/myosu.yaml
-raspberry status --manifest fabro/programs/myosu.yaml
+raspberry plan --manifest fabro/programs/<program>.yaml
+raspberry status --manifest fabro/programs/<program>.yaml
 ```
 
 Use `plan` first when you want the grouped frontier:
@@ -92,18 +84,34 @@ Use `status` when you want the lane-level explanation:
 - run id / stage when known
 - last failure
 
-### 2. Watch a program settle
+### 2. Open the Paperclip web dashboard
 
 ```bash
-raspberry watch --manifest fabro/programs/myosu.yaml --interval-ms 500
+fabro paperclip start --target-repo /path/to/repo --program <program>
+fabro paperclip status --target-repo /path/to/repo --program <program>
 ```
 
-This is the simplest live operator view when you do not need the TUI.
+Then open the reported base URL in a browser. By default that is:
 
-### 3. Open the TUI for diagnosis
+```text
+http://127.0.0.1:3100/
+```
+
+Use the Paperclip web UI as the primary human-facing dashboard for ongoing
+runs, frontier state, wake actions, and issue-level coordination.
+
+### 3. Watch a program settle in the terminal
 
 ```bash
-raspberry tui --manifest fabro/programs/myosu.yaml
+raspberry watch --manifest fabro/programs/<program>.yaml --interval-ms 500
+```
+
+This is the simplest live terminal view when you do not need the browser UI.
+
+### 4. Open the TUI only when you need local diagnosis
+
+```bash
+raspberry tui --manifest fabro/programs/<program>.yaml
 ```
 
 Useful keys:
@@ -124,28 +132,28 @@ What the panes are good for:
 - **Artifacts**: curated artifact presence
 - **Detail**: artifact contents or run/autodev context
 
-### 4. Dispatch ready work explicitly
+### 5. Dispatch ready work explicitly
 
 ```bash
-raspberry execute --manifest fabro/programs/myosu.yaml
+raspberry execute --manifest fabro/programs/<program>.yaml
 ```
 
 Or dispatch a specific ready lane:
 
 ```bash
 raspberry execute \
-  --manifest fabro/programs/myosu-play-tui-implementation.yaml \
-  --lane play:tui-implement
+  --manifest fabro/programs/<child-program>.yaml \
+  --lane <unit>:<lane>
 ```
 
 `execute` is the bounded operator-controlled path. Use it when you want to
 advance the frontier without starting the autonomous loop.
 
-### 5. Run bounded autonomy
+### 6. Run bounded autonomy
 
 ```bash
 raspberry autodev \
-  --manifest fabro/programs/myosu.yaml \
+  --manifest fabro/programs/<program>.yaml \
   --fabro-bin /path/to/fabro \
   --max-cycles 1 \
   --poll-interval-ms 500 \
@@ -167,8 +175,8 @@ This is the core loop:
 These files tell you what Raspberry thinks is true at the program level:
 
 ```text
-.raspberry/myosu-state.json
-.raspberry/myosu-autodev.json
+.raspberry/<program>-state.json
+.raspberry/<program>-autodev.json
 .raspberry/<child-program>-state.json
 .raspberry/<child-program>-autodev.json
 ```
@@ -217,31 +225,30 @@ The most useful files are:
 | `graph.fabro` | The exact workflow graph that ran |
 | `run.toml` | The exact run config that ran |
 
-## Myosu Walkthrough
+## Portfolio Program Walkthrough
 
-The live Myosu top-level program currently looks like this:
+A portfolio-style top-level program often looks like this:
 
 ```text
-fabro/programs/myosu.yaml
+fabro/programs/<program>.yaml
 ```
 
 It is not one flat workflow. It is a portfolio of child programs:
 
 - bootstrap
-- chain-core
 - product
 - platform
 - services
 - recurring
-- implementation follow-ons like `play-tui-implementation` and
-  `sdk-core-implementation`
+- implementation follow-ons like `api-implementation` and
+  `client-implementation`
 
 That means the normal operator flow is:
 
 ```bash
-raspberry status --manifest fabro/programs/myosu.yaml
-raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
-raspberry status --manifest fabro/programs/myosu-sdk-core-implementation.yaml
+raspberry status --manifest fabro/programs/<program>.yaml
+raspberry status --manifest fabro/programs/<program>-api-implementation.yaml
+raspberry status --manifest fabro/programs/<program>-client-implementation.yaml
 ```
 
 Start top-down. Then drill into the child program that is actually stuck.
@@ -311,13 +318,13 @@ Use this exact order.
 ### 1. Inspect the child program
 
 ```bash
-raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
+raspberry status --manifest fabro/programs/<child-program>.yaml
 ```
 
 ### 2. Inspect current program truth
 
 ```bash
-cat .raspberry/myosu-play-tui-implementation-state.json
+cat .raspberry/<child-program>-state.json
 ```
 
 ### 3. Inspect the latest run
@@ -337,10 +344,10 @@ cat ~/.fabro/runs/<run-id>/nodes/review/cli_stderr.log
 ### 5. Inspect artifact truth
 
 ```bash
-ls outputs/play/tui
-sed -n '1,220p' outputs/play/tui/verification.md
-sed -n '1,220p' outputs/play/tui/quality.md
-sed -n '1,220p' outputs/play/tui/promotion.md
+ls outputs/<unit>/<lane>
+sed -n '1,220p' outputs/<unit>/<lane>/verification.md
+sed -n '1,220p' outputs/<unit>/<lane>/quality.md
+sed -n '1,220p' outputs/<unit>/<lane>/promotion.md
 ```
 
 This is the minimum loop that separates:
@@ -358,17 +365,17 @@ the blueprint flow.
 
 ```bash
 fabro synth import \
-  --target-repo /home/r/coding/myosu \
-  --program myosu \
-  --output /tmp/myosu.yaml
+  --target-repo /path/to/repo \
+  --program <program> \
+  --output /tmp/<program>.yaml
 ```
 
 ### 2. Evolve it against doctrine and evidence
 
 ```bash
 fabro synth evolve \
-  --blueprint /tmp/myosu.yaml \
-  --target-repo /home/r/coding/myosu
+  --blueprint /tmp/<program>.yaml \
+  --target-repo /path/to/repo
 ```
 
 Use `--preview-root` if you want a review-first patch tree.
@@ -402,10 +409,7 @@ preflight
   -> implement
   -> verify
   -> quality
-  -> clear_promotion
   -> review
-  -> promote
-  -> promotion_check
   -> audit
 ```
 
@@ -443,13 +447,13 @@ Symptom:
 
 Meaning:
 
-- the Codex/OpenAI stage lacks usable auth/scopes for that run identity
+- the dedicated Codex OAuth slot for that run lacks usable auth or scopes
 
 Current mitigation:
 
-- Fabro now supports native Codex slot selection through `CODEX_HOME`
-- if OpenAI API key is absent and Codex slots are unavailable, it can fall back
-  to the Anthropic/MiniMax CLI path
+- Fabro uses dedicated `CODEX_HOME` slots for Codex automation
+- re-auth the affected slot with `CODEX_HOME=/path/to/slot codex login`
+- Fabro no longer relies on API-key login for Codex automation
 
 ### 2. Quality gate failure
 
@@ -505,35 +509,35 @@ First move:
 
 ```bash
 # 1. top-level frontier
-raspberry status --manifest fabro/programs/myosu.yaml
+raspberry status --manifest fabro/programs/<program>.yaml
 
-# 2. open the TUI if anything is unclear
-raspberry tui --manifest fabro/programs/myosu.yaml
+# 2. open the Paperclip web dashboard
+fabro paperclip status --target-repo /path/to/repo --program <program>
 
 # 3. drill into suspicious child programs
-raspberry status --manifest fabro/programs/myosu-play-tui-implementation.yaml
-raspberry status --manifest fabro/programs/myosu-sdk-core-implementation.yaml
+raspberry status --manifest fabro/programs/<program>-api-implementation.yaml
+raspberry status --manifest fabro/programs/<program>-client-implementation.yaml
 
 # 4. inspect the latest run when needed
 cat ~/.fabro/runs/<run-id>/state.json
 tail -n 120 ~/.fabro/runs/<run-id>/progress.jsonl
 
 # 5. evolve the package when the structure is wrong
-fabro synth import --target-repo /home/r/coding/myosu --program myosu --output /tmp/myosu.yaml
-fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /home/r/coding/myosu
+fabro synth import --target-repo /path/to/repo --program <program> --output /tmp/<program>.yaml
+fabro synth evolve --blueprint /tmp/<program>.yaml --target-repo /path/to/repo
 
 # 6. run bounded autonomy again
-raspberry autodev --manifest fabro/programs/myosu.yaml --fabro-bin /path/to/fabro --max-cycles 1
+raspberry autodev --manifest fabro/programs/<program>.yaml --fabro-bin /path/to/fabro --max-cycles 1
 ```
 
 ## Current Caveats
 
 These are the practical caveats to remember today:
 
-- the TUI is still read-only
+- the Paperclip web UI is the preferred dashboard, while the TUI remains a
+  read-only terminal fallback
 - explicit failed-lane reruns are still less ergonomic than they should be
-- OpenAI/Codex review/promote is still being proven live under the new slot
-  routing
+- Codex/OAuth slot health still matters for OpenAI-backed review lanes
 - implementation quality is improving because the contract is stricter, not
   because the model suddenly became perfect
 

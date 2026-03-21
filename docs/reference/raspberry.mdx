@@ -1,6 +1,6 @@
 ---
 title: "Raspberry Supervisory Plane"
-description: "Programs, lanes, autodev, synthesis, TUI, and the operator model built on top of Fabro"
+description: "Programs, lanes, autodev, synthesis, and the Paperclip-integrated operator model built on top of Fabro"
 ---
 
 Raspberry is the supervisory plane layered on top of Fabro's workflow engine.
@@ -20,6 +20,7 @@ layer above it:
 - Raspberry supervises many lanes across one program
 - `fabro synth import/create/evolve` manages the checked-in `fabro/` package
 - `raspberry plan/status/watch/execute/autodev/tui` operates that package
+- Paperclip can mirror that live frontier into a browser-based coordination dashboard
 
 ## Why Raspberry Exists
 
@@ -41,7 +42,7 @@ needs:
 - bounded dispatch over many lanes
 - durable runtime state
 - repo-level autonomous development loops
-- operator-facing TUI surfaces
+- operator-facing browser and terminal observer surfaces
 - blueprint-first synthesis for creating and evolving workflow trees
 
 ## Mental Model
@@ -85,7 +86,7 @@ A Raspberry **program** is the supervised shape of a repository frontier. It is
 defined by a manifest such as:
 
 ```text
-fabro/programs/myosu.yaml
+fabro/programs/<program>.yaml
 ```
 
 A program owns:
@@ -198,12 +199,21 @@ That create-mode bootstrap path is covered in
 Raspberry currently ships a read/write CLI around the supervisory plane:
 
 ```bash
-raspberry plan --manifest fabro/programs/myosu.yaml
-raspberry status --manifest fabro/programs/myosu.yaml
-raspberry watch --manifest fabro/programs/myosu.yaml
-raspberry execute --manifest fabro/programs/myosu.yaml
-raspberry autodev --manifest fabro/programs/myosu.yaml
-raspberry tui --manifest fabro/programs/myosu.yaml
+raspberry plan --manifest fabro/programs/<program>.yaml
+raspberry status --manifest fabro/programs/<program>.yaml
+raspberry watch --manifest fabro/programs/<program>.yaml
+raspberry execute --manifest fabro/programs/<program>.yaml
+raspberry autodev --manifest fabro/programs/<program>.yaml
+raspberry tui --manifest fabro/programs/<program>.yaml
+```
+
+For the preferred human dashboard on a live supervised repo, pair Raspberry
+with Paperclip:
+
+```bash
+fabro paperclip status --target-repo /path/to/repo --program <program>
+fabro paperclip wake --target-repo /path/to/repo --program <program> --agent raspberry-orchestrator
+fabro paperclip refresh --target-repo /path/to/repo --program <program>
 ```
 
 ### `raspberry plan`
@@ -233,7 +243,8 @@ Use it when you need concrete lane truth.
 
 Repeatedly refreshes `status` over time.
 
-Use it as the simplest operator monitor when you do not need the TUI.
+Use it as the simplest terminal monitor when you do not need the Paperclip web
+dashboard.
 
 ### `raspberry execute`
 
@@ -262,7 +273,7 @@ Important current behavior:
 
 ### `raspberry tui`
 
-Runs the read-only run observer TUI over a program manifest.
+Runs the optional read-only terminal observer over a program manifest.
 
 The TUI currently supports:
 
@@ -273,8 +284,9 @@ The TUI currently supports:
 - cached operator narration
 - background narration refresh with timeout handling
 
-The TUI is intentionally read-only today. It is for observation and diagnosis,
-not yet for dispatch control.
+The TUI is intentionally read-only today. It is for local observation and
+diagnosis, not for dispatch control. The preferred human-facing dashboard for
+live ongoing runs is the synced Paperclip web UI.
 
 ## Autodev
 
@@ -299,9 +311,9 @@ Raspberry can supervise top-level programs whose lanes point to other program
 manifests. This lets a repo become a portfolio of child frontiers rather than a
 single flat lane list.
 
-This is how the Myosu proving ground now works:
+This is how a portfolio-style repo works:
 
-- one top-level `myosu.yaml`
+- one top-level program manifest
 - multiple child programs for product, platform, services, recurring work, and
   generated implementation frontiers
 
@@ -312,9 +324,9 @@ Raspberry-oriented authoring is now blueprint-first.
 Use:
 
 ```bash
-fabro synth import --target-repo /path/to/repo --program myosu --output /tmp/myosu.yaml
+fabro synth import --target-repo /path/to/repo --program my-program --output /tmp/my-program.yaml
 fabro synth create --blueprint fabro/blueprints/craps.yaml --target-repo .
-fabro synth evolve --blueprint /tmp/myosu.yaml --target-repo /path/to/repo
+fabro synth evolve --blueprint /tmp/my-program.yaml --target-repo /path/to/repo
 ```
 
 ### `synth import`
@@ -345,14 +357,15 @@ preflight
   -> implement
   -> verify
   -> quality
-  -> clear_promotion
   -> review
-  -> promote
-  -> promotion_check
   -> audit
 ```
 
 The key idea is that merge-worthiness should not depend on prose alone.
+
+Deterministic failures from `verify` or `quality` loop back through `fixup`
+before the stronger-model `review` gate runs. `review` owns the merge-readiness
+verdict and the `promotion.md` artifact.
 
 ### Required artifacts
 

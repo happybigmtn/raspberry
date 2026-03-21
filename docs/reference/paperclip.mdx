@@ -40,8 +40,9 @@ You need:
 2. A checked-in `fabro/` package, or enough planning/spec material for Fabro to
    author the first blueprint and render the package.
 3. A Paperclip CLI on your `PATH`, or an explicit `--paperclip-cmd`.
-4. Working model credentials for the generated local agents. The bundle declares
-   `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.
+4. Working local model auth for the generated local agents. Claude-based local
+   agents can use synced secrets when configured. Codex-based local agents use
+   dedicated OAuth-backed `CODEX_HOME` slots instead of API-key login.
 
 If your repo does not have a clear `fabro/` package yet and you want more
 control over the synthesis step, start with
@@ -74,7 +75,7 @@ With `--apply true` (the default), Fabro will:
 1. load or author the current blueprint
 2. render the `fabro/` package if needed
 3. seed or reuse the repo-local Paperclip instance
-4. start or reuse the local Paperclip server at `http://127.0.0.1:3100`
+4. start or reuse the local Paperclip server and browser dashboard
 5. import or update the company bundle
 6. sync the goal, project, workspace, and frontier issues
 7. write local agent env exports under `.paperclip/local-cli/`
@@ -98,14 +99,15 @@ When the frontier changed since the last sync, `refresh` also posts a
 ### 4. Open the local Paperclip instance
 
 After a successful apply run, the repo-local server should already be running on
-the configured base URL. By default that is:
+the configured base URL. Open that URL in a browser to use the Paperclip web
+dashboard. By default the server starts at:
 
 ```text
 http://127.0.0.1:3100
 ```
 
-If you want to launch the same repo-owned instance manually, use the generated
-script:
+The browser UI is the preferred human dashboard for ongoing runs. If you want
+to launch the same repo-owned instance manually, use the generated script:
 
 ```bash
 bash fabro/paperclip/my-program/scripts/run-paperclip.sh
@@ -127,7 +129,7 @@ fabro paperclip stop --target-repo /path/to/repo --program my-program
 - managed pid state
 - current frontier summary
 - last bootstrap/refresh sync time
-- whether `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are present
+- detected local credential state for common adapters
 - how many local CLI export files were generated
 - how many Paperclip company secrets were synced into bootstrap state
 - current company spend vs budget from Paperclip costs
@@ -141,16 +143,17 @@ The normal loop after initial bootstrap is:
 
 1. Check the current local Paperclip and frontier state with
    `fabro paperclip status`.
-2. Coordinate in Paperclip.
+2. Open the Paperclip web UI and coordinate there.
 3. Wake the orchestrator through Paperclip with `fabro paperclip wake`.
 4. Let Raspberry advance the frontier through that heartbeat.
-4. Run `fabro paperclip refresh` to resync Paperclip to repo truth.
+5. Run `fabro paperclip refresh` to resync Paperclip to repo truth.
 
 If you only remember one thing, remember this:
 
 ```text
 bootstrap once
 status to inspect
+web UI for the human dashboard
 wake through Paperclip
 refresh to resync
 ```
@@ -266,16 +269,14 @@ and local state stay out of git.
 
 ## Secret sync
 
-When `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is present in the environment
-running `bootstrap` or `refresh`, Fabro now:
+When provider credentials are present for adapters that require ambient secrets,
+Fabro can create or rotate a Paperclip company secret for that provider,
+record the synced secret id and value hash in `bootstrap-state.json`, and patch
+generated local agents to use `adapterConfig.env` with `secret_ref`.
 
-- creates or rotates a Paperclip company secret for that provider
-- records the synced secret id and a value hash in `bootstrap-state.json`
-- patches generated `codex_local` and `claude_local` agents to use
-  `adapterConfig.env` with `secret_ref`
-
-That keeps generated local agents runnable through Paperclip without depending
-only on the server process environment.
+Codex local agents are handled differently: Fabro points them at dedicated
+OAuth-backed `CODEX_HOME` slots and does not try to log them in with
+`OPENAI_API_KEY`.
 
 ## Important defaults
 
