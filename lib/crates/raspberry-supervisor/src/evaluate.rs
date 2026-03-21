@@ -290,7 +290,7 @@ pub(crate) fn refresh_parent_programs(
         if !references_child_program(&candidate, &parent, manifest_path) {
             continue;
         }
-        let _ = evaluate_program_internal(&candidate, true)?;
+        let _ = evaluate_program_internal(&candidate, false)?;
     }
 
     Ok(())
@@ -1091,7 +1091,7 @@ fn summarize_child_program(
     if evaluation_stack_contains(&program_manifest) {
         return None;
     }
-    let program = evaluate_program(&program_manifest).ok()?;
+    let program = evaluate_program_internal(&program_manifest, false).ok()?;
     let mut summary = ChildProgramSummary {
         program: program.program,
         complete: 0,
@@ -1843,5 +1843,77 @@ units:
         );
 
         assert_eq!(status, LaneExecutionStatus::Running);
+    }
+
+    #[test]
+    fn evaluating_parent_with_missing_child_state_uses_local_child_summary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        std::fs::create_dir_all(repo.join("fabro/programs")).expect("programs dir");
+        std::fs::create_dir_all(repo.join("outputs/child")).expect("outputs dir");
+
+        let child_manifest_path = repo.join("fabro/programs/child.yaml");
+        std::fs::write(
+            &child_manifest_path,
+            r#"
+version: 1
+program: child
+target_repo: ../..
+state_path: ../../.raspberry/child-state.json
+units:
+  - id: work
+    title: Child Work
+    output_root: ../../outputs/child
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: task
+        title: Child Task
+        kind: artifact
+        run_config: ../run-configs/bootstrap/task.toml
+        managed_milestone: reviewed
+        produces: [spec, review]
+"#,
+        )
+        .expect("child manifest");
+
+        let parent_manifest_path = repo.join("fabro/programs/parent.yaml");
+        std::fs::write(
+            &parent_manifest_path,
+            r#"
+version: 1
+program: parent
+target_repo: ../..
+state_path: ../../.raspberry/parent-state.json
+units:
+  - id: child
+    title: Child Program
+    lanes:
+      - id: program
+        title: Child Program Lane
+        kind: orchestration
+        run_config: ../run-configs/orchestration/child.toml
+        program_manifest: child.yaml
+        managed_milestone: coordinated
+"#,
+        )
+        .expect("parent manifest");
+
+        let program = evaluate_program_local(&parent_manifest_path).expect("parent evaluates");
+        let lane = program
+            .lanes
+            .iter()
+            .find(|lane| lane.lane_key == "child:program")
+            .expect("child program lane exists");
+
+        assert_eq!(lane.status, LaneExecutionStatus::Ready);
+        assert!(lane.detail.contains("child program `child`"));
+        assert!(lane.detail.contains("ready=1"));
     }
 }

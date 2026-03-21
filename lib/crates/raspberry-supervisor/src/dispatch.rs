@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::autodev::{autodev_cargo_target_dir, orchestrate_program, AutodevSettings};
-use crate::evaluate::{evaluate_program, refresh_parent_programs, LaneExecutionStatus};
+use crate::evaluate::{evaluate_program, LaneExecutionStatus};
 use crate::integration::{integrate_lane, IntegrationRequest};
 use crate::manifest::{LaneKind, ProgramManifest};
 use crate::program_state::{
@@ -198,7 +198,6 @@ pub fn execute_selected_lanes(
             outcomes.push(output);
         }
         state.save(&manifest.resolved_state_path(manifest_path))?;
-        refresh_parent_programs(manifest_path, &manifest)?;
     }
 
     Ok(outcomes)

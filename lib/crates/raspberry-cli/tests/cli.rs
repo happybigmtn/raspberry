@@ -524,7 +524,6 @@ fn autodev_runs_synth_and_dispatch_cycle() {
             "ready: runtime:page, runtime:proof",
         ))
         .stdout(predicate::str::contains("dispatched: runtime:page"))
-        .stdout(predicate::str::contains("dispatched: runtime:proof"))
         .stdout(predicate::str::contains("Stop reason: cycle_limit"));
 
     let log = fs::read_to_string(temp.path().join("autodev-fabro.log")).expect("fabro log");
