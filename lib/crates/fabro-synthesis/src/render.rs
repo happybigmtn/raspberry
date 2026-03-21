@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use git2::Repository;
 use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
 use serde::Serialize;
 use serde_json::Value;
@@ -10,9 +11,8 @@ use crate::blueprint::{
 };
 use crate::error::RenderError;
 
-const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
-const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimax.io/anthropic";
+const DEFAULT_WRITE_PROVIDER: &str = "openai";
+const DEFAULT_WRITE_MODEL: &str = "gpt-5.4";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -492,7 +492,7 @@ fn render_lane(
         .health_command
         .clone()
         .unwrap_or_else(|| "true".to_string());
-    let promotion_command = implementation_promotion_command(blueprint, unit_id, lane);
+    let promotion_command = implementation_promotion_contract_command(blueprint, unit_id, lane);
     let audit_command = implementation_audit_command(blueprint, unit_id, lane, &promotion_command);
     let quality_command = implementation_quality_command(blueprint, unit_id, lane);
 
@@ -508,14 +508,17 @@ fn render_lane(
     } else {
         None
     };
-    let run_config = render_run_config(lane, integration_artifact_path.as_deref());
+    let run_config = render_run_config(
+        lane,
+        integration_artifact_path.as_deref(),
+        layout.target_repo,
+    );
     let mut written_files = Vec::new();
     write_file(&workflow_path, &graph, &mut written_files)?;
     write_file(&run_config_path, &run_config, &mut written_files)?;
     if lane.template != WorkflowTemplate::Integration {
         let plan_prompt = render_prompt("plan", lane);
         let review_prompt = render_prompt("review", lane);
-        let promote_prompt = render_prompt("promote", lane);
         let polish_prompt = render_prompt("polish", lane);
         write_file(
             &prompt_dir.join("plan.md"),
@@ -527,18 +530,14 @@ fn render_lane(
             &review_prompt,
             &mut written_files,
         )?;
-        if lane.template == WorkflowTemplate::Implementation {
-            write_file(
-                &prompt_dir.join("promote.md"),
-                &promote_prompt,
-                &mut written_files,
-            )?;
-        }
         write_file(
             &prompt_dir.join("polish.md"),
             &polish_prompt,
             &mut written_files,
         )?;
+        if lane.template == WorkflowTemplate::Implementation {
+            remove_file_if_exists(&prompt_dir.join("promote.md"))?;
+        }
     }
     Ok(written_files)
 }
@@ -618,7 +617,7 @@ fn render_workflow_graph(
                 "    verify -> quality [condition=\"outcome=success\"]\n"
             };
             format!(
-                "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #settle {{ backend: cli; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits=3]\n    settle [label=\"Settle\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> settle [condition=\"outcome=success\"]\n    quality -> fixup\n    settle -> audit [condition=\"outcome=success\"]\n    settle -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+                "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits=3]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> review [condition=\"outcome=success\"]\n    quality -> fixup\n    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 escape_graph_attr(&preflight_command(verify_command)),
@@ -627,7 +626,7 @@ fn render_workflow_graph(
                 health_node,
                 escape_graph_attr(quality_command),
                 prompt_path("polish"),
-                prompt_path("promote"),
+                prompt_path("review"),
                 escape_graph_attr(audit_command),
                 success_edges,
             )
@@ -657,22 +656,18 @@ fn preflight_command(verify_command: &str) -> String {
     format!("set +e\n{}\ntrue", body)
 }
 
-fn implementation_promotion_command(
+fn implementation_promotion_contract_command(
     blueprint: &ProgramBlueprint,
     unit_id: &str,
     lane: &BlueprintLane,
 ) -> String {
-    let quality_path = implementation_quality_path(blueprint, unit_id, lane);
     let promotion_path = implementation_promotion_path(blueprint, unit_id, lane);
     format!(
-        "grep -Eq '^merge_ready: yes$' {} && grep -Eq '^manual_proof_pending: no$' {} && grep -Eq '^quality_ready: yes$' {} && grep -Eq '^placeholder_debt: no$' {} && grep -Eq '^warning_debt: no$' {} && grep -Eq '^artifact_mismatch_risk: no$' {} && grep -Eq '^manual_followup_required: no$' {}",
+        "grep -Eq '^merge_ready: yes$' {} && grep -Eq '^manual_proof_pending: no$' {} && grep -Eq '^reason: .+$' {} && grep -Eq '^next_action: .+$' {}",
         promotion_path.display(),
         promotion_path.display(),
-        quality_path.display(),
-        quality_path.display(),
-        quality_path.display(),
-        quality_path.display(),
-        quality_path.display()
+        promotion_path.display(),
+        promotion_path.display()
     )
 }
 
@@ -782,7 +777,23 @@ fn template_supports_direct_integration(template: WorkflowTemplate) -> bool {
     )
 }
 
-fn render_run_config(lane: &BlueprintLane, integration_artifact_path: Option<&Path>) -> String {
+fn direct_integration_target_branch(target_repo: &Path) -> Option<String> {
+    let Ok(repo) = Repository::discover(target_repo) else {
+        return None;
+    };
+    if repo.find_remote("origin").is_ok() {
+        return Some("origin/HEAD".to_string());
+    }
+    repo.head()
+        .ok()
+        .and_then(|head| head.shorthand().map(ToOwned::to_owned))
+}
+
+fn render_run_config(
+    lane: &BlueprintLane,
+    integration_artifact_path: Option<&Path>,
+    target_repo: &Path,
+) -> String {
     let graph_rel = format!(
         "../../workflows/{}/{}.fabro",
         lane.workflow_family(),
@@ -815,8 +826,7 @@ fn render_run_config(lane: &BlueprintLane, integration_artifact_path: Option<&Pa
             | WorkflowTemplate::Implementation
     ) {
         format!(
-            "\n[sandbox.env]\nANTHROPIC_BASE_URL = \"{}\"\nANTHROPIC_AUTH_TOKEN = \"${{env.MINIMAX_API_KEY}}\"\nANTHROPIC_MODEL = \"{}\"\n",
-            DEFAULT_MINIMAX_BASE_URL, DEFAULT_WRITE_MODEL
+            "\n[sandbox.env]\nFABRO_STRICT_PROVIDER = \"1\"\n",
         )
     } else {
         String::new()
@@ -829,10 +839,14 @@ fn render_run_config(lane: &BlueprintLane, integration_artifact_path: Option<&Pa
         worktree_mode,
         sandbox_env,
     );
-    if template_supports_direct_integration(lane.template) {
-        config.push_str(
-            "\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"origin/HEAD\"\n",
-        );
+    if let Some(target_branch) = template_supports_direct_integration(lane.template)
+        .then(|| direct_integration_target_branch(target_repo))
+        .flatten()
+    {
+        config.push_str(&format!(
+            "\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"{}\"\n",
+            target_branch
+        ));
         if let Some(path) = integration_artifact_path {
             config.push_str(&format!(
                 "artifact_path = \"{}\"\n",
@@ -912,18 +926,6 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
                 &implementation_artifact_expectations,
                 &verification_artifact_expectations,
             ),
-            "promote" => render_implementation_promotion_prompt(
-                lane,
-                context,
-                &implement_now,
-                &touch_first,
-                &build_slice,
-                &setup_first,
-                &first_proof_gate,
-                &first_health_gate,
-                &execution_guidance,
-                &manual_notes,
-            ),
             "polish" => render_implementation_fixup_prompt(
                 lane,
                 context,
@@ -949,8 +951,8 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
             lane.title, lane.id, lane.goal, context
         ),
         "review" => format!(
-            "# {} — Review\n\nReview the lane outcome for `{}`.\n\nFocus on:\n- correctness\n- milestone fit\n- remaining blockers\n",
-            lane.title, lane.id
+            "{}",
+            render_general_review_prompt(lane, context)
         ),
         "polish" => format!(
             "# {} — Polish\n\nPolish the durable artifacts for `{}` so they are clear, repo-specific, and ready for the supervisory plane.\n",
@@ -1030,7 +1032,7 @@ fn render_implementation_plan_prompt(
         false,
     );
     output.push_str(
-        "\n\nStage ownership:\n- do not write `promotion.md` during Plan/Implement\n- do not hand-author `quality.md`; it is regenerated by the Quality Gate\n- `promotion.md` is owned by the Settle stage only\n- keep source edits inside the named slice and touched surfaces\n",
+        "\n\nStage ownership:\n- do not write `promotion.md` during Plan/Implement\n- do not hand-author `quality.md`; it is regenerated by the Quality Gate\n- `promotion.md` is owned by the Review stage only\n- keep source edits inside the named slice and touched surfaces\n",
     );
     if !has_structured_sections {
         output.push_str(&format!("\n\nCurrent Slice Contract:\n{}\n", context));
@@ -1146,11 +1148,42 @@ fn render_implementation_review_prompt(
         verification_artifact_expectations,
         false,
     );
+    let security_review_items = implementation_security_review_items(
+        lane,
+        context,
+        touch_first,
+        build_slice,
+        execution_guidance,
+        health_surfaces,
+        observability_surfaces,
+    );
+    append_prompt_section(
+        &mut output,
+        "Nemesis-style security review",
+        &security_review_items,
+        false,
+    );
     output.push_str(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
     output.push_str(
         "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
+    );
+    output.push_str(
+        "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
+merge_ready: yes|no\n\
+manual_proof_pending: yes|no\n\
+reason: <one sentence>\n\
+next_action: <one sentence>\n\n\
+Only set `merge_ready: yes` when:\n\
+- `quality.md` says `quality_ready: yes`\n\
+- automated proof is sufficient for this slice\n\
+- any required manual proof has actually been performed\n\
+- no unresolved warnings or stale failures undermine confidence\n\
+- the implementation and verification artifacts match the real code.\n",
+    );
+    output.push_str(
+        "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
     );
     output
 }
@@ -1224,59 +1257,130 @@ fn render_implementation_fixup_prompt(
         false,
     );
     output.push_str(
-        "\n\nPriorities:\n- unblock the active slice's first proof gate\n- stay within the named slice and touched surfaces\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Settle stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
+        "\n\nPriorities:\n- unblock the active slice's first proof gate\n- stay within the named slice and touched surfaces\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
     );
     output
 }
 
-fn render_implementation_promotion_prompt(
+fn implementation_security_review_items(
     lane: &BlueprintLane,
     context: &str,
-    implement_now: &[String],
     touch_first: &[String],
     build_slice: &[String],
-    setup_first: &[String],
-    first_proof_gate: &[String],
-    first_health_gate: &[String],
     execution_guidance: &[String],
-    manual_notes: &[String],
-) -> String {
+    health_surfaces: &[String],
+    observability_surfaces: &[String],
+) -> Vec<String> {
+    let mut haystack = format!("{} {} {} {}", lane.id, lane.title, lane.goal, context);
+    for lines in [
+        touch_first,
+        build_slice,
+        execution_guidance,
+        health_surfaces,
+        observability_surfaces,
+    ] {
+        for line in lines {
+            haystack.push('\n');
+            haystack.push_str(line);
+        }
+    }
+    let lower = haystack.to_lowercase();
+    let is_security_sensitive = [
+        "wallet",
+        "rpc",
+        "seed",
+        "shuffle",
+        "provably",
+        "settlement",
+        "payout",
+        "balance",
+        "auth",
+        "token",
+        "principal",
+        "secret",
+        "key",
+        "daemon",
+        "control plane",
+        "control-plane",
+        "pair",
+        "capability",
+        "mining",
+        "node",
+        "external process",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !is_security_sensitive {
+        return Vec::new();
+    }
+
+    let mut items = vec![
+        "Pass 1 — first-principles challenge: question trust boundaries, authority assumptions, and who can trigger the slice's dangerous actions".to_string(),
+        "Pass 2 — coupled-state review: identify paired state or protocol surfaces and check that every mutation path keeps them consistent or explains the asymmetry".to_string(),
+    ];
+    if [
+        "wallet",
+        "rpc",
+        "seed",
+        "shuffle",
+        "provably",
+        "settlement",
+        "payout",
+        "balance",
+        "token",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        items.push(
+            "check state transitions that affect balances, commitments, randomness, payout safety, or replayability"
+                .to_string(),
+        );
+    }
+    if ["auth", "principal", "secret", "key", "pair", "capability"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        items.push(
+            "check secret handling, capability scoping, pairing/idempotence behavior, and privilege escalation paths"
+                .to_string(),
+        );
+    }
+    if [
+        "daemon",
+        "control plane",
+        "control-plane",
+        "mining",
+        "node",
+        "external process",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        items.push(
+            "check external-process control, operator safety, idempotent retries, and failure modes around service lifecycle"
+                .to_string(),
+        );
+    }
+    items
+}
+
+fn general_security_review_items(lane: &BlueprintLane, context: &str) -> Vec<String> {
+    implementation_security_review_items(lane, context, &[], &[], &[], &[], &[])
+}
+
+fn render_general_review_prompt(lane: &BlueprintLane, context: &str) -> String {
     let mut output = format!(
-        "# {} — Promotion\n\nDecide whether `{}` is truly merge-ready.\n",
+        "# {} — Review\n\nReview the lane outcome for `{}`.\n\nFocus on:\n- correctness\n- milestone fit\n- remaining blockers\n",
         lane.title, lane.id
     );
-    append_prompt_section(&mut output, "Current slice", implement_now, false);
-    append_prompt_section(&mut output, "Touched surfaces", touch_first, true);
-    append_prompt_section(&mut output, "Slice work", build_slice, false);
-    append_prompt_section(&mut output, "Setup checks", setup_first, false);
-    append_prompt_section(&mut output, "First proof gate", first_proof_gate, true);
-    append_prompt_section(&mut output, "First health gate", first_health_gate, true);
-    append_prompt_section(&mut output, "Execution guidance", execution_guidance, false);
+    let security_items = general_security_review_items(lane, context);
     append_prompt_section(
         &mut output,
-        "Manual proof still required",
-        manual_notes,
+        "Nemesis-style security review",
+        &security_items,
         false,
     );
-    output.push_str(
-        "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
-merge_ready: yes|no\n\
-manual_proof_pending: yes|no\n\
-reason: <one sentence>\n\
-next_action: <one sentence>\n\n\
-Only set `merge_ready: yes` when:\n\
-- `quality.md` says `quality_ready: yes`\n\
-- automated proof is sufficient for this slice\n\
-- any required manual proof has actually been performed\n\
-- no unresolved warnings or stale failures undermine confidence\n\
-- the implementation and verification artifacts match the real code.\n",
-    );
-    output.push_str(
-        "\nSettle stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- prefer not to modify source code here unless a tiny correction is required to make the settlement judgment truthful\n",
-    );
-    if implement_now.is_empty() && touch_first.is_empty() && build_slice.is_empty() {
-        output.push_str(&format!("\nCurrent Slice Contract:\n{}\n", context));
-    }
     output
 }
 
@@ -3987,6 +4091,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
+    use git2::Repository;
+
     use crate::blueprint::{
         BlueprintArtifact, BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram,
         BlueprintUnit, ProgramBlueprint, WorkflowTemplate,
@@ -5020,10 +5126,80 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(plan.contains("do not hand-author `quality.md`"));
         assert!(review.contains("Review only the current slice"));
         assert!(review.contains("treat `quality.md` as machine-generated truth"));
+        assert!(review.contains("Write `promotion.md` in this exact machine-readable form"));
+        assert!(review.contains("Review stage ownership"));
         assert!(review.contains("Current slice"));
         assert!(polish.contains("# Gameplay TUI Implementation Lane — Fixup"));
         assert!(polish.contains("do not hand-author `quality.md`"));
         assert!(polish.contains("stay within the named slice and touched surfaces"));
+    }
+
+    #[test]
+    fn implementation_review_prompt_adds_security_guidance_for_sensitive_slices() {
+        let lane = BlueprintLane {
+            id: "wallet-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Wallet Service Implementation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("wallet-service".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement the next approved wallet RPC slice.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Implement now:\n- Wallet RPC session validation\n\nTouch first:\n- `crates/rxmr-wallet/src/rpc.rs`\n".to_string(),
+            ),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let review = render_prompt("review", &lane);
+
+        assert!(review.contains("Nemesis-style security review"));
+        assert!(review.contains("trust boundaries"));
+        assert!(review.contains("state transitions"));
+    }
+
+    #[test]
+    fn bootstrap_review_prompt_adds_security_guidance_for_sensitive_lanes() {
+        let lane = BlueprintLane {
+            id: "monero-infrastructure".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Monero Infrastructure".to_string(),
+            family: "bootstrap".to_string(),
+            workflow_family: Some("bootstrap".to_string()),
+            slug: Some("monero-infrastructure".to_string()),
+            template: WorkflowTemplate::Bootstrap,
+            goal: "Bootstrap wallet RPC and node lifecycle safely.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["foundation_plan".to_string(), "review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some("Review wallet/node trust boundaries.".to_string()),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let review = render_prompt("review", &lane);
+
+        assert!(review.contains("Nemesis-style security review"));
+        assert!(review.contains("first-principles challenge"));
+        assert!(review.contains("coupled-state review"));
     }
 
     #[test]
@@ -5075,13 +5251,14 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(graph.contains("label=\"Health\""));
         assert!(graph.contains("label=\"Quality Gate\""));
+        assert!(graph.contains("label=\"Review\""));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
-        assert!(graph.contains("quality -> settle [condition=\"outcome=success\"]"));
-        assert!(graph.contains("settle -> audit [condition=\"outcome=success\"]"));
-        assert!(graph.contains("settle -> fixup"));
+        assert!(graph.contains("quality -> review [condition=\"outcome=success\"]"));
+        assert!(graph.contains("review -> audit [condition=\"outcome=success\"]"));
+        assert!(graph.contains("review -> fixup"));
         assert!(graph.contains("audit -> fixup"));
-        assert!(!graph.contains("promotion_check"));
+        assert!(!graph.contains("label=\"Settle\""));
     }
 
     #[test]
@@ -5115,22 +5292,30 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let run_config =
-            render_run_config(&lane, Some(Path::new("outputs/play/tui/integration.md")));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(temp.path()).expect("git repo");
+        repo.remote("origin", "https://example.com/repo.git")
+            .expect("origin remote");
+        let run_config = render_run_config(
+            &lane,
+            Some(Path::new("outputs/play/tui/integration.md")),
+            temp.path(),
+        );
         assert!(run_config.contains("worktree_mode = \"always\""));
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
-        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("provider = \"openai\""));
+        assert!(run_config.contains("model = \"gpt-5.4\""));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("ANTHROPIC_BASE_URL = \"https://api.minimax.io/anthropic\""));
-        assert!(run_config.contains("ANTHROPIC_AUTH_TOKEN = \"${env.MINIMAX_API_KEY}\""));
+        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
+        assert!(run_config.contains("target_branch = \"origin/HEAD\""));
         assert!(run_config.contains("artifact_path = \"../../../outputs/play/tui/integration.md\""));
     }
 
     #[test]
-    fn bootstrap_run_config_uses_minimax_defaults_and_direct_integration() {
+    fn bootstrap_run_config_uses_openai_defaults_and_direct_integration() {
         let lane = BlueprintLane {
             id: "private-control-plane".to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -5155,16 +5340,22 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let run_config = render_run_config(&lane, None);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(temp.path()).expect("git repo");
+        repo.remote("origin", "https://example.com/repo.git")
+            .expect("origin remote");
+        let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
-        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("provider = \"openai\""));
+        assert!(run_config.contains("model = \"gpt-5.4\""));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("ANTHROPIC_AUTH_TOKEN = \"${env.MINIMAX_API_KEY}\""));
+        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("worktree_mode = \"clean\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
+        assert!(run_config.contains("target_branch = \"origin/HEAD\""));
         assert!(!run_config.contains("artifact_path = "));
     }
 
@@ -5194,13 +5385,101 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let run_config = render_run_config(&lane, None);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(temp.path()).expect("git repo");
+        repo.remote("origin", "https://example.com/repo.git")
+            .expect("origin remote");
+        let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("provider = \"openai\""));
+        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
+        assert!(run_config.contains("target_branch = \"origin/HEAD\""));
         assert!(!run_config.contains("artifact_path = "));
+    }
+
+    #[test]
+    fn bootstrap_run_config_omits_direct_integration_for_non_git_repo() {
+        let lane = BlueprintLane {
+            id: "poker".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Poker".to_string(),
+            family: "bootstrap".to_string(),
+            workflow_family: Some("bootstrap".to_string()),
+            slug: Some("poker".to_string()),
+            template: WorkflowTemplate::Bootstrap,
+            goal: "Bootstrap poker.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let run_config = render_run_config(&lane, None, temp.path());
+
+        assert!(!run_config.contains("[integration]"));
+        assert!(run_config.contains("worktree_mode = \"clean\""));
+    }
+
+    #[test]
+    fn bootstrap_run_config_targets_local_branch_when_origin_is_missing() {
+        let lane = BlueprintLane {
+            id: "poker".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Poker".to_string(),
+            family: "bootstrap".to_string(),
+            workflow_family: Some("bootstrap".to_string()),
+            slug: Some("poker".to_string()),
+            template: WorkflowTemplate::Bootstrap,
+            goal: "Bootstrap poker.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(temp.path()).expect("git repo");
+        repo.reference_symbolic("HEAD", "refs/heads/main", true, "main branch")
+            .expect("set head");
+        std::fs::write(temp.path().join("README.md"), "# Demo\n").expect("readme");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("stage readme");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("tree lookup");
+        let sig = git2::Signature::now("Test", "test@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+
+        let run_config = render_run_config(&lane, None, temp.path());
+
+        assert!(run_config.contains("[integration]"));
+        assert!(run_config.contains("target_branch = \"main\""));
     }
 }
 

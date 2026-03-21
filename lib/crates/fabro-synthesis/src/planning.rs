@@ -33,6 +33,7 @@ struct PlanningCorpus {
     repo_name: String,
     doctrine_files: Vec<PathBuf>,
     evidence_paths: Vec<PathBuf>,
+    plan_docs: Vec<PlanningDocument>,
     active_plan: Option<PlanningDocument>,
     active_spec: Option<PlanningDocument>,
 }
@@ -75,6 +76,13 @@ enum TaskCategory {
 struct PlanTask {
     text: String,
     category: TaskCategory,
+}
+
+#[derive(Debug, Clone)]
+struct ExplicitUnitSpec {
+    id: String,
+    title: String,
+    description: String,
 }
 
 pub fn author_blueprint_for_create(
@@ -221,7 +229,7 @@ fn load_planning_corpus(target_repo: &Path) -> Result<PlanningCorpus, PlanningEr
     let root_spec = load_optional_document(target_repo, Path::new("SPEC.md"))?;
     let root_specs = load_optional_document(target_repo, Path::new("SPECS.md"))?;
 
-    let active_plan = plan_docs.last().cloned();
+    let active_plan = select_primary_plan(&plan_docs);
     let active_spec = spec_docs
         .last()
         .cloned()
@@ -251,9 +259,71 @@ fn load_planning_corpus(target_repo: &Path) -> Result<PlanningCorpus, PlanningEr
         repo_name,
         doctrine_files,
         evidence_paths,
+        plan_docs,
         active_plan,
         active_spec,
     })
+}
+
+fn select_primary_plan(plan_docs: &[PlanningDocument]) -> Option<PlanningDocument> {
+    if plan_docs.is_empty() {
+        return None;
+    }
+
+    let reference_counts = plan_docs
+        .iter()
+        .flat_map(|doc| markdown_path_references(&doc.body, "plans"))
+        .fold(BTreeMap::<PathBuf, usize>::new(), |mut counts, path| {
+            *counts.entry(path).or_insert(0) += 1;
+            counts
+        });
+
+    let mut best: Option<(&PlanningDocument, i64, usize)> = None;
+    for (index, doc) in plan_docs.iter().enumerate() {
+        let stem = doc
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let title = doc.title.to_ascii_lowercase();
+        let referenced = reference_counts.get(&doc.path).copied().unwrap_or(0) as i64;
+        let mut score = referenced * 100;
+        if stem.contains("master-plan") || title.contains("master plan") {
+            score += 2_000;
+        }
+        if stem.starts_with("001-") {
+            score += 300;
+        }
+        if stem.contains("mvp") || title.contains("mvp") {
+            score += 150;
+        }
+        if title.contains("workspace") {
+            score += 25;
+        }
+        let rank = (score, usize::MAX - index);
+        if best
+            .as_ref()
+            .map(|(_, best_score, best_index)| rank > (*best_score, *best_index))
+            .unwrap_or(true)
+        {
+            best = Some((doc, score, usize::MAX - index));
+        }
+    }
+
+    best.map(|(doc, _, _)| doc.clone())
+}
+
+fn markdown_path_references(body: &str, root: &str) -> Vec<PathBuf> {
+    body.split('`')
+        .filter_map(|chunk| {
+            let trimmed = chunk.trim();
+            if !trimmed.starts_with(&format!("{root}/")) || !trimmed.ends_with(".md") {
+                return None;
+            }
+            Some(PathBuf::from(trimmed))
+        })
+        .collect()
 }
 
 fn load_markdown_dir(
@@ -385,6 +455,18 @@ fn derive_lane_intents(
     corpus: &PlanningCorpus,
     program_id: &str,
 ) -> Vec<LaneIntent> {
+    let explicit_units = corpus
+        .active_spec
+        .as_ref()
+        .map(|spec| parse_explicit_units_from_spec(&spec.body))
+        .unwrap_or_default();
+    if !explicit_units.is_empty() {
+        return derive_explicit_unit_intents(target_repo, corpus, &explicit_units);
+    }
+    if let Some(intents) = derive_master_plan_intents(target_repo, corpus) {
+        return intents;
+    }
+
     let tasks = corpus
         .active_plan
         .as_ref()
@@ -467,6 +549,562 @@ fn derive_lane_intents(
     }
 
     intents
+}
+
+fn derive_master_plan_intents(
+    target_repo: &Path,
+    corpus: &PlanningCorpus,
+) -> Option<Vec<LaneIntent>> {
+    let active_plan = corpus.active_plan.as_ref()?;
+    let referenced_plans = referenced_bootstrap_plan_docs(corpus, active_plan);
+    if referenced_plans.len() < 2 {
+        return None;
+    }
+
+    let selected = referenced_plans
+        .iter()
+        .map(|doc| {
+            let id = plan_unit_id(doc);
+            (doc.path.clone(), id)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut intents = Vec::new();
+
+    for doc in referenced_plans {
+        let id = selected
+            .get(&doc.path)
+            .expect("selected plan id should exist")
+            .clone();
+        let title = humanize_slug(&id);
+        let unit = ExplicitUnitSpec {
+            id: id.clone(),
+            title: title.clone(),
+            description: doc.title.clone(),
+        };
+        let family = explicit_unit_family(target_repo, &unit);
+        let category = explicit_unit_category(&unit);
+        let output_root = PathBuf::from("outputs").join(&id);
+        let (kind, artifacts, milestones, produces, health_command, verify_command) =
+            category_contract(category, family, &output_root, target_repo);
+        let dependencies = explicit_plan_dependency_paths(&doc.body)
+            .into_iter()
+            .filter_map(|path| selected.get(&path))
+            .fold(
+                BTreeMap::<String, LaneDependency>::new(),
+                |mut acc, dependency_id| {
+                    acc.entry(dependency_id.clone())
+                        .or_insert_with(|| LaneDependency {
+                            unit: dependency_id.clone(),
+                            lane: None,
+                            milestone: Some("reviewed".to_string()),
+                        });
+                    acc
+                },
+            )
+            .into_values()
+            .collect::<Vec<_>>();
+        let goal = build_goal(
+            &title,
+            &family,
+            &output_root,
+            corpus,
+            std::slice::from_ref(&doc.title),
+            &artifacts,
+        );
+        let prompt_context = Some(
+            [
+                format!("Program plan:\n- `{}`", active_plan.path.display()),
+                format!("Work plan:\n- `{}`", doc.path.display()),
+                format!("Plan title:\n- {}", doc.title),
+                format!(
+                    "Artifacts to write:\n{}",
+                    artifacts
+                        .iter()
+                        .map(|artifact| format!("- `{}`", artifact.path.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            ]
+            .join("\n\n"),
+        );
+
+        intents.push(LaneIntent {
+            id,
+            title,
+            output_root,
+            family,
+            kind,
+            goal,
+            prompt_context,
+            dependencies,
+            produces,
+            health_command,
+            verify_command,
+            milestones,
+            artifacts,
+        });
+    }
+
+    Some(intents)
+}
+
+fn referenced_bootstrap_plan_docs(
+    corpus: &PlanningCorpus,
+    active_plan: &PlanningDocument,
+) -> Vec<PlanningDocument> {
+    let mut resolved = Vec::new();
+    let mut seen = BTreeMap::<PathBuf, ()>::new();
+    let has_phases = active_plan.body.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("Phase 0") || trimmed.starts_with("Phase 1")
+    });
+    let mut current_phase = None::<usize>;
+
+    for line in active_plan.body.lines() {
+        let trimmed = line.trim();
+        if let Some(phase) = parse_phase_heading(trimmed) {
+            current_phase = Some(phase);
+            continue;
+        }
+        if has_phases && current_phase.unwrap_or(usize::MAX) > 1 {
+            continue;
+        }
+        let Some(task) = trimmed
+            .strip_prefix("- [ ] ")
+            .or_else(|| trimmed.strip_prefix("- [x] "))
+        else {
+            continue;
+        };
+        for doc in referenced_plan_docs_for_task(corpus, task) {
+            if seen.insert(doc.path.clone(), ()).is_some() {
+                continue;
+            }
+            resolved.push(doc);
+        }
+    }
+
+    resolved
+}
+
+fn explicit_plan_dependency_paths(body: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for paragraph in planning_markdown_paragraphs(body) {
+        let lower = paragraph.to_ascii_lowercase();
+        let Some(index) = lower.find("depends on:") else {
+            continue;
+        };
+        let mut segment = paragraph[index + "depends on:".len()..].to_string();
+        if let Some(depended_on_by_index) = segment.to_ascii_lowercase().find("depended on by:") {
+            segment.truncate(depended_on_by_index);
+        }
+        if let Some(next_sentence_index) = segment.find(". The ") {
+            segment.truncate(next_sentence_index);
+        }
+        if let Some(next_sentence_index) = segment.find(". This ") {
+            segment.truncate(next_sentence_index);
+        }
+        paths.extend(markdown_path_references(&segment, "plans"));
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn planning_markdown_paragraphs(body: &str) -> Vec<String> {
+    body.split("\n\n")
+        .map(|chunk| {
+            chunk
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect()
+}
+
+fn parse_phase_heading(trimmed: &str) -> Option<usize> {
+    let rest = trimmed.strip_prefix("Phase ")?;
+    let digits = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
+fn referenced_plan_docs_for_task(corpus: &PlanningCorpus, task: &str) -> Vec<PlanningDocument> {
+    let lower = task.to_ascii_lowercase();
+    let mut docs = markdown_path_references(task, "plans")
+        .into_iter()
+        .filter_map(|path| {
+            corpus
+                .plan_docs
+                .iter()
+                .find(|doc| doc.path == path)
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+
+    for doc in &corpus.plan_docs {
+        let stem = doc
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let prefix = stem.split('-').next().unwrap_or_default().trim();
+        if prefix.len() == 3 && prefix.chars().all(|ch| ch.is_ascii_digit()) {
+            if lower.contains(&format!("plan {prefix}")) {
+                docs.push(doc.clone());
+            }
+        }
+    }
+    docs.sort_by(|left, right| left.path.cmp(&right.path));
+    docs.dedup_by(|left, right| left.path == right.path);
+    docs
+}
+
+fn plan_unit_id(doc: &PlanningDocument) -> String {
+    let stem = doc
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let without_prefix = stem
+        .strip_prefix(
+            stem.split('-')
+                .next()
+                .filter(|prefix| prefix.len() == 3 && prefix.chars().all(|ch| ch.is_ascii_digit()))
+                .map(|prefix| format!("{prefix}-"))
+                .as_deref()
+                .unwrap_or(""),
+        )
+        .unwrap_or(&stem)
+        .to_string();
+    let simplified = without_prefix
+        .trim_end_matches("-game")
+        .trim_end_matches("-plan")
+        .trim_end_matches("-crate")
+        .trim_end_matches("-trait")
+        .to_string();
+    sanitize_identifier(&simplified)
+}
+
+fn parse_explicit_units_from_spec(body: &str) -> Vec<ExplicitUnitSpec> {
+    let mut in_manifest_section = false;
+    let mut units = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
+            in_manifest_section = trimmed.eq_ignore_ascii_case("### Raspberry Program Manifest");
+            continue;
+        }
+        if !in_manifest_section {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("- **") else {
+            continue;
+        };
+        let Some(end) = rest.find("**") else {
+            continue;
+        };
+        let raw_id = rest[..end].trim();
+        let description = rest[end + 2..]
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap_or(rest[end + 2..].trim_start())
+            .trim();
+        if raw_id.is_empty() || description.is_empty() {
+            continue;
+        }
+        let id = sanitize_identifier(raw_id);
+        if id.is_empty() {
+            continue;
+        }
+        units.push(ExplicitUnitSpec {
+            id: id.clone(),
+            title: humanize_slug(&id),
+            description: description.to_string(),
+        });
+    }
+
+    units
+}
+
+fn derive_explicit_unit_intents(
+    target_repo: &Path,
+    corpus: &PlanningCorpus,
+    units: &[ExplicitUnitSpec],
+) -> Vec<LaneIntent> {
+    let identity_by_id = units
+        .iter()
+        .map(|unit| (unit.id.clone(), unit.title.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut intents = Vec::new();
+
+    for unit in units {
+        let family = explicit_unit_family(target_repo, unit);
+        let output_root = PathBuf::from("outputs").join(&unit.id);
+        let category = explicit_unit_category(unit);
+        let (kind, artifacts, milestones, produces, health_command, verify_command) =
+            category_contract(category, family, &output_root, target_repo);
+        let related_plans = related_plan_docs_for_unit(corpus, unit);
+        let dependencies = explicit_unit_dependencies(unit, &identity_by_id);
+        let goal = build_explicit_unit_goal(
+            unit,
+            family,
+            &output_root,
+            corpus,
+            &related_plans,
+            &artifacts,
+        );
+        let prompt_context =
+            build_explicit_unit_prompt_context(unit, corpus, &related_plans, &artifacts);
+
+        intents.push(LaneIntent {
+            id: unit.id.clone(),
+            title: unit.title.clone(),
+            output_root,
+            family,
+            kind,
+            goal,
+            prompt_context,
+            dependencies,
+            produces,
+            health_command,
+            verify_command,
+            milestones,
+            artifacts,
+        });
+    }
+
+    intents
+}
+
+fn explicit_unit_family(target_repo: &Path, unit: &ExplicitUnitSpec) -> WorkflowTemplate {
+    let text = format!(
+        "{}\n{}",
+        unit.title.to_ascii_lowercase(),
+        unit.description.to_ascii_lowercase()
+    );
+    if text.contains("monitoring") || text.contains("operations") || text.contains("deployment") {
+        return WorkflowTemplate::ServiceBootstrap;
+    }
+    if text.contains("websocket") || text.contains("wallet escrow") || text.contains("remote") {
+        return WorkflowTemplate::ServiceBootstrap;
+    }
+    if text.contains("depends on") || text.contains("tui") || text.contains("menu") {
+        return WorkflowTemplate::Bootstrap;
+    }
+    if has_existing_child_programs(target_repo) && has_child_program_cues(&text) {
+        return WorkflowTemplate::Orchestration;
+    }
+    WorkflowTemplate::Bootstrap
+}
+
+fn explicit_unit_category(unit: &ExplicitUnitSpec) -> TaskCategory {
+    let id = unit.id.as_str();
+    let text = format!(
+        "{}\n{}",
+        unit.title.to_ascii_lowercase(),
+        unit.description.to_ascii_lowercase()
+    );
+    if id == "house" || text.contains("websocket") || text.contains("wallet escrow") {
+        return TaskCategory::Service;
+    }
+    if id == "shell" || text.contains("tui") || text.contains("menu") {
+        return TaskCategory::Client;
+    }
+    if id == "provably-fair" || text.contains("verification") || text.contains("shuffle") {
+        return TaskCategory::Proof;
+    }
+    if id == "infra" || text.contains("monitoring") || text.contains("node operations") {
+        return TaskCategory::Service;
+    }
+    TaskCategory::Foundations
+}
+
+fn explicit_unit_dependencies(
+    unit: &ExplicitUnitSpec,
+    identity_by_id: &BTreeMap<String, String>,
+) -> Vec<LaneDependency> {
+    let mut dependencies = Vec::new();
+    let mut seen = BTreeMap::<String, ()>::new();
+    let lower = unit.description.to_ascii_lowercase();
+    for dependency_id in identity_by_id.keys() {
+        if dependency_id == &unit.id {
+            continue;
+        }
+        let exact = dependency_id.replace('-', " ");
+        if !lower.contains(&exact) {
+            continue;
+        }
+        if seen.insert(dependency_id.clone(), ()).is_some() {
+            continue;
+        }
+        dependencies.push(LaneDependency {
+            unit: dependency_id.clone(),
+            lane: None,
+            milestone: Some("reviewed".to_string()),
+        });
+    }
+    dependencies
+}
+
+fn related_plan_docs_for_unit(
+    corpus: &PlanningCorpus,
+    unit: &ExplicitUnitSpec,
+) -> Vec<PlanningDocument> {
+    let mut scored = corpus
+        .plan_docs
+        .iter()
+        .map(|doc| (score_plan_for_unit(doc, unit), doc))
+        .filter(|(score, _)| *score > 0)
+        .collect::<Vec<_>>();
+    scored.sort_by(|(left_score, left_doc), (right_score, right_doc)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_doc.path.cmp(&right_doc.path))
+    });
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, doc)| doc.clone())
+        .collect()
+}
+
+fn score_plan_for_unit(doc: &PlanningDocument, unit: &ExplicitUnitSpec) -> usize {
+    let stem = doc
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let title = doc.title.to_ascii_lowercase();
+    let body = doc.body.to_ascii_lowercase();
+    let keywords = unit_keywords(unit);
+
+    let mut score = 0usize;
+    for keyword in keywords {
+        if stem.contains(&keyword) {
+            score += 20;
+        }
+        if title.contains(&keyword) {
+            score += 25;
+        }
+        if body.contains(&keyword) {
+            score += 5;
+        }
+    }
+    if stem.starts_with("001-") {
+        score += 2;
+    }
+    score
+}
+
+fn unit_keywords(unit: &ExplicitUnitSpec) -> Vec<String> {
+    let mut keywords = vec![unit.id.clone(), unit.id.replace('-', " ")];
+    keywords.extend(
+        unit.title
+            .split_whitespace()
+            .map(|part| part.to_ascii_lowercase())
+            .filter(|part| part.len() > 3),
+    );
+    keywords.extend(
+        unit.description
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .map(|part| part.to_ascii_lowercase())
+            .filter(|part| part.len() > 4)
+            .filter(|part| {
+                !matches!(
+                    part.as_str(),
+                    "lanes"
+                        | "their"
+                        | "reaching"
+                        | "milestone"
+                        | "screen"
+                        | "implementation"
+                        | "deterministic"
+                        | "protocol"
+                        | "management"
+                        | "wallet"
+                )
+            }),
+    );
+    match unit.id.as_str() {
+        "house" => keywords.extend(["house agent", "websocket", "escrow"].map(str::to_string)),
+        "shell" => keywords.extend(["tui shell", "game menu"].map(str::to_string)),
+        "provably-fair" => keywords.extend(["provably fair", "shuffle"].map(str::to_string)),
+        "infra" => keywords.extend(["infrastructure", "monero"].map(str::to_string)),
+        "poker" => keywords.extend(["nlhe", "blueprint"].map(str::to_string)),
+        _ => {}
+    }
+    keywords.sort();
+    keywords.dedup();
+    keywords
+}
+
+fn build_explicit_unit_goal(
+    unit: &ExplicitUnitSpec,
+    family: WorkflowTemplate,
+    output_root: &Path,
+    corpus: &PlanningCorpus,
+    related_plans: &[PlanningDocument],
+    artifacts: &[BlueprintArtifact],
+) -> String {
+    let plan_tasks = if related_plans.is_empty() {
+        vec![unit.description.clone()]
+    } else {
+        related_plans.iter().map(|doc| doc.title.clone()).collect()
+    };
+    build_goal(
+        &unit.title,
+        &family,
+        output_root,
+        corpus,
+        &plan_tasks,
+        artifacts,
+    )
+}
+
+fn build_explicit_unit_prompt_context(
+    unit: &ExplicitUnitSpec,
+    corpus: &PlanningCorpus,
+    related_plans: &[PlanningDocument],
+    artifacts: &[BlueprintArtifact],
+) -> Option<String> {
+    let mut sections = vec![format!(
+        "Spec unit:\n- `{}` — {}",
+        unit.id, unit.description
+    )];
+    if let Some(spec) = &corpus.active_spec {
+        sections.push(format!("Active spec:\n- `{}`", spec.path.display()));
+    }
+    if !related_plans.is_empty() {
+        sections.push(format!(
+            "Related plans:\n{}",
+            related_plans
+                .iter()
+                .map(|doc| format!("- `{}`", doc.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    } else if let Some(plan) = &corpus.active_plan {
+        sections.push(format!("Program plan:\n- `{}`", plan.path.display()));
+    }
+    if !artifacts.is_empty() {
+        sections.push(format!(
+            "Artifacts to write:\n{}",
+            artifacts
+                .iter()
+                .map(|artifact| format!("- `{}`", artifact.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    Some(sections.join("\n\n"))
 }
 
 fn derive_max_parallel(intents: &[LaneIntent]) -> usize {
@@ -1699,5 +2337,310 @@ units:
 
         assert_eq!(authored.blueprint.units.len(), 1);
         assert_eq!(authored.blueprint.units[0].id, "private-control-plane");
+    }
+
+    #[test]
+    fn create_authoring_prefers_explicit_spec_units_over_leaf_plan_drift() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(
+            temp.path().join("SPEC.md"),
+            "# Root Spec\n\nUse a spec before a plan.\n",
+        )
+        .expect("root spec");
+        fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("specs/001-rxmragent-founding.md"),
+            concat!(
+                "# Decision Spec: rXMRagent — Zero-Human Game Studio on rXMR\n\n",
+                "## Studio Structure (Paperclip Company)\n\n",
+                "### Raspberry Program Manifest\n\n",
+                "The program manifest defines the first units:\n\n",
+                "- **poker**: The heads-up NLHE game. Lanes: GameVariant implementation, TUI poker screen, blueprint integration.\n",
+                "- **blackjack**: The blackjack game. Lanes: GameVariant implementation, TUI blackjack screen, dealer rules.\n",
+                "- **house**: The remote house agent. Lanes: multi-game session management, WebSocket protocol, rXMR wallet escrow, deployment.\n",
+                "- **shell**: The TUI shell (game menu, wallet screen, verification). Depends on poker and blackjack reaching their `verified` milestone.\n",
+                "- **provably-fair**: The core fairness crate. Lanes: seed protocol, deterministic shuffle, action_seed mapping, session verification.\n",
+                "- **infra**: Node operations and monitoring. Recurring lane.\n",
+            ),
+        )
+        .expect("founding spec");
+        fs::write(
+            temp.path().join("plans/001-rxmr-poker-mvp.md"),
+            "# rXMR Casino MVP — Provably Fair Terminal Games on a Privacy Chain\n\n- [ ] Milestone 1: Provably fair crate\n- [ ] Milestone 2: Poker game\n- [ ] Milestone 3: Blackjack game\n- [ ] Milestone 4: House agent\n- [ ] Milestone 5: TUI shell\n",
+        )
+        .expect("mvp plan");
+        fs::write(
+            temp.path().join("plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate: The Trust Surface of the rXMR Casino\n",
+        )
+        .expect("provably fair");
+        fs::write(
+            temp.path().join("plans/003-poker-game.md"),
+            "# Poker Game Implementation (GameVariant, TUI Screen, Blueprint Integration)\n",
+        )
+        .expect("poker plan");
+        fs::write(
+            temp.path().join("plans/004-blackjack-game.md"),
+            "# Blackjack Game: GameVariant, Dealer Rules, TUI Screen, Verification\n",
+        )
+        .expect("blackjack plan");
+        fs::write(
+            temp.path().join("plans/013-house-agent.md"),
+            "# House Agent: The Remote Multi-Game Casino Server\n",
+        )
+        .expect("house plan");
+        fs::write(
+            temp.path().join("plans/014-tui-shell.md"),
+            "# TUI Shell: The Terminal Casino Client\n",
+        )
+        .expect("shell plan");
+        fs::write(
+            temp.path().join("plans/015-monero-infrastructure.md"),
+            "# Monero Infrastructure: Node, Wallet RPC, and Deployment\n",
+        )
+        .expect("infra plan");
+        fs::write(
+            temp.path().join("plans/018-war-game.md"),
+            "# Casino War — The Simplest Card Game in the Catalog\n",
+        )
+        .expect("war plan");
+        fs::write(
+            temp.path().join("plans/021-wheel-game.md"),
+            "# Wheel of Fortune — Seed-Derived Multiplier Wheel for rXMR Casino\n",
+        )
+        .expect("wheel plan");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.clone())
+            .collect::<Vec<_>>();
+        let poker_goal = &authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "poker")
+            .expect("poker unit")
+            .lanes[0]
+            .goal;
+
+        assert_eq!(
+            authored.active_plan,
+            Some(PathBuf::from("plans/001-rxmr-poker-mvp.md"))
+        );
+        assert!(unit_ids.contains(&"poker".to_string()));
+        assert!(unit_ids.contains(&"blackjack".to_string()));
+        assert!(unit_ids.contains(&"house".to_string()));
+        assert!(unit_ids.contains(&"shell".to_string()));
+        assert!(unit_ids.contains(&"provably-fair".to_string()));
+        assert!(unit_ids.contains(&"infra".to_string()));
+        assert!(!unit_ids.contains(&"foundations".to_string()));
+        assert!(!poker_goal.contains("War"));
+        assert!(poker_goal.contains("Poker Game Implementation"));
+    }
+
+    #[test]
+    fn create_authoring_decomposes_master_plan_references_into_units() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(
+            temp.path().join("SPEC.md"),
+            "# Root Spec\n\nThis repo builds a zero-human casino.\n",
+        )
+        .expect("root spec");
+        fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("specs/001-rxmragent-founding.md"),
+            "# Decision Spec: rXMRagent\n",
+        )
+        .expect("founding spec");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            concat!(
+                "# rxmr-play Master Plan\n\n",
+                "## Progress\n\n",
+                "Phase 0 (Foundation):\n",
+                "- [ ] Provably fair crate (plan 002)\n",
+                "- [ ] Casino-core crate with GameVariant trait (plan 016)\n",
+                "- [ ] House agent skeleton with WebSocket server (plan 013)\n",
+                "- [ ] TUI shell skeleton with three-layer layout (plan 014)\n",
+                "- [ ] Monero infrastructure (plan 015)\n\n",
+                "Phase 1 (Day 1 -- ship together):\n",
+                "- [ ] Poker (plan 003)\n",
+                "- [ ] Blackjack (plan 004)\n\n",
+                "Phase 2 (Later):\n",
+                "- [ ] Faucet (plan 027)\n",
+            ),
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate: The Trust Surface of the rXMR Casino\n",
+        )
+        .expect("plan 002");
+        fs::write(
+            temp.path().join("plans/003-poker-game.md"),
+            "# Poker Game Implementation\n",
+        )
+        .expect("plan 003");
+        fs::write(
+            temp.path().join("plans/004-blackjack-game.md"),
+            "# Blackjack Game\n",
+        )
+        .expect("plan 004");
+        fs::write(
+            temp.path().join("plans/013-house-agent.md"),
+            "# House Agent\n",
+        )
+        .expect("plan 013");
+        fs::write(temp.path().join("plans/014-tui-shell.md"), "# TUI Shell\n").expect("plan 014");
+        fs::write(
+            temp.path().join("plans/015-monero-infrastructure.md"),
+            "# Monero Infrastructure\n",
+        )
+        .expect("plan 015");
+        fs::write(
+            temp.path().join("plans/016-casino-core-trait.md"),
+            "# Casino Core Trait\n",
+        )
+        .expect("plan 016");
+        fs::write(temp.path().join("plans/027-faucet.md"), "# rXMR Faucet\n").expect("plan 027");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            authored.active_plan,
+            Some(PathBuf::from("plans/001-master-plan.md"))
+        );
+        assert!(unit_ids.contains(&"provably-fair".to_string()));
+        assert!(unit_ids.contains(&"casino-core".to_string()));
+        assert!(unit_ids.contains(&"house-agent".to_string()));
+        assert!(unit_ids.contains(&"tui-shell".to_string()));
+        assert!(unit_ids.contains(&"monero-infrastructure".to_string()));
+        assert!(unit_ids.contains(&"poker".to_string()));
+        assert!(unit_ids.contains(&"blackjack".to_string()));
+        assert!(!unit_ids.contains(&"faucet".to_string()));
+        assert!(!unit_ids.contains(&"foundations".to_string()));
+    }
+
+    #[test]
+    fn create_authoring_master_plan_dependencies_use_explicit_depends_on_clauses() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("specs/001-rxmragent-founding.md"),
+            "# Decision Spec: rXMRagent\n",
+        )
+        .expect("founding spec");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            concat!(
+                "# rxmr-play Master Plan\n\n",
+                "Phase 0:\n",
+                "- [ ] Provably fair crate (plan 002)\n",
+                "- [ ] Casino-core crate with GameVariant trait (plan 016)\n",
+                "- [ ] House agent skeleton with WebSocket server (plan 013)\n",
+                "- [ ] TUI shell skeleton with three-layer layout (plan 014)\n",
+                "- [ ] Monero infrastructure (plan 015)\n",
+            ),
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate\n\nThis plan depends on: `plans/015-monero-infrastructure.md`.\n",
+        )
+        .expect("plan 002");
+        fs::write(
+            temp.path().join("plans/013-house-agent.md"),
+            "# House Agent\n\nThis plan depends on: `plans/002-provably-fair-crate.md`, `plans/016-casino-core-trait.md`, and `plans/015-monero-infrastructure.md`. This plan is depended on by: `plans/014-tui-shell.md`.\n",
+        )
+        .expect("plan 013");
+        fs::write(
+            temp.path().join("plans/014-tui-shell.md"),
+            "# TUI Shell\n\nThis plan depends on: `plans/002-provably-fair-crate.md`, `plans/016-casino-core-trait.md`, `plans/013-house-agent.md`, and `plans/015-monero-infrastructure.md`.\n",
+        )
+        .expect("plan 014");
+        fs::write(
+            temp.path().join("plans/015-monero-infrastructure.md"),
+            "# Monero Infrastructure\n",
+        )
+        .expect("plan 015");
+        fs::write(
+            temp.path().join("plans/016-casino-core-trait.md"),
+            "# Casino Core Trait\n\nThis plan depends on: `plans/002-provably-fair-crate.md`.\n",
+        )
+        .expect("plan 016");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let casino_core = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "casino-core")
+            .expect("casino-core unit");
+        let house_agent = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "house-agent")
+            .expect("house-agent unit");
+        let tui_shell = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "tui-shell")
+            .expect("tui-shell unit");
+
+        let casino_core_dependencies = &casino_core.lanes[0].dependencies;
+        let house_agent_dependencies = &house_agent.lanes[0].dependencies;
+        let tui_shell_dependencies = &tui_shell.lanes[0].dependencies;
+
+        assert_eq!(
+            casino_core_dependencies
+                .iter()
+                .map(|dependency| dependency.unit.clone())
+                .collect::<Vec<_>>(),
+            vec!["provably-fair".to_string()]
+        );
+        assert_eq!(
+            house_agent_dependencies
+                .iter()
+                .map(|dependency| dependency.unit.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "casino-core".to_string(),
+                "monero-infrastructure".to_string(),
+                "provably-fair".to_string(),
+            ]
+        );
+        assert_eq!(
+            tui_shell_dependencies
+                .iter()
+                .map(|dependency| dependency.unit.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "casino-core".to_string(),
+                "house-agent".to_string(),
+                "monero-infrastructure".to_string(),
+                "provably-fair".to_string(),
+            ]
+        );
     }
 }

@@ -163,11 +163,12 @@ fn process_start_ticks_for_pid(pid: u32) -> Option<u64> {
 }
 
 fn try_write_lease(path: &Path, lease: &AutodevLease) -> Result<bool, ControllerLeaseError> {
-    let json =
-        serde_json::to_string_pretty(lease).map_err(|source| ControllerLeaseError::SerializeLease {
+    let json = serde_json::to_string_pretty(lease).map_err(|source| {
+        ControllerLeaseError::SerializeLease {
             path: path.to_path_buf(),
             source,
-        })?;
+        }
+    })?;
     match OpenOptions::new().create_new(true).write(true).open(path) {
         Ok(mut file) => {
             file.write_all(json.as_bytes())
@@ -227,10 +228,9 @@ mod tests {
         let _lease = acquire_autodev_lease(&manifest_path, &manifest).expect("lease acquired");
         let err = acquire_autodev_lease(&manifest_path, &manifest).expect_err("duplicate fails");
 
-        assert!(
-            err.to_string()
-                .contains("autodev controller already running for program `raspberry-demo`")
-        );
+        assert!(err
+            .to_string()
+            .contains("autodev controller already running for program `raspberry-demo`"));
     }
 
     #[test]

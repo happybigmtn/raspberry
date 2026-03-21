@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -21,6 +21,7 @@ use raspberry_supervisor::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 const SYNC_MARKER_PREFIX: &str = "fabro.paperclip.sync-key:";
 
@@ -44,6 +45,8 @@ pub enum PaperclipCommand {
     Status(PaperclipServerArgs),
     /// Print recent lines from the repo-local Paperclip server log
     Logs(PaperclipLogsArgs),
+    /// Invoke a Paperclip heartbeat for the orchestrator or a generated agent
+    Wake(PaperclipWakeArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -80,6 +83,10 @@ pub struct PaperclipRefreshArgs {
 pub struct PaperclipServerArgs {
     #[command(flatten)]
     pub repo: PaperclipRepoArgs,
+    #[arg(long, default_value_t = false, action = ArgAction::Set)]
+    pub watch: bool,
+    #[arg(long, default_value_t = 3)]
+    pub interval_secs: u64,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -88,6 +95,14 @@ pub struct PaperclipLogsArgs {
     pub repo: PaperclipRepoArgs,
     #[arg(long, default_value_t = 80)]
     pub lines: usize,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct PaperclipWakeArgs {
+    #[command(flatten)]
+    pub repo: PaperclipRepoArgs,
+    #[arg(long, default_value = "raspberry-orchestrator")]
+    pub agent: String,
 }
 
 #[derive(Debug, Clone)]
@@ -119,20 +134,56 @@ struct PaperclipApplySummary {
     project_id: String,
     workspace_id: String,
     synced_issue_count: usize,
+    synced_document_count: usize,
+    synced_secret_count: usize,
+    synced_comment_count: usize,
+    synced_work_product_count: usize,
+    synced_attachment_count: usize,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GitBootstrapResult {
+    initialized: bool,
+    committed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GitTransientCleanupResult {
+    removed_paths: usize,
+}
+
+const BOOTSTRAP_GITIGNORE_LINES: &[&str] = &[
+    ".raspberry/",
+    ".paperclip/",
+    "fabro/paperclip/*/bootstrap-state.json",
+];
 
 struct PaperclipServerStatus {
     pid: Option<u32>,
     pid_live: bool,
     server_ready: bool,
+    controller_pid: Option<u32>,
+    controller_pid_live: bool,
+    controller_acquired_at: Option<String>,
     bootstrap_state: Option<serde_json::Value>,
     frontier: Option<FrontierSyncModel>,
     openai_api_key_present: bool,
     anthropic_api_key_present: bool,
     local_cli_export_count: usize,
+    synced_secret_count: usize,
+    synced_work_product_count: usize,
+    synced_attachment_count: usize,
+    cost_summary: Option<PaperclipCostSummary>,
+    budget_overview: Option<PaperclipBudgetOverview>,
+    pending_approvals: usize,
 }
 
 pub async fn bootstrap_command(args: &PaperclipBootstrapArgs) -> Result<()> {
+    let git_bootstrap = if args.apply {
+        Some(ensure_target_repo_initialized(&args.repo.target_repo)?)
+    } else {
+        None
+    };
     let context = prepare_paperclip_context(&args.repo)?;
     print_paperclip_context_summary(&context.paths, &context.mission.goal_title);
     if !args.apply {
@@ -140,15 +191,24 @@ pub async fn bootstrap_command(args: &PaperclipBootstrapArgs) -> Result<()> {
         return Ok(());
     }
     let summary = apply_paperclip_context(&context, args.repo.paperclip_cmd.as_deref()).await?;
+    if let Some(git_bootstrap) = git_bootstrap {
+        print_git_bootstrap_summary(git_bootstrap);
+    }
     print_paperclip_apply_summary("Applied", &summary);
+    let cleanup = prune_tracked_transient_paths(&context.paths.target_repo)?;
+    print_git_transient_cleanup_summary(cleanup);
     Ok(())
 }
 
 pub async fn refresh_command(args: &PaperclipRefreshArgs) -> Result<()> {
+    let git_bootstrap = ensure_target_repo_initialized(&args.repo.target_repo)?;
     let context = prepare_paperclip_context(&args.repo)?;
     print_paperclip_context_summary(&context.paths, &context.mission.goal_title);
     let summary = apply_paperclip_context(&context, args.repo.paperclip_cmd.as_deref()).await?;
+    print_git_bootstrap_summary(git_bootstrap);
     print_paperclip_apply_summary("Refreshed", &summary);
+    let cleanup = prune_tracked_transient_paths(&context.paths.target_repo)?;
+    print_git_transient_cleanup_summary(cleanup);
     Ok(())
 }
 
@@ -176,6 +236,15 @@ pub async fn stop_command(args: &PaperclipServerArgs) -> Result<()> {
 
 pub async fn status_command(args: &PaperclipServerArgs) -> Result<()> {
     let paths = resolve_paperclip_paths(&args.repo);
+    if args.watch {
+        loop {
+            let status = collect_paperclip_server_status(&paths).await?;
+            print!("\x1b[2J\x1b[H");
+            print_paperclip_server_status(&paths, &status);
+            std::io::stdout().flush().ok();
+            tokio::time::sleep(Duration::from_secs(args.interval_secs.max(1))).await;
+        }
+    }
     let status = collect_paperclip_server_status(&paths).await?;
     print_paperclip_server_status(&paths, &status);
     Ok(())
@@ -187,6 +256,65 @@ pub async fn logs_command(args: &PaperclipLogsArgs) -> Result<()> {
     let contents = std::fs::read_to_string(&log_path)
         .with_context(|| format!("failed to read {}", log_path.display()))?;
     print!("{}", last_lines(&contents, args.lines));
+    Ok(())
+}
+
+pub async fn wake_command(args: &PaperclipWakeArgs) -> Result<()> {
+    let paths = resolve_paperclip_paths(&args.repo);
+    ensure_private_data_dir(&paths.data_dir, &paths.target_repo)?;
+    ensure_paperclip_server(
+        args.repo.paperclip_cmd.as_deref(),
+        &paths.data_dir,
+        &paths.api_base,
+    )
+    .await?;
+    let state = load_bootstrap_state(&paths.bootstrap_state_path).with_context(|| {
+        format!(
+            "failed to load bootstrap state {}",
+            paths.bootstrap_state_path.display()
+        )
+    })?;
+    let company_id = state
+        .get("companyId")
+        .and_then(|value| value.as_str())
+        .context("bootstrap state is missing companyId")?;
+    let agent =
+        resolve_managed_agent(&paths.api_base, company_id, &args.agent, Some(&state)).await?;
+    let frontier_before = load_optional_frontier_sync_model(&paths)?;
+    let run = invoke_agent_heartbeat(&paths.api_base, &agent.id).await?;
+    let agent_slug = agent.slug.as_deref().unwrap_or(args.agent.as_str());
+    let followthrough = if agent_slug == "raspberry-orchestrator" {
+        Some(follow_through_orchestrator_wake(&paths, frontier_before.as_ref()).await?)
+    } else {
+        None
+    };
+
+    println!("Program: {}", paths.program_id);
+    println!("Company ID: {company_id}");
+    println!("Agent: {} ({})", agent_slug, agent.id);
+    println!(
+        "Wake command: {}",
+        paperclip_wake_command(&paths, agent_slug)
+    );
+    println!("Result: {}", render_heartbeat_invoke_result(&run));
+    if let Some(frontier) = frontier_before.as_ref() {
+        println!("Frontier before:\n{}", render_frontier_summary(frontier));
+    }
+    if let Some(followthrough) = followthrough.as_ref() {
+        println!(
+            "Followthrough: {}",
+            render_wake_followthrough(followthrough)
+        );
+        if let Some(frontier) = followthrough.after.as_ref() {
+            println!("Frontier after:\n{}", render_frontier_summary(frontier));
+        }
+        if wake_followthrough_changed(frontier_before.as_ref(), followthrough) {
+            let context = prepare_paperclip_context(&args.repo)?;
+            let summary =
+                apply_paperclip_context(&context, args.repo.paperclip_cmd.as_deref()).await?;
+            print_paperclip_apply_summary("Refreshed after wake", &summary);
+        }
+    }
     Ok(())
 }
 
@@ -271,6 +399,7 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &paths.target_repo,
         &paths.manifest_path,
         &paths.orchestrator_script_path,
+        &paperclip_wake_command(&paths, "raspberry-orchestrator"),
         &paperclip_refresh_command(&paths),
         &paperclip_status_command(&paths),
     )?;
@@ -298,18 +427,12 @@ fn ensure_paperclip_blueprint(paths: &PaperclipPaths) -> Result<ProgramBlueprint
     } else {
         let authored = author_blueprint_for_create(&paths.target_repo, Some(&paths.program_id))?;
         save_blueprint(&paths.blueprint_path, &authored.blueprint)?;
-        render_blueprint(RenderRequest {
-            blueprint: &authored.blueprint,
-            target_repo: &paths.target_repo,
-        })?;
         authored.blueprint
     };
-    if !paths.manifest_path.exists() {
-        render_blueprint(RenderRequest {
-            blueprint: &blueprint,
-            target_repo: &paths.target_repo,
-        })?;
-    }
+    render_blueprint(RenderRequest {
+        blueprint: &blueprint,
+        target_repo: &paths.target_repo,
+    })?;
     Ok(blueprint)
 }
 
@@ -390,10 +513,45 @@ async fn apply_paperclip_context(
         &company_id,
         &goal.id,
         &project_sync.project.id,
+        &project_sync.workspace.id,
         &context.frontier,
         &context.bundle.agents,
         &import_result.agents,
         existing_state.as_ref(),
+    )
+    .await?;
+    let synced_document_count =
+        sync_coordination_documents(&paths.api_base, &context.frontier, &synced_issue_ids).await?;
+    let synced_comment_count = sync_coordination_comments(
+        &paths.api_base,
+        &context.frontier,
+        &synced_issue_ids,
+        existing_state.as_ref(),
+    )
+    .await?;
+    let attachment_sync = sync_coordination_attachments(
+        &paths.api_base,
+        &company_id,
+        &paths.target_repo,
+        &context.frontier,
+        &synced_issue_ids,
+    )
+    .await?;
+    let synced_work_product_count = sync_coordination_work_products(
+        &paths.api_base,
+        &context.frontier,
+        &synced_issue_ids,
+        &attachment_sync.attachments_by_scope,
+    )
+    .await?;
+    let synced_attachment_count = attachment_sync.synced_count;
+    let synced_secrets =
+        sync_company_secrets(&paths.api_base, &company_id, existing_state.as_ref()).await?;
+    wire_generated_agent_secrets(
+        &paths.api_base,
+        &context.bundle.agents,
+        &import_result.agents,
+        &synced_secrets,
     )
     .await?;
     let mut bootstrap_state = serde_json::to_value(&import_result)
@@ -415,13 +573,19 @@ async fn apply_paperclip_context(
         "program": context.frontier.program.clone(),
         "manifestPath": context.frontier.manifest_path.display().to_string(),
         "statePath": context.frontier.state_path.display().to_string(),
+        "wakeCommand": context.frontier.wake_command.clone(),
         "routeCommand": context.frontier.route_command.clone(),
         "refreshCommand": context.frontier.refresh_command.clone(),
         "statusCommand": context.frontier.status_command.clone(),
         "summary": context.frontier.summary.clone(),
         "issueIds": synced_issue_ids,
+        "snapshots": frontier_snapshots_json(&context.frontier),
+        "documentsSynced": synced_document_count,
+        "workProductsSynced": synced_work_product_count,
+        "attachmentsSynced": synced_attachment_count,
         "updatedAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
     });
+    bootstrap_state["secrets"] = synced_secrets_to_json(&synced_secrets);
     save_bootstrap_state(&paths.bootstrap_state_path, &bootstrap_state)?;
     install_local_cli_for_agents(
         &paperclip_cmd,
@@ -438,6 +602,11 @@ async fn apply_paperclip_context(
         project_id: project_sync.project.id,
         workspace_id: project_sync.workspace.id,
         synced_issue_count: synced_issue_ids.len(),
+        synced_document_count,
+        synced_secret_count: synced_secrets.len(),
+        synced_comment_count,
+        synced_work_product_count,
+        synced_attachment_count,
     })
 }
 
@@ -449,6 +618,25 @@ fn print_paperclip_context_summary(paths: &PaperclipPaths, goal_title: &str) {
     println!("Company goal: {goal_title}");
 }
 
+fn print_git_bootstrap_summary(result: GitBootstrapResult) {
+    let status = match (result.initialized, result.committed) {
+        (false, false) => "existing repo",
+        (true, false) => "initialized empty repo",
+        (_, true) => "initialized repo and seeded initial commit",
+    };
+    println!("Git bootstrap: {status}");
+}
+
+fn print_git_transient_cleanup_summary(result: GitTransientCleanupResult) {
+    if result.removed_paths == 0 {
+        return;
+    }
+    println!(
+        "Git transient cleanup: untracked {} runtime files from index",
+        result.removed_paths
+    );
+}
+
 fn print_paperclip_apply_summary(label: &str, summary: &PaperclipApplySummary) {
     println!("{label}: yes");
     println!("Company ID: {}", summary.company_id);
@@ -456,17 +644,32 @@ fn print_paperclip_apply_summary(label: &str, summary: &PaperclipApplySummary) {
     println!("Project ID: {}", summary.project_id);
     println!("Workspace ID: {}", summary.workspace_id);
     println!("Synced issues: {}", summary.synced_issue_count);
+    println!("Synced documents: {}", summary.synced_document_count);
+    println!("Synced secrets: {}", summary.synced_secret_count);
+    println!("Synced comments: {}", summary.synced_comment_count);
+    println!(
+        "Synced work products: {}",
+        summary.synced_work_product_count
+    );
+    println!("Synced attachments: {}", summary.synced_attachment_count);
 }
 
 async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<PaperclipServerStatus> {
     let pid = read_pid_file(&paths.data_dir.join("server.pid"))?;
+    let controller = load_controller_status(paths);
     let bootstrap_state = load_bootstrap_state(&paths.bootstrap_state_path).ok();
+    let company_id = bootstrap_state
+        .as_ref()
+        .and_then(|state| state.get("companyId"))
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
     let frontier = if paths.manifest_path.exists() {
         load_frontier_sync_model(
             &paths.program_id,
             &paths.target_repo,
             &paths.manifest_path,
             &paths.orchestrator_script_path,
+            &paperclip_wake_command(paths, "raspberry-orchestrator"),
             &paperclip_refresh_command(paths),
             &paperclip_status_command(paths),
         )
@@ -474,16 +677,46 @@ async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<Paper
     } else {
         None
     };
+    let cost_summary = if let Some(company_id) = company_id.as_deref() {
+        fetch_company_cost_summary(&paths.api_base, company_id)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let budget_overview = if let Some(company_id) = company_id.as_deref() {
+        fetch_company_budget_overview(&paths.api_base, company_id)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let pending_approvals = if let Some(company_id) = company_id.as_deref() {
+        fetch_pending_approval_count(&paths.api_base, company_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        0
+    };
 
     Ok(PaperclipServerStatus {
         pid,
         pid_live: pid.map(process_is_running).unwrap_or(false),
         server_ready: paperclip_server_ready(&paths.api_base).await,
+        controller_pid: controller.pid,
+        controller_pid_live: controller.pid_live,
+        controller_acquired_at: controller.acquired_at,
         bootstrap_state,
         frontier,
         openai_api_key_present: std::env::var_os("OPENAI_API_KEY").is_some(),
         anthropic_api_key_present: std::env::var_os("ANTHROPIC_API_KEY").is_some(),
         local_cli_export_count: count_local_cli_exports(&paths.data_dir),
+        synced_secret_count: count_synced_secrets(paths),
+        synced_work_product_count: count_synced_work_products(paths),
+        synced_attachment_count: count_synced_attachments(paths),
+        cost_summary,
+        budget_overview,
+        pending_approvals,
     })
 }
 
@@ -501,6 +734,13 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
         paths.data_dir.join("server.log").display()
     );
     println!(
+        "Raspberry controller: {}",
+        render_pid_status(status.controller_pid, status.controller_pid_live)
+    );
+    if let Some(acquired_at) = status.controller_acquired_at.as_ref() {
+        println!("Controller acquired at: {acquired_at}");
+    }
+    println!(
         "OPENAI_API_KEY present: {}",
         yes_no(status.openai_api_key_present)
     );
@@ -509,9 +749,34 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
         yes_no(status.anthropic_api_key_present)
     );
     println!("Local CLI exports: {}", status.local_cli_export_count);
+    println!("Synced secrets: {}", status.synced_secret_count);
+    println!("Synced work products: {}", status.synced_work_product_count);
+    println!("Synced attachments: {}", status.synced_attachment_count);
+    if let Some(costs) = status.cost_summary.as_ref() {
+        println!(
+            "Company spend: {} / {} cents ({:.1}%)",
+            costs.spend_cents, costs.budget_cents, costs.utilization_percent
+        );
+    }
+    if let Some(overview) = status.budget_overview.as_ref() {
+        println!(
+            "Budget overview: pending approvals {}, paused agents {}, paused projects {}",
+            overview.pending_approval_count,
+            overview.paused_agent_count,
+            overview.paused_project_count
+        );
+    }
+    println!("Pending approvals: {}", status.pending_approvals);
     if let Some(frontier) = status.frontier.as_ref() {
         println!("Frontier summary:");
         println!("{}", render_frontier_summary(frontier));
+        println!("Frontier lanes:");
+        println!("{}", render_frontier_lane_sets(frontier));
+        let details = render_frontier_detail_sections(frontier);
+        if !details.is_empty() {
+            println!("Frontier details:");
+            println!("{details}");
+        }
     }
     if let Some(state) = status.bootstrap_state.as_ref() {
         if let Some(company_id) = state.get("companyId").and_then(|value| value.as_str()) {
@@ -564,6 +829,35 @@ fn count_local_cli_exports(data_dir: &Path) -> usize {
         .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
         .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("env"))
         .count()
+}
+
+fn count_synced_secrets(paths: &PaperclipPaths) -> usize {
+    load_bootstrap_state(&paths.bootstrap_state_path)
+        .ok()
+        .and_then(|state| state.get("secrets").cloned())
+        .and_then(|value| value.as_object().cloned())
+        .map(|values| values.len())
+        .unwrap_or_default()
+}
+
+fn count_synced_work_products(paths: &PaperclipPaths) -> usize {
+    load_bootstrap_state(&paths.bootstrap_state_path)
+        .ok()
+        .and_then(|state| state.get("frontierSync").cloned())
+        .and_then(|value| value.get("workProductsSynced").cloned())
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or_default()
+}
+
+fn count_synced_attachments(paths: &PaperclipPaths) -> usize {
+    load_bootstrap_state(&paths.bootstrap_state_path)
+        .ok()
+        .and_then(|state| state.get("frontierSync").cloned())
+        .and_then(|value| value.get("attachmentsSynced").cloned())
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or_default()
 }
 
 fn read_pid_file(path: &Path) -> Result<Option<u32>> {
@@ -686,19 +980,20 @@ struct BootstrapMission {
     workspace_name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FrontierSyncModel {
     program: String,
     manifest_path: PathBuf,
     state_path: PathBuf,
     route_command: String,
+    wake_command: String,
     refresh_command: String,
     status_command: String,
     summary: FrontierSummary,
     entries: Vec<FrontierSyncEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct FrontierSummary {
     ready: usize,
     running: usize,
@@ -707,7 +1002,7 @@ struct FrontierSummary {
     complete: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FrontierSyncEntry {
     sync_key: String,
     lane_key: String,
@@ -731,7 +1026,9 @@ struct FrontierSyncEntry {
     last_stderr_snippet: Option<String>,
     failure_kind: Option<String>,
     blocker_reason: Option<String>,
+    wake_command: String,
     route_command: String,
+    refresh_command: String,
     artifact_paths: Vec<String>,
     artifact_statuses: Vec<String>,
     dependency_keys: Vec<String>,
@@ -746,6 +1043,20 @@ struct DesiredIssue {
     priority: String,
     parent_id: Option<String>,
     assignee_agent_id: Option<String>,
+    project_workspace_id: Option<String>,
+    assignee_adapter_overrides: Option<serde_json::Value>,
+    execution_workspace_preference: Option<String>,
+}
+
+struct DesiredWorkProduct {
+    external_id: String,
+    title: String,
+    status: String,
+    health_status: String,
+    is_primary: bool,
+    url: Option<String>,
+    summary: Option<String>,
+    metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -753,6 +1064,30 @@ struct PaperclipProjectSync {
     project: PaperclipProject,
     workspace: PaperclipWorkspace,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WakeFollowthroughStatus {
+    ObservedViaHeartbeat,
+    RouteFallbackRan,
+    RouteAlreadyActive,
+    NoObservedChange,
+}
+
+#[derive(Debug, Clone)]
+struct WakeFollowthrough {
+    status: WakeFollowthroughStatus,
+    after: Option<FrontierSyncModel>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ControllerStatus {
+    pid: Option<u32>,
+    pid_live: bool,
+    acquired_at: Option<String>,
+}
+
+const ORCHESTRATOR_WAKE_WAIT_MS: u64 = 3_000;
+const ORCHESTRATOR_WAKE_POLL_MS: u64 = 250;
 
 struct BundleAgent {
     slug: String,
@@ -978,9 +1313,10 @@ fn orchestrator_draft(
             slug,
             "pm",
             format!(
-                "You operate the repo-local Raspberry control plane for `{}`.\n\nCurrent frontier:\n{}\n\nExecution route:\n- Run `{}` to let Raspberry evaluate and advance the frontier.\n- Refresh Paperclip with `{}` after package or frontier changes.\n- Do not create parallel execution flows outside Raspberry.\n- Use Paperclip for coordination, escalation, review, and handoff only.\n",
+                "You operate the repo-local Raspberry control plane for `{}`.\n\nCurrent frontier:\n{}\n\nExecution route:\n- Wake the orchestrator with `{}` to let Paperclip invoke the Raspberry control loop.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}` after package or frontier changes.\n- Do not create parallel execution flows outside Raspberry.\n- Use Paperclip for coordination, escalation, review, and handoff only.\n",
                 blueprint.program.id,
                 render_frontier_summary(frontier),
+                frontier.wake_command,
                 frontier.route_command,
                 frontier.refresh_command,
             ),
@@ -1015,6 +1351,24 @@ fn lane_agent_draft(
     } else {
         json!("gpt-5.3-codex")
     };
+    let mut adapter_config = serde_json::Map::from_iter([
+        ("cwd".to_string(), json!(target_repo.display().to_string())),
+        ("model".to_string(), model.clone()),
+    ]);
+    if adapter_type == "codex_local" {
+        let codex_home = preferred_automation_codex_home().unwrap_or_else(|| {
+            target_repo
+                .join(".paperclip")
+                .join("codex")
+                .join(&slug)
+        });
+        adapter_config.insert(
+            "env".to_string(),
+            json!({
+                "CODEX_HOME": codex_home.display().to_string()
+            }),
+        );
+    }
     BundleAgentDraft {
         manifest: json!({
             "slug": slug.clone(),
@@ -1026,10 +1380,7 @@ fn lane_agent_draft(
             "capabilities": format!("Own the `{}` lane and its artifacts.", lane.id),
             "reportsToSlug": "raspberry-orchestrator",
             "adapterType": adapter_type,
-            "adapterConfig": {
-                "cwd": target_repo.display().to_string(),
-                "model": model
-            },
+            "adapterConfig": serde_json::Value::Object(adapter_config),
             "runtimeConfig": {
                 "heartbeat": {
                     "enabled": false,
@@ -1054,7 +1405,7 @@ fn lane_agent_draft(
             &slug,
             role,
             format!(
-                "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nCurrent frontier state:\n{}\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Run `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Refresh Paperclip with `{}` after route execution or package changes.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
+                "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nCurrent frontier state:\n{}\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Wake the Raspberry Orchestrator with `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}` after route execution or package changes.\n- Keep the lane plan in the Paperclip `plan` document aligned with repo truth.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
                 lane.id,
                 blueprint.program.id,
                 mission.goal_title,
@@ -1062,6 +1413,7 @@ fn lane_agent_draft(
                 render_frontier_entry(frontier_entry),
                 lane_artifact_block(frontier_entry, unit),
                 lane_dependency_block(frontier_entry, lane),
+                frontier.wake_command,
                 frontier.route_command,
                 frontier.refresh_command,
             ),
@@ -1075,6 +1427,54 @@ fn lane_agent_draft(
             lane_key: Some(lane_key),
         },
     }
+}
+
+fn preferred_automation_codex_home() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let primary_home = home.join(".codex");
+    let config_paths = [
+        home.join(".config/autonomy/codex-rotator.json"),
+        home.join(".config/rsociety/codex-rotator.json"),
+    ];
+
+    for path in config_paths {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if config.get("enabled").and_then(|value| value.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(slots) = config.get("slots").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for slot in slots {
+            let Some(codex_home) = slot
+                .get("codexHome")
+                .and_then(|value| value.as_str())
+                .map(PathBuf::from)
+            else {
+                continue;
+            };
+            if codex_home == primary_home {
+                continue;
+            }
+            if codex_home.join("auth.json").exists() {
+                return Some(codex_home);
+            }
+        }
+    }
+
+    for slot_name in ["slot1", "slot2", "slot3", "slot4", "slot5"] {
+        let codex_home = home.join(format!(".codex-{slot_name}/.codex"));
+        if codex_home.join("auth.json").exists() {
+            return Some(codex_home);
+        }
+    }
+
+    None
 }
 
 fn lane_agent_slug(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> String {
@@ -1183,11 +1583,17 @@ fn build_company_markdown(
     agents: &[BundleAgent],
 ) -> String {
     let mut body = format!(
-        "# {}\n\n{}\n\n# Frontier\n\n{}\n\n# Agents\n",
+        "# {}\n\n{}\n\n# Frontier\n\n{}\n\n## Lane Sets\n\n{}\n",
         name,
         description,
         render_frontier_summary(frontier),
+        render_frontier_lane_sets(frontier),
     );
+    let details = render_frontier_detail_sections(frontier);
+    if !details.is_empty() {
+        body.push_str(&format!("\n## Live Details\n\n{}\n", details));
+    }
+    body.push_str("\n# Agents\n");
     for agent in agents {
         body.push_str(&format!("- {} - {}\n", agent.slug, agent.name));
     }
@@ -1214,6 +1620,7 @@ fn load_frontier_sync_model(
     target_repo: &Path,
     manifest_path: &Path,
     orchestrator_script: &Path,
+    wake_command: &str,
     refresh_command: &str,
     status_command: &str,
 ) -> Result<FrontierSyncModel> {
@@ -1240,6 +1647,7 @@ fn load_frontier_sync_model(
         manifest_path: normalize_storage_path(manifest_path),
         state_path: normalize_storage_path(&state_path),
         route_command: route_command.clone(),
+        wake_command: wake_command.to_string(),
         refresh_command: refresh_command.to_string(),
         status_command: status_command.to_string(),
         summary: summarize_frontier(&program),
@@ -1248,10 +1656,176 @@ fn load_frontier_sync_model(
             &manifest,
             manifest_path,
             &program,
+            wake_command,
             &route_command,
             refresh_command,
         ),
     })
+}
+
+fn load_optional_frontier_sync_model(paths: &PaperclipPaths) -> Result<Option<FrontierSyncModel>> {
+    if !paths.manifest_path.exists() {
+        return Ok(None);
+    }
+    let frontier = load_frontier_sync_model(
+        &paths.program_id,
+        &paths.target_repo,
+        &paths.manifest_path,
+        &paths.orchestrator_script_path,
+        &paperclip_wake_command(paths, "raspberry-orchestrator"),
+        &paperclip_refresh_command(paths),
+        &paperclip_status_command(paths),
+    )?;
+    Ok(Some(frontier))
+}
+
+async fn follow_through_orchestrator_wake(
+    paths: &PaperclipPaths,
+    frontier_before: Option<&FrontierSyncModel>,
+) -> Result<WakeFollowthrough> {
+    let observed = wait_for_frontier_change(paths, frontier_before).await?;
+    if observed.is_some() {
+        return Ok(WakeFollowthrough {
+            status: WakeFollowthroughStatus::ObservedViaHeartbeat,
+            after: observed,
+        });
+    }
+
+    let route_output = run_orchestrator_route(paths)?;
+    let active_controller = output_indicates_active_autodev_controller(&route_output);
+    if !route_output.status.success() && !active_controller {
+        bail!(
+            "Raspberry route fallback failed with exit_status={}: stdout=\n{}\n\nstderr=\n{}",
+            route_output.status,
+            String::from_utf8_lossy(&route_output.stdout),
+            String::from_utf8_lossy(&route_output.stderr)
+        );
+    }
+    let status = if active_controller {
+        WakeFollowthroughStatus::RouteAlreadyActive
+    } else {
+        WakeFollowthroughStatus::RouteFallbackRan
+    };
+    let after = load_optional_frontier_sync_model(paths)?;
+    if frontier_before
+        .zip(after.as_ref())
+        .map(|(before, after)| !frontier_sync_unchanged(before, after))
+        .unwrap_or(false)
+    {
+        return Ok(WakeFollowthrough { status, after });
+    }
+
+    Ok(WakeFollowthrough {
+        status: WakeFollowthroughStatus::NoObservedChange,
+        after,
+    })
+}
+
+async fn wait_for_frontier_change(
+    paths: &PaperclipPaths,
+    frontier_before: Option<&FrontierSyncModel>,
+) -> Result<Option<FrontierSyncModel>> {
+    let Some(frontier_before) = frontier_before else {
+        return Ok(None);
+    };
+    let polls = (ORCHESTRATOR_WAKE_WAIT_MS / ORCHESTRATOR_WAKE_POLL_MS).max(1);
+    for _ in 0..polls {
+        tokio::time::sleep(Duration::from_millis(ORCHESTRATOR_WAKE_POLL_MS)).await;
+        let Some(frontier_after) = load_optional_frontier_sync_model(paths)? else {
+            continue;
+        };
+        if !frontier_sync_unchanged(frontier_before, &frontier_after) {
+            return Ok(Some(frontier_after));
+        }
+    }
+    Ok(None)
+}
+
+fn run_orchestrator_route(paths: &PaperclipPaths) -> Result<Output> {
+    Command::new("bash")
+        .arg(&paths.orchestrator_script_path)
+        .current_dir(&paths.target_repo)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run Raspberry route fallback {}",
+                paths.orchestrator_script_path.display()
+            )
+        })
+}
+
+fn frontier_sync_unchanged(before: &FrontierSyncModel, after: &FrontierSyncModel) -> bool {
+    before == after
+}
+
+fn wake_followthrough_changed(
+    frontier_before: Option<&FrontierSyncModel>,
+    followthrough: &WakeFollowthrough,
+) -> bool {
+    let Some(after) = followthrough.after.as_ref() else {
+        return false;
+    };
+    let Some(before) = frontier_before else {
+        return true;
+    };
+    !frontier_sync_unchanged(before, after)
+}
+
+fn output_indicates_active_autodev_controller(output: &Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr_indicates_active_autodev_controller(&stdout, &stderr)
+}
+
+fn load_controller_status(paths: &PaperclipPaths) -> ControllerStatus {
+    let lease_path = paths
+        .target_repo
+        .join(".raspberry")
+        .join(format!("{}-autodev.lock", paths.program_id));
+    let Ok(raw) = std::fs::read_to_string(&lease_path) else {
+        return ControllerStatus::default();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return ControllerStatus::default();
+    };
+    let pid = value
+        .get("pid")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok());
+    let acquired_at = value
+        .get("acquired_at")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    ControllerStatus {
+        pid,
+        pid_live: pid.map(process_is_running).unwrap_or(false),
+        acquired_at,
+    }
+}
+
+fn stderr_indicates_active_autodev_controller(stdout: &str, stderr: &str) -> bool {
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    combined.contains("autodev controller already running for program")
+}
+
+fn render_wake_followthrough(followthrough: &WakeFollowthrough) -> String {
+    match followthrough.status {
+        WakeFollowthroughStatus::ObservedViaHeartbeat => {
+            "frontier moved after heartbeat".to_string()
+        }
+        WakeFollowthroughStatus::RouteFallbackRan => {
+            "frontier did not move immediately; ran repo-local Raspberry route fallback"
+                .to_string()
+        }
+        WakeFollowthroughStatus::RouteAlreadyActive => {
+            "frontier did not move immediately; route fallback reported an active autodev controller"
+                .to_string()
+        }
+        WakeFollowthroughStatus::NoObservedChange => {
+            "frontier still shows no observable change after heartbeat and route fallback"
+                .to_string()
+        }
+    }
 }
 
 fn summarize_frontier(program: &raspberry_supervisor::EvaluatedProgram) -> FrontierSummary {
@@ -1279,6 +1853,7 @@ fn build_frontier_entries(
     manifest: &ProgramManifest,
     manifest_path: &Path,
     program: &raspberry_supervisor::EvaluatedProgram,
+    wake_command: &str,
     route_command: &str,
     refresh_command: &str,
 ) -> Vec<FrontierSyncEntry> {
@@ -1292,6 +1867,7 @@ fn build_frontier_entries(
                 manifest,
                 manifest_path,
                 &lane,
+                wake_command,
                 route_command,
                 refresh_command,
             )
@@ -1304,6 +1880,7 @@ fn build_frontier_entry(
     manifest: &ProgramManifest,
     manifest_path: &Path,
     lane: &EvaluatedLane,
+    wake_command: &str,
     route_command: &str,
     refresh_command: &str,
 ) -> FrontierSyncEntry {
@@ -1360,11 +1937,18 @@ fn build_frontier_entry(
         last_stderr_snippet: lane.last_stderr_snippet.clone(),
         failure_kind: lane.failure_kind.map(|kind| format!("{kind:?}")),
         blocker_reason: blocker_reason_for_lane(lane),
+        wake_command: wake_command.to_string(),
         route_command: route_command.to_string(),
+        refresh_command: refresh_command.to_string(),
         artifact_paths,
         artifact_statuses,
         dependency_keys,
-        next_operator_move: next_operator_move_for_lane(lane, route_command, refresh_command),
+        next_operator_move: next_operator_move_for_lane(
+            lane,
+            wake_command,
+            route_command,
+            refresh_command,
+        ),
     }
 }
 
@@ -1405,12 +1989,13 @@ fn format_timestamp(value: Option<chrono::DateTime<Utc>>) -> Option<String> {
 
 fn next_operator_move_for_lane(
     lane: &EvaluatedLane,
+    wake_command: &str,
     route_command: &str,
     refresh_command: &str,
 ) -> String {
     match lane.status {
         LaneExecutionStatus::Ready => format!(
-            "Run `{route_command}` to let Raspberry dispatch ready work, then `{refresh_command}` to refresh Paperclip."
+            "Wake the orchestrator with `{wake_command}` to let Raspberry dispatch ready work, then `{refresh_command}` to refresh Paperclip. Use `{route_command}` as the direct fallback."
         ),
         LaneExecutionStatus::Running => {
             if let Some(run_id) = lane.current_run_id.as_ref() {
@@ -1423,16 +2008,16 @@ fn next_operator_move_for_lane(
             )
         }
         LaneExecutionStatus::Blocked => format!(
-            "Resolve the blocker in repo truth, then rerun `{route_command}` and `{refresh_command}`."
+            "Resolve the blocker in repo truth, then rerun `{wake_command}` and `{refresh_command}`."
         ),
         LaneExecutionStatus::Failed => {
             if let Some(run_id) = lane.last_run_id.as_ref() {
                 return format!(
-                    "Inspect `fabro inspect {run_id}` and `fabro logs {run_id}`, fix the underlying cause, then rerun `{route_command}` and `{refresh_command}`."
+                    "Inspect `fabro inspect {run_id}` and `fabro logs {run_id}`, fix the underlying cause, then rerun `{wake_command}` and `{refresh_command}`."
                 );
             }
             format!(
-                "Inspect the last failure, fix the cause in repo truth, then rerun `{route_command}` and `{refresh_command}`."
+                "Inspect the last failure, fix the cause in repo truth, then rerun `{wake_command}` and `{refresh_command}`."
             )
         }
         LaneExecutionStatus::Complete => format!(
@@ -1448,11 +2033,45 @@ fn render_frontier_summary(frontier: &FrontierSyncModel) -> String {
         format!("- blocked: {}", frontier.summary.blocked),
         format!("- failed: {}", frontier.summary.failed),
         format!("- complete: {}", frontier.summary.complete),
+        format!("- wake: `{}`", frontier.wake_command),
         format!("- route: `{}`", frontier.route_command),
         format!("- refresh: `{}`", frontier.refresh_command),
         format!("- status: `{}`", frontier.status_command),
     ]
     .join("\n")
+}
+
+fn render_frontier_detail_sections(frontier: &FrontierSyncModel) -> String {
+    let sections = [
+        render_frontier_status_section(frontier, LaneExecutionStatus::Running, "Running"),
+        render_frontier_status_section(frontier, LaneExecutionStatus::Failed, "Failed"),
+        render_frontier_status_section(frontier, LaneExecutionStatus::Ready, "Ready"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    sections.join("\n\n")
+}
+
+fn render_frontier_status_section(
+    frontier: &FrontierSyncModel,
+    status: LaneExecutionStatus,
+    title: &str,
+) -> Option<String> {
+    let entries = frontier
+        .entries
+        .iter()
+        .filter(|entry| entry.status == status)
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return None;
+    }
+    let mut body = vec![format!("## {title}")];
+    for entry in entries {
+        body.push(format!("### `{}`", entry.lane_key));
+        body.push(render_frontier_entry(Some(entry)));
+    }
+    Some(body.join("\n"))
 }
 
 fn render_frontier_entry(entry: Option<&FrontierSyncEntry>) -> String {
@@ -1490,6 +2109,15 @@ fn repo_relative_display(path: &Path, root: &Path) -> String {
 
 fn normalize_storage_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn paperclip_wake_command(paths: &PaperclipPaths, agent_slug: &str) -> String {
+    format!(
+        "fabro paperclip wake --target-repo {} --program {} --agent {}",
+        shell_quote(&paths.target_repo.display().to_string()),
+        shell_quote(&paths.program_id),
+        shell_quote(agent_slug),
+    )
 }
 
 fn paperclip_refresh_command(paths: &PaperclipPaths) -> String {
@@ -1535,8 +2163,11 @@ fn write_orchestrator_script(
 }
 
 fn write_run_script(path: &Path, paperclip_cmd: &str, data_dir: &Path) -> Result<()> {
+    let tmp_dir = paperclip_instance_root(data_dir).join("tmp");
     let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\nexec {} run --data-dir {}\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p {}\nexport TMPDIR={}\nexec {} run --data-dir {}\n",
+        shell_quote(&tmp_dir.display().to_string()),
+        shell_quote(&tmp_dir.display().to_string()),
         paperclip_cmd,
         shell_quote(&data_dir.display().to_string()),
     );
@@ -1583,11 +2214,13 @@ fn paperclip_command(override_value: Option<&str>) -> String {
 }
 
 fn paperclip_server_command(override_value: Option<&str>, data_dir: &Path) -> Result<String> {
+    let tmp_dir = paperclip_instance_root(data_dir).join("tmp");
     if let Some(value) = override_value {
         return Ok(format!(
-            "exec {} run --data-dir {}",
-            value,
-            shell_quote(&data_dir.display().to_string()),
+            "mkdir -p {tmp} && exec env TMPDIR={tmp} {cmd} run --data-dir {data_dir}",
+            tmp = shell_quote(&tmp_dir.display().to_string()),
+            cmd = value,
+            data_dir = shell_quote(&data_dir.display().to_string()),
         ));
     }
 
@@ -1598,8 +2231,10 @@ fn paperclip_server_command(override_value: Option<&str>, data_dir: &Path) -> Re
     let env_path = paperclip_instance_root(data_dir).join(".env");
     if local_repo.is_dir() && tsx_cli.exists() && server_entry.exists() {
         return Ok(format!(
-            "cd {} && exec env PAPERCLIP_HOME={} PAPERCLIP_CONFIG={} DOTENV_CONFIG_PATH={} node {} {}",
+            "cd {} && mkdir -p {} && exec env TMPDIR={} PAPERCLIP_HOME={} PAPERCLIP_CONFIG={} DOTENV_CONFIG_PATH={} PAPERCLIP_UI_DEV_MIDDLEWARE=true node {} {}",
             shell_quote(&local_repo.display().to_string()),
+            shell_quote(&tmp_dir.display().to_string()),
+            shell_quote(&tmp_dir.display().to_string()),
             shell_quote(&data_dir.display().to_string()),
             shell_quote(&config_path.display().to_string()),
             shell_quote(&env_path.display().to_string()),
@@ -1609,9 +2244,10 @@ fn paperclip_server_command(override_value: Option<&str>, data_dir: &Path) -> Re
     }
 
     Ok(format!(
-        "exec {} run --data-dir {}",
-        paperclip_command(None),
-        shell_quote(&data_dir.display().to_string()),
+        "mkdir -p {tmp} && exec env TMPDIR={tmp} {cmd} run --data-dir {data_dir}",
+        tmp = shell_quote(&tmp_dir.display().to_string()),
+        cmd = paperclip_command(None),
+        data_dir = shell_quote(&data_dir.display().to_string()),
     ))
 }
 
@@ -1894,6 +2530,377 @@ fn import_company_package(
     parse_json_stdout(&output.stdout, "paperclip company import")
 }
 
+async fn sync_company_secrets(
+    api_base: &str,
+    company_id: &str,
+    existing_state: Option<&serde_json::Value>,
+) -> Result<BTreeMap<String, SyncedSecret>> {
+    let existing_secrets = list_company_secrets(api_base, company_id).await?;
+    let mut synced = BTreeMap::new();
+
+    for spec in SECRET_SYNC_SPECS {
+        let Some(value) = std::env::var_os(spec.env_key).and_then(|value| {
+            let value = value.to_string_lossy().trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }) else {
+            continue;
+        };
+
+        let value_hash = sha256_hex(&value);
+        let previous = existing_state
+            .and_then(|state| state.get("secrets"))
+            .and_then(|value| value.get(spec.env_key));
+        let previous_secret_id = previous
+            .and_then(|value| value.get("secretId"))
+            .and_then(|value| value.as_str());
+        let previous_hash = previous
+            .and_then(|value| value.get("valueHash"))
+            .and_then(|value| value.as_str());
+        let existing_secret = previous_secret_id
+            .and_then(|secret_id| {
+                existing_secrets
+                    .iter()
+                    .find(|secret| secret.id == secret_id)
+            })
+            .or_else(|| {
+                existing_secrets
+                    .iter()
+                    .find(|secret| secret.name == spec.secret_name)
+            });
+
+        let secret = if let Some(secret) = existing_secret {
+            if previous_hash != Some(value_hash.as_str()) {
+                rotate_company_secret(api_base, &secret.id, &value).await?
+            } else {
+                secret.clone()
+            }
+        } else {
+            create_company_secret(
+                api_base,
+                company_id,
+                spec.secret_name,
+                spec.description,
+                &value,
+            )
+            .await?
+        };
+
+        synced.insert(
+            spec.env_key.to_string(),
+            SyncedSecret {
+                secret_id: secret.id,
+                name: secret.name,
+                value_hash,
+            },
+        );
+    }
+
+    Ok(synced)
+}
+
+fn synced_secrets_to_json(secrets: &BTreeMap<String, SyncedSecret>) -> serde_json::Value {
+    let mut values = serde_json::Map::new();
+    for (env_key, secret) in secrets {
+        values.insert(
+            env_key.clone(),
+            json!({
+                "secretId": secret.secret_id,
+                "name": secret.name,
+                "valueHash": secret.value_hash,
+            }),
+        );
+    }
+    serde_json::Value::Object(values)
+}
+
+async fn list_company_secrets(api_base: &str, company_id: &str) -> Result<Vec<PaperclipSecret>> {
+    reqwest::Client::new()
+        .get(format!("{api_base}/api/companies/{company_id}/secrets"))
+        .send()
+        .await
+        .context("failed to list paperclip secrets")?
+        .error_for_status()
+        .context("paperclip secret list request failed")?
+        .json::<Vec<PaperclipSecret>>()
+        .await
+        .context("failed to parse paperclip secret list response")
+}
+
+async fn create_company_secret(
+    api_base: &str,
+    company_id: &str,
+    name: &str,
+    description: &str,
+    value: &str,
+) -> Result<PaperclipSecret> {
+    reqwest::Client::new()
+        .post(format!("{api_base}/api/companies/{company_id}/secrets"))
+        .json(&json!({
+            "name": name,
+            "description": description,
+            "value": value,
+        }))
+        .send()
+        .await
+        .context("failed to create paperclip secret")?
+        .error_for_status()
+        .context("paperclip secret create request failed")?
+        .json::<PaperclipSecret>()
+        .await
+        .context("failed to parse created paperclip secret")
+}
+
+async fn rotate_company_secret(
+    api_base: &str,
+    secret_id: &str,
+    value: &str,
+) -> Result<PaperclipSecret> {
+    reqwest::Client::new()
+        .post(format!("{api_base}/api/secrets/{secret_id}/rotate"))
+        .json(&json!({
+            "value": value,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to rotate paperclip secret {secret_id}"))?
+        .error_for_status()
+        .with_context(|| format!("paperclip secret rotate request failed for {secret_id}"))?
+        .json::<PaperclipSecret>()
+        .await
+        .context("failed to parse rotated paperclip secret")
+}
+
+async fn wire_generated_agent_secrets(
+    api_base: &str,
+    bundle_agents: &[BundleAgent],
+    imported_agents: &[PaperclipImportAgent],
+    synced_secrets: &BTreeMap<String, SyncedSecret>,
+) -> Result<()> {
+    for bundle_agent in bundle_agents {
+        let Some(imported) = imported_agents
+            .iter()
+            .find(|agent| agent.slug == bundle_agent.slug)
+        else {
+            continue;
+        };
+        let Some(agent_id) = imported.id.as_deref() else {
+            continue;
+        };
+        let Some(secret_env_key) = secret_env_key_for_adapter(bundle_agent.adapter_type) else {
+            continue;
+        };
+        let Some(secret) = synced_secrets.get(secret_env_key) else {
+            continue;
+        };
+
+        let agent = get_managed_agent(api_base, agent_id).await?;
+        let existing_config = agent
+            .adapter_config
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let existing_env = existing_config
+            .get("env")
+            .and_then(|value| value.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let desired_binding = json!({
+            "type": "secret_ref",
+            "secretId": secret.secret_id,
+            "version": "latest",
+        });
+        if existing_env.get(secret_env_key) == Some(&desired_binding) {
+            continue;
+        }
+
+        let mut next_env = existing_env;
+        next_env.insert(secret_env_key.to_string(), desired_binding);
+        let mut next_config = existing_config;
+        next_config.insert("env".to_string(), serde_json::Value::Object(next_env));
+        patch_managed_agent_config(api_base, agent_id, &serde_json::Value::Object(next_config))
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn secret_env_key_for_adapter(adapter_type: &str) -> Option<&'static str> {
+    match adapter_type {
+        "claude_local" => Some("ANTHROPIC_API_KEY"),
+        _ => None,
+    }
+}
+
+async fn get_managed_agent(api_base: &str, agent_id: &str) -> Result<PaperclipManagedAgent> {
+    reqwest::Client::new()
+        .get(format!("{api_base}/api/agents/{agent_id}"))
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch paperclip agent {agent_id}"))?
+        .error_for_status()
+        .with_context(|| format!("paperclip agent get request failed for {agent_id}"))?
+        .json::<PaperclipManagedAgent>()
+        .await
+        .context("failed to parse paperclip agent response")
+}
+
+async fn patch_managed_agent_config(
+    api_base: &str,
+    agent_id: &str,
+    adapter_config: &serde_json::Value,
+) -> Result<PaperclipManagedAgent> {
+    reqwest::Client::new()
+        .patch(format!("{api_base}/api/agents/{agent_id}"))
+        .json(&json!({
+            "adapterConfig": adapter_config,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to patch paperclip agent {agent_id}"))?
+        .error_for_status()
+        .with_context(|| format!("paperclip agent patch request failed for {agent_id}"))?
+        .json::<PaperclipManagedAgent>()
+        .await
+        .context("failed to parse patched paperclip agent")
+}
+
+fn sha256_hex(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+async fn resolve_managed_agent(
+    api_base: &str,
+    company_id: &str,
+    agent_slug: &str,
+    existing_state: Option<&serde_json::Value>,
+) -> Result<PaperclipManagedAgent> {
+    if let Some(agent_id) = existing_state
+        .and_then(|state| state.get("agents"))
+        .and_then(|value| value.as_array())
+        .and_then(|agents| {
+            agents.iter().find_map(|agent| {
+                (agent.get("slug").and_then(|value| value.as_str()) == Some(agent_slug))
+                    .then(|| agent.get("id").and_then(|value| value.as_str()))
+                    .flatten()
+            })
+        })
+    {
+        return get_managed_agent(api_base, agent_id).await;
+    }
+
+    let agents = list_company_agents(api_base, company_id).await?;
+    agents
+        .into_iter()
+        .find(|agent| agent.slug.as_deref() == Some(agent_slug))
+        .with_context(|| format!("paperclip agent `{agent_slug}` not found"))
+}
+
+async fn list_company_agents(
+    api_base: &str,
+    company_id: &str,
+) -> Result<Vec<PaperclipManagedAgent>> {
+    reqwest::Client::new()
+        .get(format!("{api_base}/api/companies/{company_id}/agents"))
+        .send()
+        .await
+        .context("failed to list paperclip agents")?
+        .error_for_status()
+        .context("paperclip agent list request failed")?
+        .json::<Vec<PaperclipManagedAgent>>()
+        .await
+        .context("failed to parse paperclip agent list response")
+}
+
+async fn invoke_agent_heartbeat(
+    api_base: &str,
+    agent_id: &str,
+) -> Result<PaperclipHeartbeatInvokeResponse> {
+    reqwest::Client::new()
+        .post(format!("{api_base}/api/agents/{agent_id}/heartbeat/invoke"))
+        .send()
+        .await
+        .with_context(|| format!("failed to invoke heartbeat for paperclip agent {agent_id}"))?
+        .error_for_status()
+        .with_context(|| format!("heartbeat invoke request failed for paperclip agent {agent_id}"))?
+        .json::<PaperclipHeartbeatInvokeResponse>()
+        .await
+        .context("failed to parse heartbeat invoke response")
+}
+
+async fn fetch_company_cost_summary(
+    api_base: &str,
+    company_id: &str,
+) -> Result<PaperclipCostSummary> {
+    reqwest::Client::new()
+        .get(format!(
+            "{api_base}/api/companies/{company_id}/costs/summary"
+        ))
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch company cost summary for {company_id}"))?
+        .error_for_status()
+        .context("paperclip company cost summary request failed")?
+        .json::<PaperclipCostSummary>()
+        .await
+        .context("failed to parse company cost summary")
+}
+
+async fn fetch_company_budget_overview(
+    api_base: &str,
+    company_id: &str,
+) -> Result<PaperclipBudgetOverview> {
+    reqwest::Client::new()
+        .get(format!(
+            "{api_base}/api/companies/{company_id}/budgets/overview"
+        ))
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch company budget overview for {company_id}"))?
+        .error_for_status()
+        .context("paperclip company budget overview request failed")?
+        .json::<PaperclipBudgetOverview>()
+        .await
+        .context("failed to parse company budget overview")
+}
+
+async fn fetch_pending_approval_count(api_base: &str, company_id: &str) -> Result<usize> {
+    let approvals = reqwest::Client::new()
+        .get(format!("{api_base}/api/companies/{company_id}/approvals"))
+        .query(&[("status", "pending")])
+        .send()
+        .await
+        .with_context(|| format!("failed to list pending approvals for {company_id}"))?
+        .error_for_status()
+        .context("paperclip pending approvals request failed")?
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .context("failed to parse pending approvals response")?;
+    Ok(approvals.len())
+}
+
+fn render_heartbeat_invoke_result(response: &PaperclipHeartbeatInvokeResponse) -> String {
+    match (response.id.as_deref(), response.status.as_deref()) {
+        (_, Some("skipped")) => "skipped".to_string(),
+        (Some(run_id), Some(status)) => format!("{status} ({run_id})"),
+        (Some(run_id), None) => format!("accepted ({run_id})"),
+        (None, Some(status)) => status.to_string(),
+        (None, None) => "accepted".to_string(),
+    }
+}
+
 fn install_local_cli_for_agents(
     paperclip_cmd: &str,
     data_dir: &Path,
@@ -1985,6 +2992,22 @@ struct PaperclipGoal {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipCostSummary {
+    spend_cents: u64,
+    budget_cents: u64,
+    utilization_percent: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipBudgetOverview {
+    paused_agent_count: u64,
+    paused_project_count: u64,
+    pending_approval_count: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct PaperclipProject {
     id: String,
     name: String,
@@ -2008,8 +3031,74 @@ struct PaperclipCompany {
 struct PaperclipManagedAgent {
     id: String,
     #[serde(default)]
+    slug: Option<String>,
+    #[serde(rename = "adapterConfig", default)]
+    adapter_config: Option<serde_json::Value>,
+    #[serde(default)]
     metadata: Option<serde_json::Value>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipIssueDocument {
+    latest_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PaperclipSecret {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipHeartbeatInvokeResponse {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+struct SecretSyncSpec {
+    env_key: &'static str,
+    secret_name: &'static str,
+    description: &'static str,
+}
+
+struct SyncedSecret {
+    secret_id: String,
+    name: String,
+    value_hash: String,
+}
+
+struct AttachmentSpec {
+    filename: String,
+    path: PathBuf,
+    content_type: &'static str,
+}
+
+struct AttachmentSyncResult {
+    synced_count: usize,
+    attachments_by_scope: BTreeMap<String, BTreeMap<String, PaperclipAttachment>>,
+}
+
+struct SyncIssueAttachmentsResult {
+    synced_count: usize,
+    attachments_by_filename: BTreeMap<String, PaperclipAttachment>,
+}
+
+const SECRET_SYNC_SPECS: [SecretSyncSpec; 2] = [
+    SecretSyncSpec {
+        env_key: "OPENAI_API_KEY",
+        secret_name: "openai-api-key",
+        description: "Fabro-synced OpenAI API key for generated local agents",
+    },
+    SecretSyncSpec {
+        env_key: "ANTHROPIC_API_KEY",
+        secret_name: "anthropic-api-key",
+        description: "Fabro-synced Anthropic API key for generated local agents",
+    },
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2023,6 +3112,25 @@ struct PaperclipIssue {
     parent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipWorkProduct {
+    id: String,
+    #[serde(default)]
+    external_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperclipAttachment {
+    id: String,
+    #[serde(default)]
+    original_filename: Option<String>,
+    #[serde(rename = "contentPath", default)]
+    content_path: Option<String>,
+    sha256: String,
+}
+
 fn derive_bootstrap_mission(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -2031,7 +3139,8 @@ fn derive_bootstrap_mission(
     let spec_title = latest_markdown_title(target_repo, "specs")
         .or_else(|| markdown_title_for_file(&target_repo.join("SPEC.md")))
         .unwrap_or_else(|| format!("{} specification", humanize(&blueprint.program.id)));
-    let plan_title = latest_markdown_title(target_repo, "plans")
+    let plan_title = preferred_plan_title(target_repo)
+        .or_else(|| latest_markdown_title(target_repo, "plans"))
         .unwrap_or_else(|| format!("{} execution plan", humanize(&blueprint.program.id)));
     let fronts = blueprint
         .units
@@ -2064,6 +3173,83 @@ fn derive_bootstrap_mission(
         ),
         workspace_name: format!("{} repo", humanize(&blueprint.program.id)),
     })
+}
+
+fn preferred_plan_title(target_repo: &Path) -> Option<String> {
+    let path = target_repo.join("plans");
+    let mut entries = std::fs::read_dir(path)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .collect::<Vec<_>>();
+    entries.sort();
+    if entries.is_empty() {
+        return None;
+    }
+
+    let mut docs = entries
+        .into_iter()
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            let title = markdown_title_for_file(&path)?;
+            Some((path, title, body))
+        })
+        .collect::<Vec<_>>();
+    let reference_counts = docs
+        .iter()
+        .flat_map(|(_, _, body)| markdown_plan_references(body))
+        .fold(BTreeMap::<PathBuf, usize>::new(), |mut counts, path| {
+            *counts.entry(path).or_insert(0) += 1;
+            counts
+        });
+
+    docs.sort_by(|(left_path, left_title, _), (right_path, right_title, _)| {
+        let left_score = preferred_plan_score(left_path, left_title, &reference_counts);
+        let right_score = preferred_plan_score(right_path, right_title, &reference_counts);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    docs.first().map(|(_, title, _)| title.clone())
+}
+
+fn preferred_plan_score(
+    path: &Path,
+    title: &str,
+    reference_counts: &BTreeMap<PathBuf, usize>,
+) -> i64 {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let title = title.to_ascii_lowercase();
+    let mut score = reference_counts.get(path).copied().unwrap_or(0) as i64 * 100;
+    if stem.contains("master-plan") || title.contains("master plan") {
+        score += 2_000;
+    }
+    if stem.starts_with("001-") {
+        score += 300;
+    }
+    if stem.contains("mvp") || title.contains("mvp") {
+        score += 150;
+    }
+    if title.contains("workspace") {
+        score += 25;
+    }
+    score
+}
+
+fn markdown_plan_references(body: &str) -> Vec<PathBuf> {
+    body.split('`')
+        .filter_map(|chunk| {
+            let trimmed = chunk.trim();
+            if !trimmed.starts_with("plans/") || !trimmed.ends_with(".md") {
+                return None;
+            }
+            Some(PathBuf::from(trimmed))
+        })
+        .collect()
 }
 
 fn latest_markdown_title(target_repo: &Path, directory: &str) -> Option<String> {
@@ -2138,6 +3324,189 @@ fn ensure_private_data_dir(data_dir: &Path, target_repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_target_repo_initialized(target_repo: &Path) -> Result<GitBootstrapResult> {
+    ensure_target_repo_gitignore(target_repo)?;
+    let git_marker = target_repo.join(".git");
+    let initialized = if git_marker.exists() {
+        false
+    } else {
+        let output = Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(target_repo)
+            .output()
+            .with_context(|| format!("failed to initialize git repo {}", target_repo.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git init failed for {}: {}",
+                target_repo.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        true
+    };
+
+    let has_commit = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(target_repo)
+        .output()
+        .with_context(|| format!("failed to inspect git repo {}", target_repo.display()))?
+        .status
+        .success();
+    if has_commit {
+        return Ok(GitBootstrapResult {
+            initialized,
+            committed: false,
+        });
+    }
+
+    let add = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(target_repo)
+        .output()
+        .with_context(|| format!("failed to stage bootstrap repo {}", target_repo.display()))?;
+    if !add.status.success() {
+        bail!(
+            "git add failed for {}: {}",
+            target_repo.display(),
+            String::from_utf8_lossy(&add.stderr)
+        );
+    }
+
+    let diff = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(target_repo)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to inspect staged bootstrap diff {}",
+                target_repo.display()
+            )
+        })?;
+    if diff.status.success() {
+        return Ok(GitBootstrapResult {
+            initialized,
+            committed: false,
+        });
+    }
+
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Fabro Bootstrap",
+            "-c",
+            "user.email=bootstrap@fabro.local",
+            "commit",
+            "-m",
+            "chore(repo): bootstrap fabro workspace",
+        ])
+        .current_dir(target_repo)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to create initial git commit for {}",
+                target_repo.display()
+            )
+        })?;
+    if !commit.status.success() {
+        bail!(
+            "git commit failed for {}: {}",
+            target_repo.display(),
+            String::from_utf8_lossy(&commit.stderr)
+        );
+    }
+
+    Ok(GitBootstrapResult {
+        initialized,
+        committed: true,
+    })
+}
+
+fn ensure_target_repo_gitignore(target_repo: &Path) -> Result<()> {
+    let path = target_repo.join(".gitignore");
+    let mut lines = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut changed = false;
+    for entry in BOOTSTRAP_GITIGNORE_LINES {
+        if lines.iter().any(|line| line.trim() == *entry) {
+            continue;
+        }
+        lines.push((*entry).to_string());
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    let mut body = lines.join("\n");
+    body.push('\n');
+    std::fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn prune_tracked_transient_paths(target_repo: &Path) -> Result<GitTransientCleanupResult> {
+    if !target_repo.join(".git").exists() {
+        return Ok(GitTransientCleanupResult { removed_paths: 0 });
+    }
+
+    let ls_files = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(target_repo)
+        .output()
+        .with_context(|| format!("failed to list tracked files in {}", target_repo.display()))?;
+    if !ls_files.status.success() {
+        bail!(
+            "git ls-files failed for {}: {}",
+            target_repo.display(),
+            String::from_utf8_lossy(&ls_files.stderr)
+        );
+    }
+
+    let tracked = ls_files
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| String::from_utf8(entry.to_vec()).ok())
+        .filter(|path| {
+            path == ".paperclip/.gitignore"
+                || path.starts_with(".raspberry/")
+                || path.starts_with(".paperclip/")
+                || path.ends_with("/bootstrap-state.json")
+        })
+        .collect::<Vec<_>>();
+    if tracked.is_empty() {
+        return Ok(GitTransientCleanupResult { removed_paths: 0 });
+    }
+
+    let mut command = Command::new("git");
+    command
+        .args(["rm", "--cached", "--ignore-unmatch", "-r", "--"])
+        .args(&tracked)
+        .current_dir(target_repo);
+    let output = command.output().with_context(|| {
+        format!(
+            "failed to prune tracked runtime files in {}",
+            target_repo.display()
+        )
+    })?;
+    if !output.status.success() {
+        bail!(
+            "git rm --cached failed for {}: {}",
+            target_repo.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(GitTransientCleanupResult {
+        removed_paths: tracked.len(),
+    })
+}
+
 fn write_secrets_gitignore(directory: &Path) -> Result<()> {
     let gitignore = directory.join(".gitignore");
     if gitignore.exists() {
@@ -2167,6 +3536,7 @@ fn project_workspace_metadata(
         "program": frontier.program.clone(),
         "manifestPath": repo_relative_display(&frontier.manifest_path, target_repo),
         "statePath": repo_relative_display(&frontier.state_path, target_repo),
+        "wakeCommand": frontier.wake_command.clone(),
         "routeCommand": frontier.route_command.clone(),
         "refreshCommand": frontier.refresh_command.clone(),
         "statusCommand": frontier.status_command.clone(),
@@ -2410,7 +3780,38 @@ async fn ensure_company_project(
         preferred_workspace_id,
     )
     .await?;
+    let project = ensure_project_execution_workspace_policy(api_base, &project, &workspace).await?;
     Ok(PaperclipProjectSync { project, workspace })
+}
+
+async fn ensure_project_execution_workspace_policy(
+    api_base: &str,
+    project: &PaperclipProject,
+    workspace: &PaperclipWorkspace,
+) -> Result<PaperclipProject> {
+    reqwest::Client::new()
+        .patch(format!("{api_base}/api/projects/{}", project.id))
+        .json(&json!({
+            "executionWorkspacePolicy": {
+                "enabled": true,
+                "defaultMode": "shared_workspace",
+                "allowIssueOverride": true,
+                "defaultProjectWorkspaceId": workspace.id,
+            }
+        }))
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "failed to update project execution workspace policy {}",
+                project.id
+            )
+        })?
+        .error_for_status()
+        .context("paperclip project execution workspace policy update failed")?
+        .json::<PaperclipProject>()
+        .await
+        .context("failed to parse project after workspace policy update")
 }
 
 async fn ensure_project_workspace(
@@ -2494,6 +3895,7 @@ async fn sync_coordination_issues(
     company_id: &str,
     goal_id: &str,
     project_id: &str,
+    project_workspace_id: &str,
     frontier: &FrontierSyncModel,
     bundle_agents: &[BundleAgent],
     imported_agents: &[PaperclipImportAgent],
@@ -2523,7 +3925,11 @@ async fn sync_coordination_issues(
         goal_id,
         project_id,
         root_existing.as_ref(),
-        &desired_root_issue(frontier, orchestrator_agent_id.clone()),
+        &desired_root_issue(
+            frontier,
+            orchestrator_agent_id.clone(),
+            project_workspace_id,
+        ),
     )
     .await?;
     synced.insert(root_key, root_issue.id.clone());
@@ -2536,6 +3942,7 @@ async fn sync_coordination_issues(
             orchestrator_agent_id.clone(),
             lane_agent_ids.get(&entry.lane_key).cloned(),
             existing_issue.is_some(),
+            project_workspace_id,
         );
         let Some(desired) = desired else {
             continue;
@@ -2569,28 +3976,272 @@ async fn sync_coordination_issues(
     Ok(synced)
 }
 
+async fn sync_coordination_documents(
+    api_base: &str,
+    frontier: &FrontierSyncModel,
+    synced_issue_ids: &BTreeMap<String, String>,
+) -> Result<usize> {
+    let mut synced = 0usize;
+
+    if let Some(issue_id) = synced_issue_ids.get(&frontier_root_sync_key(&frontier.program)) {
+        upsert_issue_plan_document(
+            api_base,
+            issue_id,
+            "Frontier plan",
+            &render_root_issue_plan_document(frontier),
+        )
+        .await?;
+        synced += 1;
+    }
+
+    for entry in &frontier.entries {
+        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+            continue;
+        };
+        upsert_issue_plan_document(
+            api_base,
+            issue_id,
+            &format!("{} plan", entry.lane_title),
+            &render_lane_issue_plan_document(entry),
+        )
+        .await?;
+        synced += 1;
+    }
+
+    Ok(synced)
+}
+
+async fn sync_coordination_comments(
+    api_base: &str,
+    frontier: &FrontierSyncModel,
+    synced_issue_ids: &BTreeMap<String, String>,
+    existing_state: Option<&serde_json::Value>,
+) -> Result<usize> {
+    let previous_snapshots = synced_snapshots_from_state(existing_state);
+    let current_snapshots = frontier_snapshots(frontier);
+    let mut comment_count = 0usize;
+
+    let root_key = frontier_root_sync_key(&frontier.program);
+    if let (Some(issue_id), Some(current_snapshot)) = (
+        synced_issue_ids.get(&root_key),
+        current_snapshots.get(&root_key),
+    ) {
+        let previous_snapshot = previous_snapshots.get(&root_key);
+        if snapshot_changed(previous_snapshot, current_snapshot) {
+            post_issue_comment(
+                api_base,
+                issue_id,
+                &render_root_transition_comment(frontier, previous_snapshot, current_snapshot),
+            )
+            .await?;
+            comment_count += 1;
+        }
+    }
+
+    for entry in &frontier.entries {
+        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+            continue;
+        };
+        let Some(current_snapshot) = current_snapshots.get(&entry.sync_key) else {
+            continue;
+        };
+        let previous_snapshot = previous_snapshots.get(&entry.sync_key);
+        if snapshot_changed(previous_snapshot, current_snapshot) {
+            post_issue_comment(
+                api_base,
+                issue_id,
+                &render_lane_transition_comment(entry, previous_snapshot, current_snapshot),
+            )
+            .await?;
+            comment_count += 1;
+        }
+    }
+
+    Ok(comment_count)
+}
+
+async fn sync_coordination_work_products(
+    api_base: &str,
+    frontier: &FrontierSyncModel,
+    synced_issue_ids: &BTreeMap<String, String>,
+    attachments_by_scope: &BTreeMap<String, BTreeMap<String, PaperclipAttachment>>,
+) -> Result<usize> {
+    let mut synced = 0usize;
+    let root_key = frontier_root_sync_key(&frontier.program);
+
+    if let Some(issue_id) = synced_issue_ids.get(&root_key) {
+        synced += sync_issue_work_products(
+            api_base,
+            issue_id,
+            &desired_root_work_products(frontier, attachments_by_scope.get(&root_key), api_base),
+        )
+        .await?;
+    }
+
+    for entry in &frontier.entries {
+        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+            continue;
+        };
+        synced += sync_issue_work_products(
+            api_base,
+            issue_id,
+            &desired_lane_work_products(entry, attachments_by_scope.get(&entry.sync_key), api_base),
+        )
+        .await?;
+    }
+
+    Ok(synced)
+}
+
+async fn sync_coordination_attachments(
+    api_base: &str,
+    company_id: &str,
+    target_repo: &Path,
+    frontier: &FrontierSyncModel,
+    synced_issue_ids: &BTreeMap<String, String>,
+) -> Result<AttachmentSyncResult> {
+    let mut attachments_by_scope = BTreeMap::new();
+    let mut synced_count = 0usize;
+
+    let root_key = frontier_root_sync_key(&frontier.program);
+    if let Some(issue_id) = synced_issue_ids.get(&root_key) {
+        let synced = sync_issue_attachments(
+            api_base,
+            company_id,
+            issue_id,
+            &desired_root_attachment_specs(frontier),
+        )
+        .await?;
+        synced_count += synced.synced_count;
+        attachments_by_scope.insert(root_key, synced.attachments_by_filename);
+    }
+
+    for entry in &frontier.entries {
+        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+            continue;
+        };
+        let synced = sync_issue_attachments(
+            api_base,
+            company_id,
+            issue_id,
+            &desired_lane_attachment_specs(target_repo, entry),
+        )
+        .await?;
+        synced_count += synced.synced_count;
+        attachments_by_scope.insert(entry.sync_key.clone(), synced.attachments_by_filename);
+    }
+
+    Ok(AttachmentSyncResult {
+        synced_count,
+        attachments_by_scope,
+    })
+}
+
+fn desired_root_attachment_specs(frontier: &FrontierSyncModel) -> Vec<AttachmentSpec> {
+    vec![
+        AttachmentSpec {
+            filename: format!("{}-program-manifest.yaml", frontier.program),
+            path: frontier.manifest_path.clone(),
+            content_type: "text/plain",
+        },
+        AttachmentSpec {
+            filename: format!("{}-program-state.json", frontier.program),
+            path: frontier.state_path.clone(),
+            content_type: "application/json",
+        },
+    ]
+}
+
+fn desired_lane_attachment_specs(
+    target_repo: &Path,
+    entry: &FrontierSyncEntry,
+) -> Vec<AttachmentSpec> {
+    entry
+        .artifact_paths
+        .iter()
+        .map(|artifact| AttachmentSpec {
+            filename: lane_attachment_filename(entry, artifact),
+            path: target_repo.join(artifact),
+            content_type: content_type_for_path(artifact),
+        })
+        .collect()
+}
+
+async fn sync_issue_attachments(
+    api_base: &str,
+    company_id: &str,
+    issue_id: &str,
+    desired: &[AttachmentSpec],
+) -> Result<SyncIssueAttachmentsResult> {
+    if desired.is_empty() {
+        return Ok(SyncIssueAttachmentsResult {
+            synced_count: 0,
+            attachments_by_filename: BTreeMap::new(),
+        });
+    }
+
+    let existing = list_issue_attachments(api_base, issue_id).await?;
+    let managed = existing
+        .into_iter()
+        .filter_map(|attachment| {
+            let filename = attachment.original_filename.clone()?;
+            Some((filename, attachment))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut attachments_by_filename = managed.clone();
+    let mut synced = 0usize;
+
+    for attachment in desired {
+        if !attachment.path.exists() {
+            continue;
+        }
+        let bytes = std::fs::read(&attachment.path)
+            .with_context(|| format!("failed to read {}", attachment.path.display()))?;
+        let file_hash = sha256_bytes_hex(&bytes);
+        if let Some(existing_attachment) = managed.get(&attachment.filename) {
+            if existing_attachment.sha256 == file_hash {
+                attachments_by_filename
+                    .insert(attachment.filename.clone(), existing_attachment.clone());
+                synced += 1;
+                continue;
+            }
+            delete_issue_attachment(api_base, &existing_attachment.id).await?;
+        }
+        let uploaded = upload_issue_attachment(
+            api_base,
+            company_id,
+            issue_id,
+            &attachment.filename,
+            attachment.content_type,
+            bytes,
+        )
+        .await?;
+        attachments_by_filename.insert(attachment.filename.clone(), uploaded);
+        synced += 1;
+    }
+
+    Ok(SyncIssueAttachmentsResult {
+        synced_count: synced,
+        attachments_by_filename,
+    })
+}
+
 fn desired_root_issue(
     frontier: &FrontierSyncModel,
     assignee_agent_id: Option<String>,
+    project_workspace_id: &str,
 ) -> DesiredIssue {
-    let status = if frontier.summary.failed > 0 || frontier.summary.blocked > 0 {
-        "blocked"
-    } else if frontier.summary.running > 0 {
-        "in_progress"
-    } else if frontier.summary.ready > 0 {
-        "todo"
-    } else {
-        "done"
-    };
+    let status = root_issue_status(frontier);
 
     DesiredIssue {
         title: format!("Raspberry frontier: {}", humanize(&frontier.program)),
         description: with_sync_marker(
             format!(
-                "This issue tracks the live Raspberry frontier for `{}`.\n\nSummary:\n{}\n\nLane sets:\n{}\n\nExecution route:\n- `{}`\n- Refresh Paperclip with `{}`.\n- Inspect local status with `{}`.\n",
+                "This issue tracks the live Raspberry frontier for `{}`.\n\nSummary:\n{}\n\nLane sets:\n{}\n\nExecution route:\n- Wake the orchestrator with `{}`.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}`.\n- Inspect local status with `{}`.\n- See the synced `plan` document for the current operator playbook.\n",
                 frontier.program,
                 render_frontier_summary(frontier),
                 render_frontier_lane_sets(frontier),
+                frontier.wake_command,
                 frontier.route_command,
                 frontier.refresh_command,
                 frontier.status_command,
@@ -2601,6 +4252,11 @@ fn desired_root_issue(
         priority: "high".to_string(),
         parent_id: None,
         assignee_agent_id,
+        project_workspace_id: Some(project_workspace_id.to_string()),
+        assignee_adapter_overrides: Some(json!({
+            "useProjectWorkspace": true,
+        })),
+        execution_workspace_preference: Some("reuse_existing".to_string()),
     }
 }
 
@@ -2610,6 +4266,7 @@ fn desired_lane_issue(
     fallback_assignee_id: Option<String>,
     direct_assignee_id: Option<String>,
     existing_issue: bool,
+    project_workspace_id: &str,
 ) -> Option<DesiredIssue> {
     if entry.status == LaneExecutionStatus::Complete && !existing_issue {
         return None;
@@ -2640,6 +4297,11 @@ fn desired_lane_issue(
         priority: priority.to_string(),
         parent_id: Some(root_issue_id.to_string()),
         assignee_agent_id,
+        project_workspace_id: Some(project_workspace_id.to_string()),
+        assignee_adapter_overrides: Some(json!({
+            "useProjectWorkspace": true,
+        })),
+        execution_workspace_preference: Some("reuse_existing".to_string()),
     })
 }
 
@@ -2657,7 +4319,305 @@ fn desired_archived_issue(sync_key: String, issue: &PaperclipIssue) -> DesiredIs
         priority: "low".to_string(),
         parent_id: issue.parent_id.clone(),
         assignee_agent_id: None,
+        project_workspace_id: None,
+        assignee_adapter_overrides: None,
+        execution_workspace_preference: None,
     }
+}
+
+fn render_root_issue_plan_document(frontier: &FrontierSyncModel) -> String {
+    format!(
+        "# Raspberry Frontier\n\n## Summary\n\n{}\n\n## Lane Sets\n\n{}\n\n## Operator Loop\n\n1. Check current state with `{}`.\n2. Wake the orchestrator with `{}`.\n3. Use `{}` only as the direct repo-local fallback.\n4. Refresh Paperclip with `{}` after the frontier moves.\n",
+        render_frontier_summary(frontier),
+        render_frontier_lane_sets(frontier),
+        frontier.status_command,
+        frontier.wake_command,
+        frontier.route_command,
+        frontier.refresh_command,
+    )
+}
+
+fn render_lane_issue_plan_document(entry: &FrontierSyncEntry) -> String {
+    format!(
+        "# {}\n\n## Current Frontier State\n\n{}\n\n## Next Operator Move\n\n- {}\n\n## Commands\n\n- Wake the orchestrator: `{}`\n- Direct repo-local fallback: `{}`\n- Refresh Paperclip: `{}`\n\n## Artifacts\n\n{}\n\n## Dependencies\n\n{}\n",
+        entry.lane_title,
+        render_frontier_entry(Some(entry)),
+        entry.next_operator_move,
+        entry.wake_command,
+        entry.route_command,
+        entry.refresh_command,
+        bullet_block(&entry.artifact_statuses, "No curated artifacts recorded."),
+        bullet_block(&entry.dependency_keys, "No explicit dependencies."),
+    )
+}
+
+async fn upsert_issue_plan_document(
+    api_base: &str,
+    issue_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    let existing = get_issue_document(api_base, issue_id, "plan").await?;
+    let response = reqwest::Client::new()
+        .put(format!("{api_base}/api/issues/{issue_id}/documents/plan"))
+        .json(&json!({
+            "title": title,
+            "format": "markdown",
+            "body": body,
+            "changeSummary": "Synced from Raspberry frontier",
+            "baseRevisionId": existing.as_ref().and_then(|doc| doc.latest_revision_id.as_ref()),
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to upsert plan document for issue {issue_id}"))?;
+    if response.status() == reqwest::StatusCode::CONFLICT {
+        let latest = get_issue_document(api_base, issue_id, "plan").await?;
+        reqwest::Client::new()
+            .put(format!("{api_base}/api/issues/{issue_id}/documents/plan"))
+            .json(&json!({
+                "title": title,
+                "format": "markdown",
+                "body": body,
+                "changeSummary": "Synced from Raspberry frontier",
+                "baseRevisionId": latest.as_ref().and_then(|doc| doc.latest_revision_id.as_ref()),
+            }))
+            .send()
+            .await
+            .with_context(|| format!("failed to retry plan document upsert for issue {issue_id}"))?
+            .error_for_status()
+            .with_context(|| format!("plan document retry request failed for issue {issue_id}"))?;
+        return Ok(());
+    }
+    response
+        .error_for_status()
+        .with_context(|| format!("plan document request failed for issue {issue_id}"))?;
+    Ok(())
+}
+
+async fn get_issue_document(
+    api_base: &str,
+    issue_id: &str,
+    key: &str,
+) -> Result<Option<PaperclipIssueDocument>> {
+    let response = reqwest::Client::new()
+        .get(format!("{api_base}/api/issues/{issue_id}/documents/{key}"))
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch issue document `{key}` for issue {issue_id}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    response
+        .error_for_status()
+        .with_context(|| format!("issue document get request failed for issue {issue_id}"))?
+        .json::<PaperclipIssueDocument>()
+        .await
+        .map(Some)
+        .context("failed to parse issue document response")
+}
+
+async fn post_issue_comment(api_base: &str, issue_id: &str, body: &str) -> Result<()> {
+    reqwest::Client::new()
+        .post(format!("{api_base}/api/issues/{issue_id}/comments"))
+        .json(&json!({
+            "body": body,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to post paperclip comment for issue {issue_id}"))?
+        .error_for_status()
+        .with_context(|| format!("paperclip issue comment request failed for issue {issue_id}"))?;
+    Ok(())
+}
+
+async fn sync_issue_work_products(
+    api_base: &str,
+    issue_id: &str,
+    desired_products: &[DesiredWorkProduct],
+) -> Result<usize> {
+    let existing_products = list_issue_work_products(api_base, issue_id).await?;
+    let existing_by_external_id = existing_products
+        .iter()
+        .filter_map(|product| {
+            product
+                .external_id
+                .as_ref()
+                .map(|external_id| (external_id.clone(), product.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let desired_ids = desired_products
+        .iter()
+        .map(|product| product.external_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut synced = 0usize;
+
+    for desired in desired_products {
+        if let Some(existing) = existing_by_external_id.get(&desired.external_id) {
+            update_issue_work_product(api_base, &existing.id, desired).await?;
+        } else {
+            create_issue_work_product(api_base, issue_id, desired).await?;
+        }
+        synced += 1;
+    }
+
+    for existing in existing_products {
+        let Some(external_id) = existing.external_id.as_ref() else {
+            continue;
+        };
+        if !external_id.starts_with("fabro.paperclip::") {
+            continue;
+        }
+        if desired_ids.contains(external_id) {
+            continue;
+        }
+        delete_issue_work_product(api_base, &existing.id).await?;
+    }
+
+    Ok(synced)
+}
+
+async fn list_issue_work_products(
+    api_base: &str,
+    issue_id: &str,
+) -> Result<Vec<PaperclipWorkProduct>> {
+    reqwest::Client::new()
+        .get(format!("{api_base}/api/issues/{issue_id}/work-products"))
+        .send()
+        .await
+        .with_context(|| format!("failed to list work products for issue {issue_id}"))?
+        .error_for_status()
+        .with_context(|| format!("work product list request failed for issue {issue_id}"))?
+        .json::<Vec<PaperclipWorkProduct>>()
+        .await
+        .context("failed to parse work product list response")
+}
+
+async fn create_issue_work_product(
+    api_base: &str,
+    issue_id: &str,
+    desired: &DesiredWorkProduct,
+) -> Result<PaperclipWorkProduct> {
+    reqwest::Client::new()
+        .post(format!("{api_base}/api/issues/{issue_id}/work-products"))
+        .json(&json!({
+            "type": "artifact",
+            "provider": "paperclip",
+            "externalId": desired.external_id,
+            "title": desired.title,
+            "url": desired.url,
+            "status": desired.status,
+            "reviewState": "none",
+            "isPrimary": desired.is_primary,
+            "healthStatus": desired.health_status,
+            "summary": desired.summary,
+            "metadata": desired.metadata,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to create work product for issue {issue_id}"))?
+        .error_for_status()
+        .with_context(|| format!("work product create request failed for issue {issue_id}"))?
+        .json::<PaperclipWorkProduct>()
+        .await
+        .context("failed to parse created work product")
+}
+
+async fn update_issue_work_product(
+    api_base: &str,
+    work_product_id: &str,
+    desired: &DesiredWorkProduct,
+) -> Result<PaperclipWorkProduct> {
+    reqwest::Client::new()
+        .patch(format!("{api_base}/api/work-products/{work_product_id}"))
+        .json(&json!({
+            "externalId": desired.external_id,
+            "title": desired.title,
+            "url": desired.url,
+            "status": desired.status,
+            "isPrimary": desired.is_primary,
+            "healthStatus": desired.health_status,
+            "summary": desired.summary,
+            "metadata": desired.metadata,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to update work product {work_product_id}"))?
+        .error_for_status()
+        .with_context(|| format!("work product patch request failed for {work_product_id}"))?
+        .json::<PaperclipWorkProduct>()
+        .await
+        .context("failed to parse updated work product")
+}
+
+async fn delete_issue_work_product(api_base: &str, work_product_id: &str) -> Result<()> {
+    reqwest::Client::new()
+        .delete(format!("{api_base}/api/work-products/{work_product_id}"))
+        .send()
+        .await
+        .with_context(|| format!("failed to delete work product {work_product_id}"))?
+        .error_for_status()
+        .with_context(|| format!("work product delete request failed for {work_product_id}"))?;
+    Ok(())
+}
+
+async fn list_issue_attachments(
+    api_base: &str,
+    issue_id: &str,
+) -> Result<Vec<PaperclipAttachment>> {
+    reqwest::Client::new()
+        .get(format!("{api_base}/api/issues/{issue_id}/attachments"))
+        .send()
+        .await
+        .with_context(|| format!("failed to list attachments for issue {issue_id}"))?
+        .error_for_status()
+        .with_context(|| format!("attachment list request failed for issue {issue_id}"))?
+        .json::<Vec<PaperclipAttachment>>()
+        .await
+        .context("failed to parse attachment list response")
+}
+
+async fn upload_issue_attachment(
+    api_base: &str,
+    company_id: &str,
+    issue_id: &str,
+    filename: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> Result<PaperclipAttachment> {
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str(content_type)
+        .with_context(|| format!("invalid content type {content_type}"))?;
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    reqwest::Client::new()
+        .post(format!(
+            "{api_base}/api/companies/{company_id}/issues/{issue_id}/attachments"
+        ))
+        .multipart(form)
+        .send()
+        .await
+        .with_context(|| format!("failed to upload attachment for issue {issue_id}"))?
+        .error_for_status()
+        .with_context(|| format!("attachment upload request failed for issue {issue_id}"))?
+        .json::<PaperclipAttachment>()
+        .await
+        .context("failed to parse uploaded attachment response")
+}
+
+async fn delete_issue_attachment(api_base: &str, attachment_id: &str) -> Result<()> {
+    let response = reqwest::Client::new()
+        .delete(format!("{api_base}/api/attachments/{attachment_id}"))
+        .send()
+        .await
+        .with_context(|| format!("failed to delete attachment {attachment_id}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    response
+        .error_for_status()
+        .with_context(|| format!("attachment delete request failed for {attachment_id}"))?;
+    Ok(())
 }
 
 fn render_lane_issue_description(entry: &FrontierSyncEntry) -> String {
@@ -2728,8 +4688,10 @@ fn render_lane_issue_description(entry: &FrontierSyncEntry) -> String {
         ));
     }
     body.push_str(&format!(
-        "\nExecution route:\n- `{}`\n- Coordinate in Paperclip, but let Raspberry move the frontier.\n",
+        "\nExecution route:\n- Wake the orchestrator with `{}`.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}`.\n- See the synced `plan` document for the current lane playbook.\n- Coordinate in Paperclip, but let Raspberry move the frontier.\n",
+        entry.wake_command,
         entry.route_command,
+        entry.refresh_command,
     ));
     body
 }
@@ -2863,6 +4825,288 @@ fn synced_issue_ids_from_state(
         .unwrap_or_default()
 }
 
+fn synced_snapshots_from_state(
+    existing_state: Option<&serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    existing_state
+        .and_then(|state| state.get("frontierSync"))
+        .and_then(|value| value.get("snapshots"))
+        .and_then(|value| value.as_object())
+        .map(|values| {
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn frontier_snapshots(frontier: &FrontierSyncModel) -> BTreeMap<String, serde_json::Value> {
+    let mut snapshots = BTreeMap::new();
+    snapshots.insert(
+        frontier_root_sync_key(&frontier.program),
+        json!({
+            "status": root_issue_status(frontier),
+            "ready": frontier.summary.ready,
+            "running": frontier.summary.running,
+            "blocked": frontier.summary.blocked,
+            "failed": frontier.summary.failed,
+            "complete": frontier.summary.complete,
+        }),
+    );
+    for entry in &frontier.entries {
+        snapshots.insert(entry.sync_key.clone(), frontier_entry_snapshot(entry));
+    }
+    snapshots
+}
+
+fn frontier_snapshots_json(frontier: &FrontierSyncModel) -> serde_json::Value {
+    let mut values = serde_json::Map::new();
+    for (key, value) in frontier_snapshots(frontier) {
+        values.insert(key, value);
+    }
+    serde_json::Value::Object(values)
+}
+
+fn frontier_entry_snapshot(entry: &FrontierSyncEntry) -> serde_json::Value {
+    json!({
+        "status": entry.status.to_string(),
+        "detail": entry.detail,
+        "currentRunId": entry.current_run_id,
+        "lastRunId": entry.last_run_id,
+        "blockerReason": entry.blocker_reason,
+        "failureKind": entry.failure_kind,
+    })
+}
+
+fn root_issue_status(frontier: &FrontierSyncModel) -> &'static str {
+    if frontier.summary.failed > 0 || frontier.summary.blocked > 0 {
+        "blocked"
+    } else if frontier.summary.running > 0 {
+        "in_progress"
+    } else if frontier.summary.ready > 0 {
+        "todo"
+    } else {
+        "done"
+    }
+}
+
+fn snapshot_changed(previous: Option<&serde_json::Value>, current: &serde_json::Value) -> bool {
+    previous != Some(current)
+}
+
+fn render_root_transition_comment(
+    frontier: &FrontierSyncModel,
+    previous: Option<&serde_json::Value>,
+    current: &serde_json::Value,
+) -> String {
+    format!(
+        "## Frontier Sync Update\n\n{}\n\n- previous snapshot: `{}`\n- current snapshot: `{}`\n- wake: `{}`\n- route fallback: `{}`\n- refresh after movement: `{}`\n- plan document: `plan`\n",
+        render_frontier_summary(frontier),
+        compact_snapshot(previous),
+        compact_snapshot(Some(current)),
+        frontier.wake_command,
+        frontier.route_command,
+        frontier.refresh_command,
+    )
+}
+
+fn render_lane_transition_comment(
+    entry: &FrontierSyncEntry,
+    previous: Option<&serde_json::Value>,
+    current: &serde_json::Value,
+) -> String {
+    format!(
+        "## Frontier Sync Update\n\n- lane: `{}`\n- previous snapshot: `{}`\n- current snapshot: `{}`\n- next move: {}\n- wake orchestrator: `{}`\n- route fallback: `{}`\n- refresh after movement: `{}`\n- plan document: `plan`\n",
+        entry.lane_key,
+        compact_snapshot(previous),
+        compact_snapshot(Some(current)),
+        entry.next_operator_move,
+        entry.wake_command,
+        entry.route_command,
+        entry.refresh_command,
+    )
+}
+
+fn desired_root_work_products(
+    frontier: &FrontierSyncModel,
+    attachments: Option<&BTreeMap<String, PaperclipAttachment>>,
+    api_base: &str,
+) -> Vec<DesiredWorkProduct> {
+    let manifest_filename = format!("{}-program-manifest.yaml", frontier.program);
+    let state_filename = format!("{}-program-state.json", frontier.program);
+    vec![
+        DesiredWorkProduct {
+            external_id: format!(
+                "fabro.paperclip::{}::manifest",
+                frontier_root_sync_key(&frontier.program)
+            ),
+            title: "Program manifest".to_string(),
+            status: "active".to_string(),
+            health_status: path_health(&frontier.manifest_path),
+            is_primary: true,
+            url: attachment_url(
+                attachments.and_then(|attachments| attachments.get(&manifest_filename)),
+                api_base,
+            ),
+            summary: Some("Authoritative Raspberry program manifest.".to_string()),
+            metadata: json!({
+                "path": frontier.manifest_path.display().to_string(),
+                "attachmentFilename": manifest_filename,
+                "kind": "program_manifest",
+                "syncKey": frontier_root_sync_key(&frontier.program),
+            }),
+        },
+        DesiredWorkProduct {
+            external_id: format!(
+                "fabro.paperclip::{}::state",
+                frontier_root_sync_key(&frontier.program)
+            ),
+            title: "Program state".to_string(),
+            status: root_work_product_status(frontier),
+            health_status: path_health(&frontier.state_path),
+            is_primary: false,
+            url: attachment_url(
+                attachments.and_then(|attachments| attachments.get(&state_filename)),
+                api_base,
+            ),
+            summary: Some("Current Raspberry program runtime state.".to_string()),
+            metadata: json!({
+                "path": frontier.state_path.display().to_string(),
+                "attachmentFilename": state_filename,
+                "kind": "program_state",
+                "syncKey": frontier_root_sync_key(&frontier.program),
+            }),
+        },
+    ]
+}
+
+fn desired_lane_work_products(
+    entry: &FrontierSyncEntry,
+    attachments: Option<&BTreeMap<String, PaperclipAttachment>>,
+    api_base: &str,
+) -> Vec<DesiredWorkProduct> {
+    entry
+        .artifact_paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| DesiredWorkProduct {
+            external_id: format!(
+                "fabro.paperclip::{}::artifact::{}",
+                entry.sync_key,
+                sha256_hex(path)
+            ),
+            title: path.clone(),
+            status: lane_work_product_status(entry),
+            health_status: if entry
+                .artifact_statuses
+                .get(index)
+                .is_some_and(|status| status.starts_with("present:"))
+            {
+                "healthy".to_string()
+            } else {
+                "unhealthy".to_string()
+            },
+            is_primary: index == 0,
+            url: attachment_url(
+                attachments.and_then(|attachments| {
+                    attachments.get(&lane_attachment_filename(entry, path))
+                }),
+                api_base,
+            ),
+            summary: Some(entry.detail.clone()),
+            metadata: json!({
+                "path": path,
+                "attachmentFilename": lane_attachment_filename(entry, path),
+                "kind": "lane_artifact",
+                "syncKey": entry.sync_key,
+                "laneKey": entry.lane_key,
+                "status": entry.status.to_string(),
+            }),
+        })
+        .collect()
+}
+
+fn root_work_product_status(frontier: &FrontierSyncModel) -> String {
+    if frontier.summary.failed > 0 || frontier.summary.blocked > 0 {
+        return "failed".to_string();
+    }
+    if frontier.summary.running > 0 {
+        return "active".to_string();
+    }
+    if frontier.summary.ready > 0 {
+        return "draft".to_string();
+    }
+    "ready_for_review".to_string()
+}
+
+fn lane_work_product_status(entry: &FrontierSyncEntry) -> String {
+    match entry.status {
+        LaneExecutionStatus::Ready => "draft",
+        LaneExecutionStatus::Running => "active",
+        LaneExecutionStatus::Blocked | LaneExecutionStatus::Failed => "failed",
+        LaneExecutionStatus::Complete => "ready_for_review",
+    }
+    .to_string()
+}
+
+fn path_health(path: &Path) -> String {
+    if path.exists() {
+        "healthy".to_string()
+    } else {
+        "unhealthy".to_string()
+    }
+}
+
+fn lane_attachment_filename(entry: &FrontierSyncEntry, artifact_path: &str) -> String {
+    let basename = Path::new(artifact_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    format!(
+        "{}-{}-{}",
+        sanitize_filename_component(&entry.unit_id),
+        sanitize_filename_component(&entry.lane_id),
+        sanitize_filename_component(basename),
+    )
+}
+
+fn sanitize_filename_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn content_type_for_path(path: &str) -> &'static str {
+    match Path::new(path).extension().and_then(|ext| ext.to_str()) {
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        Some("txt") => "text/plain",
+        Some("csv") => "text/csv",
+        Some("html") => "text/html",
+        Some("yaml") | Some("yml") => "text/plain",
+        _ => "text/plain",
+    }
+}
+
+fn attachment_url(attachment: Option<&PaperclipAttachment>, api_base: &str) -> Option<String> {
+    let content_path = attachment.and_then(|attachment| attachment.content_path.as_ref())?;
+    Some(format!("{api_base}{content_path}"))
+}
+
+fn compact_snapshot(snapshot: Option<&serde_json::Value>) -> String {
+    snapshot
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_else(|| "none".to_string())
+}
+
 fn imported_agent_ids(imported_agents: &[PaperclipImportAgent]) -> BTreeMap<String, String> {
     imported_agents
         .iter()
@@ -2882,12 +5126,15 @@ async fn upsert_sync_issue(
     let payload = json!({
         "goalId": goal_id,
         "projectId": project_id,
+        "projectWorkspaceId": desired.project_workspace_id,
+        "assigneeAdapterOverrides": desired.assignee_adapter_overrides,
         "parentId": desired.parent_id,
         "title": desired.title,
         "description": desired.description,
         "status": desired.status,
         "priority": desired.priority,
         "assigneeAgentId": desired.assignee_agent_id,
+        "executionWorkspacePreference": desired.execution_workspace_preference,
     });
 
     let response = if let Some(issue) = existing_issue {
@@ -3022,6 +5269,42 @@ mod tests {
     }
 
     #[test]
+    fn derive_bootstrap_mission_prefers_referenced_master_plan_over_latest_leaf() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("SPEC.md"),
+            "# rXMRagent Spec\n\nThe goal is to launch a zero-human game studio.\n",
+        )
+        .expect("write spec");
+        std::fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        std::fs::write(
+            temp.path().join("plans/001-rxmr-poker-mvp.md"),
+            "# rXMR Casino MVP — Provably Fair Terminal Games on a Privacy Chain\n",
+        )
+        .expect("write master plan");
+        std::fs::write(
+            temp.path().join("plans/018-war-game.md"),
+            "# Casino War — The Simplest Card Game in the Catalog\n\nThis plan builds on `plans/001-rxmr-poker-mvp.md`.\n",
+        )
+        .expect("write leaf plan");
+        std::fs::write(
+            temp.path().join("plans/021-wheel-game.md"),
+            "# Wheel of Fortune — Seed-Derived Multiplier Wheel for rXMR Casino\n\nThis plan builds on `plans/001-rxmr-poker-mvp.md`.\n",
+        )
+        .expect("write later leaf plan");
+        let blueprint = sample_blueprint();
+
+        let mission =
+            derive_bootstrap_mission(&blueprint, temp.path(), "Rxmragent").expect("mission");
+
+        assert!(mission
+            .company_description
+            .contains("rXMR Casino MVP — Provably Fair Terminal Games on a Privacy Chain"));
+        assert!(!mission.company_description.contains("Casino War"));
+        assert!(!mission.company_description.contains("Wheel of Fortune"));
+    }
+
+    #[test]
     fn lane_adapter_type_prefers_claude_for_reports() {
         let lane = BlueprintLane {
             id: "proof".to_string(),
@@ -3122,6 +5405,8 @@ mod tests {
         };
         let managed = PaperclipManagedAgent {
             id: "agent-1".to_string(),
+            slug: None,
+            adapter_config: None,
             metadata: Some(json!({
                 "source": "fabro.paperclip",
                 "unit": "command-center-client",
@@ -3244,6 +5529,7 @@ mod tests {
             program: "zend".to_string(),
             manifest_path: temp.path().join("fabro/programs/zend.yaml"),
             state_path: temp.path().join(".raspberry/zend-state.json"),
+            wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
             route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"
                 .to_string(),
             refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend"
@@ -3281,8 +5567,10 @@ mod tests {
                     last_stderr_snippet: None,
                     failure_kind: None,
                     blocker_reason: None,
+                    wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
                     route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"
                         .to_string(),
+                    refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend".to_string(),
                     artifact_paths: vec!["outputs/client/plan.md".to_string()],
                     artifact_statuses: vec!["missing: outputs/client/plan.md".to_string()],
                     dependency_keys: Vec::new(),
@@ -3311,8 +5599,10 @@ mod tests {
                     last_stderr_snippet: None,
                     failure_kind: None,
                     blocker_reason: None,
+                    wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
                     route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"
                         .to_string(),
+                    refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend".to_string(),
                     artifact_paths: vec!["outputs/client/implementation.md".to_string()],
                     artifact_statuses: vec!["missing: outputs/client/implementation.md".to_string()],
                     dependency_keys: Vec::new(),
@@ -3348,6 +5638,108 @@ mod tests {
     }
 
     #[test]
+    fn codex_local_lane_agents_prefer_dedicated_oauth_slot() {
+        let temp = tempdir().expect("tempdir");
+        let oauth_home = temp.path().join(".codex-slot2/.codex");
+        std::fs::create_dir_all(&oauth_home).expect("oauth slot dir");
+        std::fs::write(oauth_home.join("auth.json"), "{}").expect("oauth auth");
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let unit = BlueprintUnit {
+            id: "wallet".to_string(),
+            title: "Wallet".to_string(),
+            output_root: PathBuf::from("outputs/wallet"),
+            artifacts: Vec::new(),
+            milestones: Vec::new(),
+            lanes: vec![BlueprintLane {
+                id: "implement".to_string(),
+                kind: Default::default(),
+                title: "Implement".to_string(),
+                family: "implement".to_string(),
+                workflow_family: None,
+                slug: None,
+                template: WorkflowTemplate::Bootstrap,
+                goal: "Implement wallet".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                dependencies: Vec::new(),
+                produces: Vec::new(),
+                proof_profile: None,
+                proof_state_path: None,
+                program_manifest: None,
+                service_state_path: None,
+                orchestration_state_path: None,
+                checks: Vec::new(),
+                run_dir: None,
+                prompt_context: None,
+                verify_command: None,
+                health_command: None,
+            }],
+        };
+        let lane = &unit.lanes[0];
+        let frontier = FrontierSyncModel {
+            program: "demo".to_string(),
+            manifest_path: temp.path().join("fabro/programs/demo.yaml"),
+            state_path: temp.path().join(".raspberry/demo-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: Vec::new(),
+        };
+        let mission = BootstrapMission {
+            company_description: "Demo".to_string(),
+            goal_title: "Demo".to_string(),
+            goal_description: "Demo".to_string(),
+            project_name: "Demo".to_string(),
+            project_description: "Demo".to_string(),
+            workspace_name: "Demo".to_string(),
+        };
+
+        let draft = lane_agent_draft(
+            &ProgramBlueprint {
+                version: 1,
+                program: BlueprintProgram {
+                    id: "demo".to_string(),
+                    max_parallel: 1,
+                    state_path: None,
+                    run_dir: None,
+                },
+                inputs: Default::default(),
+                package: Default::default(),
+                units: vec![unit.clone()],
+            },
+            temp.path(),
+            &mission,
+            &frontier,
+            &unit,
+            lane,
+            None,
+        );
+
+        let env = draft
+            .manifest
+            .get("adapterConfig")
+            .and_then(|value| value.get("env"))
+            .and_then(|value| value.get("CODEX_HOME"))
+            .and_then(|value| value.as_str())
+            .expect("codex home");
+
+        assert_eq!(env, oauth_home.display().to_string());
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
     fn render_lane_issue_description_includes_next_move_and_run_commands() {
         let entry = FrontierSyncEntry {
             sync_key: "frontier/zend/lane/client:implement".to_string(),
@@ -3372,8 +5764,10 @@ mod tests {
             last_stderr_snippet: Some("stderr snippet".to_string()),
             failure_kind: Some("Verification".to_string()),
             blocker_reason: Some("tests failed".to_string()),
+            wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
             route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"
                 .to_string(),
+            refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend".to_string(),
             artifact_paths: vec!["outputs/client/implementation.md".to_string()],
             artifact_statuses: vec!["present: outputs/client/implementation.md".to_string()],
             dependency_keys: vec!["spec@reviewed".to_string()],
@@ -3389,10 +5783,576 @@ mod tests {
     }
 
     #[test]
+    fn render_frontier_detail_sections_includes_running_and_failed_entries() {
+        let frontier = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 1,
+                running: 1,
+                blocked: 0,
+                failed: 1,
+                complete: 0,
+            },
+            entries: vec![
+                FrontierSyncEntry {
+                    sync_key: "frontier/zend/lane/client:implement".to_string(),
+                    lane_key: "client:implement".to_string(),
+                    unit_id: "client".to_string(),
+                    unit_title: "Client".to_string(),
+                    lane_id: "implement".to_string(),
+                    lane_title: "Implement".to_string(),
+                    lane_kind: "artifact".to_string(),
+                    status: LaneExecutionStatus::Running,
+                    detail: "running".to_string(),
+                    current_run_id: Some("01RUN".to_string()),
+                    last_run_id: Some("01RUN".to_string()),
+                    current_stage: Some("Implement".to_string()),
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: None,
+                    last_usage_summary: None,
+                    last_completed_stage: None,
+                    last_stage_duration_ms: None,
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    failure_kind: None,
+                    blocker_reason: None,
+                    wake_command: "wake".to_string(),
+                    route_command: "route".to_string(),
+                    refresh_command: "refresh".to_string(),
+                    artifact_paths: vec![],
+                    artifact_statuses: vec![],
+                    dependency_keys: vec![],
+                    next_operator_move: "watch".to_string(),
+                },
+                FrontierSyncEntry {
+                    sync_key: "frontier/zend/lane/wallet:implement".to_string(),
+                    lane_key: "wallet:implement".to_string(),
+                    unit_id: "wallet".to_string(),
+                    unit_title: "Wallet".to_string(),
+                    lane_id: "implement".to_string(),
+                    lane_title: "Implement".to_string(),
+                    lane_kind: "artifact".to_string(),
+                    status: LaneExecutionStatus::Failed,
+                    detail: "failed".to_string(),
+                    current_run_id: None,
+                    last_run_id: Some("01FAIL".to_string()),
+                    current_stage: Some("Review".to_string()),
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_usage_summary: None,
+                    last_completed_stage: None,
+                    last_stage_duration_ms: None,
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: Some("boom".to_string()),
+                    failure_kind: Some("proof_script_failure".to_string()),
+                    blocker_reason: Some("tests failed".to_string()),
+                    wake_command: "wake".to_string(),
+                    route_command: "route".to_string(),
+                    refresh_command: "refresh".to_string(),
+                    artifact_paths: vec![],
+                    artifact_statuses: vec![],
+                    dependency_keys: vec![],
+                    next_operator_move: "fix".to_string(),
+                },
+            ],
+        };
+
+        let rendered = render_frontier_detail_sections(&frontier);
+
+        assert!(rendered.contains("## Running"));
+        assert!(rendered.contains("## Failed"));
+        assert!(rendered.contains("`client:implement`"));
+        assert!(rendered.contains("`wallet:implement`"));
+    }
+
+    #[test]
+    fn desired_lane_issue_sets_workspace_binding_and_override() {
+        let entry = FrontierSyncEntry {
+            sync_key: "frontier/zend/lane/client:implement".to_string(),
+            lane_key: "client:implement".to_string(),
+            unit_id: "client".to_string(),
+            unit_title: "Client".to_string(),
+            lane_id: "implement".to_string(),
+            lane_title: "Implement".to_string(),
+            lane_kind: "artifact".to_string(),
+            status: LaneExecutionStatus::Ready,
+            detail: "ready".to_string(),
+            current_run_id: None,
+            last_run_id: None,
+            current_stage: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_usage_summary: None,
+            last_completed_stage: None,
+            last_stage_duration_ms: None,
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            failure_kind: None,
+            blocker_reason: None,
+            wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
+            route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh".to_string(),
+            refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend".to_string(),
+            artifact_paths: vec!["outputs/client/implementation.md".to_string()],
+            artifact_statuses: vec!["missing: outputs/client/implementation.md".to_string()],
+            dependency_keys: vec!["spec@reviewed".to_string()],
+            next_operator_move: "Wake the orchestrator.".to_string(),
+        };
+
+        let desired = desired_lane_issue(
+            &entry,
+            "root-1",
+            Some("orchestrator-1".to_string()),
+            Some("agent-1".to_string()),
+            true,
+            "workspace-1",
+        )
+        .expect("desired lane issue");
+
+        assert_eq!(desired.project_workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(
+            desired.assignee_adapter_overrides,
+            Some(json!({ "useProjectWorkspace": true }))
+        );
+    }
+
+    #[test]
+    fn build_company_markdown_includes_lane_sets_and_live_details() {
+        let frontier = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 1,
+                blocked: 0,
+                failed: 1,
+                complete: 0,
+            },
+            entries: vec![
+                FrontierSyncEntry {
+                    sync_key: "frontier/zend/lane/client:implement".to_string(),
+                    lane_key: "client:implement".to_string(),
+                    unit_id: "client".to_string(),
+                    unit_title: "Client".to_string(),
+                    lane_id: "implement".to_string(),
+                    lane_title: "Implement".to_string(),
+                    lane_kind: "artifact".to_string(),
+                    status: LaneExecutionStatus::Running,
+                    detail: "running".to_string(),
+                    current_run_id: Some("01RUN".to_string()),
+                    last_run_id: Some("01RUN".to_string()),
+                    current_stage: Some("Implement".to_string()),
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: None,
+                    last_usage_summary: None,
+                    last_completed_stage: None,
+                    last_stage_duration_ms: None,
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    failure_kind: None,
+                    blocker_reason: None,
+                    wake_command: "wake".to_string(),
+                    route_command: "route".to_string(),
+                    refresh_command: "refresh".to_string(),
+                    artifact_paths: vec![],
+                    artifact_statuses: vec![],
+                    dependency_keys: vec![],
+                    next_operator_move: "watch".to_string(),
+                },
+                FrontierSyncEntry {
+                    sync_key: "frontier/zend/lane/wallet:implement".to_string(),
+                    lane_key: "wallet:implement".to_string(),
+                    unit_id: "wallet".to_string(),
+                    unit_title: "Wallet".to_string(),
+                    lane_id: "implement".to_string(),
+                    lane_title: "Implement".to_string(),
+                    lane_kind: "artifact".to_string(),
+                    status: LaneExecutionStatus::Failed,
+                    detail: "failed".to_string(),
+                    current_run_id: None,
+                    last_run_id: Some("01FAIL".to_string()),
+                    current_stage: Some("Review".to_string()),
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_usage_summary: None,
+                    last_completed_stage: None,
+                    last_stage_duration_ms: None,
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: Some("boom".to_string()),
+                    failure_kind: Some("proof_script_failure".to_string()),
+                    blocker_reason: Some("tests failed".to_string()),
+                    wake_command: "wake".to_string(),
+                    route_command: "route".to_string(),
+                    refresh_command: "refresh".to_string(),
+                    artifact_paths: vec![],
+                    artifact_statuses: vec![],
+                    dependency_keys: vec![],
+                    next_operator_move: "fix".to_string(),
+                },
+            ],
+        };
+        let agents = vec![BundleAgent {
+            slug: "client".to_string(),
+            name: "Client".to_string(),
+            adapter_type: "codex_local",
+            metadata_type: None,
+            unit: Some("client".to_string()),
+            lane_key: Some("client:implement".to_string()),
+        }];
+
+        let markdown = build_company_markdown("Zend", "desc", &frontier, &agents);
+
+        assert!(markdown.contains("## Lane Sets"));
+        assert!(markdown.contains("## Live Details"));
+        assert!(markdown.contains("## Running"));
+        assert!(markdown.contains("## Failed"));
+    }
+
+    #[test]
+    fn desired_root_work_products_use_attachment_urls() {
+        let frontier = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
+            route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh".to_string(),
+            refresh_command: "fabro paperclip refresh --target-repo /tmp/zend --program zend".to_string(),
+            status_command: "fabro paperclip status --target-repo /tmp/zend --program zend".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 1,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: Vec::new(),
+        };
+        let attachments = BTreeMap::from([
+            (
+                "zend-program-manifest.yaml".to_string(),
+                PaperclipAttachment {
+                    id: "att-1".to_string(),
+                    original_filename: Some("zend-program-manifest.yaml".to_string()),
+                    content_path: Some("/api/attachments/att-1/content".to_string()),
+                    sha256: "abc".to_string(),
+                },
+            ),
+            (
+                "zend-program-state.json".to_string(),
+                PaperclipAttachment {
+                    id: "att-2".to_string(),
+                    original_filename: Some("zend-program-state.json".to_string()),
+                    content_path: Some("/api/attachments/att-2/content".to_string()),
+                    sha256: "def".to_string(),
+                },
+            ),
+        ]);
+
+        let products =
+            desired_root_work_products(&frontier, Some(&attachments), "http://127.0.0.1:3100");
+
+        assert_eq!(products.len(), 2);
+        assert_eq!(
+            products[0].url.as_deref(),
+            Some("http://127.0.0.1:3100/api/attachments/att-1/content")
+        );
+        assert_eq!(
+            products[1].url.as_deref(),
+            Some("http://127.0.0.1:3100/api/attachments/att-2/content")
+        );
+    }
+
+    #[test]
     fn last_lines_returns_requested_tail() {
         let rendered = last_lines("a\nb\nc\nd\n", 2);
 
         assert_eq!(rendered, "c\nd\n");
+    }
+
+    #[tokio::test]
+    async fn delete_issue_attachment_ignores_not_found() {
+        let server = MockServer::start();
+        let attachment_id = "missing-attachment";
+        let _mock = server.mock(|when, then| {
+            when.method(httpmock::Method::DELETE)
+                .path(format!("/api/attachments/{attachment_id}"));
+            then.status(404);
+        });
+
+        delete_issue_attachment(&server.base_url(), attachment_id)
+            .await
+            .expect("404 should be treated as already deleted");
+    }
+
+    #[test]
+    fn ensure_target_repo_initialized_creates_initial_commit_for_plain_directory() {
+        use git2::Repository;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("README.md"), "# Demo\n").expect("readme");
+
+        let result = ensure_target_repo_initialized(temp.path()).expect("git bootstrap");
+        let repo = Repository::open(temp.path()).expect("repo opens");
+        let head = repo.head().expect("head");
+        let commit = head.peel_to_commit().expect("commit");
+
+        assert!(result.initialized);
+        assert!(result.committed);
+        assert_eq!(head.name(), Some("refs/heads/main"));
+        assert_eq!(
+            commit.summary(),
+            Some("chore(repo): bootstrap fabro workspace")
+        );
+    }
+
+    #[test]
+    fn ensure_target_repo_gitignore_adds_transient_runtime_entries() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join(".gitignore"), "node_modules/\n").expect("gitignore");
+
+        ensure_target_repo_gitignore(temp.path()).expect("seed gitignore");
+        let body = std::fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
+
+        assert!(body.contains("node_modules/"));
+        assert!(body.contains(".raspberry/"));
+        assert!(body.contains(".paperclip/"));
+        assert!(body.contains("fabro/paperclip/*/bootstrap-state.json"));
+    }
+
+    #[test]
+    fn prune_tracked_transient_paths_untracks_runtime_files() {
+        use git2::Repository;
+
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join(".raspberry")).expect("raspberry dir");
+        std::fs::create_dir_all(temp.path().join(".paperclip")).expect("paperclip dir");
+        std::fs::create_dir_all(temp.path().join("fabro/paperclip/demo")).expect("bundle dir");
+        std::fs::write(temp.path().join(".raspberry/state.json"), "{}").expect("state");
+        std::fs::write(temp.path().join(".paperclip/.gitignore"), "*\n").expect("pc gitignore");
+        std::fs::write(
+            temp.path()
+                .join("fabro/paperclip/demo/bootstrap-state.json"),
+            "{}",
+        )
+        .expect("bootstrap state");
+
+        let init = Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git init");
+        assert!(init.status.success());
+        let add = Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git add");
+        assert!(add.status.success());
+        let commit = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "seed tracked runtime state",
+            ])
+            .current_dir(temp.path())
+            .output()
+            .expect("git commit");
+        assert!(commit.status.success());
+
+        let cleanup = prune_tracked_transient_paths(temp.path()).expect("cleanup");
+        let tracked = Command::new("git")
+            .args(["ls-files"])
+            .current_dir(temp.path())
+            .output()
+            .expect("ls-files");
+        let tracked = String::from_utf8(tracked.stdout).expect("utf8");
+
+        assert!(cleanup.removed_paths >= 2);
+        assert!(!tracked.contains(".raspberry/state.json"));
+        assert!(!tracked.contains(".paperclip/.gitignore"));
+        assert!(!tracked.contains("fabro/paperclip/demo/bootstrap-state.json"));
+        let _repo = Repository::open(temp.path()).expect("repo opens");
+    }
+
+    #[test]
+    fn ensure_paperclip_blueprint_rerenders_package_after_git_bootstrap() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
+        std::fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        std::fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        std::fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Zend Master Plan\n\nPhase 0:\n- [ ] Command Center Client (plan 003)\n",
+        )
+        .expect("master plan");
+        std::fs::write(
+            temp.path().join("plans/003-command-center-client.md"),
+            "# Command Center Client\n",
+        )
+        .expect("leaf plan");
+        let args = PaperclipRepoArgs {
+            target_repo: temp.path().to_path_buf(),
+            program: Some("zend".to_string()),
+            company_name: None,
+            data_dir: None,
+            api_base: None,
+            paperclip_cmd: None,
+        };
+        let paths = resolve_paperclip_paths(&args);
+        ensure_paperclip_blueprint(&paths).expect("initial render");
+        let run_config_path =
+            walkdir::WalkDir::new(temp.path().join("fabro/run-configs/bootstrap"))
+                .into_iter()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().to_path_buf())
+                .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+                .expect("bootstrap run config");
+        let before = std::fs::read_to_string(&run_config_path).expect("initial run config");
+        assert!(!before.contains("[integration]"));
+
+        let bootstrap = ensure_target_repo_initialized(temp.path()).expect("git bootstrap");
+        assert!(bootstrap.initialized);
+
+        ensure_paperclip_blueprint(&paths).expect("rerender after git");
+        let after = std::fs::read_to_string(&run_config_path).expect("updated run config");
+        assert!(after.contains("[integration]"));
+        assert!(after.contains("target_branch = \"main\""));
+    }
+
+    #[test]
+    fn frontier_sync_unchanged_detects_runtime_progress() {
+        let before = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 1,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: vec![FrontierSyncEntry {
+                sync_key: "frontier/zend/lane/client:implement".to_string(),
+                lane_key: "client:implement".to_string(),
+                unit_id: "client".to_string(),
+                unit_title: "Client".to_string(),
+                lane_id: "implement".to_string(),
+                lane_title: "Implement".to_string(),
+                lane_kind: "artifact".to_string(),
+                status: LaneExecutionStatus::Ready,
+                detail: "ready".to_string(),
+                current_run_id: None,
+                last_run_id: None,
+                current_stage: None,
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: None,
+                last_usage_summary: None,
+                last_completed_stage: None,
+                last_stage_duration_ms: None,
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                failure_kind: None,
+                blocker_reason: None,
+                wake_command: "wake".to_string(),
+                route_command: "route".to_string(),
+                refresh_command: "refresh".to_string(),
+                artifact_paths: Vec::new(),
+                artifact_statuses: Vec::new(),
+                dependency_keys: Vec::new(),
+                next_operator_move: "wake".to_string(),
+            }],
+        };
+        let mut after = before.clone();
+        after.summary.ready = 0;
+        after.summary.running = 1;
+        after.entries[0].status = LaneExecutionStatus::Running;
+        after.entries[0].current_run_id = Some("01KMTEST".to_string());
+
+        assert!(!frontier_sync_unchanged(&before, &after));
+        assert!(frontier_sync_unchanged(&before, &before));
+    }
+
+    #[test]
+    fn stderr_indicates_active_autodev_controller_detects_lock_message() {
+        assert!(stderr_indicates_active_autodev_controller(
+            "",
+            "Error: autodev controller already running for program `zend` via pid=123"
+        ));
+        assert!(!stderr_indicates_active_autodev_controller(
+            "",
+            "Error: failed to load manifest"
+        ));
+    }
+
+    #[test]
+    fn wake_followthrough_changed_detects_frontier_updates() {
+        let before = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 1,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: Vec::new(),
+        };
+        let mut after = before.clone();
+        after.summary.ready = 0;
+        after.summary.running = 1;
+
+        assert!(wake_followthrough_changed(
+            Some(&before),
+            &WakeFollowthrough {
+                status: WakeFollowthroughStatus::ObservedViaHeartbeat,
+                after: Some(after),
+            }
+        ));
+        assert!(!wake_followthrough_changed(
+            Some(&before),
+            &WakeFollowthrough {
+                status: WakeFollowthroughStatus::NoObservedChange,
+                after: Some(before.clone()),
+            }
+        ));
+        assert!(!wake_followthrough_changed(
+            Some(&before),
+            &WakeFollowthrough {
+                status: WakeFollowthroughStatus::NoObservedChange,
+                after: None,
+            }
+        ));
     }
 
     fn sample_blueprint() -> ProgramBlueprint {

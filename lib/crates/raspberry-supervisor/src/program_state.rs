@@ -416,12 +416,12 @@ pub fn refresh_program_state(
                     );
                     lane_changed = true;
                 }
-                if record.failure_kind != Some(FailureKind::Unknown) {
-                    record.failure_kind = Some(FailureKind::Unknown);
+                if record.failure_kind != Some(FailureKind::TransientLaunchFailure) {
+                    record.failure_kind = Some(FailureKind::TransientLaunchFailure);
                     lane_changed = true;
                 }
-                if record.recovery_action != Some(FailureRecoveryAction::SurfaceBlocked) {
-                    record.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+                if record.recovery_action != Some(FailureRecoveryAction::BackoffRetry) {
+                    record.recovery_action = Some(FailureRecoveryAction::BackoffRetry);
                     lane_changed = true;
                 }
                 let finished_at = progress.updated_at.unwrap_or_else(Utc::now);
@@ -964,6 +964,8 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
     let run_state = RunLiveState::load(&state_path).ok();
     let run_status = RunStatusRecord::load(&run_root.join("status.json")).ok();
     let conclusion = Conclusion::load(&run_root.join("conclusion.json")).ok();
+    let authoritative_status =
+        authoritative_failure_status(run_status.as_ref(), conclusion.as_ref());
     let cli_activity_at = latest_cli_activity_at(run_root);
     let progress_path = run_root.join("progress.jsonl");
     let contents = match std::fs::read_to_string(&progress_path) {
@@ -1005,6 +1007,9 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         finished_at: conclusion.as_ref().map(|conclusion| conclusion.timestamp),
         ..LiveLaneProgress::default()
     };
+    if authoritative_status.is_some() {
+        progress.workflow_status = authoritative_status;
+    }
 
     for line in contents.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1059,6 +1064,9 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
             _ => {}
         }
     }
+    if authoritative_status.is_some() {
+        progress.workflow_status = authoritative_status;
+    }
 
     if progress.fabro_run_id.is_none() {
         progress.fabro_run_id = run_root
@@ -1074,6 +1082,25 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         return Ok(None);
     }
     Ok(Some(progress))
+}
+
+fn authoritative_failure_status(
+    run_status: Option<&RunStatusRecord>,
+    conclusion: Option<&Conclusion>,
+) -> Option<RunStatus> {
+    if matches!(
+        run_status.map(|status| status.status),
+        Some(RunStatus::Failed | RunStatus::Dead)
+    ) {
+        return run_status.map(|status| status.status);
+    }
+    if matches!(
+        conclusion.map(|conclusion| conclusion.status.clone()),
+        Some(fabro_workflows::outcome::StageStatus::Fail)
+    ) {
+        return Some(RunStatus::Failed);
+    }
+    None
 }
 
 fn worker_process_alive(run_root: &Path) -> Option<bool> {
@@ -1769,6 +1796,116 @@ mod tests {
         assert!(record.recovery_action.is_none());
         assert!(record.last_stdout_snippet.is_none());
         assert!(record.last_stderr_snippet.is_none());
+    }
+
+    #[test]
+    fn refresh_program_state_prefers_failed_status_record_over_succeeded_live_state() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/fixtures/raspberry-supervisor");
+        let temp = tempfile::tempdir().expect("tempdir");
+        copy_dir(&fixture_root, temp.path()).expect("copy fixture tree");
+
+        let manifest_path = temp.path().join("program.yaml");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/state.json"),
+            serde_json::json!({
+                "run_id": "01CONSENSUSFAIL000000000000000",
+                "updated_at": "2026-03-18T22:00:00Z",
+                "status": "succeeded",
+                "reason": "completed",
+                "last_completed_stage_id": "brief",
+                "last_completed_stage_label": "Brief",
+                "last_completed_stage_status": "success",
+                "last_event": "WorkflowRunCompleted",
+                "last_event_seq": 9,
+                "completed_stage_count": 1
+            })
+            .to_string(),
+        )
+        .expect("write live state");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/status.json"),
+            serde_json::json!({
+                "status": "failed",
+                "reason": "workflow_error",
+                "updated_at": "2026-03-18T22:00:00Z"
+            })
+            .to_string(),
+        )
+        .expect("write status");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/conclusion.json"),
+            serde_json::json!({
+                "timestamp": "2026-03-18T22:00:00Z",
+                "status": "fail",
+                "duration_ms": 1234,
+                "failure_reason": "git push failed: fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.",
+                "stages": [],
+                "total_retries": 0
+            })
+            .to_string(),
+        )
+        .expect("write conclusion");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/progress.jsonl"),
+            concat!(
+                "{\"event\":\"WorkflowRunCompleted\",\"event_seq\":1}\n",
+                "{\"event\":\"StageCompleted\",\"event_seq\":2,\"node_label\":\"Brief\",\"duration_ms\":15}\n"
+            ),
+        )
+        .expect("write progress");
+
+        let mut state = ProgramRuntimeState::new("raspberry-demo");
+        state.lanes.insert(
+            "consensus:chapter".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "consensus:chapter".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
+                current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                current_stage_label: Some("Review".to_string()),
+                last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                failure_kind: None,
+                recovery_action: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("consensus:chapter")
+            .expect("consensus record exists");
+        assert_eq!(record.status, LaneExecutionStatus::Failed);
+        assert_eq!(
+            record.last_error.as_deref(),
+            Some(
+                "git push failed: fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository."
+            )
+        );
+        assert_eq!(
+            record.failure_kind,
+            Some(crate::failure::FailureKind::IntegrationTargetUnavailable)
+        );
+        assert_eq!(
+            record.recovery_action,
+            Some(crate::failure::FailureRecoveryAction::ReplayLane)
+        );
     }
 
     #[test]

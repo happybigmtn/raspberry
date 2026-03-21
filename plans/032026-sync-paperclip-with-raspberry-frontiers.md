@@ -50,12 +50,28 @@ surfaces. The immediate goals are:
   back through Raspberry instead of bypassing it.
 - [x] (2026-03-20 17:18Z) Prove the flow on a repo-local Zend Paperclip
   instance.
-- [ ] Expand the synchronized issue model to write first-class issue documents
-  for root and lane coordination issues.
-- [ ] Add a Paperclip-native wake path for the Raspberry orchestrator and
-  generated agents.
-- [ ] Create or update Paperclip company secrets from available local model
-  credentials and wire generated local agents to `secret_ref` env config.
+- [x] (2026-03-20 21:17Z) Expand the synchronized issue model to write
+  first-class issue `plan` documents for root and lane coordination issues.
+- [x] (2026-03-20 21:17Z) Add a Paperclip-native wake path for the Raspberry
+  orchestrator and generated agents.
+- [x] (2026-03-20 21:17Z) Create or update Paperclip company secrets from
+  available local model credentials and wire generated local agents to
+  `secret_ref` env config.
+- [x] (2026-03-20 21:25Z) Persist frontier snapshots and post deterministic
+  transition comments only when the synchronized frontier actually changes.
+- [x] (2026-03-20 21:43Z) Bind synchronized issues to the Paperclip project
+  workspace so native heartbeats inherit the repo context.
+- [x] (2026-03-20 21:50Z) Sync the root frontier manifest and runtime state as
+  native Paperclip issue attachments.
+- [x] (2026-03-20 21:56Z) Make the root work products point at the synced
+  Paperclip attachment content URLs instead of acting as metadata-only rows.
+- [x] (2026-03-20 22:00Z) Generalize attachment-backed work-product URLs to
+  lane artifact files whenever those files exist.
+- [x] (2026-03-20 21:35Z) Sync first-class Paperclip issue work products for
+  root and lane frontier artifacts.
+- [x] (2026-03-20 22:05Z) Reached the point where this plan can be called
+  complete; further work now belongs to a follow-on run-reliability plan based
+  on the latest Myosu, rXMRbro, and Zend proving-ground assessment.
 
 ## What Already Exists
 
@@ -109,6 +125,69 @@ This plan intentionally does not include:
   Evidence: bootstrap currently declares required secrets and reports env
   presence, but generated local agents still depend on ambient server env
   instead of company secrets plus `secret_ref` adapter config.
+
+- Observation: synced Paperclip issue documents are a much better place for
+  frontier playbooks than the issue description body.
+  Evidence: the root Zend issue now has a first-class `plan` document that
+  stores the operator loop, lane sets, and wake/route/refresh commands while
+  leaving the issue description shorter and easier to scan.
+
+- Observation: Paperclip issue comments are the right place for state-change
+  history, but only when driven by snapshot diffs.
+  Evidence: the first Zend refresh after snapshot persistence wrote five
+  `Frontier Sync Update` comments, while the next no-change refresh wrote zero,
+  which keeps the thread useful instead of noisy.
+
+- Observation: Paperclip work products are the natural home for frontier
+  artifact pointers that are too structured for comments and too operational
+  for the `plan` document.
+  Evidence: Paperclip issue APIs already expose `workProducts` on issue detail
+  and support first-class `artifact` products linked to issues.
+
+- Observation: root frontier artifacts are the easiest first work-product sync
+  target because they always exist even when a lane has no current proof files.
+  Evidence: the Zend proof now shows `Program manifest` and `Program state`
+  work products on the root frontier issue, while implementation lane issues
+  only gain work products when they have curated artifact paths to expose.
+
+- Observation: `projectWorkspaceId` persists cleanly on synchronized issues
+  today, while `executionWorkspacePreference` remains gated behind Paperclip's
+  isolated-workspace feature flag in the current local instance.
+  Evidence: the Zend root and lane issues now return the synchronized
+  `projectWorkspaceId`, but `executionWorkspacePreference` stays `null`.
+
+- Observation: in the current local Paperclip instance, `assigneeAdapterOverrides`
+  and `executionWorkspacePolicy` echo back from PATCH responses but disappear on
+  a fresh GET.
+  Evidence: direct Zend API probes showed both fields present in PATCH
+  responses and `null` in subsequent reads, so they should be treated as
+  forward-compatible best-effort payloads rather than proven active state in
+  this environment.
+
+- Observation: root-issue attachments are a practical native artifact surface
+  even when richer workspace policy fields are flaky.
+  Evidence: the Zend root issue now exposes `zend-program-manifest.yaml` and
+  `zend-program-state.json` through Paperclip's attachment API with stable
+  refresh counts and no extra scheduler semantics.
+
+- Observation: the right composition is attachments for file storage and work
+  products for durable metadata plus direct links.
+  Evidence: after refresh, the Zend root work products now point at the
+  Paperclip attachment content URLs for the manifest and state files instead of
+  only carrying metadata.
+
+- Observation: the lane attachment/work-product path is now generalized in code
+  even though the current Zend proof still only exercises the root issue.
+  Evidence: active Zend implementation lanes currently do not expose syncable
+  artifact files, so refresh reports root attachments and root work-product
+  URLs today, and lane attachment-backed URLs will appear automatically when
+  those files exist.
+
+- Observation: Paperclip heartbeat invocation gives us a control-plane-native
+  route to Raspberry without inventing a second scheduler.
+  Evidence: `fabro paperclip wake --agent raspberry-orchestrator` now queues a
+  Paperclip heartbeat run for the imported orchestrator agent instead of
+  forcing operators to run the shell script directly.
 
 - Observation: generated agent markdown already captures the right topology.
   Evidence: `paperclip.rs` derives unit-aligned agents from the blueprint, so
@@ -167,6 +246,64 @@ read-only, refreshes goal narration and workspace metadata, regenerates agent
 instructions with explicit Raspberry-only execution routes, synchronizes a
 deterministic frontier issue family, and records the sync map in
 `bootstrap-state.json`.
+
+The expanded slice now leans harder into Paperclip's native control-plane
+model. Refresh writes first-class `plan` documents for the root frontier issue
+and each lane issue, so the Paperclip UI and Paperclip skill can treat the
+frontier playbook as structured issue work product instead of only description
+text. Generated local agents also stop depending only on ambient server env:
+refresh creates or rotates company secrets from available model credentials and
+patches generated `claude_local` and `codex_local` agents to use `secret_ref`
+adapter env bindings. Finally, operators can now wake the imported Raspberry
+Orchestrator through Paperclip itself with `fabro paperclip wake`, which keeps
+the control loop inside Paperclip's heartbeat model while still letting
+Raspberry own execution truth.
+
+Refresh now also persists frontier snapshots in `bootstrap-state.json` and
+posts deterministic `Frontier Sync Update` comments on the synchronized root
+and lane issues only when the frontier changed since the last sync. That gives
+Paperclip a meaningful comment trail without spamming the issue thread on every
+refresh.
+
+The next useful expansion is syncing work products for frontier artifacts so the
+root issue and lane issues expose curated artifact surfaces as native Paperclip
+objects rather than only as markdown bullets inside descriptions and documents.
+
+That expansion is now live for the first useful slice: refresh synchronizes root
+issue work products for the Raspberry manifest and runtime state, and it will do
+the same for lane artifacts whenever the frontier exposes curated artifact
+paths. This gives the Paperclip issue detail page a native artifact surface
+alongside the synced `plan` document and transition comments.
+
+Synchronized issues are now also bound to the project workspace itself through
+`projectWorkspaceId`, which means Paperclip-native heartbeats can inherit the
+same repo context as the synced project. In the current local Paperclip build,
+isolated-workspace preference remains feature-gated, so the explicit workspace
+binding is the active part of that integration today.
+
+The root frontier issue now also carries the actual manifest and runtime state
+files as Paperclip attachments. That gives the board a native download/open
+surface for the current Raspberry files alongside the synced `plan` document,
+transition comments, and root work products.
+
+Those root work products are now actionable as well: they persist the metadata
+and now point directly at the synced attachment content URLs, which means the
+board can open the actual manifest and runtime state from the work-product
+surface instead of hunting for them separately.
+
+The same composition now applies to lane artifacts in the code path: when a
+lane exposes real artifact files, refresh will upload them as lane issue
+attachments and point the lane work products at those attachment URLs. Zend
+does not currently exercise that branch because the active implementation lanes
+do not yet have syncable artifact files.
+
+At this point the Paperclip overlay objective is met. The remaining high-value
+work discovered during this slice is no longer "more Paperclip" but
+run-reliability hardening in Fabro/Raspberry itself: Myosu is dominated by
+direct-integration merge failures and stale running state, rXMRbro mixes real
+implementation progress with direct-integration remote/branch failures, and
+Zend is mostly blocked by fixup loops, verify stalls, and proof-script
+idempotence problems. Those findings now belong in a separate follow-on plan.
 
 The Zend proof also shook out two recovery behaviors that are now part of the
 implementation instead of tribal knowledge: bootstrap seeds a repo-local

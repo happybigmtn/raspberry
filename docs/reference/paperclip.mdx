@@ -24,6 +24,12 @@ When you run `fabro paperclip bootstrap`, Fabro:
 - imports or updates the Paperclip company and agent roster
 - creates or updates the company goal, project, and primary repo workspace
 - mirrors the Raspberry frontier into deterministic Paperclip issues
+- writes or refreshes first-class `plan` documents on the synchronized root and lane issues
+- syncs native Paperclip work products for root and lane frontier artifacts
+- binds synchronized issues to the primary Paperclip project workspace
+- uploads the root manifest and runtime state as Paperclip attachments
+- creates or updates Paperclip company secrets from available local model credentials
+- patches generated local agents to use Paperclip `secret_ref` adapter env config
 - records stable ids and sync metadata in `bootstrap-state.json`
 
 ## Before you start
@@ -84,6 +90,10 @@ fabro paperclip refresh \
 ```
 
 Use `refresh` after frontier movement, blueprint changes, or issue drift.
+It also refreshes the synchronized issue `plan` documents and any synced
+company secrets for generated local agents.
+When the frontier changed since the last sync, `refresh` also posts a
+`Frontier Sync Update` comment on the affected root or lane issues.
 
 ### 4. Open the local Paperclip instance
 
@@ -106,6 +116,7 @@ bash fabro/paperclip/my-program/scripts/run-paperclip.sh
 ```bash
 fabro paperclip start --target-repo /path/to/repo --program my-program
 fabro paperclip status --target-repo /path/to/repo --program my-program
+fabro paperclip wake --target-repo /path/to/repo --program my-program --agent raspberry-orchestrator
 fabro paperclip logs --target-repo /path/to/repo --program my-program --lines 120
 fabro paperclip stop --target-repo /path/to/repo --program my-program
 ```
@@ -118,6 +129,9 @@ fabro paperclip stop --target-repo /path/to/repo --program my-program
 - last bootstrap/refresh sync time
 - whether `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are present
 - how many local CLI export files were generated
+- how many Paperclip company secrets were synced into bootstrap state
+- current company spend vs budget from Paperclip costs
+- pending approvals plus paused agent/project counts from Paperclip budget overview
 
 ## How to use it day to day
 
@@ -128,7 +142,8 @@ The normal loop after initial bootstrap is:
 1. Check the current local Paperclip and frontier state with
    `fabro paperclip status`.
 2. Coordinate in Paperclip.
-3. Let Raspberry advance the frontier through the generated orchestrator route.
+3. Wake the orchestrator through Paperclip with `fabro paperclip wake`.
+4. Let Raspberry advance the frontier through that heartbeat.
 4. Run `fabro paperclip refresh` to resync Paperclip to repo truth.
 
 If you only remember one thing, remember this:
@@ -136,7 +151,7 @@ If you only remember one thing, remember this:
 ```text
 bootstrap once
 status to inspect
-route through Raspberry
+wake through Paperclip
 refresh to resync
 ```
 
@@ -144,13 +159,13 @@ refresh to resync
 
 - **Mission CEO** owns the company-level mission and prioritization.
 - **Raspberry Orchestrator** is the execution bridge. It runs the repo-local
-  route script:
-  `bash fabro/paperclip/<program>/scripts/raspberry-orchestrator.sh`
+  route script and can be invoked natively with:
+  `fabro paperclip wake --target-repo <repo> --program <program> --agent raspberry-orchestrator`
 - **Lane agents** mirror the synthesized frontier lanes. Use them to triage,
   review, explain blockers, and coordinate next moves for their lane.
 
-The orchestrator route script runs one bounded Raspberry cycle. It is the
-intended way to advance the frontier from Paperclip.
+The wake path is the preferred Paperclip-native way to advance the frontier.
+The generated orchestrator route script is still available as a direct fallback.
 
 ### Treat Paperclip issues as a mirror of the frontier
 
@@ -167,9 +182,24 @@ Each mirrored lane issue now includes:
 
 - current lane state and detail
 - current or last run ids when available
+- a synchronized `plan` document with the current lane playbook
+- transition comments when the frontier actually changed since the previous sync
+- native work products for synchronized frontier artifacts when they exist
+- project workspace binding through `projectWorkspaceId`
 - artifact truth as `present:` or `missing:`
 - dependency keys
 - a concrete next operator move
+
+The root frontier issue also carries the current manifest and runtime state as
+native Paperclip attachments so they can be opened or downloaded directly from
+the issue detail page.
+
+The matching root work products now point at those attachment content URLs, so
+the work-product surface is actionable rather than metadata-only.
+
+When synchronized lane artifact files exist, the same pattern applies there:
+refresh uploads them as lane issue attachments and points the lane work
+products at those attachment URLs.
 - direct `fabro inspect` and `fabro logs` commands when a run id exists
 - recent stdout or stderr snippets when Raspberry has them
 
@@ -234,6 +264,19 @@ Fabro seeds and maintains files like:
 If the data dir lives inside the repo, Fabro writes a `.gitignore` so secrets
 and local state stay out of git.
 
+## Secret sync
+
+When `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is present in the environment
+running `bootstrap` or `refresh`, Fabro now:
+
+- creates or rotates a Paperclip company secret for that provider
+- records the synced secret id and a value hash in `bootstrap-state.json`
+- patches generated `codex_local` and `claude_local` agents to use
+  `adapterConfig.env` with `secret_ref`
+
+That keeps generated local agents runnable through Paperclip without depending
+only on the server process environment.
+
 ## Important defaults
 
 | Setting | Default |
@@ -269,6 +312,9 @@ state records:
 - workspace id
 - frontier sync metadata
 - synchronized issue ids
+- synchronized frontier snapshots
+- synchronized secret ids and value hashes
+- synchronized attachment counts
 
 Fabro uses that state as a hint on the next run. If a saved company id goes
 stale, bootstrap falls back to matching by company name instead of assuming the

@@ -737,6 +737,7 @@ async fn main_inner() -> (String, Result<()>) {
             commands::paperclip::PaperclipCommand::Stop(_) => "paperclip stop",
             commands::paperclip::PaperclipCommand::Status(_) => "paperclip status",
             commands::paperclip::PaperclipCommand::Logs(_) => "paperclip logs",
+            commands::paperclip::PaperclipCommand::Wake(_) => "paperclip wake",
         },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
@@ -1124,6 +1125,9 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 commands::paperclip::PaperclipCommand::Logs(args) => {
                     commands::paperclip::logs_command(&args).await?;
+                }
+                commands::paperclip::PaperclipCommand::Wake(args) => {
+                    commands::paperclip::wake_command(&args).await?;
                 }
             },
             Command::Skill { command } => match command {

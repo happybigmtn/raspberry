@@ -8,35 +8,48 @@ rendered manifest ran out of runnable lanes, the system could go idle even when
 repo doctrine still described obvious unfinished work. The second bug was truth
 loss: the operator-facing state could collapse real failure causes into generic
 messages like "script failed with exit code: 1" or accidentally trigger deeper
-work just to render a status table.
+work just to render a status table. The newest proving ground, `rXMRbro`, adds
+one more class of false failure: child programs can die before domain work even
+starts because the runtime launch path itself assumes an interactive shell and
+a writable home-directory log location.
 
-Zend and Myosu make the distinction concrete. Zend needed to keep moving past
-bootstrap and to classify implementation-child failures into meaningful next
-actions. Myosu needed read-only top-level status to stay fast and truthful
-without silently evaluating child programs deeply enough to look like a hidden
-scheduler.
+Zend and Myosu made the orchestration/truth distinction concrete. `rXMRbro`
+adds the next requirement: a zero-human system cannot depend on incidental host
+shell behavior or on `~/.fabro/logs` being writable inside nested worker
+contexts.
 
 ## Operating Theory
 
-The no-idle loop only works if authorship, orchestration, and truth all reinforce
-each other.
+The no-idle loop only works if authorship, orchestration, truth, and launch
+hygiene all reinforce each other.
 
 Authorship lives in `fabro-synthesis`. `author_blueprint_for_evolve(...)` must
 be able to materialize missing parent-program work from doctrine instead of only
 re-importing the current package. The parent program remains the roadmap, while
 implementation child programs remain execution fronts inside that roadmap.
 
-Orchestration lives in `raspberry-supervisor::autodev`. Spare capacity and
-doctrine deltas should be reasons to search for more work, but only inside an
-explicit frontier budget. Otherwise a single empty slot turns into unbounded
-frontier spam.
+Orchestration lives in `raspberry-supervisor::autodev` and `dispatch.rs`.
+Spare capacity and doctrine deltas should be reasons to search for more work,
+but only inside an explicit frontier budget. Otherwise a single empty slot
+turns into unbounded frontier spam. The same layer must also launch work in a
+way that is invariant to dotfiles and shell interactivity. If dispatch uses
+`bash -ic`, then the scheduler is no longer scheduling work; it is also
+implicitly depending on starship prompts, tty behavior, and whatever the host
+shell startup scripts happen to do.
 
 Truth lives in `program_state.rs` and `evaluate.rs`. Those surfaces must be
 child-state-authoritative when child state already exists, because read-only
 commands like `raspberry status` should not become implicit work runners. The
 same surfaces also need richer failure extraction than the final top-level
 workflow error alone, because the actionable cause often appears earlier in the
-run history than the final collapse message.
+run history than the final collapse message. In `rXMRbro`, the actionable cause
+was not "provably fair failed" or "house agent failed"; it was that the
+framework launched nested work through an interactive shell and a logging path
+that panicked on a read-only filesystem. The newer truth discovery is that
+`conclusion.json` and `status.json` must stay authoritative even if the
+progress log ends with `WorkflowRunCompleted`; otherwise a genuinely failed run
+can be re-labeled as successful and lose the recovery metadata needed for
+self-healing.
 
 ## Strategy
 
@@ -63,6 +76,14 @@ In `failure.rs` and `evaluate.rs`, the shared failure kind plus recovery action
 now flow all the way to operator output. The point is not taxonomy for its own
 sake; it is to let the status surface answer "what happened?" and "what should
 happen next?" from the same source of truth.
+
+The newest runtime hardening step is to remove unnecessary shell mediation and
+make logging opportunistic rather than fatal. `dispatch.rs` and the
+`synth import/evolve` path in `autodev.rs` should launch `fabro` directly with
+explicit env vars instead of through `bash -ic`. `fabro-cli::logging` should
+prefer file logs when it can create them, but it must fall back to run-local
+logging when the home directory is unavailable or read-only. That keeps nested
+autonomous runs from failing before their first stage executes.
 
 The newest execution step extends that into actual remediation for one concrete
 resource family. Zend-style service/interface runs already know how to honor
@@ -109,15 +130,51 @@ already been written to accept leased daemon env, which meant the framework only
 needed one small bridge: resource lease allocation in Raspberry plus host-env
 passthrough in `fabro run`.
 
+The newest and most important discovery from `rXMRbro` is that some "failed
+implementation" lanes were not implementation failures at all. The child
+autodev evidence showed `bash: cannot set terminal process group`, starship
+startup noise, and then a panic from `tracing-appender` trying to create
+`~/.fabro/logs` on a read-only filesystem. That changed the theory
+substantially. The right lever is not better prompts or different repo plans;
+it is launch-path determinism in the framework itself.
+
+Another important discovery is that local-only direct integration has two
+different failure modes. The first was missing `origin`, which made trunk
+detection and push-based settlement impossible. The second was subtler: once
+the system fell back to a local branch like `main`, linked-worktree repos could
+still fail because `git branch -f main HEAD` refuses to move a branch that is
+checked out in the live repo worktree. For unattended local proving grounds,
+that branch-ref update cannot stay a hard stop. The framework now needs a
+best-effort local settlement mode that leaves the failure actionable instead of
+terminal.
+
+The latest Myosu-specific discovery is that not every remaining proving-ground
+failure needs a brand-new recovery family. Two live failures that were still
+blocking bounded runs — `goal gate unsatisfied for node verify and no retry
+target` and a 600000ms scripted test timeout — were really proof/verify
+failures that had fallen through to `unknown`. Expanding the proof-script
+classifier to cover those strings was enough to turn them into
+`regenerate_lane` work instead of `surface_blocked`.
+
+The newest workflow-design discovery is that implementation review had become
+structurally muddled. `Settle` was acting as a hidden subjective signoff stage,
+while `Review` was either missing or underused for implementation-family work.
+The cleaner model is: deterministic checks (`Verify`, `Quality`) feed `Fixup`,
+then one explicit stronger-model `Review` stage owns merge-readiness and folds
+security scrutiny into that judgment when the slice touches trust boundaries.
+That keeps the workflow legible: deterministic loop first, subjective gate
+second, contract enforcement last.
+
 ## Open Questions
 
 The main remaining open question is the live proving strategy. The watchdog
-loops on Zend and Myosu are active, so there is still a coordination question
-around how to run explicit bounded proving passes without colliding with the
-existing overnight controllers.
+loops on Zend, Myosu, and now `rXMRbro` are active, so there is still a
+coordination question around how to run explicit bounded proving passes without
+colliding with the standing controllers.
 
-The other open question is how far to push failure extraction beyond the current
-run-history heuristics. The present approach is already much better than the
-generic wrapper messages, but some future cases may need even more structured
-engine output if we want classification to stay honest without pattern-matching
-ever-larger error strings.
+The other open question is how far to push runtime isolation. Direct command
+launch plus non-fatal logging should remove the current shell/home-directory
+footguns, but nested autonomous execution may still surface other host-coupled
+assumptions over time. The right long-term answer may be a stricter framework
+contract for child-program execution environments, not just a growing list of
+patched symptoms.

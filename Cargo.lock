@@ -1757,6 +1757,7 @@ dependencies = [
  "anyhow",
  "fabro-config",
  "fabro-workflows",
+ "git2",
  "raspberry-supervisor",
  "serde",
  "serde_json",

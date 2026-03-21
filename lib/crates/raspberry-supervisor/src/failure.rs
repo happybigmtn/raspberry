@@ -7,7 +7,9 @@ pub enum FailureKind {
     BranchBackedRunRequired,
     SourceBranchMissing,
     IntegrationConflict,
+    IntegrationTargetUnavailable,
     DeterministicVerifyCycle,
+    TransientLaunchFailure,
     CapabilityContractMismatch,
     StallWatchdog,
     ProviderPolicyMismatch,
@@ -22,7 +24,9 @@ impl fmt::Display for FailureKind {
             Self::BranchBackedRunRequired => "branch_backed_run_required",
             Self::SourceBranchMissing => "source_branch_missing",
             Self::IntegrationConflict => "integration_conflict",
+            Self::IntegrationTargetUnavailable => "integration_target_unavailable",
             Self::DeterministicVerifyCycle => "deterministic_verify_cycle",
+            Self::TransientLaunchFailure => "transient_launch_failure",
             Self::CapabilityContractMismatch => "capability_contract_mismatch",
             Self::StallWatchdog => "stall_watchdog",
             Self::ProviderPolicyMismatch => "provider_policy_mismatch",
@@ -95,6 +99,15 @@ pub fn classify_failure(
     {
         return Some(FailureKind::IntegrationConflict);
     }
+    if combined.contains("could not read from remote repository")
+        || combined.contains("does not appear to be a git repository")
+        || (combined.contains("cannot force update the branch")
+            && combined.contains("used by worktree"))
+        || combined.contains("configure origin/head so direct integration can target trunk")
+        || combined.contains("set fabro_trunk_branch")
+    {
+        return Some(FailureKind::IntegrationTargetUnavailable);
+    }
     if combined.contains("cycle detection")
         || combined.contains("deterministic failure cycle detected")
         || combined.contains("deterministic cycle")
@@ -103,6 +116,18 @@ pub fn classify_failure(
         || combined.contains("dependency cycle")
     {
         return Some(FailureKind::DeterministicVerifyCycle);
+    }
+    if combined.contains("sandbox_init_failed")
+        || combined.contains("sandbox init failed")
+        || combined.contains("worker process disappeared")
+        || combined.contains("sandbox_initializing")
+        || combined.contains("cannot set terminal process group")
+        || combined.contains("no job control in this shell")
+        || combined.contains("error finding codex home")
+        || combined.contains("codex_home points to")
+        || (combined.contains("could not update path") && combined.contains("codex_home"))
+    {
+        return Some(FailureKind::TransientLaunchFailure);
     }
     if combined.contains("gatewayunauthorized")
         || combined.contains("lacks 'control' capability")
@@ -127,6 +152,9 @@ pub fn classify_failure(
         || combined.contains("verify command")
         || combined.contains("verification command")
         || combined.contains("health command")
+        || combined.contains("goal gate unsatisfied for node verify")
+        || combined.contains("no retry target")
+        || combined.contains("script timed out after")
         || combined.contains("script failed with exit code")
     {
         return Some(FailureKind::ProofScriptFailure);
@@ -147,10 +175,11 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
         FailureKind::BranchBackedRunRequired | FailureKind::SourceBranchMissing => {
             FailureRecoveryAction::ReplaySourceLane
         }
+        FailureKind::IntegrationTargetUnavailable => FailureRecoveryAction::ReplayLane,
         FailureKind::IntegrationConflict => FailureRecoveryAction::RefreshFromTrunk,
-        FailureKind::EnvironmentCollision | FailureKind::StallWatchdog => {
-            FailureRecoveryAction::BackoffRetry
-        }
+        FailureKind::EnvironmentCollision
+        | FailureKind::StallWatchdog
+        | FailureKind::TransientLaunchFailure => FailureRecoveryAction::BackoffRetry,
         FailureKind::DeterministicVerifyCycle
         | FailureKind::CapabilityContractMismatch
         | FailureKind::ProofScriptFailure => FailureRecoveryAction::RegenerateLane,
@@ -215,6 +244,38 @@ mod tests {
     }
 
     #[test]
+    fn classify_failure_detects_transient_launch_failures() {
+        assert_eq!(
+            classify_failure(
+                Some("tracked run remained active after its worker process disappeared"),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            classify_failure(Some("sandbox_init_failed"), None, None,),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("bash: cannot set terminal process group (1): Inappropriate ioctl for device\nbash: no job control in this shell"),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("WARNING: proceeding, even though we could not update PATH: CODEX_HOME points to \"/tmp/fabro_cli_demo_codex_home\", but that path does not exist\nError finding codex home: CODEX_HOME points to \"/tmp/fabro_cli_demo_codex_home\", but that path does not exist"),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+    }
+
+    #[test]
     fn classify_failure_detects_node_visit_cycle_limit_failures() {
         assert_eq!(
             classify_failure(
@@ -235,6 +296,28 @@ mod tests {
     }
 
     #[test]
+    fn classify_failure_detects_integration_target_unavailable() {
+        assert_eq!(
+            classify_failure(
+                Some("git push failed: fatal: Could not read from remote repository."),
+                None,
+                None,
+            ),
+            Some(FailureKind::IntegrationTargetUnavailable)
+        );
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "git branch -f target branch failed: fatal: cannot force update the branch 'main' used by worktree at '/repo'"
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::IntegrationTargetUnavailable)
+        );
+    }
+
+    #[test]
     fn deterministic_recovery_actions_regenerate_lane() {
         assert_eq!(
             default_recovery_action(FailureKind::DeterministicVerifyCycle),
@@ -248,6 +331,14 @@ mod tests {
             default_recovery_action(FailureKind::ProofScriptFailure),
             FailureRecoveryAction::RegenerateLane
         );
+        assert_eq!(
+            default_recovery_action(FailureKind::TransientLaunchFailure),
+            FailureRecoveryAction::BackoffRetry
+        );
+        assert_eq!(
+            default_recovery_action(FailureKind::IntegrationTargetUnavailable),
+            FailureRecoveryAction::ReplayLane
+        );
     }
 
     #[test]
@@ -255,6 +346,22 @@ mod tests {
         assert_eq!(
             classify_failure(
                 Some("Script failed with exit code: 1\n\n## stdout\nbootstrap output"),
+                None,
+                None,
+            ),
+            Some(FailureKind::ProofScriptFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("Engine error: goal gate unsatisfied for node verify and no retry target"),
+                None,
+                None,
+            ),
+            Some(FailureKind::ProofScriptFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("Handler error: Script timed out after 600000ms: set -e\ncargo test"),
                 None,
                 None,
             ),

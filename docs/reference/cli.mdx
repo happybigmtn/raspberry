@@ -506,7 +506,20 @@ When `--apply` is `true`, Fabro will:
 3. start or reuse a repo-local Paperclip instance
 4. import or update the company and tailored agent roster
 5. ensure the company goal and repo workspace project exist
-6. write agent-specific local-cli env exports under `.paperclip/local-cli/`
+6. sync issue `plan` documents for the root and lane frontier issues
+7. sync root and lane frontier artifacts into native issue work products when available
+8. bind synchronized issues to the primary project workspace for Paperclip-native heartbeats
+9. upload the root manifest and runtime state as native Paperclip attachments
+10. create or rotate Paperclip company secrets from available model env vars and
+    patch generated local agents to use `secret_ref` adapter env config
+11. write agent-specific local-cli env exports under `.paperclip/local-cli/`
+
+The synced root work products point at those attachment URLs, so the manifest
+and runtime state can be opened from either the attachment surface or the
+work-product surface.
+
+When synchronized lane artifact files exist, refresh applies the same pattern
+to the lane issues as well.
 
 The generated company is layered on top of Raspberry rather than bypassing it:
 the Raspberry orchestrator agent is a process adapter that runs the repo-local
@@ -526,6 +539,8 @@ fabro paperclip refresh --target-repo /home/r/coding/zend --program zend
 
 Use this after Raspberry advances, after the blueprint changes, or whenever you
 want to resync Paperclip to the current frontier.
+When the frontier changed since the last sync, refresh also posts deterministic
+transition comments on the synchronized root and lane issues.
 
 | Flag | Description |
 |---|---|
@@ -563,7 +578,9 @@ fabro paperclip status --target-repo /home/r/coding/zend --program zend
 
 This reports server readiness, the managed pid, last sync time, frontier
 summary, detected local-cli exports, and whether `OPENAI_API_KEY` and
-`ANTHROPIC_API_KEY` are present in the environment.
+`ANTHROPIC_API_KEY` are present in the environment. It also reports current
+company spend vs budget plus pending approvals and paused scope counts from the
+Paperclip control plane.
 
 | Flag | Description |
 |---|---|
@@ -591,6 +608,28 @@ fabro paperclip logs --target-repo /home/r/coding/zend --program zend --lines 12
 | `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
 | `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
 | `--lines <N>` | Number of trailing log lines to print. Defaults to `80`. |
+
+## `fabro paperclip wake`
+
+Invoke a Paperclip heartbeat for the imported orchestrator or another generated
+agent.
+
+```bash
+fabro paperclip wake --target-repo /home/r/coding/zend --program zend --agent raspberry-orchestrator
+```
+
+This is the preferred Paperclip-native way to ask the Raspberry Orchestrator to
+advance the frontier. The direct shell route remains available as a fallback.
+
+| Flag | Description |
+|---|---|
+| `--target-repo <DIR>` | Repository root containing the current Paperclip bundle and bootstrap state. |
+| `--program <ID>` | Optional program id override. Defaults to the repo directory name. |
+| `--company-name <NAME>` | Optional Paperclip company name override. |
+| `--data-dir <DIR>` | Optional Paperclip instance data dir. Defaults to `<repo>/.paperclip`. |
+| `--api-base <URL>` | Optional Paperclip API base. Defaults to `http://127.0.0.1:3100`. |
+| `--paperclip-cmd <CMD>` | Optional Paperclip CLI command override. |
+| `--agent <SLUG>` | Agent slug to wake. Defaults to `raspberry-orchestrator`. |
 
 ## `fabro paperclip stop`
 

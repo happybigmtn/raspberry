@@ -339,33 +339,27 @@ fn run_fabro(
             message: error.to_string(),
         })?;
 
-    let mut command = format!(
-        "export CARGO_TARGET_DIR={}; ",
-        shell_escape(&autodev_cargo_target_dir(target_repo).display().to_string()),
-    );
+    let mut command = Command::new(fabro_bin);
+    command
+        .current_dir(target_repo)
+        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(target_repo))
+        .arg("--no-upgrade-check")
+        .arg("run")
+        .arg("--detach")
+        .arg(run_config);
     if let Some(env) = leased_env.as_ref() {
         let mut entries = env.iter().collect::<Vec<_>>();
         entries.sort_by(|left, right| left.0.cmp(right.0));
         for (key, value) in entries {
-            command.push_str(&format!("{key}={}; export {key}; ", shell_escape(value)));
+            command.env(key, value);
         }
     }
-    command.push_str(&format!(
-        "exec {} --no-upgrade-check run --detach {}",
-        shell_escape(&fabro_bin.display().to_string()),
-        shell_escape(&run_config.display().to_string()),
-    ));
 
-    let output = Command::new("bash")
-        .current_dir(target_repo)
-        .arg("-ic")
-        .arg(command)
-        .output()
-        .map_err(|source| DispatchError::Spawn {
-            lane: lane_key.to_string(),
-            path: run_config.to_path_buf(),
-            source,
-        })?;
+    let output = command.output().map_err(|source| DispatchError::Spawn {
+        lane: lane_key.to_string(),
+        path: run_config.to_path_buf(),
+        source,
+    })?;
 
     if output.status.code().unwrap_or(-1) != 0 {
         let _ = resource_lease::release_for_lane(target_repo, lane_key);
@@ -378,10 +372,6 @@ fn run_fabro(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
-}
-
-fn shell_escape(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn parse_detached_run_id(stdout: &[u8]) -> Option<String> {

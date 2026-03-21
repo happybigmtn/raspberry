@@ -104,6 +104,7 @@ pub fn integrate_run(
     let result = run_integration_worktree(
         request,
         &worktree_path,
+        &base_ref,
         &target_branch,
         run_branch,
         &source_ref,
@@ -119,6 +120,7 @@ pub fn integrate_run(
 fn run_integration_worktree(
     request: &DirectIntegrationRequest,
     worktree_path: &Path,
+    base_ref: &str,
     target_branch: &str,
     run_branch: &str,
     source_ref: &str,
@@ -158,23 +160,41 @@ fn run_integration_worktree(
         head_sha(worktree_path)?
     };
 
-    let push_refspec = format!("HEAD:refs/heads/{target_branch}");
-    run_git(
-        worktree_path,
-        "push",
-        ["push", REMOTE_NAME, push_refspec.as_str()],
-    )?;
+    let (mode, pushed) = if base_ref.starts_with(&format!("{REMOTE_NAME}/")) {
+        let push_refspec = format!("HEAD:refs/heads/{target_branch}");
+        run_git(
+            worktree_path,
+            "push",
+            ["push", REMOTE_NAME, push_refspec.as_str()],
+        )?;
+        ("direct_trunk_squash".to_string(), true)
+    } else {
+        let local_mode = match run_git(
+            worktree_path,
+            "branch -f target branch",
+            ["branch", "-f", target_branch, "HEAD"],
+        ) {
+            Ok(_) => "direct_trunk_squash".to_string(),
+            Err(DirectIntegrationError::Git { message, .. })
+                if is_checked_out_branch_update_error(&message) =>
+            {
+                "direct_trunk_squash_local_branch_pending".to_string()
+            }
+            Err(error) => return Err(error),
+        };
+        (local_mode, false)
+    };
 
     let record = DirectIntegrationRecord {
         integrated: true,
-        mode: "direct_trunk_squash".to_string(),
+        mode,
         source_lane: request.source_lane.clone(),
         source_run_id: request.manifest.run_id.clone(),
         source_run_branch: run_branch.to_string(),
         target_branch: target_branch.to_string(),
         commit_sha,
         already_integrated,
-        pushed: true,
+        pushed,
         integrated_at: Utc::now().to_rfc3339(),
     };
     if let Some(path) = &request.artifact_path {
@@ -435,6 +455,11 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+fn is_checked_out_branch_update_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("cannot force update the branch") && lower.contains("used by worktree")
+}
+
 struct IntegrationLock {
     path: PathBuf,
 }
@@ -573,5 +598,149 @@ mod tests {
             git_output(&repo, &["show", "origin/main:feature.txt"]),
             "integrated"
         );
+    }
+
+    #[test]
+    fn direct_integration_updates_local_branch_when_origin_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("README.md"), "base\n").expect("readme");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+
+        git(&repo, &["branch", "fabro/run/run-1", "HEAD"]);
+        let worktree = temp.path().join("run-worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                worktree.to_str().expect("worktree path"),
+                "fabro/run/run-1",
+            ],
+        );
+        fs::write(worktree.join("feature.txt"), "integrated\n").expect("feature");
+        git(&worktree, &["add", "feature.txt"]);
+        git(&worktree, &["commit", "-m", "feature"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree.to_str().expect("worktree path"),
+            ],
+        );
+        git(&repo, &["checkout", "--detach"]);
+
+        let record = integrate_run(&DirectIntegrationRequest {
+            source_lane: "demo:implement".to_string(),
+            manifest: RunManifest {
+                run_id: "run-1".to_string(),
+                workflow_name: "Demo".to_string(),
+                goal: "Demo".to_string(),
+                start_time: Utc::now(),
+                node_count: 1,
+                edge_count: 0,
+                run_branch: Some("fabro/run/run-1".to_string()),
+                base_sha: None,
+                labels: std::collections::HashMap::new(),
+                base_branch: Some("main".to_string()),
+                workflow_slug: None,
+                host_repo_path: Some(repo.display().to_string()),
+            },
+            repo_fallback: repo.clone(),
+            target_branch: "main".to_string(),
+            strategy: MergeStrategy::Squash,
+            artifact_path: None,
+        })
+        .expect("direct integration succeeds");
+
+        assert!(record.integrated);
+        assert!(!record.pushed);
+        assert_eq!(
+            git_output(&repo, &["show", "main:feature.txt"]),
+            "integrated"
+        );
+    }
+
+    #[test]
+    fn direct_integration_allows_local_branch_ref_pending_for_linked_worktree() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("README.md"), "base\n").expect("readme");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["checkout", "--detach"]);
+
+        let target = temp.path().join("target");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                target.to_str().expect("target path"),
+                "main",
+            ],
+        );
+
+        git(&repo, &["branch", "fabro/run/run-1", "HEAD"]);
+        let run_worktree = temp.path().join("run-worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                run_worktree.to_str().expect("worktree path"),
+                "fabro/run/run-1",
+            ],
+        );
+        fs::write(run_worktree.join("feature.txt"), "integrated\n").expect("feature");
+        git(&run_worktree, &["add", "feature.txt"]);
+        git(&run_worktree, &["commit", "-m", "feature"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                run_worktree.to_str().expect("worktree path"),
+            ],
+        );
+
+        let record = integrate_run(&DirectIntegrationRequest {
+            source_lane: "demo:implement".to_string(),
+            manifest: RunManifest {
+                run_id: "run-1".to_string(),
+                workflow_name: "Demo".to_string(),
+                goal: "Demo".to_string(),
+                start_time: Utc::now(),
+                node_count: 1,
+                edge_count: 0,
+                run_branch: Some("fabro/run/run-1".to_string()),
+                base_sha: None,
+                labels: std::collections::HashMap::new(),
+                base_branch: Some("main".to_string()),
+                workflow_slug: None,
+                host_repo_path: Some(target.display().to_string()),
+            },
+            repo_fallback: target.clone(),
+            target_branch: "main".to_string(),
+            strategy: MergeStrategy::Squash,
+            artifact_path: None,
+        })
+        .expect("direct integration succeeds");
+
+        assert!(record.integrated);
+        assert_eq!(record.mode, "direct_trunk_squash_local_branch_pending");
+        assert!(!record.pushed);
     }
 }

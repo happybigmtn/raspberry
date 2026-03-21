@@ -483,8 +483,11 @@ fn resolve_cli_target(
     launch_env: &HashMap<String, String>,
     codex_slots_available: bool,
 ) -> (Provider, String, Option<String>) {
+    let strict_provider = launch_env
+        .get("FABRO_STRICT_PROVIDER")
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     if requested_provider == Provider::OpenAi
-        && !launch_env.contains_key("OPENAI_API_KEY")
+        && !strict_provider
         && !codex_slots_available
         && (launch_env.contains_key("ANTHROPIC_API_KEY")
             || launch_env.contains_key("ANTHROPIC_AUTH_TOKEN"))
@@ -497,7 +500,7 @@ fn resolve_cli_target(
             Provider::Anthropic,
             fallback_model,
             Some(
-                "requested provider=openai but OPENAI_API_KEY is unavailable; using Anthropic/MiniMax CLI auth instead"
+                "requested provider=openai but no dedicated OAuth-backed Codex slot is available; using Anthropic/MiniMax CLI auth instead"
                     .to_string(),
             ),
         );
@@ -560,6 +563,14 @@ fn slot_key(name: &str) -> String {
         .collect()
 }
 
+fn automation_codex_home_allowed(path: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return true;
+    };
+    let primary_home = PathBuf::from(home).join(".codex");
+    path != primary_home
+}
+
 fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
     let now = now_ms();
     let cooldown_seconds = rotator.config.cooldown_seconds.unwrap_or(900);
@@ -573,6 +584,7 @@ fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
         .config
         .slots
         .iter()
+        .filter(|slot| automation_codex_home_allowed(&slot.codex_home))
         .filter(|slot| slot.codex_home.join("auth.json").exists())
         .collect::<Vec<_>>();
     if healthy_slots.is_empty() {
@@ -648,7 +660,6 @@ fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
     };
     let home = PathBuf::from(home);
     let candidates = [
-        ("primary", home.join(".codex")),
         ("slot1", home.join(".codex-slot1/.codex")),
         ("slot2", home.join(".codex-slot2/.codex")),
         ("slot3", home.join(".codex-slot3/.codex")),
@@ -881,6 +892,10 @@ impl CodergenBackend for AgentCliBackend {
             launch_env.insert(name.clone(), val.clone());
         }
 
+        if requested_provider == Provider::OpenAi {
+            launch_env.remove("OPENAI_API_KEY");
+        }
+
         let codex_slot = if requested_provider == Provider::OpenAi {
             load_codex_rotator()
                 .and_then(|rotator| choose_codex_slot(&rotator))
@@ -903,6 +918,15 @@ impl CodergenBackend for AgentCliBackend {
                 selection.codex_home.display().to_string(),
             );
             mark_codex_slot_selected(selection);
+        }
+
+        if requested_provider == Provider::OpenAi
+            && provider == Provider::OpenAi
+            && codex_slot.is_none()
+        {
+            return Err(FabroError::handler(
+                "requested provider=openai but no dedicated OAuth-backed Codex slot is available; Fabro will not use API-key auth or the shared ~/.codex home".to_string(),
+            ));
         }
 
         // Ensure the CLI tool is installed in the sandbox
@@ -932,30 +956,6 @@ impl CodergenBackend for AgentCliBackend {
                 actual_model = model,
                 "{reason}"
             );
-        }
-
-        // Codex CLI requires `codex login --with-api-key` to store credentials;
-        // it does not read OPENAI_API_KEY from the environment at runtime.
-        // This only runs when OPENAI_API_KEY was explicitly supplied for the
-        // current launch.
-        if cli == AgentCli::Codex {
-            if let Some(api_key) = launch_env.get("OPENAI_API_KEY") {
-                let login_cmd = format!(
-                    "PATH=\"$HOME/.local/bin:$PATH\" echo '{}' | codex login --with-api-key",
-                    shell_escape(api_key)
-                );
-                let login_result = sandbox
-                    .exec_command(&login_cmd, 30_000, None, None, None)
-                    .await
-                    .map_err(|e| FabroError::handler(format!("codex login failed: {e}")))?;
-                if login_result.exit_code != 0 {
-                    tracing::warn!(
-                        exit_code = login_result.exit_code,
-                        "codex login --with-api-key failed: {}",
-                        login_result.stderr
-                    );
-                }
-            }
         }
 
         // Also write env file as fallback for commands that source it (e.g. ensure_cli PATH)
@@ -1329,6 +1329,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cli_target_keeps_openai_when_strict_provider_requested() {
+        let env = HashMap::from([
+            ("FABRO_STRICT_PROVIDER".to_string(), "1".to_string()),
+            (
+                "ANTHROPIC_API_KEY".to_string(),
+                "test-anthropic-key".to_string(),
+            ),
+        ]);
+
+        let (provider, model, reason) = resolve_cli_target(
+            Provider::OpenAi,
+            "gpt-5.4",
+            "MiniMax-M2.7-highspeed",
+            &env,
+            false,
+        );
+
+        assert_eq!(provider, Provider::OpenAi);
+        assert_eq!(model, "gpt-5.4");
+        assert!(reason.is_none());
+    }
+
+    #[test]
     fn resolve_cli_target_keeps_openai_when_codex_slots_exist() {
         let env = HashMap::from([(
             "ANTHROPIC_API_KEY".to_string(),
@@ -1440,6 +1463,52 @@ mod tests {
     }
 
     #[test]
+    fn choose_codex_slot_skips_primary_shared_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+
+        let primary = temp.path().join(".codex");
+        let slot1 = temp.path().join(".codex-slot1/.codex");
+        std::fs::create_dir_all(&primary).expect("primary dir");
+        std::fs::create_dir_all(&slot1).expect("slot1 dir");
+        std::fs::write(primary.join("auth.json"), "{}").expect("primary auth");
+        std::fs::write(slot1.join("auth.json"), "{}").expect("slot1 auth");
+
+        let rotator = CodexRotator {
+            config_path: temp.path().join("config.json"),
+            state_path: temp.path().join("state.json"),
+            config: CodexRotatorConfig {
+                enabled: true,
+                selection_policy: Some("sticky".to_string()),
+                cooldown_seconds: Some(900),
+                state_path: Some(temp.path().join("state.json")),
+                shared_state_path: None,
+                slots: vec![
+                    CodexRotatorSlot {
+                        name: "primary".to_string(),
+                        codex_home: primary.clone(),
+                    },
+                    CodexRotatorSlot {
+                        name: "slot1".to_string(),
+                        codex_home: slot1.clone(),
+                    },
+                ],
+            },
+            state: CodexRotatorState::default(),
+        };
+
+        let selected = choose_codex_slot(&rotator).expect("slot selected");
+        assert_eq!(selected.slot_name, "slot1");
+        assert_eq!(selected.codex_home, slot1);
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
     fn classify_codex_slot_failure_detects_scope_error() {
         let reason = classify_codex_slot_failure(
             "unexpected status 401 Unauthorized: Missing scopes: api.responses.write",
@@ -1456,8 +1525,11 @@ mod tests {
         let original_home = std::env::var_os("HOME");
         std::env::set_var("HOME", temp.path());
 
+        let primary = temp.path().join(".codex");
         let slot3 = temp.path().join(".codex-slot3/.codex");
+        std::fs::create_dir_all(&primary).expect("primary dir");
         std::fs::create_dir_all(&slot3).expect("slot3 dir");
+        std::fs::write(primary.join("auth.json"), "{}").expect("primary auth");
         std::fs::write(slot3.join("auth.json"), "{}").expect("slot3 auth");
 
         let selected = fallback_codex_slot_selection().expect("fallback slot");

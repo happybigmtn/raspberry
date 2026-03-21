@@ -10,6 +10,7 @@ anyhow.workspace = true
 fabro-config = { path = "../fabro-config" }
 fabro-workflows = { path = "../fabro-workflows" }
 raspberry-supervisor = { path = "../raspberry-supervisor" }
+git2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

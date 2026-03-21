@@ -78,7 +78,9 @@ pub struct AutodevCycleReport {
 
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
+const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 300;
+const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -258,6 +260,7 @@ pub fn orchestrate_program(
     let evolve_every = Duration::from_secs(settings.evolve_every_seconds);
     let mut last_evolve_at = None::<Instant>;
     let mut last_evolve_frontier = None::<FrontierSignature>;
+    let mut last_paperclip_refresh_at = None::<Instant>;
     let mut report = AutodevReport {
         program: initial_manifest.program.clone(),
         stop_reason: AutodevStopReason::CycleLimit,
@@ -405,6 +408,12 @@ pub fn orchestrate_program(
         report.current = Some(current_snapshot(&program_after));
         report.updated_at = Utc::now();
         save_autodev_report(&manifest_path, &manifest, &report)?;
+        maybe_refresh_paperclip_dashboard(
+            &manifest_path,
+            &manifest,
+            settings,
+            &mut last_paperclip_refresh_at,
+        );
 
         let has_ready = program_after
             .lanes
@@ -434,6 +443,12 @@ pub fn orchestrate_program(
             report.current = Some(current_snapshot(&program_after));
             report.updated_at = Utc::now();
             save_autodev_report(&manifest_path, &manifest, &report)?;
+            maybe_refresh_paperclip_dashboard(
+                &manifest_path,
+                &manifest,
+                settings,
+                &mut last_paperclip_refresh_at,
+            );
             return Ok(report);
         }
 
@@ -448,6 +463,12 @@ pub fn orchestrate_program(
     let final_program = evaluate_program(&manifest_path)?;
     report.current = Some(current_snapshot(&final_program));
     save_autodev_report(&manifest_path, &final_manifest, &report)?;
+    maybe_refresh_paperclip_dashboard(
+        &manifest_path,
+        &final_manifest,
+        settings,
+        &mut last_paperclip_refresh_at,
+    );
     drop(guard);
     Ok(report)
 }
@@ -1017,7 +1038,12 @@ fn replay_target_lane(
             lane.lane_key.clone(),
         ),
         FailureRecoveryAction::BackoffRetry => {
-            retry_after_cooldown(lane, now, BACKOFF_RETRY_MIN_SECS, lane.lane_key.clone())
+            let cooldown = if kind == FailureKind::TransientLaunchFailure {
+                TRANSIENT_LAUNCH_RETRY_MIN_SECS
+            } else {
+                BACKOFF_RETRY_MIN_SECS
+            };
+            retry_after_cooldown(lane, now, cooldown, lane.lane_key.clone())
         }
         FailureRecoveryAction::RegenerateLane => {
             if allow_regenerate {
@@ -1101,18 +1127,18 @@ fn run_synth_evolve(
     let temp_dir = autodev_temp_dir(&manifest.program)?;
     let blueprint_path = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
 
-    let import_cmd = format!(
-        "export CARGO_TARGET_DIR={}; exec {} --no-upgrade-check synth import --target-repo {} --program {} --output {}",
-        shell_escape(&autodev_cargo_target_dir(&target_repo).display().to_string()),
-        shell_escape(&settings.fabro_bin.display().to_string()),
-        shell_escape(&target_repo.display().to_string()),
-        shell_escape(&manifest.program),
-        shell_escape(&blueprint_path.display().to_string()),
-    );
-    let import = Command::new("bash")
+    let import = Command::new(&settings.fabro_bin)
         .current_dir(&target_repo)
-        .arg("-ic")
-        .arg(import_cmd)
+        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
+        .arg("--no-upgrade-check")
+        .arg("synth")
+        .arg("import")
+        .arg("--target-repo")
+        .arg(&target_repo)
+        .arg("--program")
+        .arg(&manifest.program)
+        .arg("--output")
+        .arg(&blueprint_path)
         .output()
         .map_err(|source| AutodevError::Spawn {
             step: "synth import".to_string(),
@@ -1127,31 +1153,72 @@ fn run_synth_evolve(
         &settings.evidence_paths,
     )?;
 
-    let mut evolve_cmd = format!(
-        "export CARGO_TARGET_DIR={}; exec {} --no-upgrade-check synth evolve --blueprint {} --target-repo {}",
-        shell_escape(&autodev_cargo_target_dir(&target_repo).display().to_string()),
-        shell_escape(&settings.fabro_bin.display().to_string()),
-        shell_escape(&blueprint_path.display().to_string()),
-        shell_escape(&target_repo.display().to_string()),
-    );
-    if let Some(preview_root) = &settings.preview_evolve_root {
-        evolve_cmd.push_str(" --preview-root ");
-        evolve_cmd.push_str(&shell_escape(&preview_root.display().to_string()));
-    }
-    let output = Command::new("bash")
+    let mut evolve = Command::new(&settings.fabro_bin);
+    evolve
         .current_dir(&target_repo)
-        .arg("-ic")
-        .arg(evolve_cmd)
-        .output()
-        .map_err(|source| AutodevError::Spawn {
-            step: "synth evolve".to_string(),
-            program: manifest.program.clone(),
-            source,
-        })?;
+        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
+        .arg("--no-upgrade-check")
+        .arg("synth")
+        .arg("evolve")
+        .arg("--blueprint")
+        .arg(&blueprint_path)
+        .arg("--target-repo")
+        .arg(&target_repo);
+    if let Some(preview_root) = &settings.preview_evolve_root {
+        evolve.arg("--preview-root").arg(preview_root);
+    }
+    let output = evolve.output().map_err(|source| AutodevError::Spawn {
+        step: "synth evolve".to_string(),
+        program: manifest.program.clone(),
+        source,
+    })?;
     ensure_success("synth evolve", &manifest.program, output)?;
 
     let _ = fs::remove_dir_all(&temp_dir);
     Ok(())
+}
+
+fn maybe_refresh_paperclip_dashboard(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    settings: &AutodevSettings,
+    last_refresh_at: &mut Option<Instant>,
+) {
+    let Some(bundle_root) = paperclip_bundle_root(manifest_path, manifest) else {
+        return;
+    };
+    if !bundle_root.join("bootstrap-state.json").exists() {
+        return;
+    }
+    if last_refresh_at
+        .as_ref()
+        .is_some_and(|instant| instant.elapsed() < Duration::from_secs(PAPERCLIP_REFRESH_MIN_SECS))
+    {
+        return;
+    }
+
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    let _ = Command::new(&settings.fabro_bin)
+        .current_dir(&target_repo)
+        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
+        .arg("--no-upgrade-check")
+        .arg("paperclip")
+        .arg("refresh")
+        .arg("--target-repo")
+        .arg(&target_repo)
+        .arg("--program")
+        .arg(&manifest.program)
+        .output();
+    *last_refresh_at = Some(Instant::now());
+}
+
+fn paperclip_bundle_root(manifest_path: &Path, manifest: &ProgramManifest) -> Option<PathBuf> {
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    let root = target_repo
+        .join("fabro")
+        .join("paperclip")
+        .join(&manifest.program);
+    root.exists().then_some(root)
 }
 
 fn ensure_success(
@@ -1184,10 +1251,6 @@ fn autodev_temp_dir(program: &str) -> Result<PathBuf, AutodevError> {
         source,
     })?;
     Ok(path)
-}
-
-fn shell_escape(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn inject_inputs_into_blueprint(
@@ -2122,5 +2185,25 @@ units:
         .expect_err("recursive program cycle should fail cleanly");
 
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn paperclip_bundle_root_detects_existing_bundle() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("fabro/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("fabro/paperclip/raspberry-demo"))
+            .expect("paperclip dir");
+        let manifest = ProgramManifest {
+            program: "raspberry-demo".to_string(),
+            target_repo: PathBuf::from("../.."),
+            state_path: PathBuf::from("../../.raspberry/demo-state.json"),
+            max_parallel: 1,
+            run_dir: None,
+            units: std::collections::BTreeMap::new(),
+        };
+
+        let root = paperclip_bundle_root(&manifest_path, &manifest).expect("bundle root");
+        assert_eq!(root, temp.path().join("fabro/paperclip/raspberry-demo"));
     }
 }
