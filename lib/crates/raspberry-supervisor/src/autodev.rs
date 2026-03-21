@@ -79,7 +79,7 @@ pub struct AutodevCycleReport {
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
-const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 300;
+const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
