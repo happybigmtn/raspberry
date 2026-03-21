@@ -1,11 +1,10 @@
 ## Raspberry: Autodev Orchestrator
-<img width="1819" height="906" alt="image" src="https://github.com/user-attachments/assets/2e80b521-b4ef-4734-99ee-2e7704dc5702" />
 
-This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro).
+This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro) and Paperclip.
 We forked it because Fabro is already a strong workflow engine for individual
 agent runs, but we wanted to push it further into repo-level supervision:
 multi-lane frontier management, autonomous replay and recovery, and a live
-human dashboard for ongoing runs.
+human dashboard for ongoing runs. Paperclip is a great agent orchestrator and command center. 
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE.md)
 
@@ -148,19 +147,10 @@ raspberry plan --manifest /path/to/repo/fabro/programs/<program>.yaml
 
 For the fork-specific surfaces, start with:
 
-- [From Specs to Blueprints](https://docs.fabro.sh/guides/from-specs-to-blueprint)
-- [Raspberry Supervisory Plane](https://docs.fabro.sh/reference/raspberry)
-- [Paperclip Coordination](https://docs.fabro.sh/reference/paperclip)
-- [Raspberry Operator Runbook](https://docs.fabro.sh/guides/raspberry-operator-runbook)
-
----
-
-## Help or Feedback
-
-- [Bug reports](https://github.com/fabro-sh/fabro/issues) via GitHub Issues
-- [Feature requests](https://github.com/fabro-sh/fabro/discussions) via GitHub Discussions
-- Email [bryan@qlty.sh](mailto:bryan@qlty.sh) for questions
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and development workflow
+- [From Specs to Blueprints](docs/from-specs-to-blueprint)
+- [Raspberry Supervisory Plane](docs/reference/raspberry)
+- [Paperclip Coordination](docs/reference/paperclip)
+- [Raspberry Operator Runbook](docs/guides/raspberry-operator-runbook)
 
 ---
 
