@@ -724,6 +724,17 @@ fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<String> {
         .map(|pattern| format!("output matched `{pattern}`"))
 }
 
+fn should_rotate_away_from_failed_slot(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.contains("429")
+        || reason.contains("rate limit")
+        || reason.contains("quota")
+        || reason.contains("limit_reached")
+        || reason.contains("insufficient permissions")
+        || reason.contains("api.responses.write")
+        || reason.contains("401 unauthorized")
+}
+
 fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
     if selection.config_path == PathBuf::from("<fallback>") {
         return;
@@ -737,6 +748,11 @@ fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
     entry.last_failure_reason = Some(reason.to_string());
     entry.last_failure_at_ms = Some(now);
     entry.cooldown_until_ms = now.saturating_add(selection.cooldown_seconds.saturating_mul(1000));
+    if should_rotate_away_from_failed_slot(reason)
+        && state.selected_slot.as_deref() == Some(selection.slot_name.as_str())
+    {
+        state.selected_slot = None;
+    }
     save_codex_rotator_state(&selection.state_path, &state);
 }
 
@@ -1595,6 +1611,41 @@ mod tests {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn mark_codex_slot_failed_clears_selected_slot_for_quota_failures() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+        let initial_state = CodexRotatorState {
+            selected_slot: Some("slot1".to_string()),
+            slots: HashMap::new(),
+        };
+        std::fs::write(
+            &state_path,
+            serde_json::to_string_pretty(&initial_state).expect("state json"),
+        )
+        .expect("write state");
+
+        let selection = CodexSlotSelection {
+            slot_name: "slot1".to_string(),
+            codex_home: temp.path().join("slot1"),
+            config_path: temp.path().join("config.json"),
+            state_path: state_path.clone(),
+            cooldown_seconds: 900,
+        };
+
+        mark_codex_slot_failed(&selection, "output matched `quota`");
+
+        let state = std::fs::read_to_string(state_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+            .expect("updated state");
+        assert_eq!(state.selected_slot, None);
+        assert!(state
+            .slots
+            .get("slot1")
+            .is_some_and(|slot| slot.cooldown_until_ms > 0));
     }
 
     // -- ensure_cli --

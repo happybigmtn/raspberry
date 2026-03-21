@@ -126,6 +126,12 @@ pub fn classify_failure(
         || combined.contains("error finding codex home")
         || combined.contains("codex_home points to")
         || (combined.contains("could not update path") && combined.contains("codex_home"))
+        || combined.contains("failed to connect to websocket")
+        || combined.contains("api.responses.write")
+        || combined.contains("insufficient permissions for this operation")
+        || combined.contains("401 unauthorized")
+        || combined.contains("you've hit your usage limit")
+        || combined.contains("try again at")
     {
         return Some(FailureKind::TransientLaunchFailure);
     }
@@ -164,6 +170,8 @@ pub fn classify_failure(
         || combined.contains("resource busy")
         || combined.contains("text file busy")
         || combined.contains("port is already allocated")
+        || combined.contains("quota exceeded (os error 122)")
+        || combined.contains("disk quota exceeded")
     {
         return Some(FailureKind::EnvironmentCollision);
     }
@@ -210,6 +218,14 @@ mod tests {
         assert_eq!(
             classify_failure(
                 Some("bind failed: Errno 98 address already in use"),
+                None,
+                None
+            ),
+            Some(FailureKind::EnvironmentCollision)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("thread 'main' panicked: failed printing to stdout: Quota exceeded (os error 122)"),
                 None,
                 None
             ),
@@ -268,6 +284,22 @@ mod tests {
         assert_eq!(
             classify_failure(
                 Some("WARNING: proceeding, even though we could not update PATH: CODEX_HOME points to \"/tmp/fabro_cli_demo_codex_home\", but that path does not exist\nError finding codex home: CODEX_HOME points to \"/tmp/fabro_cli_demo_codex_home\", but that path does not exist"),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 21st, 2026 7:31 PM."),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("unexpected status 401 Unauthorized: You have insufficient permissions for this operation. Missing scopes: api.responses.write."),
                 None,
                 None,
             ),

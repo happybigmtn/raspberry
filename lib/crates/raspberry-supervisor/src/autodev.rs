@@ -1010,13 +1010,16 @@ fn replayable_failed_lanes(
 }
 
 fn failure_kind_for_lane(lane: &crate::evaluate::EvaluatedLane) -> Option<FailureKind> {
-    lane.failure_kind.or_else(|| {
-        classify_failure(
-            lane.last_error.as_deref(),
-            lane.last_stderr_snippet.as_deref(),
-            lane.last_stdout_snippet.as_deref(),
-        )
-    })
+    let classified = classify_failure(
+        lane.last_error.as_deref(),
+        lane.last_stderr_snippet.as_deref(),
+        lane.last_stdout_snippet.as_deref(),
+    );
+    match (lane.failure_kind, classified) {
+        (Some(FailureKind::Unknown), Some(kind)) if kind != FailureKind::Unknown => Some(kind),
+        (Some(kind), _) => Some(kind),
+        (None, classified) => classified,
+    }
 }
 
 fn replay_target_lane(
@@ -1786,6 +1789,32 @@ units:
         let lanes = replayable_failed_lanes(&manifest, &program);
 
         assert_eq!(lanes, vec!["play:tui-implement".to_string()]);
+    }
+
+    #[test]
+    fn replayable_failed_lanes_reclassify_unknown_failures_from_last_error() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane(
+            "broken:lane",
+            "thread 'main' panicked: failed printing to stdout: Quota exceeded (os error 122)",
+        );
+        lane.failure_kind = Some(FailureKind::Unknown);
+        lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            lanes: vec![lane],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(lanes, vec!["broken:lane".to_string()]);
     }
 
     #[test]
