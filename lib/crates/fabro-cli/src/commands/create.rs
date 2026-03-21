@@ -4,7 +4,7 @@ use chrono::Local;
 use fabro_config::run::RunDefaults;
 use fabro_workflows::run_spec::RunSpec;
 
-use super::run::{prepare_workflow, RunArgs};
+use super::run::{cached_graph_path, prepare_workflow, write_run_config_snapshot, RunArgs};
 use fabro_util::terminal::Styles;
 
 /// Create a workflow run: allocate run directory, persist spec, return (run_id, run_dir).
@@ -21,7 +21,7 @@ pub async fn create_run(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--workflow is required"))?;
 
-    let prep = prepare_workflow(args, run_defaults, styles, quiet)?;
+    let mut prep = prepare_workflow(args, run_defaults, styles, quiet)?;
 
     let goal = prep.graph.goal();
 
@@ -41,7 +41,7 @@ pub async fn create_run(
     tokio::fs::create_dir_all(&run_dir).await?;
 
     // Write essential files
-    tokio::fs::write(run_dir.join("graph.fabro"), &prep.source).await?;
+    tokio::fs::write(cached_graph_path(&run_dir), &prep.source).await?;
     tokio::fs::write(run_dir.join("id.txt"), &run_id).await?;
     std::fs::File::create(run_dir.join("progress.jsonl"))?;
     fabro_workflows::run_status::write_run_status(
@@ -50,12 +50,8 @@ pub async fn create_run(
         None,
     );
 
-    // Save TOML config alongside the run if present
-    if workflow_path.extension().is_some_and(|ext| ext == "toml") {
-        if let Ok(toml_contents) = tokio::fs::read(workflow_path).await {
-            tokio::fs::write(run_dir.join("run.toml"), toml_contents).await?;
-        }
-    }
+    // Serialize the merged run config so the run dir is self-contained.
+    write_run_config_snapshot(&run_dir, prep.run_cfg.as_mut()).await?;
 
     // Build and save RunSpec
     let working_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
