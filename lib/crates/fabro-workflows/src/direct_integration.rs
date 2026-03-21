@@ -303,10 +303,18 @@ fn ensure_target_branch_ref(
         }
     }
 
-    if ref_exists(repo, &format!("refs/remotes/{REMOTE_NAME}/{target_branch}"))? {
+    let remote_ref = format!("refs/remotes/{REMOTE_NAME}/{target_branch}");
+    let local_ref = format!("refs/heads/{target_branch}");
+    let remote_exists = ref_exists(repo, &remote_ref)?;
+    let local_exists = ref_exists(repo, &local_ref)?;
+
+    if remote_exists && local_exists {
+        return preferred_target_branch_ref(repo, target_branch, &local_ref, &remote_ref);
+    }
+    if remote_exists {
         return Ok(format!("{REMOTE_NAME}/{target_branch}"));
     }
-    if ref_exists(repo, &format!("refs/heads/{target_branch}"))? {
+    if local_exists {
         return Ok(target_branch.to_string());
     }
 
@@ -315,6 +323,26 @@ fn ensure_target_branch_ref(
         repo: repo.to_path_buf(),
         message: format!("branch `{target_branch}` is missing locally and on `{REMOTE_NAME}`"),
     })
+}
+
+fn preferred_target_branch_ref(
+    repo: &Path,
+    target_branch: &str,
+    local_ref: &str,
+    remote_ref: &str,
+) -> Result<String, DirectIntegrationError> {
+    let local_oid = ref_oid(repo, local_ref)?;
+    let remote_oid = ref_oid(repo, remote_ref)?;
+    if local_oid == remote_oid {
+        return Ok(format!("{REMOTE_NAME}/{target_branch}"));
+    }
+    if is_ancestor(repo, &remote_oid, &local_oid)? {
+        return Ok(target_branch.to_string());
+    }
+    if is_ancestor(repo, &local_oid, &remote_oid)? {
+        return Ok(format!("{REMOTE_NAME}/{target_branch}"));
+    }
+    Ok(target_branch.to_string())
 }
 
 fn ensure_source_ref(repo: &Path, run_branch: &str) -> Result<String, DirectIntegrationError> {
@@ -349,6 +377,24 @@ fn ref_exists(repo: &Path, reference: &str) -> Result<bool, DirectIntegrationErr
         repo,
         ["show-ref", "--verify", "--quiet", reference],
         "show-ref --verify --quiet",
+    )?;
+    Ok(status == 0)
+}
+
+fn ref_oid(repo: &Path, reference: &str) -> Result<String, DirectIntegrationError> {
+    let output = run_git(repo, "rev-parse ref", ["rev-parse", reference])?;
+    Ok(output.stdout.trim().to_string())
+}
+
+fn is_ancestor(
+    repo: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, DirectIntegrationError> {
+    let status = git_exit_status(
+        repo,
+        ["merge-base", "--is-ancestor", ancestor, descendant],
+        "merge-base --is-ancestor",
     )?;
     Ok(status == 0)
 }
@@ -665,6 +711,125 @@ mod tests {
         assert_eq!(
             git_output(&repo, &["show", "main:feature.txt"]),
             "integrated"
+        );
+    }
+
+    #[test]
+    fn direct_integration_prefers_local_branch_when_remote_has_diverged() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("README.md"), "base\n").expect("readme");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&repo, &["push", "-u", "origin", "main"]);
+        git(&repo, &["remote", "set-head", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+        let other = temp.path().join("other");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("other path"),
+            ],
+        );
+        git(&other, &["config", "user.name", "Test"]);
+        git(&other, &["config", "user.email", "test@example.com"]);
+        fs::write(other.join("remote.txt"), "remote\n").expect("remote file");
+        git(&other, &["add", "remote.txt"]);
+        git(&other, &["commit", "-m", "remote change"]);
+        git(&other, &["push", "origin", "main"]);
+
+        fs::write(repo.join("local.txt"), "local\n").expect("local file");
+        git(&repo, &["add", "local.txt"]);
+        git(&repo, &["commit", "-m", "local change"]);
+        git(&repo, &["checkout", "--detach"]);
+
+        git(&repo, &["branch", "fabro/run/run-1", "main"]);
+        let worktree = temp.path().join("run-worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                worktree.to_str().expect("worktree path"),
+                "fabro/run/run-1",
+            ],
+        );
+        fs::write(worktree.join("feature.txt"), "integrated\n").expect("feature");
+        git(&worktree, &["add", "feature.txt"]);
+        git(&worktree, &["commit", "-m", "feature"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree.to_str().expect("worktree path"),
+            ],
+        );
+
+        let record = integrate_run(&DirectIntegrationRequest {
+            source_lane: "demo:implement".to_string(),
+            manifest: RunManifest {
+                run_id: "run-1".to_string(),
+                workflow_name: "Demo".to_string(),
+                goal: "Demo".to_string(),
+                start_time: Utc::now(),
+                node_count: 1,
+                edge_count: 0,
+                run_branch: Some("fabro/run/run-1".to_string()),
+                base_sha: None,
+                labels: std::collections::HashMap::new(),
+                base_branch: Some("main".to_string()),
+                workflow_slug: None,
+                host_repo_path: Some(repo.display().to_string()),
+            },
+            repo_fallback: repo.clone(),
+            target_branch: DEFAULT_TARGET_BRANCH.to_string(),
+            strategy: MergeStrategy::Squash,
+            artifact_path: None,
+        })
+        .expect("direct integration succeeds");
+
+        assert!(record.integrated);
+        assert!(!record.pushed);
+        assert_eq!(record.target_branch, "main");
+        assert_eq!(
+            git_output(&repo, &["show", "main:feature.txt"]),
+            "integrated"
+        );
+        assert_eq!(git_output(&repo, &["show", "main:local.txt"]), "local");
+        assert!(
+            Command::new("git")
+                .current_dir(&repo)
+                .args(["show", "origin/main:feature.txt"])
+                .output()
+                .expect("git output")
+                .status
+                .code()
+                .unwrap_or(1)
+                != 0
         );
     }
 

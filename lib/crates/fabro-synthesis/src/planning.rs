@@ -557,7 +557,8 @@ fn derive_master_plan_intents(
 ) -> Option<Vec<LaneIntent>> {
     let active_plan = corpus.active_plan.as_ref()?;
     let referenced_plans = referenced_bootstrap_plan_docs(corpus, active_plan);
-    if referenced_plans.len() < 2 {
+    let workspace_tasks = workspace_setup_tasks(active_plan);
+    if referenced_plans.len() < 2 && workspace_tasks.is_empty() {
         return None;
     }
 
@@ -569,6 +570,66 @@ fn derive_master_plan_intents(
         })
         .collect::<BTreeMap<_, _>>();
     let mut intents = Vec::new();
+    let workspace_dependency = if workspace_tasks.is_empty() {
+        None
+    } else {
+        let id = "workspace-foundation".to_string();
+        let title = "Workspace Foundation".to_string();
+        let output_root = PathBuf::from("outputs").join(&id);
+        let family = WorkflowTemplate::Bootstrap;
+        let (kind, artifacts, milestones, produces, health_command, verify_command) =
+            category_contract(TaskCategory::Foundations, family, &output_root, target_repo);
+        let goal = build_goal(
+            &title,
+            &family,
+            &output_root,
+            corpus,
+            &workspace_tasks,
+            &artifacts,
+        );
+        let prompt_context = Some(
+            [
+                format!("Program plan:\n- `{}`", active_plan.path.display()),
+                format!(
+                    "Workspace setup tasks:\n{}",
+                    workspace_tasks
+                        .iter()
+                        .map(|task| format!("- {task}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                format!(
+                    "Artifacts to write:\n{}",
+                    artifacts
+                        .iter()
+                        .map(|artifact| format!("- `{}`", artifact.path.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            ]
+            .join("\n\n"),
+        );
+        intents.push(LaneIntent {
+            id: id.clone(),
+            title,
+            output_root,
+            family,
+            kind,
+            goal,
+            prompt_context,
+            dependencies: Vec::new(),
+            produces,
+            health_command,
+            verify_command,
+            milestones,
+            artifacts,
+        });
+        Some(LaneDependency {
+            unit: id,
+            lane: None,
+            milestone: Some("reviewed".to_string()),
+        })
+    };
 
     for doc in referenced_plans {
         let id = selected
@@ -603,6 +664,15 @@ fn derive_master_plan_intents(
             )
             .into_values()
             .collect::<Vec<_>>();
+        let mut dependencies = dependencies;
+        if let Some(workspace_dependency) = &workspace_dependency {
+            let already_depends = dependencies
+                .iter()
+                .any(|dependency| dependency.unit == workspace_dependency.unit);
+            if !already_depends {
+                dependencies.insert(0, workspace_dependency.clone());
+            }
+        }
         let goal = build_goal(
             &title,
             &family,
@@ -646,6 +716,47 @@ fn derive_master_plan_intents(
     }
 
     Some(intents)
+}
+
+fn workspace_setup_tasks(active_plan: &PlanningDocument) -> Vec<String> {
+    let has_phases = active_plan.body.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("Phase 0") || trimmed.starts_with("Phase 1")
+    });
+    let mut current_phase = None::<usize>;
+    let mut tasks = Vec::new();
+
+    for line in active_plan.body.lines() {
+        let trimmed = line.trim();
+        if let Some(phase) = parse_phase_heading(trimmed) {
+            current_phase = Some(phase);
+            continue;
+        }
+        if has_phases && current_phase.unwrap_or(usize::MAX) > 1 {
+            continue;
+        }
+        let Some(task) = trimmed
+            .strip_prefix("- [ ] ")
+            .or_else(|| trimmed.strip_prefix("- [x] "))
+        else {
+            continue;
+        };
+        if is_workspace_setup_task(task) {
+            tasks.push(task.trim().to_string());
+        }
+    }
+
+    tasks
+}
+
+fn is_workspace_setup_task(task: &str) -> bool {
+    let lower = task.to_ascii_lowercase();
+    (lower.contains("workspace") && (lower.contains("setup") || lower.contains("cargo.toml")))
+        || lower.contains("git subtree")
+        || lower.contains("subtree")
+        || lower.contains("vendored")
+        || lower.contains("vendor")
+        || lower.contains("clone robopoker")
 }
 
 fn referenced_bootstrap_plan_docs(
@@ -2534,6 +2645,71 @@ units:
         assert!(unit_ids.contains(&"blackjack".to_string()));
         assert!(!unit_ids.contains(&"faucet".to_string()));
         assert!(!unit_ids.contains(&"foundations".to_string()));
+    }
+
+    #[test]
+    fn create_authoring_promotes_workspace_setup_into_foundation_unit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("specs/001-rxmragent-founding.md"),
+            "# Decision Spec: rXMRagent\n",
+        )
+        .expect("founding spec");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            concat!(
+                "# rxmr-play Master Plan\n\n",
+                "Phase 0 (Foundation):\n",
+                "- [ ] Workspace setup: clone robopoker as git subtree, establish crate boundaries\n",
+                "- [ ] Provably fair crate (plan 002)\n",
+                "- [ ] Casino-core crate with GameVariant trait (plan 016)\n",
+                "- [ ] Monero infrastructure (plan 015)\n",
+            ),
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate\n",
+        )
+        .expect("plan 002");
+        fs::write(
+            temp.path().join("plans/015-monero-infrastructure.md"),
+            "# Monero Infrastructure\n",
+        )
+        .expect("plan 015");
+        fs::write(
+            temp.path().join("plans/016-casino-core-trait.md"),
+            "# Casino Core Trait\n",
+        )
+        .expect("plan 016");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.clone())
+            .collect::<Vec<_>>();
+        let provably_fair = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "provably-fair")
+            .expect("provably-fair unit");
+
+        assert!(unit_ids.contains(&"workspace-foundation".to_string()));
+        assert!(
+            provably_fair
+                .lanes[0]
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.unit == "workspace-foundation")
+        );
     }
 
     #[test]
