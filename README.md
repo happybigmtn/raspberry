@@ -65,6 +65,10 @@ raspberry autodev --manifest fabro/programs/<program>.yaml
 
 Paperclip is the coordination and dashboard layer on top of Raspberry.
 
+Upstream project:
+
+- [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
+
 It adds:
 
 - a browser-based dashboard for live frontiers
@@ -83,6 +87,69 @@ fabro paperclip refresh --target-repo /path/to/repo --program <program>
 
 After bootstrap or start, the preferred human dashboard is the Paperclip web
 UI served by the local instance, typically at `http://127.0.0.1:3100/`.
+
+## How the layers connect
+
+The key integration in this fork is:
+
+- Fabro defines and executes workflow graphs
+- Raspberry evaluates repo-level frontier state and decides what should run
+- Paperclip mirrors that live frontier into a browser-based coordination surface
+
+In practice, that means we are not using Paperclip as a second scheduler.
+Paperclip is the dashboard and wake surface, while Raspberry stays the source
+of execution truth and Fabro stays the workflow engine underneath it.
+
+### Architecture
+
+```mermaid
+flowchart TD
+    A[Specs / Plans / Doctrine] --> B[Fabro Blueprints]
+    B --> C[Checked-in fabro/ Package]
+    C --> D[Fabro Runs]
+    C --> E[Raspberry Supervisor]
+    D --> F[outputs/**/*]
+    D --> G[~/.fabro/runs/<run-id>]
+    E --> H[.raspberry/*-state.json]
+    E --> I[Lane readiness / retries / autodev]
+    E --> J[Paperclip refresh + wake]
+    J --> K[Paperclip bundle]
+    K --> L[Paperclip web dashboard]
+    E --> L
+```
+
+### Control Loop
+
+```mermaid
+sequenceDiagram
+    participant Human
+    participant Paperclip
+    participant Raspberry
+    participant Fabro
+    participant Repo
+
+    Human->>Paperclip: inspect dashboard / wake orchestrator
+    Paperclip->>Raspberry: heartbeat / route trigger
+    Raspberry->>Repo: read manifest, artifacts, runtime state
+    Raspberry->>Fabro: dispatch ready lane
+    Fabro->>Repo: run workflow, write outputs
+    Fabro->>Repo: persist run truth in ~/.fabro/runs
+    Raspberry->>Repo: persist frontier truth in .raspberry/*
+    Raspberry->>Paperclip: refresh synced frontier/issues/work products
+    Paperclip->>Human: updated web dashboard
+```
+
+### What is actually linked
+
+- `fabro/programs/*.yaml` gives Raspberry a repo-level manifest to supervise.
+- `fabro synth import/create/evolve` keeps the checked-in control plane in sync
+  with doctrine and run evidence.
+- Raspberry writes durable frontier truth to `.raspberry/*` and drives bounded
+  `execute` / `autodev` loops.
+- `fabro paperclip bootstrap/refresh` exports that frontier into a Paperclip
+  company bundle, synced issues, documents, work products, and attachments.
+- `fabro paperclip wake --agent raspberry-orchestrator` lets Paperclip trigger
+  the Raspberry control loop without becoming the scheduler itself.
 
 ## Current status
 
@@ -147,10 +214,19 @@ raspberry plan --manifest /path/to/repo/fabro/programs/<program>.yaml
 
 For the fork-specific surfaces, start with:
 
-- [From Specs to Blueprints](docs/from-specs-to-blueprint)
-- [Raspberry Supervisory Plane](docs/reference/raspberry)
-- [Paperclip Coordination](docs/reference/paperclip)
-- [Raspberry Operator Runbook](docs/guides/raspberry-operator-runbook)
+- [From Specs to Blueprints](./docs/guides/from-specs-to-blueprint.mdx)
+- [Raspberry Supervisory Plane](./docs/reference/raspberry.mdx)
+- [Paperclip Coordination](./docs/reference/paperclip.mdx)
+- [Raspberry Operator Runbook](./docs/guides/raspberry-operator-runbook.mdx)
+
+---
+
+## Help or Feedback
+
+- [Bug reports](https://github.com/fabro-sh/fabro/issues) via GitHub Issues
+- [Feature requests](https://github.com/fabro-sh/fabro/discussions) via GitHub Discussions
+- Email [bryan@qlty.sh](mailto:bryan@qlty.sh) for questions
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and development workflow
 
 ---
 
