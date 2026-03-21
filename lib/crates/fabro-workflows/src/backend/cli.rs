@@ -714,6 +714,8 @@ fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<String> {
         "rate limit",
         "quota",
         "limit_reached",
+        "usage limit",
+        "try again at",
         "insufficient permissions",
         "api.responses.write",
         "401 unauthorized",
@@ -870,12 +872,23 @@ impl CodergenBackend for AgentCliBackend {
 
         // 2. Generate unique paths for this run
         let run_id = uuid::Uuid::new_v4().to_string();
-        let tmp_prefix = format!("/tmp/fabro_cli_{run_id}");
-        let prompt_path = format!("{tmp_prefix}_prompt.txt");
-        let stdout_path = format!("{tmp_prefix}_stdout.log");
-        let stderr_path = format!("{tmp_prefix}_stderr.log");
-        let exit_code_path = format!("{tmp_prefix}_exit_code");
-        let env_path = format!("{tmp_prefix}_env.sh");
+        let scratch_dir = format!(".fabro_cli/{run_id}");
+        let prompt_path = format!("{scratch_dir}/prompt.txt");
+        let stdout_path = format!("{scratch_dir}/stdout.log");
+        let stderr_path = format!("{scratch_dir}/stderr.log");
+        let exit_code_path = format!("{scratch_dir}/exit_code");
+        let env_path = format!("{scratch_dir}/env.sh");
+
+        let scratch_dir_result = sandbox
+            .exec_command(&format!("mkdir -p {scratch_dir}"), 30_000, None, None, None)
+            .await
+            .map_err(|e| FabroError::handler(format!("Failed to create CLI scratch dir: {e}")))?;
+        if scratch_dir_result.exit_code != 0 {
+            return Err(FabroError::handler(format!(
+                "failed to create CLI scratch dir {}: {}",
+                scratch_dir, scratch_dir_result.stderr
+            )));
+        }
 
         sandbox
             .write_file(&prompt_path, prompt)
@@ -1082,7 +1095,7 @@ impl CodergenBackend for AgentCliBackend {
 
         // 3e. Cleanup temp files
         let _ = sandbox
-            .exec_command(&format!("rm -f {tmp_prefix}_*"), 30_000, None, None, None)
+            .exec_command(&format!("rm -rf {scratch_dir}"), 30_000, None, None, None)
             .await;
 
         if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
@@ -1588,6 +1601,17 @@ mod tests {
         .expect("retryable reason");
 
         assert!(reason.contains("api.responses.write"));
+    }
+
+    #[test]
+    fn classify_codex_slot_failure_detects_usage_limit_error() {
+        let reason = classify_codex_slot_failure(
+            "",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:31 PM.",
+        )
+        .expect("retryable reason");
+
+        assert!(reason.contains("usage limit"));
     }
 
     #[test]
