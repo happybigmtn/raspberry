@@ -579,6 +579,7 @@ fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
         .selection_policy
         .as_deref()
         .unwrap_or("sticky");
+    let sticky_reuse_min_ms = 60_000u64;
 
     let mut healthy_slots = rotator
         .config
@@ -606,7 +607,9 @@ fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
                     .map(|(_, state)| state)
                     .cloned()
                     .unwrap_or_default();
-                if state.cooldown_until_ms <= now {
+                if state.cooldown_until_ms <= now
+                    && now.saturating_sub(state.last_selected_at_ms) >= sticky_reuse_min_ms
+                {
                     return Some(CodexSlotSelection {
                         slot_name: slot.name.clone(),
                         codex_home: slot.codex_home.clone(),
@@ -1429,6 +1432,58 @@ mod tests {
                 cooldown_until_ms: now_ms().saturating_add(60_000),
                 last_failure_reason: Some("quota".to_string()),
                 last_failure_at_ms: Some(now_ms()),
+            },
+        );
+
+        let rotator = CodexRotator {
+            config_path: temp.path().join("config.json"),
+            state_path: temp.path().join("state.json"),
+            config: CodexRotatorConfig {
+                enabled: true,
+                selection_policy: Some("sticky".to_string()),
+                cooldown_seconds: Some(900),
+                state_path: Some(temp.path().join("state.json")),
+                shared_state_path: None,
+                slots: vec![
+                    CodexRotatorSlot {
+                        name: "slot1".to_string(),
+                        codex_home: home1,
+                    },
+                    CodexRotatorSlot {
+                        name: "slot2".to_string(),
+                        codex_home: home2,
+                    },
+                ],
+            },
+            state: CodexRotatorState {
+                selected_slot: Some("slot1".to_string()),
+                slots,
+            },
+        };
+
+        let selected = choose_codex_slot(&rotator).expect("slot selected");
+        assert_eq!(selected.slot_name, "slot2");
+    }
+
+    #[test]
+    fn choose_codex_slot_rotates_away_from_recently_selected_sticky_slot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home1 = temp.path().join("slot1");
+        let home2 = temp.path().join("slot2");
+        std::fs::create_dir_all(&home1).expect("slot1 dir");
+        std::fs::create_dir_all(&home2).expect("slot2 dir");
+        std::fs::write(home1.join("auth.json"), "{}").expect("slot1 auth");
+        std::fs::write(home2.join("auth.json"), "{}").expect("slot2 auth");
+
+        let now = now_ms();
+        let mut slots = HashMap::new();
+        slots.insert(
+            "slot1".to_string(),
+            CodexRotatorSlotState {
+                last_selected_at_ms: now,
+                cooldown_until_ms: 0,
+                last_failure_reason: None,
+                last_failure_at_ms: None,
             },
         );
 

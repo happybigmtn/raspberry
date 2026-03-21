@@ -1287,7 +1287,8 @@ fn orchestrator_draft(
             "reportsToSlug": "mission-ceo",
             "adapterType": "process",
             "adapterConfig": {
-                "command": format!("bash {}", shell_quote(&orchestrator_script.display().to_string())),
+                "command": "bash",
+                "args": [orchestrator_script.display().to_string()],
                 "cwd": target_repo.display().to_string(),
                 "timeoutSec": 1800
             },
@@ -5737,6 +5738,65 @@ mod tests {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn orchestrator_process_agent_uses_command_and_args() {
+        let temp = tempdir().expect("tempdir");
+        let frontier = FrontierSyncModel {
+            program: "demo".to_string(),
+            manifest_path: temp.path().join("fabro/programs/demo.yaml"),
+            state_path: temp.path().join(".raspberry/demo-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: Vec::new(),
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: Default::default(),
+            package: Default::default(),
+            units: Vec::new(),
+        };
+        let script_path = temp
+            .path()
+            .join("fabro/paperclip/demo/scripts/raspberry-orchestrator.sh");
+
+        let draft = orchestrator_draft(&blueprint, temp.path(), &script_path, &frontier);
+        let adapter_config = draft
+            .manifest
+            .get("adapterConfig")
+            .expect("adapter config");
+        let expected_arg = script_path.display().to_string();
+
+        assert_eq!(
+            adapter_config
+                .get("command")
+                .and_then(|value| value.as_str()),
+            Some("bash")
+        );
+        assert_eq!(
+            adapter_config
+                .get("args")
+                .and_then(|value| value.as_array())
+                .and_then(|value| value.first())
+                .and_then(|value| value.as_str()),
+            Some(expected_arg.as_str())
+        );
     }
 
     #[test]
