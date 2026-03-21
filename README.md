@@ -7,7 +7,6 @@ multi-lane frontier management, autonomous replay and recovery, and a live
 human dashboard for ongoing runs.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE.md)
-[![docs](https://img.shields.io/badge/docs-fabro.sh-357F9E)](https://docs.fabro.sh)
 
 ## What Fabro does
 
