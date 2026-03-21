@@ -1,4 +1,5 @@
 ## Raspberry: Autodev Orchestrator
+<img width="1819" height="906" alt="image" src="https://github.com/user-attachments/assets/2e80b521-b4ef-4734-99ee-2e7704dc5702" />
 
 This repository is a working fork of [Fabro](https://github.com/fabro-sh/fabro).
 We forked it because Fabro is already a strong workflow engine for individual
