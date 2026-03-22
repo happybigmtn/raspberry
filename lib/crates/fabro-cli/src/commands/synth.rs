@@ -99,7 +99,6 @@ pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
         .iter()
         .filter(|plan| {
             plan.composite
-                && plan.declared_child_ids.len() > 1
                 && plan.category != raspberry_supervisor::PlanCategory::Meta
         })
         .collect();
@@ -1303,7 +1302,6 @@ fn run_opus_decomposition(
         .iter()
         .filter(|plan| {
             plan.composite
-                && plan.declared_child_ids.len() > 1
                 && plan.category != raspberry_supervisor::PlanCategory::Meta
         })
         .collect();
