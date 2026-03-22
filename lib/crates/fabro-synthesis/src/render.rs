@@ -815,11 +815,11 @@ fn implementation_quality_command(
         surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
     }
     if surface_scan_lines.is_empty() {
-        surface_scan_lines.push("true".to_string());
+        surface_scan_lines.push("scan_surface .".to_string());
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  search_root=\"$surface\"\n  if [ -e \"$surface\" ] && [ -f \"$surface\" ]; then\n    search_root=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$search_root\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$code_change_present\" = no ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -1265,7 +1265,7 @@ fn render_implementation_review_prompt(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
     output.push_str(
-        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
+        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about touched-surface code changes, placeholder debt, and manual follow-up\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
     );
     output.push_str(
         "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
@@ -1275,10 +1275,11 @@ reason: <one sentence>\n\
 next_action: <one sentence>\n\n\
 Only set `merge_ready: yes` when:\n\
 - `quality.md` says `quality_ready: yes`\n\
+- `quality.md` says `code_change_present: yes`\n\
 - automated proof is sufficient for this slice\n\
 - any required manual proof has actually been performed\n\
-- no unresolved warnings or stale failures undermine confidence\n\
-- the implementation and verification artifacts match the real code.\n",
+- no unresolved failures undermine confidence\n\
+- the touched code under the owned surfaces matches the claimed slice.\n",
     );
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
@@ -5063,7 +5064,7 @@ The validator binary should emit structured log lines.
     }
 
     #[test]
-    fn implementation_quality_command_does_not_treat_future_slice_wording_as_artifact_mismatch() {
+    fn implementation_quality_command_checks_real_touched_surface_changes() {
         let unit = BlueprintUnit {
             id: "home-miner-service".to_string(),
             title: "Home Miner Service".to_string(),
@@ -5108,7 +5109,9 @@ The validator binary should emit structured log lines.
             orchestration_state_path: None,
             checks: Vec::new(),
             run_dir: None,
-            prompt_context: None,
+            prompt_context: Some(
+                "Touch first:\n- `crates/home-miner-service/src/lib.rs`\n".to_string(),
+            ),
             verify_command: None,
             health_command: None,
         };
@@ -5127,7 +5130,9 @@ The validator binary should emit structured log lines.
 
         let command = implementation_quality_command(&blueprint, "home-miner-service", &lane);
 
-        assert!(!command.contains("future slice"));
+        assert!(command.contains("git diff --name-only --"));
+        assert!(command.contains("code_change_present"));
+        assert!(!command.contains("artifact_mismatch_risk"));
     }
 
     #[test]
