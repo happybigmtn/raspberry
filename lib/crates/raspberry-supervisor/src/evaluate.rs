@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::autodev::sync_autodev_report_with_program;
-use crate::failure::{FailureKind, FailureRecoveryAction};
+use crate::failure::{
+    classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction,
+};
 use crate::manifest::{
     LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
     LaneManifest, ProgramManifest,
@@ -572,6 +574,18 @@ fn evaluate_lane(
     );
     let proof_state = lane_proof_state(manifest_path, manifest, lane, &check_result);
 
+    let derived_failure_kind = runtime_record.and_then(|record| match record.failure_kind {
+        Some(FailureKind::Unknown) | None => classify_failure(
+            record.last_error.as_deref(),
+            record.last_stderr_snippet.as_deref(),
+            record.last_stdout_snippet.as_deref(),
+        ),
+        other => other,
+    });
+    let derived_recovery_action = runtime_record
+        .and_then(|record| record.recovery_action)
+        .or(derived_failure_kind.map(default_recovery_action));
+
     EvaluatedLane {
         lane_key: key,
         unit_id: unit_id.to_string(),
@@ -603,8 +617,8 @@ fn evaluate_lane(
         last_finished_at: runtime_record.and_then(|record| record.last_finished_at),
         last_exit_status: runtime_record.and_then(|record| record.last_exit_status),
         last_error: runtime_record.and_then(|record| record.last_error.clone()),
-        failure_kind: runtime_record.and_then(|record| record.failure_kind),
-        recovery_action: runtime_record.and_then(|record| record.recovery_action),
+        failure_kind: derived_failure_kind,
+        recovery_action: derived_recovery_action,
         last_completed_stage_label: runtime_record
             .and_then(|record| record.last_completed_stage_label.clone()),
         last_stage_duration_ms: runtime_record.and_then(|record| record.last_stage_duration_ms),
@@ -1857,6 +1871,54 @@ units:
         );
 
         assert_eq!(status, LaneExecutionStatus::Running);
+    }
+
+    #[test]
+    fn failed_runtime_record_reclassifies_unknown_failure_from_error_text() {
+        let manifest = ProgramManifest::load(&portfolio_fixture_path()).expect("manifest loads");
+        let manifest_path = portfolio_fixture_path();
+        let unit = &manifest.units["complete"];
+        let runtime_record = LaneRuntimeRecord {
+            lane_key: "complete:program".to_string(),
+            status: LaneExecutionStatus::Failed,
+            run_config: Some(PathBuf::from("malinka/programs/complete-program.yaml")),
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage_label: None,
+            last_run_id: Some("01KMTESTFAILED0000000000000".to_string()),
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: Some(1),
+            last_error: Some("You're out of extra usage · resets 5pm".to_string()),
+            failure_kind: Some(FailureKind::Unknown),
+            recovery_action: Some(FailureRecoveryAction::SurfaceBlocked),
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+        };
+        let unit_status = evaluate_unit_status(&manifest_path, unit);
+        let evaluated = evaluate_lane(
+            &manifest_path,
+            &manifest,
+            "complete",
+            "program",
+            &BTreeSet::new(),
+            &unit_status,
+            Some(&runtime_record),
+        );
+
+        assert_eq!(
+            evaluated.failure_kind,
+            Some(FailureKind::ProviderAccessLimited)
+        );
+        assert_eq!(
+            evaluated.recovery_action,
+            Some(FailureRecoveryAction::SurfaceBlocked)
+        );
     }
 
     #[test]
