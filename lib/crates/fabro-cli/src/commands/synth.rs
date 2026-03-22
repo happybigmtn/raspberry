@@ -244,7 +244,7 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
     let mut child = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
+            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 200",
             prompt_file.path().display(),
             DECOMPOSE_MODEL,
         ))
@@ -253,7 +253,7 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         .stderr(Stdio::piped())
         .spawn()?;
 
-    // Stream stderr to show live progress while Opus works
+    // Stream stderr for CLI-level messages
     let stderr_handle = {
         let stderr = child.stderr.take().expect("stderr piped");
         std::thread::spawn(move || {
@@ -269,49 +269,71 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         })
     };
 
-    // Monitor genesis/ directory for new files while Opus runs
-    let monitor_dir = genesis_dir.clone();
-    let monitor_handle = std::thread::spawn(move || {
-        let mut seen = std::collections::BTreeSet::new();
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            let Ok(entries) = std::fs::read_dir(&monitor_dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if seen.contains(&path) {
+    // Stream stdout JSON lines for real-time Claude output
+    let stdout_handle = {
+        let stdout = child.stdout.take().expect("stdout piped");
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let reader = std::io::BufReader::new(stdout);
+            let mut success = false;
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
-                }
-                seen.insert(path.clone());
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    eprintln!("  [genesis] wrote {name}");
-                }
-                // Also scan plans/ subdirectory
-                if path.is_dir() {
-                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                        for sub in sub_entries.flatten() {
-                            let sub_path = sub.path();
-                            if seen.contains(&sub_path) {
-                                continue;
-                            }
-                            seen.insert(sub_path.clone());
-                            if let Some(name) = sub_path.file_name().and_then(|n| n.to_str()) {
-                                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                                eprintln!("  [genesis] wrote {dir_name}/{name}");
+                };
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match event_type {
+                    "assistant" => {
+                        // Text content from Claude
+                        if let Some(message) = event.get("message") {
+                            if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                                for block in content {
+                                    if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                            eprint!("{text}");
+                                            let _ = std::io::stderr().flush();
+                                        }
+                                    }
+                                    if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                            let path_hint = block
+                                                .get("input")
+                                                .and_then(|i| i.get("file_path").or_else(|| i.get("command")))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let short = if path_hint.len() > 60 {
+                                                &path_hint[..60]
+                                            } else {
+                                                path_hint
+                                            };
+                                            eprintln!("\n  [tool] {name}: {short}");
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
+                    "result" => {
+                        // Final result
+                        if let Some(sub) = event.get("subtype").and_then(|v| v.as_str()) {
+                            eprintln!("\n  [genesis] result: {sub}");
+                            if sub == "success" {
+                                success = true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
-        }
-    });
+            success
+        })
+    };
 
-    let output = child.wait_with_output()?;
-    drop(monitor_handle); // monitor thread exits when main continues
-
+    let status = child.wait()?;
+    let genesis_success = stdout_handle.join().unwrap_or(false);
     let stderr_lines = stderr_handle.join().unwrap_or_default();
-    if !output.status.success() {
+
+    if !status.success() && !genesis_success {
         let stderr = stderr_lines.join("\n");
         anyhow::bail!("Genesis failed: {}", stderr.trim());
     }
