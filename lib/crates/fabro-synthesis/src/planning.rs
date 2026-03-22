@@ -696,14 +696,42 @@ fn derive_registry_plan_intents(
         intents.push(intent.clone());
     }
 
+    let dependency_targets = registry
+        .plans
+        .iter()
+        .map(|plan| {
+            let family = registry_plan_family(plan);
+            let child_count = plan_child_count(plan);
+            let emit_parent_intent =
+                plan.bootstrap_required || !plan.implementation_required || child_count <= 1;
+            let targets = if emit_parent_intent {
+                vec![LaneDependency {
+                    unit: plan.plan_id.clone(),
+                    lane: None,
+                    milestone: Some(dependency_milestone_for_template(family)),
+                }]
+            } else if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
+                effective_plan_children(target_repo, plan)
+                    .into_iter()
+                    .map(|child| LaneDependency {
+                        unit: child_unit_id(&plan.plan_id, &child.child_id),
+                        lane: None,
+                        milestone: Some(dependency_milestone_for_template(archetype_to_template(
+                            child.archetype,
+                        ))),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (plan.plan_id.clone(), targets)
+        })
+        .collect::<BTreeMap<_, _>>();
+
     for plan in registry.plans {
         let family = registry_plan_family(&plan);
         let parent_id = plan.plan_id.clone();
-        let child_count = if !plan.children.is_empty() {
-            plan.children.len()
-        } else {
-            plan.declared_child_ids.len()
-        };
+        let child_count = plan_child_count(&plan);
         let emit_parent_intent =
             plan.bootstrap_required || !plan.implementation_required || child_count <= 1;
         let parent_dependency = if emit_parent_intent {
@@ -726,7 +754,7 @@ fn derive_registry_plan_intents(
             );
             let prompt_context =
                 build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
-            let mut dependencies = registry_plan_dependencies(&plan);
+            let mut dependencies = registry_plan_dependencies(&plan, &dependency_targets);
             if let Some((workspace_dependency, _)) = &workspace_dependency {
                 let needs_workspace = plan.category != PlanCategory::Meta
                     && !dependencies
@@ -763,11 +791,7 @@ fn derive_registry_plan_intents(
         };
 
         if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
-            let effective_children = if plan.children.is_empty() {
-                infer_child_records_from_ids(target_repo, &plan)
-            } else {
-                plan.children.clone()
-            };
+            let effective_children = effective_plan_children(target_repo, &plan);
             let enriched_plan = PlanRecord {
                 children: effective_children,
                 ..plan
@@ -777,6 +801,7 @@ fn derive_registry_plan_intents(
                 parent_dependency.as_ref(),
                 &enriched_plan,
                 corpus,
+                &dependency_targets,
                 &workspace_dependency,
             );
             intents.extend(child_intents);
@@ -819,6 +844,37 @@ fn infer_child_records_from_ids(target_repo: &Path, plan: &PlanRecord) -> Vec<Pl
             }
         })
         .collect()
+}
+
+fn plan_child_count(plan: &PlanRecord) -> usize {
+    if !plan.children.is_empty() {
+        plan.children.len()
+    } else {
+        plan.declared_child_ids.len()
+    }
+}
+
+fn effective_plan_children(target_repo: &Path, plan: &PlanRecord) -> Vec<PlanChildRecord> {
+    if plan.children.is_empty() {
+        infer_child_records_from_ids(target_repo, plan)
+    } else {
+        plan.children.clone()
+    }
+}
+
+fn dependency_milestone_for_template(template: WorkflowTemplate) -> String {
+    match template {
+        WorkflowTemplate::Implementation => "merge_ready".to_string(),
+        _ => "reviewed".to_string(),
+    }
+}
+
+fn child_unit_id(parent_id: &str, child_id: &str) -> String {
+    if child_id.starts_with(parent_id) {
+        child_id.to_string()
+    } else {
+        format!("{parent_id}-{child_id}")
+    }
 }
 
 fn infer_archetype_from_child_id(child_id: &str, plan_lower: &str) -> WorkflowArchetype {
@@ -1124,13 +1180,23 @@ fn registry_plan_contract(
     }
 }
 
-fn registry_plan_dependencies(plan: &PlanRecord) -> Vec<LaneDependency> {
+fn registry_plan_dependencies(
+    plan: &PlanRecord,
+    dependency_targets: &BTreeMap<String, Vec<LaneDependency>>,
+) -> Vec<LaneDependency> {
     plan.dependency_plan_ids
         .iter()
-        .map(|dependency| LaneDependency {
-            unit: dependency.clone(),
-            lane: None,
-            milestone: Some("reviewed".to_string()),
+        .flat_map(|dependency| {
+            dependency_targets
+                .get(dependency)
+                .cloned()
+                .unwrap_or_else(|| {
+                    vec![LaneDependency {
+                        unit: dependency.clone(),
+                        lane: None,
+                        milestone: Some("reviewed".to_string()),
+                    }]
+                })
         })
         .collect()
 }
@@ -1140,17 +1206,14 @@ fn derive_child_intents(
     parent_dependency: Option<&LaneDependency>,
     plan: &PlanRecord,
     corpus: &PlanningCorpus,
+    dependency_targets: &BTreeMap<String, Vec<LaneDependency>>,
     workspace_dependency: &Option<(LaneDependency, LaneIntent)>,
 ) -> Vec<LaneIntent> {
     plan.children
         .iter()
         .map(|child| {
             let parent_id = &plan.plan_id;
-            let child_unit_id = if child.child_id.starts_with(parent_id) {
-                child.child_id.clone()
-            } else {
-                format!("{parent_id}-{}", child.child_id)
-            };
+            let child_unit_id = child_unit_id(parent_id, &child.child_id);
             let child_title = child
                 .title
                 .clone()
@@ -1179,15 +1242,7 @@ fn derive_child_intents(
             let prompt_context =
                 build_child_prompt_context(corpus, plan, child, &child_unit_id, &artifacts);
 
-            let mut dependencies = plan
-                .dependency_plan_ids
-                .iter()
-                .map(|dependency| LaneDependency {
-                    unit: dependency.clone(),
-                    lane: None,
-                    milestone: Some("reviewed".to_string()),
-                })
-                .collect::<Vec<_>>();
+            let mut dependencies = registry_plan_dependencies(plan, dependency_targets);
             if let Some(parent_dependency) = parent_dependency {
                 dependencies.push(parent_dependency.clone());
             }
@@ -3764,6 +3819,118 @@ units:
             .artifacts
             .iter()
             .any(|artifact| artifact.path == PathBuf::from("implementation.md")));
+    }
+
+    #[test]
+    fn create_authoring_expands_dependencies_for_skipped_parent_units() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/002-build-fix-ci.md"),
+            "# Build Fix & CI\n",
+        )
+        .expect("build-fix-ci");
+        fs::write(
+            temp.path().join("plans/003-provably-fair.md"),
+            "# Provably Fair\n",
+        )
+        .expect("provably-fair");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/002-build-fix-ci.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: build-fix-ci\n",
+                "title: Build Fix & CI\n",
+                "category: infrastructure\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "children:\n",
+                "  - id: fix-street-import\n",
+                "    title: Fix Street Import\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo check -p casino-core\n",
+                "    owned_surfaces:\n",
+                "      - crates/casino-core/src/types.rs\n",
+                "  - id: verify-ci-main\n",
+                "    title: Verify CI Main\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo test --workspace\n",
+                "    owned_surfaces:\n",
+                "      - .github/workflows/ci.yml\n",
+            ),
+        )
+        .expect("build-fix-ci mapping");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/003-provably-fair.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: provably-fair\n",
+                "title: Provably Fair\n",
+                "category: foundation\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "dependency_plan_ids:\n",
+                "  - build-fix-ci\n",
+                "children:\n",
+                "  - id: seed-protocol\n",
+                "    title: Seed Protocol\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo check -p provably-fair\n",
+                "    owned_surfaces:\n",
+                "      - crates/provably-fair/src/seed.rs\n",
+                "  - id: shuffle-proof\n",
+                "    title: Shuffle Proof\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo test -p provably-fair\n",
+                "    owned_surfaces:\n",
+                "      - crates/provably-fair/src/shuffle.rs\n",
+            ),
+        )
+        .expect("provably-fair mapping");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let seed_protocol = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "provably-fair-seed-protocol")
+            .expect("seed protocol unit");
+        let dependency_units = seed_protocol.lanes[0]
+            .dependencies
+            .iter()
+            .map(|dependency| (dependency.unit.clone(), dependency.milestone.clone()))
+            .collect::<Vec<_>>();
+
+        assert!(!dependency_units
+            .iter()
+            .any(|(unit, _)| unit == "build-fix-ci"));
+        assert!(dependency_units.iter().any(|(unit, milestone)| {
+            unit == "build-fix-ci-fix-street-import" && milestone.as_deref() == Some("merge_ready")
+        }));
+        assert!(dependency_units.iter().any(|(unit, milestone)| {
+            unit == "build-fix-ci-verify-ci-main" && milestone.as_deref() == Some("merge_ready")
+        }));
     }
 
     #[test]
