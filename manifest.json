@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMBEKNX7SCE29JM6PBR8M3EW",
+  "workflow_name": "Styled",
+  "goal": "Build a styled pipeline",
+  "start_time": "2026-03-22T18:58:37.358364003Z",
+  "node_count": 5,
+  "edge_count": 4,
+  "run_branch": "fabro/run/01KMBEKNX7SCE29JM6PBR8M3EW",
+  "base_sha": "c8dfda4253cb5ab757ccdd04ff949dcc7ec38c66",
+  "base_branch": "codex/minimax-pi-autodev-20260322",
+  "workflow_slug": "test",
+  "host_repo_path": "/tmp/fabro-push-m3GUST/lib/crates/fabro-cli"
+}
