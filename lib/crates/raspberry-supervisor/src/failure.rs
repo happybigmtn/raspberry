@@ -128,6 +128,7 @@ pub fn classify_failure(
         || combined.contains("error finding codex home")
         || combined.contains("codex_home points to")
         || (combined.contains("could not update path") && combined.contains("codex_home"))
+        || combined.contains("failed to create cli scratch dir")
         || combined.contains("failed to connect to websocket")
     {
         return Some(FailureKind::TransientLaunchFailure);
@@ -138,6 +139,8 @@ pub fn classify_failure(
         || combined.contains("usage limit has been reached")
         || combined.contains("rate limited by openai")
         || combined.contains("you've hit your usage limit")
+        || combined.contains("you're out of extra usage")
+        || combined.contains("\"error\":\"rate_limit\"")
         || combined.contains("try again at")
     {
         return Some(FailureKind::ProviderAccessLimited);
@@ -297,6 +300,14 @@ mod tests {
             ),
             Some(FailureKind::TransientLaunchFailure)
         );
+        assert_eq!(
+            classify_failure(
+                Some("Handler error: failed to create CLI scratch dir .fabro_cli/abc: "),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
     }
 
     #[test]
@@ -315,6 +326,14 @@ mod tests {
                 None,
                 None,
             ),
+            Some(FailureKind::ProviderAccessLimited)
+        );
+        assert_eq!(
+            classify_failure(Some("You're out of extra usage · resets 5pm"), None, None),
+            Some(FailureKind::ProviderAccessLimited)
+        );
+        assert_eq!(
+            classify_failure(Some("{\"error\":\"rate_limit\"}"), None, None),
             Some(FailureKind::ProviderAccessLimited)
         );
     }
