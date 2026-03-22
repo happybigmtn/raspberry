@@ -127,7 +127,9 @@ pub fn execute_selected_lanes(
                 || (explicitly_selected
                     && matches!(
                         lane.status,
-                        LaneExecutionStatus::Failed | LaneExecutionStatus::Complete
+                        LaneExecutionStatus::Blocked
+                            | LaneExecutionStatus::Failed
+                            | LaneExecutionStatus::Complete
                     ));
             if !allowed {
                 return Err(DispatchError::LaneNotReady {

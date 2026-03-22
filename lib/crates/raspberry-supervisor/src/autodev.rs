@@ -81,6 +81,7 @@ const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
+const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
@@ -620,10 +621,14 @@ fn child_program_manifests_to_advance(
         if manifests.len() >= max_advances {
             break;
         }
-        if lane.status != LaneExecutionStatus::Failed {
-            continue;
-        }
-        if lane.recovery_action.is_none() {
+        let actionable = match lane.status {
+            LaneExecutionStatus::Ready => true,
+            LaneExecutionStatus::Failed => lane.recovery_action.is_some(),
+            LaneExecutionStatus::Blocked
+            | LaneExecutionStatus::Running
+            | LaneExecutionStatus::Complete => false,
+        };
+        if !actionable {
             continue;
         }
         let Some(child_manifest) =
@@ -659,12 +664,14 @@ fn should_trigger_evolve(
     }
     let spare_capacity = frontier.running < max_parallel;
     let frontier_progressed = last_evolve_frontier != Some(frontier);
-    let spare_capacity_trigger = spare_capacity && frontier.ready == 0 && frontier_progressed;
+    let no_active_work = frontier.running == 0;
+    let spare_capacity_trigger =
+        spare_capacity && no_active_work && frontier.ready == 0 && frontier_progressed;
     if doctrine_changed && (locally_settled || spare_capacity_trigger) {
         return true;
     }
     let recovery_trigger =
-        recovery_needs_evolve && frontier_progressed && (locally_settled || spare_capacity);
+        recovery_needs_evolve && frontier_progressed && (locally_settled || no_active_work);
     if recovery_trigger {
         return true;
     }
@@ -770,10 +777,37 @@ fn save_doctrine_state(path: &Path, state: &DoctrineState) -> Result<(), Autodev
             source,
         }
     })?;
-    fs::write(path, json).map_err(|source| AutodevError::WriteDoctrineState {
+    write_atomic(path, &json).map_err(|source| AutodevError::WriteDoctrineState {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn write_atomic(path: &Path, contents: &str) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::write(&temp, contents)?;
+    if let Err(first_error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(path);
+        if let Err(second_error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(std::io::Error::new(
+                second_error.kind(),
+                format!(
+                    "atomic rename failed for {}: {first_error}; retry failed: {second_error}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn collect_doctrine_fingerprints(
@@ -918,11 +952,7 @@ pub fn load_optional_autodev_report(
         path: path.clone(),
         source,
     })?;
-    let mut report: AutodevReport =
-        serde_json::from_str(&raw).map_err(|source| AutodevError::ParseReport {
-            path: path.clone(),
-            source,
-        })?;
+    let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
     let program = evaluate_program(manifest_path)?;
     let next_snapshot = current_snapshot(&program);
     if report.current.as_ref() != Some(&next_snapshot) {
@@ -946,11 +976,7 @@ pub fn sync_autodev_report_with_program(
         path: path.clone(),
         source,
     })?;
-    let mut report: AutodevReport =
-        serde_json::from_str(&raw).map_err(|source| AutodevError::ParseReport {
-            path: path.clone(),
-            source,
-        })?;
+    let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
     let next_snapshot = current_snapshot(program);
     if report.current.as_ref() == Some(&next_snapshot) {
         return Ok(());
@@ -977,9 +1003,25 @@ fn save_autodev_report(
             path: path.clone(),
             source,
         })?;
-    fs::write(&path, json).map_err(|source| AutodevError::WriteReport {
+    write_atomic(&path, &json).map_err(|source| AutodevError::WriteReport {
         path: path.clone(),
         source,
+    })
+}
+
+fn deserialize_autodev_report(
+    _path: &Path,
+    manifest: &ProgramManifest,
+    raw: &str,
+) -> Result<AutodevReport, AutodevError> {
+    serde_json::from_str(raw).or_else(|_source| {
+        Ok(AutodevReport {
+            program: manifest.program.clone(),
+            stop_reason: AutodevStopReason::CycleLimit,
+            updated_at: Utc::now(),
+            current: None,
+            cycles: Vec::new(),
+        })
     })
 }
 
@@ -1034,7 +1076,12 @@ fn dispatchable_failed_lanes(
     let mut lanes = program
         .lanes
         .iter()
-        .filter(|lane| lane.status == LaneExecutionStatus::Failed)
+        .filter(|lane| {
+            matches!(
+                lane.status,
+                LaneExecutionStatus::Blocked | LaneExecutionStatus::Failed
+            )
+        })
         .filter_map(|lane| replay_target_lane(manifest, lane, now, allow_regenerate))
         .collect::<Vec<_>>();
     lanes.sort();
@@ -1096,7 +1143,12 @@ fn replay_target_lane(
                 None
             }
         }
-        FailureRecoveryAction::SurfaceBlocked => None,
+        FailureRecoveryAction::SurfaceBlocked => retry_after_cooldown(
+            lane,
+            now,
+            SURFACE_BLOCKED_RETRY_MIN_SECS,
+            lane.lane_key.clone(),
+        ),
     }
 }
 
@@ -1651,6 +1703,139 @@ units:
     }
 
     #[test]
+    fn child_program_manifests_to_advance_includes_ready_children() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::create_dir_all(temp.path().join("malinka/programs")).expect("program dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+max_parallel: 5
+units:
+  - id: alpha
+    title: Alpha
+    output_root: out/alpha
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Alpha Program
+        run_config: malinka/programs/alpha.yaml
+        managed_milestone: coordinated
+        program_manifest: malinka/programs/alpha.yaml
+  - id: beta
+    title: Beta
+    output_root: out/beta
+    artifacts: []
+    milestones: []
+    lanes:
+      - id: program
+        kind: orchestration
+        title: Beta Program
+        run_config: malinka/programs/beta.yaml
+        managed_milestone: coordinated
+        program_manifest: malinka/programs/beta.yaml
+"#,
+        )
+        .expect("manifest written");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 5,
+            lanes: vec![
+                EvaluatedLane {
+                    lane_key: "alpha:program".to_string(),
+                    unit_id: "alpha".to_string(),
+                    unit_title: "Alpha".to_string(),
+                    lane_id: "program".to_string(),
+                    lane_title: "Alpha Program".to_string(),
+                    lane_kind: LaneKind::Orchestration,
+                    status: LaneExecutionStatus::Ready,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: String::new(),
+                    managed_milestone: "coordinated".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("malinka/programs/alpha.yaml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: None,
+                    last_error: None,
+                    failure_kind: None,
+                    recovery_action: None,
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                },
+                EvaluatedLane {
+                    lane_key: "beta:program".to_string(),
+                    unit_id: "beta".to_string(),
+                    unit_title: "Beta".to_string(),
+                    lane_id: "program".to_string(),
+                    lane_title: "Beta Program".to_string(),
+                    lane_kind: LaneKind::Orchestration,
+                    status: LaneExecutionStatus::Blocked,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: String::new(),
+                    managed_milestone: "coordinated".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("malinka/programs/beta.yaml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: None,
+                    last_error: None,
+                    failure_kind: None,
+                    recovery_action: None,
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                },
+            ],
+        };
+
+        let manifests = child_program_manifests_to_advance(&manifest_path, &manifest, &program, 1);
+
+        assert_eq!(manifests.len(), 1);
+        assert!(manifests[0].ends_with("malinka/programs/alpha.yaml"));
+    }
+
+    #[test]
     fn integration_replay_targets_source_lane_when_run_was_branchless() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest_path = temp.path().join("program.yaml");
@@ -1885,6 +2070,33 @@ units:
     }
 
     #[test]
+    fn replayable_failed_lanes_retry_surface_blocked_after_cooldown() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane(
+            "blocked:lane",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.",
+        );
+        lane.status = LaneExecutionStatus::Blocked;
+        lane.failure_kind = Some(FailureKind::ProviderAccessLimited);
+        lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(20));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            lanes: vec![lane],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(lanes, vec!["blocked:lane".to_string()]);
+    }
+
+    #[test]
     fn replayed_lanes_can_fill_available_capacity_before_ready_work() {
         let ready_lane = EvaluatedLane {
             lane_key: "ready:lane".to_string(),
@@ -2109,7 +2321,7 @@ units:
     fn spare_capacity_evolve_stays_bounded_by_frontier_budget() {
         let frontier = FrontierSignature {
             ready: 0,
-            running: 1,
+            running: 0,
             replayable_failed: 1,
             regenerable_failed: 0,
             complete: 3,
@@ -2129,7 +2341,7 @@ units:
             false,
             Some(&FrontierSignature {
                 ready: 0,
-                running: 2,
+                running: 1,
                 replayable_failed: 1,
                 regenerable_failed: 0,
                 complete: 2,
@@ -2143,13 +2355,13 @@ units:
             Duration::ZERO,
             &frontier,
             5,
-            2,
+            1,
             false,
             false,
             false,
             Some(&FrontierSignature {
                 ready: 0,
-                running: 2,
+                running: 1,
                 replayable_failed: 1,
                 regenerable_failed: 0,
                 complete: 2,
@@ -2157,6 +2369,22 @@ units:
                     "failed:lane:environment_collision:backoff_retry".to_string()
                 ],
             }),
+        ));
+
+        let active_frontier = FrontierSignature {
+            running: 2,
+            ..frontier.clone()
+        };
+        assert!(!should_trigger_evolve(
+            Some(Instant::now()),
+            Duration::ZERO,
+            &active_frontier,
+            5,
+            5,
+            false,
+            false,
+            false,
+            Some(&frontier),
         ));
     }
 

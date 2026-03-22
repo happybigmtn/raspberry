@@ -80,7 +80,7 @@ struct AutodevArgs {
     max_cycles: usize,
     #[arg(long, default_value_t = 500)]
     poll_interval_ms: u64,
-    #[arg(long, default_value_t = 1800)]
+    #[arg(long, default_value_t = 21600)]
     evolve_every_seconds: u64,
     #[arg(long = "doctrine")]
     doctrine_files: Vec<PathBuf>,

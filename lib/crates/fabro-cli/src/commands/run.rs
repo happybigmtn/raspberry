@@ -339,11 +339,36 @@ fn validate_post_run_delivery_modes(run_cfg: Option<&WorkflowRunConfig>) -> anyh
 }
 
 fn source_lane_name(config: &RunConfig, graph: &fabro_graphviz::graph::Graph) -> String {
+    if !graph.name.is_empty() {
+        return normalize_source_lane_name(&graph.name);
+    }
     config
         .workflow_slug
-        .clone()
-        .or_else(|| (!graph.name.is_empty()).then(|| graph.name.clone()))
+        .as_deref()
+        .map(normalize_source_lane_name)
         .unwrap_or_else(|| "workflow".to_string())
+}
+
+fn normalize_source_lane_name(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+    for (index, ch) in value.chars().enumerate() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() {
+                if index > 0 && !last_was_separator {
+                    normalized.push('-');
+                }
+                normalized.push(ch.to_ascii_lowercase());
+            } else {
+                normalized.push(ch.to_ascii_lowercase());
+            }
+            last_was_separator = false;
+        } else if !last_was_separator && !normalized.is_empty() {
+            normalized.push('-');
+            last_was_separator = true;
+        }
+    }
+    normalized.trim_matches('-').to_string()
 }
 
 /// Resolve daytona config: TOML config > run defaults.
@@ -3456,5 +3481,15 @@ mod tests {
             "fourth field must be event_seq, got: {fields:?}"
         );
         assert_eq!(envelope["event_seq"], 7);
+    }
+
+    #[test]
+    fn normalize_source_lane_name_prefers_graph_identity() {
+        assert_eq!(normalize_source_lane_name("BuildFixCi"), "build-fix-ci");
+        assert_eq!(normalize_source_lane_name("ChainOperations"), "chain-operations");
+        assert_eq!(
+            normalize_source_lane_name("wallet_integration"),
+            "wallet-integration"
+        );
     }
 }

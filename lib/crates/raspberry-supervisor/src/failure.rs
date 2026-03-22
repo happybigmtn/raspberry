@@ -135,6 +135,8 @@ pub fn classify_failure(
     if combined.contains("api.responses.write")
         || combined.contains("insufficient permissions for this operation")
         || combined.contains("401 unauthorized")
+        || combined.contains("usage limit has been reached")
+        || combined.contains("rate limited by openai")
         || combined.contains("you've hit your usage limit")
         || combined.contains("try again at")
     {

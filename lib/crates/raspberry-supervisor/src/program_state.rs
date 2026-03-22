@@ -19,6 +19,7 @@ use crate::resource_lease;
 
 const PROGRAM_STATE_SCHEMA_VERSION: &str = "raspberry.program.v2";
 const STALE_RUNNING_GRACE_SECS: i64 = 30;
+const ACTIVE_STALL_TIMEOUT_SECS: i64 = 1800;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramRuntimeState {
@@ -418,6 +419,44 @@ pub fn refresh_program_state(
                 }
                 if record.failure_kind != Some(FailureKind::TransientLaunchFailure) {
                     record.failure_kind = Some(FailureKind::TransientLaunchFailure);
+                    lane_changed = true;
+                }
+                if record.recovery_action != Some(FailureRecoveryAction::BackoffRetry) {
+                    record.recovery_action = Some(FailureRecoveryAction::BackoffRetry);
+                    lane_changed = true;
+                }
+                let finished_at = progress.updated_at.unwrap_or_else(Utc::now);
+                if record.last_finished_at != Some(finished_at) {
+                    record.last_finished_at = Some(finished_at);
+                    lane_changed = true;
+                }
+                if record.last_exit_status != Some(1) {
+                    record.last_exit_status = Some(1);
+                    lane_changed = true;
+                }
+                if record.current_stage_label.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_fabro_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                progress.workflow_status = Some(RunStatus::Failed);
+            } else if let Some(reason) =
+                stalled_active_progress_reason(&progress, record.last_started_at)
+            {
+                if record.status != LaneExecutionStatus::Failed {
+                    record.status = LaneExecutionStatus::Failed;
+                    lane_changed = true;
+                }
+                if record.last_error.as_deref() != Some(reason.as_str()) {
+                    record.last_error = Some(reason);
+                    lane_changed = true;
+                }
+                if record.failure_kind != Some(FailureKind::StallWatchdog) {
+                    record.failure_kind = Some(FailureKind::StallWatchdog);
                     lane_changed = true;
                 }
                 if record.recovery_action != Some(FailureRecoveryAction::BackoffRetry) {
@@ -1177,6 +1216,28 @@ fn stale_active_progress(
         return false;
     };
     (Utc::now() - started_at).num_seconds() >= STALE_RUNNING_GRACE_SECS
+}
+
+fn stalled_active_progress_reason(
+    progress: &LiveLaneProgress,
+    last_started_at: Option<DateTime<Utc>>,
+) -> Option<String> {
+    let Some(status) = progress.workflow_status else {
+        return None;
+    };
+    if !status.is_active() {
+        return None;
+    }
+    let Some(activity_at) = progress.updated_at.or(last_started_at) else {
+        return None;
+    };
+    if (Utc::now() - activity_at).num_seconds() < ACTIVE_STALL_TIMEOUT_SECS {
+        return None;
+    }
+    let stage = progress.current_stage_label.as_deref().unwrap_or("active");
+    Some(format!(
+        "stall watchdog: node `{stage}` had no activity for {ACTIVE_STALL_TIMEOUT_SECS}s"
+    ))
 }
 
 fn live_lane_progress_from_inspection(inspection: &RunInspection) -> LiveLaneProgress {
@@ -2222,6 +2283,22 @@ units:
             &progress,
             Some(Utc::now() - chrono::Duration::seconds(STALE_RUNNING_GRACE_SECS + 1)),
         ));
+    }
+
+    #[test]
+    fn stalled_active_progress_reason_detects_inactive_active_runs() {
+        let progress = LiveLaneProgress {
+            workflow_status: Some(RunStatus::Running),
+            worker_alive: Some(true),
+            current_stage_label: Some("Review".to_string()),
+            updated_at: Some(Utc::now() - chrono::Duration::seconds(ACTIVE_STALL_TIMEOUT_SECS + 1)),
+            ..LiveLaneProgress::default()
+        };
+
+        let reason = stalled_active_progress_reason(&progress, None).expect("stall reason");
+
+        assert!(reason.contains("Review"));
+        assert!(reason.contains(&ACTIVE_STALL_TIMEOUT_SECS.to_string()));
     }
 
     #[test]

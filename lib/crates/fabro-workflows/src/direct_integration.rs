@@ -125,11 +125,17 @@ fn run_integration_worktree(
     run_branch: &str,
     source_ref: &str,
 ) -> Result<DirectIntegrationRecord, DirectIntegrationError> {
-    let merge_output = run_git(
+    let merge_output = match run_git(
         worktree_path,
         "merge --squash",
         ["merge", "--squash", "--no-commit", source_ref],
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(DirectIntegrationError::Git { message, .. }) if is_merge_conflict_message(&message) => {
+            resolve_lane_owned_output_conflicts(request, worktree_path, source_ref)?
+        }
+        Err(error) => return Err(error),
+    };
     let already_integrated = git_exit_status(
         worktree_path,
         ["diff", "--cached", "--quiet"],
@@ -209,6 +215,106 @@ fn run_integration_worktree(
         );
     }
     Ok(record)
+}
+
+fn resolve_lane_owned_output_conflicts(
+    request: &DirectIntegrationRequest,
+    worktree_path: &Path,
+    source_ref: &str,
+) -> Result<GitOutput, DirectIntegrationError> {
+    let conflicted = conflicted_paths(worktree_path)?;
+    if conflicted.is_empty() {
+        return Err(DirectIntegrationError::Git {
+            step: "merge --squash".to_string(),
+            repo: worktree_path.to_path_buf(),
+            message: "merge reported conflict but no conflicted paths were found".to_string(),
+        });
+    }
+
+    let owned = lane_owned_output_paths(request);
+    if conflicted.iter().any(|path| !owned.contains(path)) {
+        return Err(DirectIntegrationError::Git {
+            step: "merge --squash".to_string(),
+            repo: worktree_path.to_path_buf(),
+            message: format!(
+                "conflicts include non-owned paths: {}",
+                conflicted
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+
+    for path in &conflicted {
+        run_git(
+            worktree_path,
+            "checkout source artifact",
+            [
+                "checkout",
+                source_ref,
+                "--",
+                path.to_string_lossy().as_ref(),
+            ],
+        )?;
+        run_git(
+            worktree_path,
+            "add resolved artifact",
+            ["add", path.to_string_lossy().as_ref()],
+        )?;
+    }
+
+    Ok(GitOutput {
+        stdout: format!(
+            "auto-resolved owned artifact conflicts for {}\n",
+            request.source_lane
+        ),
+    })
+}
+
+fn conflicted_paths(repo: &Path) -> Result<Vec<PathBuf>, DirectIntegrationError> {
+    let output = run_git(
+        repo,
+        "diff --name-only --diff-filter=U",
+        ["diff", "--name-only", "--diff-filter=U"],
+    )?;
+    let mut paths = output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn lane_owned_output_paths(request: &DirectIntegrationRequest) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = &request.artifact_path {
+        paths.push(path.clone());
+        if let Some(parent) = path.parent() {
+            paths.push(parent.join("spec.md"));
+            paths.push(parent.join("review.md"));
+        }
+    }
+    let lane = request.source_lane.replace(':', "-");
+    let output_root = PathBuf::from("outputs").join(&lane);
+    paths.push(output_root.join("spec.md"));
+    paths.push(output_root.join("review.md"));
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn is_merge_conflict_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("merge conflict")
+        || lower.contains("automatic merge failed")
+        || lower.contains("recorded preimage for")
+        || lower.contains("could not apply")
 }
 
 fn acquire_integration_lock(repo: &Path) -> Result<IntegrationLock, DirectIntegrationError> {
@@ -907,5 +1013,148 @@ mod tests {
         assert!(record.integrated);
         assert_eq!(record.mode, "direct_trunk_squash_local_branch_pending");
         assert!(!record.pushed);
+    }
+
+    #[test]
+    fn direct_integration_auto_resolves_lane_owned_output_conflicts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join("outputs/build-fix-ci")).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("outputs/build-fix-ci/spec.md"), "trunk spec\n").expect("spec");
+        fs::write(
+            repo.join("outputs/build-fix-ci/review.md"),
+            "trunk review\n",
+        )
+        .expect("review");
+        git(
+            &repo,
+            &[
+                "add",
+                "outputs/build-fix-ci/spec.md",
+                "outputs/build-fix-ci/review.md",
+            ],
+        );
+        git(&repo, &["commit", "-m", "base"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&repo, &["push", "-u", "origin", "main"]);
+        git(&repo, &["remote", "set-head", "origin", "main"]);
+
+        fs::write(
+            repo.join("outputs/build-fix-ci/spec.md"),
+            "new trunk spec\n",
+        )
+        .expect("update trunk spec");
+        fs::write(
+            repo.join("outputs/build-fix-ci/review.md"),
+            "new trunk review\n",
+        )
+        .expect("update trunk review");
+        git(
+            &repo,
+            &[
+                "add",
+                "outputs/build-fix-ci/spec.md",
+                "outputs/build-fix-ci/review.md",
+            ],
+        );
+        git(&repo, &["commit", "-m", "trunk update"]);
+        git(&repo, &["push", "origin", "main"]);
+
+        git(&repo, &["branch", "fabro/run/run-1", "HEAD~1"]);
+        let worktree = temp.path().join("run-worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                worktree.to_str().expect("worktree path"),
+                "fabro/run/run-1",
+            ],
+        );
+        fs::write(worktree.join("outputs/build-fix-ci/spec.md"), "run spec\n").expect("run spec");
+        fs::write(
+            worktree.join("outputs/build-fix-ci/review.md"),
+            "run review\n",
+        )
+        .expect("run review");
+        git(
+            &worktree,
+            &[
+                "add",
+                "outputs/build-fix-ci/spec.md",
+                "outputs/build-fix-ci/review.md",
+            ],
+        );
+        git(&worktree, &["commit", "-m", "run output"]);
+        git(
+            &repo,
+            &[
+                "push",
+                "origin",
+                "fabro/run/run-1:refs/heads/fabro/run/run-1",
+            ],
+        );
+        git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree.to_str().expect("worktree path"),
+            ],
+        );
+
+        let record = integrate_run(&DirectIntegrationRequest {
+            source_lane: "build-fix-ci".to_string(),
+            manifest: RunManifest {
+                run_id: "run-1".to_string(),
+                workflow_name: "Demo".to_string(),
+                goal: "Demo".to_string(),
+                start_time: Utc::now(),
+                node_count: 1,
+                edge_count: 0,
+                run_branch: Some("fabro/run/run-1".to_string()),
+                base_sha: None,
+                labels: std::collections::HashMap::new(),
+                base_branch: Some("main".to_string()),
+                workflow_slug: Some("build-fix-ci".to_string()),
+                host_repo_path: Some(repo.display().to_string()),
+            },
+            repo_fallback: repo.clone(),
+            target_branch: DEFAULT_TARGET_BRANCH.to_string(),
+            strategy: MergeStrategy::Squash,
+            artifact_path: None,
+        })
+        .expect("owned output conflict should auto-resolve");
+
+        assert!(record.integrated);
+        assert_eq!(
+            git_output(&repo, &["show", "origin/main:outputs/build-fix-ci/spec.md"]),
+            "run spec"
+        );
+        assert_eq!(
+            git_output(
+                &repo,
+                &["show", "origin/main:outputs/build-fix-ci/review.md"]
+            ),
+            "run review"
+        );
     }
 }

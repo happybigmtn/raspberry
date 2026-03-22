@@ -1,14 +1,16 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::{Duration, SystemTime};
 
 use clap::{Args, Subcommand};
 use fabro_synthesis::{
-    author_blueprint_for_create_with_planning_root, author_blueprint_for_evolve,
-    import_existing_package, load_blueprint, reconcile_blueprint, render_blueprint, save_blueprint,
-    ImportRequest, ReconcileRequest, RenderRequest,
+    author_blueprint_for_create_with_planning_root, import_existing_package, load_blueprint,
+    render_blueprint, save_blueprint, ImportRequest, RenderRequest,
 };
-use raspberry_supervisor::{load_plan_registry, load_plan_registry_from_planning_root, PlanRecord};
+use raspberry_supervisor::{
+    load_plan_registry, load_plan_registry_from_planning_root, PlanRecord, ProgramRuntimeState,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Subcommand)]
@@ -17,7 +19,7 @@ pub enum SynthCommand {
     Import(SynthImportArgs),
     /// Create a checked-in Fabro workflow package from a blueprint
     Create(SynthCreateArgs),
-    /// Evolve an existing Fabro workflow package from a revised blueprint
+    /// Steer the active malinka program from genesis + code + recent runtime evidence
     Evolve(SynthEvolveArgs),
     /// Eng-review mapping contracts with Opus 4.6 adversarial pass
     Review(SynthReviewArgs),
@@ -57,17 +59,17 @@ pub struct SynthCreateArgs {
 
 #[derive(Debug, Args)]
 pub struct SynthEvolveArgs {
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub blueprint: Option<PathBuf>,
     #[arg(long)]
     pub target_repo: PathBuf,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub preview_root: Option<PathBuf>,
     #[arg(long)]
     pub program: Option<String>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub output_blueprint: Option<PathBuf>,
-    /// Skip the eng-review pass after reconciliation
+    /// Skip the Opus steering review and only emit a deterministic report
     #[arg(long)]
     pub no_review: bool,
 }
@@ -885,54 +887,370 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
 }
 
 pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
-    let (blueprint, blueprint_path, notes) = if let Some(path) = &args.blueprint {
-        (load_blueprint(path)?, path.clone(), Vec::new())
-    } else {
-        let authored = author_blueprint_for_evolve(&args.target_repo, args.program.as_deref())?;
-        let path = args.output_blueprint.clone().unwrap_or_else(|| {
-            default_blueprint_path(&args.target_repo, &authored.blueprint.program.id)
-        });
-        save_blueprint(&path, &authored.blueprint)?;
-        (authored.blueprint, path, authored.notes)
-    };
     let output_repo = args.preview_root.as_ref().unwrap_or(&args.target_repo);
-    let report = reconcile_blueprint(ReconcileRequest {
-        blueprint: &blueprint,
-        current_repo: &args.target_repo,
-        output_repo,
-    })?;
-
-    if !args.no_review {
-        run_decomposition_review(output_repo)?;
+    let program = resolve_existing_program_id(&args.target_repo, args.program.as_deref())?;
+    let manifest_path = default_program_manifest_path(output_repo, &program);
+    if !manifest_path.exists() {
+        anyhow::bail!(
+            "program manifest {} does not exist; run `fabro synth create` first",
+            manifest_path.display()
+        );
     }
 
-    println!("Program: {}", blueprint.program.id);
-    println!("Mode: evolve");
-    println!("Blueprint: {}", blueprint_path.display());
+    let report_path = default_steering_report_path(output_repo, &program);
+    let recent_outputs =
+        collect_recent_output_files(&args.target_repo, Duration::from_secs(6 * 60 * 60), 24)?;
+    let recent_output_lines = recent_outputs
+        .iter()
+        .map(|path| format!("- {}", path.display()))
+        .collect::<Vec<_>>();
+    let runtime_summary = summarize_runtime_state(&args.target_repo, &program)?;
+    let autodev_summary = summarize_autodev_report(&args.target_repo, &program)?;
+
+    if args.no_review {
+        let body = deterministic_steering_report(
+            &program,
+            &manifest_path,
+            &report_path,
+            &recent_output_lines,
+            &runtime_summary,
+            &autodev_summary,
+        );
+        fabro_workflows::write_text_atomic(&report_path, &body, "steering report")
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        println!("Program: {program}");
+        println!("Mode: evolve (deterministic steering report)");
+        println!("Report: {}", report_path.display());
+        return Ok(());
+    }
+
+    let prompt = build_steering_prompt(
+        &args.target_repo,
+        output_repo,
+        &program,
+        &manifest_path,
+        &report_path,
+        &recent_output_lines,
+        &runtime_summary,
+        &autodev_summary,
+    );
+    let prompt_file = tempfile::NamedTempFile::new()?;
+    std::fs::write(prompt_file.path(), &prompt)?;
+
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        anyhow::bail!("claude CLI not found; required for synth evolve steering");
+    }
+
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 80",
+            prompt_file.path().display(),
+            STEERING_MODEL,
+        ))
+        .current_dir(&args.target_repo)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Opus steering failed: {}", stderr.trim());
+    }
+
+    let written_files = collect_malinka_written_files(output_repo)?;
+    println!("Program: {program}");
+    println!("Mode: evolve (Opus steering)");
+    println!("Report: {}", report_path.display());
     if args.preview_root.is_some() {
         println!("Preview root: {}", output_repo.display());
     }
-    if !notes.is_empty() {
-        println!("Notes:");
-        for note in notes {
-            println!("  - {note}");
-        }
-    }
-    println!("Findings:");
-    for finding in report.findings {
-        println!("  - {finding}");
-    }
-    if !report.recommendations.is_empty() {
-        println!("Recommendations:");
-        for recommendation in report.recommendations {
-            println!("  - {recommendation}");
+    println!("Runtime summary: {runtime_summary}");
+    println!("Autodev summary: {autodev_summary}");
+    if !recent_output_lines.is_empty() {
+        println!("Recent outputs:");
+        for line in &recent_output_lines {
+            println!("  {line}");
         }
     }
     println!("Written files:");
-    for path in report.written_files {
-        println!("  {}", path.display());
+    if written_files.is_empty() {
+        println!("  {}", report_path.display());
+    } else {
+        for path in written_files {
+            println!("  {}", path.display());
+        }
     }
     Ok(())
+}
+
+const STEERING_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_STEERING_LOOKBACK_HOURS: u64 = 6;
+
+fn default_program_manifest_path(target_repo: &std::path::Path, program: &str) -> PathBuf {
+    target_repo
+        .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs")
+        .join(format!("{program}.yaml"))
+}
+
+fn default_steering_report_path(target_repo: &std::path::Path, program: &str) -> PathBuf {
+    target_repo
+        .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("steering")
+        .join(format!("{program}.md"))
+}
+
+fn collect_recent_output_files(
+    target_repo: &std::path::Path,
+    lookback: Duration,
+    limit: usize,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let root = target_repo.join("outputs");
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let cutoff = SystemTime::now()
+        .checked_sub(lookback)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut files = Vec::new();
+    let mut stack = vec![root];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if modified < cutoff {
+                continue;
+            }
+            files.push((modified, path));
+        }
+    }
+    files.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(files
+        .into_iter()
+        .take(limit)
+        .map(|(_, path)| {
+            path.strip_prefix(target_repo)
+                .map(PathBuf::from)
+                .unwrap_or(path)
+        })
+        .collect())
+}
+
+fn summarize_runtime_state(target_repo: &std::path::Path, program: &str) -> anyhow::Result<String> {
+    let path = target_repo
+        .join(".raspberry")
+        .join(format!("{program}-state.json"));
+    let Some(state) = ProgramRuntimeState::load_optional(&path)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    else {
+        return Ok("no runtime state found".to_string());
+    };
+    let mut blocked = 0usize;
+    let mut complete = 0usize;
+    let mut failed = 0usize;
+    let mut ready = 0usize;
+    let mut running = 0usize;
+    let mut running_details = Vec::new();
+    let mut failed_details = Vec::new();
+    for (lane_key, lane) in &state.lanes {
+        match lane.status.to_string().as_str() {
+            "blocked" => blocked += 1,
+            "complete" => complete += 1,
+            "failed" => {
+                failed += 1;
+                failed_details.push(format!(
+                    "{lane_key}@{}",
+                    lane.failure_kind
+                        .map(|kind| kind.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                ));
+            }
+            "ready" => ready += 1,
+            "running" => {
+                running += 1;
+                running_details.push(format!(
+                    "{lane_key}@{}",
+                    lane.current_stage_label
+                        .clone()
+                        .unwrap_or_else(|| "active".to_string())
+                ));
+            }
+            _ => {}
+        }
+    }
+    running_details.sort();
+    failed_details.sort();
+    Ok(format!(
+        "counts: complete={complete} ready={ready} running={running} blocked={blocked} failed={failed}; running=[{}]; failed=[{}]",
+        running_details.join(", "),
+        failed_details.join(", "),
+    ))
+}
+
+fn summarize_autodev_report(
+    target_repo: &std::path::Path,
+    program: &str,
+) -> anyhow::Result<String> {
+    let path = target_repo
+        .join(".raspberry")
+        .join(format!("{program}-autodev.json"));
+    if !path.exists() {
+        return Ok("no autodev report found".to_string());
+    }
+    let value = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path)?)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let cycles = value
+        .get("cycles")
+        .and_then(|cycles| cycles.as_array())
+        .map(|cycles| cycles.len())
+        .unwrap_or(0);
+    let last_cycle = value
+        .get("cycles")
+        .and_then(|cycles| cycles.as_array())
+        .and_then(|cycles| cycles.last())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(format!(
+        "cycles={cycles}; last_cycle={}",
+        serde_json::to_string(&last_cycle).unwrap_or_else(|_| "{}".to_string())
+    ))
+}
+
+fn deterministic_steering_report(
+    program: &str,
+    manifest_path: &std::path::Path,
+    report_path: &std::path::Path,
+    recent_outputs: &[String],
+    runtime_summary: &str,
+    autodev_summary: &str,
+) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("# Steering Review for {program}\n\n"));
+    body.push_str("## Verdict\n\n");
+    body.push_str(
+        "Deterministic mode only. This report did not rewrite malinka and should be treated as advisory.\n\n",
+    );
+    body.push_str("## Inputs\n\n");
+    body.push_str(&format!(
+        "- Program manifest: `{}`\n",
+        manifest_path.display()
+    ));
+    body.push_str(&format!("- Report path: `{}`\n", report_path.display()));
+    body.push_str(&format!("- Runtime summary: {runtime_summary}\n"));
+    body.push_str(&format!("- Autodev summary: {autodev_summary}\n"));
+    if !recent_outputs.is_empty() {
+        body.push_str("- Recent outputs:\n");
+        for line in recent_outputs {
+            body.push_str(&format!("  - {line}\n"));
+        }
+    }
+    body
+}
+
+fn build_steering_prompt(
+    target_repo: &std::path::Path,
+    output_repo: &std::path::Path,
+    program: &str,
+    manifest_path: &std::path::Path,
+    report_path: &std::path::Path,
+    recent_outputs: &[String],
+    runtime_summary: &str,
+    autodev_summary: &str,
+) -> String {
+    let recent_outputs_block = if recent_outputs.is_empty() {
+        "- none observed in the last 6 hours".to_string()
+    } else {
+        recent_outputs.join("\n")
+    };
+    format!(
+        r#"You are the bounded steering layer for Fabro.
+
+Working repo: `{target_repo}`
+Write root: `{output_repo}`
+Program: `{program}`
+Lookback window: last {lookback_hours} hours
+
+Strategic contract:
+- `genesis/` is the long-horizon strategy and MUST NOT be edited.
+- Source code outside `malinka/` is observational evidence only and MUST NOT be edited.
+- You MAY edit only these paths under the write root:
+  - `malinka/programs/{program}.yaml`
+  - `{report_path}`
+
+Your job is to reconcile three truths:
+1. `genesis/` strategy
+2. actual code/runtime evidence
+3. current execution steer in `malinka/`
+
+Do NOT run a broad genesis process. Do NOT rewrite the plan architecture wholesale. Do NOT regenerate prompts, mappings, workflows, run configs, blueprints, or paperclip assets. Prefer the smallest program-manifest-only steering change that improves the next 6 hours of autodev behavior.
+
+Current live steer:
+- Program manifest: `{manifest_path}`
+- Runtime summary: {runtime_summary}
+- Autodev summary: {autodev_summary}
+- Recent outputs modified in the lookback window:
+{recent_outputs_block}
+
+Required workflow:
+1. Inspect `genesis/`, the current codebase, `.raspberry/{program}-state.json`, `.raspberry/{program}-autodev.json`, and the current `malinka/` program steer.
+2. Decide whether autodev is working well over the last {lookback_hours} hours.
+3. If it is not working well, make bounded edits ONLY to `malinka/programs/{program}.yaml` to improve throughput and keep focus on the strategic fronts described in `genesis/`.
+4. Always write a steering review report to `{report_path}`.
+
+The steering report must contain these sections:
+- `# Steering Review for {program}`
+- `## Verdict`
+- `## Evidence`
+- `## Changes Made`
+- `## Why These Changes Preserve Genesis Strategy`
+- `## Next Risks`
+
+Editing guidance:
+- Restrict edits to `malinka/programs/{program}.yaml`.
+- Do not touch plan mappings, prompts, run configs, workflows, paperclip config, or blueprints.
+- Do not delete major frontiers unless the last {lookback_hours} hours of evidence clearly show they are off-strategy relative to `genesis/`.
+- Bias toward improving focus and throughput, not rewriting intent.
+
+When finished, ensure any changed files are saved only at `malinka/programs/{program}.yaml` and the report exists at `{report_path}`."#,
+        target_repo = target_repo.display(),
+        output_repo = output_repo.display(),
+        program = program,
+        manifest_path = manifest_path.display(),
+        report_path = report_path.display(),
+        runtime_summary = runtime_summary,
+        autodev_summary = autodev_summary,
+        recent_outputs_block = recent_outputs_block,
+        lookback_hours = DEFAULT_STEERING_LOOKBACK_HOURS,
+    )
+}
+
+fn collect_malinka_written_files(output_repo: &std::path::Path) -> anyhow::Result<Vec<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(output_repo)
+        .args(["status", "--short", "--", "malinka"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut paths = text
+        .lines()
+        .filter_map(|line| line.get(3..).map(str::trim))
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn default_blueprint_path(target_repo: &std::path::Path, program: &str) -> PathBuf {
@@ -940,6 +1258,42 @@ fn default_blueprint_path(target_repo: &std::path::Path, program: &str) -> PathB
         .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
         .join("blueprints")
         .join(format!("{program}.yaml"))
+}
+
+fn resolve_existing_program_id(
+    target_repo: &std::path::Path,
+    program_override: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(program) = program_override {
+        return Ok(program.to_string());
+    }
+    let programs_dir = target_repo
+        .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs");
+    if !programs_dir.is_dir() {
+        anyhow::bail!(
+            "no programs directory found at {}; run `fabro synth create` first",
+            programs_dir.display()
+        );
+    }
+    let mut programs = std::fs::read_dir(&programs_dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|ext| ext.to_str()) == Some("yaml")).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    programs.sort();
+    let Some(path) = programs.first() else {
+        anyhow::bail!(
+            "no existing program manifests found in {}; pass --program explicitly",
+            programs_dir.display()
+        );
+    };
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        anyhow::bail!("failed to derive program id from {}", path.display());
+    };
+    Ok(stem.to_string())
 }
 
 fn normalize_planning_root(

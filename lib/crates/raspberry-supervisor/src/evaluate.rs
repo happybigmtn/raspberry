@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use fabro_workflows::live_state::RunLiveState;
@@ -24,6 +25,8 @@ use crate::program_state::{
 thread_local! {
     static EVALUATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
+
+const CHECK_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -1426,12 +1429,29 @@ fn run_check_command(
     command: &str,
 ) -> Option<std::process::Output> {
     let cwd = manifest.resolved_target_repo(manifest_path);
-    Command::new("bash")
+    let mut child = Command::new("bash")
         .arg("-lc")
         .arg(command)
         .current_dir(cwd)
-        .output()
-        .ok()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + CHECK_COMMAND_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait_with_output();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn resolve_check_path(manifest_path: &Path, path: &Path) -> PathBuf {
