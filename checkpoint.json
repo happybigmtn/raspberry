@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-03-22T18:58:35.893811786Z",
+  "current_node": "run_tests",
+  "completed_nodes": [
+    "start",
+    "run_tests"
+  ],
+  "node_retries": {
+    "start": 1,
+    "run_tests": 1
+  },
+  "context_values": {
+    "last_stage": "run_tests",
+    "thread.start.current_node": "run_tests",
+    "internal.thread_id": "start",
+    "internal.node_visit_count": 1,
+    "internal.fidelity": "compact",
+    "outcome": "success",
+    "current_node": "run_tests",
+    "internal.run_id": "01KMBEKMA47AR3FDSX0YS8CRKG",
+    "internal.work_dir": "/home/r/.cache/rust-tmp/.tmpjNfC0f/run/worktree",
+    "graph.goal": "Run tests and report results",
+    "response.run_tests": "[Simulated] Response for stage: run_tests",
+    "last_response": "[Simulated] Response for stage: run_tests",
+    "failure_signature": "",
+    "graph.rankdir": "LR",
+    "internal.retry_count.start": 1,
+    "current.preamble": "Goal: Run tests and report results\n",
+    "internal.retry_count.run_tests": 1,
+    "failure_class": ""
+  },
+  "logs": [],
+  "node_outcomes": {
+    "run_tests": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "run_tests",
+        "last_response": "[Simulated] Response for stage: run_tests",
+        "response.run_tests": "[Simulated] Response for stage: run_tests"
+      },
+      "notes": "[Simulated] run_tests",
+      "duration_ms": 0
+    },
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "report",
+  "node_visits": {
+    "start": 1,
+    "run_tests": 1
+  }
+}
