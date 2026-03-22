@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use fabro_llm::provider::Provider;
+use fabro_model::Provider;
 use fabro_util::terminal::Styles;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -288,15 +288,16 @@ fn resolve_model_provider(
         .map(|s| s.to_string())
         .or_else(|| config_model.map(|s| s.to_string()))
         .unwrap_or_else(|| {
-            // Look up default model from catalog for the given provider
-            let default_info = provider_str
-                .and_then(fabro_llm::catalog::default_model_for_provider)
-                .unwrap_or_else(fabro_llm::catalog::default_model);
-            default_info.id
+            // Look up default model from catalog for the given provider,
+            // falling back to the best provider with an API key configured.
+            provider_str
+                .and_then(fabro_model::default_model_for_provider)
+                .unwrap_or_else(fabro_model::default_model_from_env)
+                .id
         });
 
     // Resolve model alias through catalog
-    let (model, provider_str) = match fabro_llm::catalog::get_model_info(&model) {
+    let (model, provider_str) = match fabro_model::get_model_info(&model) {
         Some(info) => (
             info.id,
             provider_str.map(|s| s.to_string()).or(Some(info.provider)),
@@ -307,7 +308,7 @@ fn resolve_model_provider(
     let provider_enum: Provider = provider_str
         .as_deref()
         .and_then(|s| s.parse::<Provider>().ok())
-        .unwrap_or(Provider::Anthropic);
+        .unwrap_or_else(Provider::default_from_env);
 
     (model, provider_enum)
 }

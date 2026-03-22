@@ -403,6 +403,7 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
 
     let fabro_binary = current_fabro_binary()?;
     let raspberry_binary = current_raspberry_binary();
+    let fabro_agent_binary = current_fabro_agent_binary();
     let fabro_repo = default_fabro_repo();
     write_paperclip_cli_script(
         &paths.paperclip_cli_script_path,
@@ -417,7 +418,11 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &fabro_binary,
         raspberry_binary.as_deref(),
     )?;
-    write_minimax_agent_script(&paths.minimax_agent_script_path, fabro_repo.as_deref())?;
+    write_minimax_agent_script(
+        &paths.minimax_agent_script_path,
+        fabro_agent_binary.as_deref(),
+        fabro_repo.as_deref(),
+    )?;
     write_run_script(
         &paths.run_script_path,
         default_paperclip_repo(),
@@ -1376,7 +1381,7 @@ struct BundleAgentDraft {
     agent: BundleAgent,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Bundle generation wires together repo, frontier, and Paperclip surfaces in one place.
 fn build_company_bundle(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -1806,7 +1811,7 @@ fn orchestrator_draft(
 }
 
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Lane drafts are assembled from explicit blueprint and frontier inputs.
 fn lane_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -1891,7 +1896,7 @@ fn lane_agent_draft(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Top-level plan agents reuse lane-draft inputs plus plan-level context.
 fn top_level_plan_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -3232,20 +3237,35 @@ fn write_orchestrator_script(
     Ok(())
 }
 
-fn write_minimax_agent_script(path: &Path, fabro_repo: Option<&Path>) -> Result<()> {
-    let pi_cli_fallback = fabro_repo
-        .map(|repo| {
+fn write_minimax_agent_script(
+    path: &Path,
+    fabro_agent_binary: Option<&Path>,
+    fabro_repo: Option<&Path>,
+) -> Result<()> {
+    let binary_resolution = fabro_agent_binary
+        .map(|path| {
             format!(
-                "elif [ -x {repo}/node_modules/.bin/pi ]; then\n  exec {repo}/node_modules/.bin/pi --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\n",
-                repo = shell_quote(&repo.display().to_string()),
-                model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
+                "  if [ -x {fallback} ]; then\n    fabro_agent_bin={fallback}\n  elif command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n",
+                fallback = shell_quote(&path.display().to_string()),
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            "  if command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n".to_string()
+        });
+    let cargo_fallback = fabro_repo.map(|repo| {
+        format!(
+            "cd {repo}\nexec cargo run --quiet -p fabro-agent -- --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\n",
+            repo = shell_quote(&repo.display().to_string()),
+            model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
+        )
+    }).unwrap_or_else(|| {
+        "echo \"Unable to resolve fabro-agent. Set FABRO_AGENT_BIN or run from a fabro checkout.\" >&2\nexit 1\n".to_string()
+    });
     let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n\nif [ -z \"${{MINIMAX_API_KEY:-}}\" ]; then\n  echo \"MINIMAX_API_KEY is required for Paperclip MiniMax workers.\" >&2\n  exit 1\nfi\n\nprompt=\"$(cat)\"\n\nif [ -n \"${{PI_BIN:-}}\" ]; then\n  exec \"$PI_BIN\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif command -v pi >/dev/null 2>&1; then\n  exec \"$(command -v pi)\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif [ -n \"${{PI_CLI_JS:-}}\" ]; then\n  exec node \"$PI_CLI_JS\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif [ -n \"${{PI_PACKAGE_DIR:-}}\" ] && [ -x \"$PI_PACKAGE_DIR/dist/cli.js\" ]; then\n  exec node \"$PI_PACKAGE_DIR/dist/cli.js\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\n{pi_cli_fallback}elif command -v npx >/dev/null 2>&1; then\n  exec npx --yes @mariozechner/pi-coding-agent --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nfi\n\necho \"Unable to resolve Pi CLI. Set PI_BIN or PI_CLI_JS, install pi, or ensure npx is available.\" >&2\nexit 1\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nprompt=\"$(cat)\"\n\nfabro_agent_bin=\"${{FABRO_AGENT_BIN:-}}\"\nif [ -z \"$fabro_agent_bin\" ]; then\n{binary_resolution}fi\n\nif [ -n \"$fabro_agent_bin\" ]; then\n  exec \"$fabro_agent_bin\" --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\nfi\n\n{cargo_fallback}",
+        binary_resolution = binary_resolution,
         model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
-        pi_cli_fallback = pi_cli_fallback,
+        cargo_fallback = cargo_fallback,
     );
     std::fs::write(path, body)?;
     Ok(())
@@ -3282,6 +3302,12 @@ fn write_run_script(path: &Path, paperclip_repo: Option<PathBuf>, data_dir: &Pat
 
 fn current_fabro_binary() -> Result<PathBuf> {
     std::env::current_exe().context("failed to resolve current fabro binary")
+}
+
+fn current_fabro_agent_binary() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let sibling = current.with_file_name("fabro-agent");
+    sibling.exists().then_some(sibling)
 }
 
 fn current_raspberry_binary() -> Option<PathBuf> {
@@ -3352,11 +3378,11 @@ fn paperclip_server_command(override_value: Option<&str>, data_dir: &Path) -> Re
     ))
 }
 
-fn ensure_local_paperclip_instance(data_dir: &Path) -> Result<()> {
+fn ensure_local_paperclip_instance(data_dir: &Path, api_base: &str) -> Result<()> {
     let instance_root = paperclip_instance_root(data_dir);
     let config_path = instance_root.join("config.json");
     if !config_path.exists() {
-        seed_local_paperclip_config(&config_path)?;
+        seed_local_paperclip_config(&config_path, api_base)?;
     }
     ensure_local_paperclip_env(&config_path)?;
     ensure_local_paperclip_master_key(&config_path)?;
@@ -3367,7 +3393,18 @@ fn paperclip_instance_root(data_dir: &Path) -> PathBuf {
     data_dir.join("instances").join("default")
 }
 
-fn seed_local_paperclip_config(config_path: &Path) -> Result<()> {
+fn paperclip_server_host_port(api_base: &str) -> (String, u16) {
+    reqwest::Url::parse(api_base)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?.to_string();
+            let port = url.port_or_known_default()?;
+            Some((host, port))
+        })
+        .unwrap_or_else(|| ("127.0.0.1".to_string(), 3100))
+}
+
+fn seed_local_paperclip_config(config_path: &Path, api_base: &str) -> Result<()> {
     let instance_root = config_path
         .parent()
         .context("paperclip config path should have a parent directory")?;
@@ -3377,6 +3414,7 @@ fn seed_local_paperclip_config(config_path: &Path) -> Result<()> {
     let log_dir = instance_root.join("logs");
     let key_file_path = instance_root.join("secrets").join("master.key");
     std::fs::create_dir_all(instance_root)?;
+    let (server_host, server_port) = paperclip_server_host_port(api_base);
 
     let config = json!({
         "$meta": {
@@ -3402,8 +3440,8 @@ fn seed_local_paperclip_config(config_path: &Path) -> Result<()> {
         "server": {
             "deploymentMode": "local_trusted",
             "exposure": "private",
-            "host": "127.0.0.1",
-            "port": 3100,
+            "host": server_host,
+            "port": server_port,
             "allowedHostnames": [],
             "serveUi": true,
         },
@@ -3525,7 +3563,7 @@ async fn ensure_paperclip_server(
     data_dir: &Path,
     api_base: &str,
 ) -> Result<()> {
-    ensure_local_paperclip_instance(data_dir)?;
+    ensure_local_paperclip_instance(data_dir, api_base)?;
     if paperclip_server_ready(api_base).await {
         return Ok(());
     }
@@ -3958,7 +3996,9 @@ async fn resolve_managed_agent(
             })
         })
     {
-        return get_managed_agent(api_base, agent_id).await;
+        if let Ok(agent) = get_managed_agent(api_base, agent_id).await {
+            return Ok(agent);
+        }
     }
 
     let agents = list_company_agents(api_base, company_id).await?;
@@ -4874,7 +4914,7 @@ fn generated_agent_matches(agent: &PaperclipManagedAgent, desired_agent: &Bundle
             == desired_agent.lane_key.as_deref()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Project sync requires repo, mission, frontier, and preferred ids together.
 async fn ensure_company_project(
     api_base: &str,
     company_id: &str,
@@ -5066,7 +5106,7 @@ async fn ensure_project_workspace(
         .context("failed to parse created project workspace")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Coordination issue sync spans company, project, frontier, agents, and prior state.
 async fn sync_coordination_issues(
     api_base: &str,
     company_id: &str,
@@ -6950,7 +6990,8 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let data_dir = temp.path().join(".paperclip");
 
-        ensure_local_paperclip_instance(&data_dir).expect("seed local paperclip instance");
+        ensure_local_paperclip_instance(&data_dir, "http://127.0.0.1:3112")
+            .expect("seed local paperclip instance");
 
         let instance_root = data_dir.join("instances").join("default");
         let config_path = instance_root.join("config.json");
@@ -6968,6 +7009,8 @@ mod tests {
             config["server"]["deploymentMode"].as_str(),
             Some("local_trusted"),
         );
+        assert_eq!(config["server"]["host"].as_str(), Some("127.0.0.1"));
+        assert_eq!(config["server"]["port"].as_u64(), Some(3112));
     }
 
     #[test]
@@ -7013,6 +7056,43 @@ mod tests {
 
         mock.assert();
         assert_eq!(resolved, Some(live_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_managed_agent_falls_back_from_stale_saved_agent_id() {
+        let server = MockServer::start_async().await;
+        let company_id = "company-1";
+        let stale_id = "stale-agent";
+        let live_id = "live-agent";
+        let slug = "raspberry-orchestrator";
+
+        let stale_lookup = server.mock(|when, then| {
+            when.method(GET).path(format!("/api/agents/{stale_id}"));
+            then.status(404);
+        });
+        let list_agents = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/api/companies/{company_id}/agents"));
+            then.status(200).header("content-type", "application/json").body(format!(
+                r#"[{{"id":"{live_id}","slug":"{slug}","name":"Raspberry Orchestrator","adapterType":"process"}}]"#
+            ));
+        });
+
+        let existing_state = json!({
+            "agents": [
+                { "slug": slug, "id": stale_id }
+            ]
+        });
+
+        let resolved =
+            resolve_managed_agent(&server.base_url(), company_id, slug, Some(&existing_state))
+                .await
+                .expect("resolve managed agent");
+
+        stale_lookup.assert();
+        list_agents.assert();
+        assert_eq!(resolved.id, live_id);
+        assert_eq!(resolved.slug.as_deref(), Some(slug));
     }
 
     #[test]

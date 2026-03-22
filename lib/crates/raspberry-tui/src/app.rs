@@ -245,7 +245,7 @@ impl App {
         match result {
             NarrationRefreshResult::Updated(record) => {
                 if record.snapshot == self.narration_snapshot {
-                    self.operator_narration = Some(record);
+                    self.operator_narration = Some(*record);
                     self.narration_last_error = None;
                     self.narration_suppressed_snapshot = None;
                 }
@@ -1260,6 +1260,8 @@ mod tests {
             last_finished_at: None,
             last_exit_status: None,
             last_error: None,
+            failure_kind: None,
+            recovery_action: None,
             last_completed_stage_label: None,
             last_stage_duration_ms: None,
             last_usage_summary: None,
@@ -1499,9 +1501,9 @@ mod tests {
         assert_eq!(
             app.displayed_lane_keys(),
             vec![
-                "miner:service".to_string(),
                 "launch:devnet".to_string(),
                 "operations:scorecard".to_string(),
+                "miner:service".to_string(),
                 "play:tui".to_string(),
                 "chain:runtime".to_string(),
                 "validator:oracle".to_string(),

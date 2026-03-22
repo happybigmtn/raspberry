@@ -865,12 +865,11 @@ fn upgrade_implementation_unit(unit: &mut BlueprintUnit) {
 }
 
 fn repo_relative(path: &Path, target_repo: &Path) -> Result<PathBuf, BlueprintError> {
-    path.strip_prefix(target_repo)
+    let path = normalize_path(path);
+    let target_repo = normalize_path(target_repo);
+    path.strip_prefix(&target_repo)
         .map(normalize_relative_path)
-        .map_err(|_| BlueprintError::PathOutsideTargetRepo {
-            path: path.to_path_buf(),
-            target_repo: target_repo.to_path_buf(),
-        })
+        .map_err(|_| BlueprintError::PathOutsideTargetRepo { path, target_repo })
 }
 
 fn normalize_relative_path(path: &Path) -> PathBuf {
@@ -884,6 +883,22 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
             std::path::Component::Normal(part) => normalized.push(part),
             std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
             std::path::Component::RootDir => {}
+        }
+    }
+    normalized
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR.to_string()),
         }
     }
     normalized

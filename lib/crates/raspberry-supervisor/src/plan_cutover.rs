@@ -38,6 +38,7 @@ impl CutoverPhase {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // Returns Option for lightweight config parsing without FromStr boilerplate.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim() {
             "shadow" => Some(Self::Shadow),

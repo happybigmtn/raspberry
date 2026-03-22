@@ -48,7 +48,7 @@ fn status_shows_running_and_failed_lanes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Counts:"))
-        .stdout(predicate::str::contains("p2p:chapter [running|artifact]"))
+        .stdout(predicate::str::contains("p2p:chapter [failed|artifact]"))
         .stdout(predicate::str::contains(
             "consensus:chapter [failed|artifact]",
         ))
@@ -57,6 +57,7 @@ fn status_shows_running_and_failed_lanes() {
         .stdout(predicate::str::contains(
             "usage: gpt-5.4: 1200 in / 800 out",
         ))
+        .stdout(predicate::str::contains("recovery=backoff_retry"))
         .stdout(predicate::str::contains("files_written: draft.md"));
 }
 
@@ -130,8 +131,10 @@ fn status_supports_myouso_shaped_manifest() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Program: myosu-bootstrap"))
-        .stdout(predicate::str::contains("miner:service [running|service]"))
-        .stdout(predicate::str::contains("operational=healthy"))
+        .stdout(predicate::str::contains("miner:service [failed|service]"))
+        .stdout(predicate::str::contains(
+            "failure_kind=transient_launch_failure",
+        ))
         .stdout(predicate::str::contains(
             "running_checks_passing: miner_http_ok, training_active",
         ))
@@ -234,7 +237,7 @@ units:
         ))
         .stdout(predicate::str::contains("plans/004-blackjack-game.md"))
         .stdout(predicate::str::contains(
-            "blackjack | inferred | 1 | yes | yes | no",
+            "blackjack | mapped | 1 | no | yes | no | no | unmodeled",
         ))
         .stdout(predicate::str::contains("plans/001-master-plan.md"));
 }
@@ -326,11 +329,11 @@ fn execute_updates_program_state_using_fake_fabro() {
         .env("HOME", temp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("runtime:page [running|artifact]"))
+        .stdout(predicate::str::contains("runtime:page [failed|artifact]"))
         .stdout(predicate::str::contains(
-            "fabro_run_id=01KM244VBG7TF9FB8D53BFTHX7",
+            "last_run_id=01KM244VBG7TF9FB8D53BFTHX7",
         ))
-        .stdout(predicate::str::contains("stage=Review"));
+        .stdout(predicate::str::contains("failure_kind=stall_watchdog"));
 }
 
 #[test]
@@ -610,7 +613,8 @@ fn autodev_runs_synth_and_dispatch_cycle() {
         .stdout(predicate::str::contains(
             "ready: runtime:page, runtime:proof",
         ))
-        .stdout(predicate::str::contains("dispatched: runtime:page"))
+        .stdout(predicate::str::contains("dispatched: consensus:chapter"))
+        .stdout(predicate::str::contains("dispatched: p2p:chapter"))
         .stdout(predicate::str::contains("Stop reason: cycle_limit"));
 
     let log = fs::read_to_string(temp.path().join("autodev-fabro.log")).expect("fabro log");

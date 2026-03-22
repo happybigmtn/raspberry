@@ -28,9 +28,11 @@ base64.workspace = true
 bytes.workspace = true
 tokio-util.workspace = true
 cli-table.workspace = true
+indicatif.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
 tracing.workspace = true
+fabro-model = { path = "../fabro-model" }
 fabro-util = { path = "../fabro-util" }
 
 [dev-dependencies]

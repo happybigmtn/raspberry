@@ -39,7 +39,7 @@ pub struct NarrationRefreshHandle {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum NarrationRefreshResult {
-    Updated(OperatorNarrationRecord),
+    Updated(Box<OperatorNarrationRecord>),
     Failed(String),
 }
 
@@ -80,7 +80,7 @@ pub fn start_operator_narration_refresh(
         let result = match generate_operator_narration(&manifest_path, &manifest, &snapshot) {
             Ok(record) => {
                 let _ = save_operator_narration(&path, &record);
-                NarrationRefreshResult::Updated(record)
+                NarrationRefreshResult::Updated(Box::new(record))
             }
             Err(error) => NarrationRefreshResult::Failed(error.to_string()),
         };

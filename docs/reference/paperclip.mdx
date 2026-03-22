@@ -3,7 +3,7 @@ title: "Paperclip Coordination"
 description: "Bootstrap a repo-local Paperclip company from a Fabro and Raspberry package"
 ---
 
-`fabro paperclip bootstrap` turns a repo's checked-in Fabro package into a
+`fabro paperclip bootstrap` turns a repo's checked-in `malinka/` package into a
 repo-local Paperclip company. It adds a coordination layer on top of Raspberry.
 Paperclip handles planning, review, triage, and handoff. Raspberry remains the
 execution source of truth.
@@ -18,7 +18,7 @@ execution source of truth.
 
 When you run `fabro paperclip bootstrap`, Fabro:
 
-- writes an importable Paperclip bundle under `fabro/paperclip/<program>/`
+- writes an importable Paperclip bundle under `malinka/paperclip/<program>/`
 - generates a mission CEO, a Raspberry orchestrator, and one lane agent per frontier lane
 - ensures a repo-local Paperclip data dir under `.paperclip/` by default
 - imports or updates the Paperclip company and agent roster
@@ -37,14 +37,14 @@ When you run `fabro paperclip bootstrap`, Fabro:
 You need:
 
 1. A target repo.
-2. A checked-in `fabro/` package, or enough planning/spec material for Fabro to
+2. A checked-in `malinka/` package, or enough planning/spec material for Fabro to
    author the first blueprint and render the package.
 3. A Paperclip CLI on your `PATH`, or an explicit `--paperclip-cmd`.
 4. Working local model auth for the generated local agents. Claude-based local
    agents can use synced secrets when configured. Codex-based local agents use
    dedicated OAuth-backed `CODEX_HOME` slots instead of API-key login.
 
-If your repo does not have a clear `fabro/` package yet and you want more
+If your repo does not have a clear `malinka/` package yet and you want more
 control over the synthesis step, start with
 [From Specs To Blueprints](/guides/from-specs-to-blueprint).
 
@@ -59,7 +59,7 @@ fabro paperclip bootstrap \
   --apply false
 ```
 
-This writes the bundle under `fabro/paperclip/<program>/` and stops. It does
+This writes the bundle under `malinka/paperclip/<program>/` and stops. It does
 not start a Paperclip server or import anything.
 
 ### 2. Apply the live bootstrap
@@ -73,7 +73,7 @@ fabro paperclip bootstrap \
 With `--apply true` (the default), Fabro will:
 
 1. load or author the current blueprint
-2. render the `fabro/` package if needed
+2. render the `malinka/` package if needed
 3. seed or reuse the repo-local Paperclip instance
 4. start or reuse the local Paperclip server and browser dashboard
 5. import or update the company bundle
@@ -110,7 +110,7 @@ The browser UI is the preferred human dashboard for ongoing runs. If you want
 to launch the same repo-owned instance manually, use the generated script:
 
 ```bash
-bash fabro/paperclip/my-program/scripts/run-paperclip.sh
+bash malinka/paperclip/my-program/scripts/run-paperclip.sh
 ```
 
 ### 5. Use the lifecycle commands when you need server visibility
@@ -218,6 +218,28 @@ Run `fabro paperclip refresh` when:
 The refresh path is designed to be re-run. It reuses the same company, goal,
 project, workspace, and synchronized issue ids when it can.
 
+## One server, multiple repos
+
+A single local Paperclip server can host multiple repo companies at once. To do
+that, point each repo at the same `--data-dir` and the same `--api-base`.
+
+```bash
+fabro paperclip bootstrap \
+  --target-repo /repos/zend \
+  --program zend \
+  --data-dir ~/.paperclip-shared \
+  --api-base http://127.0.0.1:3112
+
+fabro paperclip bootstrap \
+  --target-repo /repos/rXMRbro \
+  --program rxmragent \
+  --data-dir ~/.paperclip-shared \
+  --api-base http://127.0.0.1:3112
+```
+
+After both bootstraps, the same Paperclip instance will expose both companies
+through one dashboard.
+
 ## Generated files
 
 The most important outputs live in two places.
@@ -225,7 +247,7 @@ The most important outputs live in two places.
 ### Bundle files in the repo
 
 ```text
-fabro/paperclip/<program>/
+malinka/paperclip/<program>/
 ├── COMPANY.md
 ├── paperclip.manifest.json
 ├── bootstrap-state.json            # written after --apply true

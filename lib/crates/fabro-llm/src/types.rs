@@ -370,6 +370,8 @@ pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<serde_json::Value>,
 }
 
@@ -393,6 +395,7 @@ impl std::ops::Add for Usage {
             reasoning_tokens: add_optional(self.reasoning_tokens, rhs.reasoning_tokens),
             cache_read_tokens: add_optional(self.cache_read_tokens, rhs.cache_read_tokens),
             cache_write_tokens: add_optional(self.cache_write_tokens, rhs.cache_write_tokens),
+            speed: self.speed,
             raw: None,
         }
     }
@@ -452,6 +455,7 @@ pub struct Request {
     pub max_tokens: Option<i64>,
     pub stop_sequences: Option<Vec<String>>,
     pub reasoning_effort: Option<String>,
+    pub speed: Option<String>,
     pub metadata: Option<HashMap<String, String>>,
     pub provider_options: Option<serde_json::Value>,
 }
@@ -636,43 +640,9 @@ impl StreamEvent {
     }
 }
 
-// --- 2.9 ModelInfo ---
+// --- 2.9 ModelInfo (re-exported from fabro-model) ---
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelLimits {
-    pub context_window: i64,
-    pub max_output: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelFeatures {
-    pub tools: bool,
-    pub vision: bool,
-    pub reasoning: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelCosts {
-    pub input_cost_per_mtok: Option<f64>,
-    pub output_cost_per_mtok: Option<f64>,
-    pub cache_input_cost_per_mtok: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelInfo {
-    pub id: String,
-    pub provider: String,
-    pub family: String,
-    pub display_name: String,
-    pub limits: ModelLimits,
-    pub training: Option<String>,
-    pub features: ModelFeatures,
-    pub costs: ModelCosts,
-    pub estimated_output_tps: Option<f64>,
-    pub aliases: Vec<String>,
-    #[serde(default)]
-    pub default: bool,
-}
+pub use fabro_model::{ModelCosts, ModelFeatures, ModelInfo, ModelLimits};
 
 // --- 4.7 Timeouts ---
 
@@ -922,6 +892,7 @@ mod tests {
             reasoning_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            speed: None,
             raw: None,
         };
         insta::assert_snapshot!(serde_json::to_string_pretty(&usage).unwrap(), @r#"
@@ -942,6 +913,7 @@ mod tests {
             reasoning_tokens: Some(20),
             cache_read_tokens: Some(80),
             cache_write_tokens: Some(10),
+            speed: None,
             raw: None,
         };
         insta::assert_snapshot!(serde_json::to_string_pretty(&usage).unwrap(), @r#"
@@ -974,6 +946,7 @@ mod tests {
             reasoning_tokens: Some(5),
             cache_read_tokens: Some(3),
             cache_write_tokens: Some(1),
+            speed: None,
             raw: None,
         };
         let b = Usage {
@@ -983,6 +956,7 @@ mod tests {
             reasoning_tokens: Some(10),
             cache_read_tokens: Some(7),
             cache_write_tokens: Some(2),
+            speed: None,
             raw: None,
         };
         let sum = a + b;
@@ -1003,6 +977,7 @@ mod tests {
             reasoning_tokens: Some(5),
             cache_read_tokens: None,
             cache_write_tokens: None,
+            speed: None,
             raw: None,
         };
         let b = Usage {
@@ -1012,6 +987,7 @@ mod tests {
             reasoning_tokens: None,
             cache_read_tokens: Some(7),
             cache_write_tokens: None,
+            speed: None,
             raw: None,
         };
         let sum = a + b;

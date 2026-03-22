@@ -12,3 +12,4 @@ botcoin*.py
 gen_payload*.py
 growth_*.py
 de_parser.py
+.ai/plans

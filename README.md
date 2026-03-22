@@ -15,7 +15,7 @@ Upstream Fabro is the execution substrate:
 - workflow graphs written as code
 - staged agent runs with deterministic gates
 - checkpointed run state and artifact output
-- synthesis tools for generating checked-in `fabro/` packages from blueprints
+- synthesis tools for generating checked-in `malinka/` packages from blueprints
 
 If you want the original project and its broader documentation, start here:
 
@@ -44,7 +44,7 @@ Raspberry is the repo-level supervisory plane layered on top of Fabro.
 
 It adds:
 
-- `fabro/programs/*.yaml` program manifests
+- `malinka/programs/*.yaml` program manifests
 - lane readiness and dependency evaluation
 - bounded `raspberry execute` and `raspberry autodev` loops
 - durable runtime truth in `.raspberry/*`
@@ -54,11 +54,11 @@ It adds:
 The core Raspberry commands are:
 
 ```bash
-raspberry plan --manifest fabro/programs/<program>.yaml
-raspberry status --manifest fabro/programs/<program>.yaml
-raspberry watch --manifest fabro/programs/<program>.yaml
-raspberry execute --manifest fabro/programs/<program>.yaml
-raspberry autodev --manifest fabro/programs/<program>.yaml
+raspberry plan --manifest malinka/programs/<program>.yaml
+raspberry status --manifest malinka/programs/<program>.yaml
+raspberry watch --manifest malinka/programs/<program>.yaml
+raspberry execute --manifest malinka/programs/<program>.yaml
+raspberry autodev --manifest malinka/programs/<program>.yaml
 ```
 
 ### Paperclip
@@ -75,6 +75,8 @@ It adds:
 - synchronized issue/work-product views of repo progress
 - native wake/refresh loops for the Raspberry orchestrator
 - a human-friendly surface for inspection, coordination, and handoff
+- one shared Paperclip server can host multiple repo companies when they point
+  at the same `--data-dir` and `--api-base`
 
 The main Paperclip commands are:
 
@@ -105,7 +107,7 @@ of execution truth and Fabro stays the workflow engine underneath it.
 ```mermaid
 flowchart TD
     A[Specs / Plans / Doctrine] --> B[Fabro Blueprints]
-    B --> C[Checked-in fabro/ Package]
+    B --> C[Checked-in malinka/ Package]
     C --> D[Fabro Runs]
     C --> E[Raspberry Supervisor]
     D --> F[outputs/**/*]
@@ -141,7 +143,7 @@ sequenceDiagram
 
 ### What is actually linked
 
-- `fabro/programs/*.yaml` gives Raspberry a repo-level manifest to supervise.
+- `malinka/programs/*.yaml` gives Raspberry a repo-level manifest to supervise.
 - `fabro synth import/create/evolve` keeps the checked-in control plane in sync
   with doctrine and run evidence.
 - Raspberry writes durable frontier truth to `.raspberry/*` and drives bounded
@@ -176,7 +178,7 @@ Expect active iteration rather than a frozen platform contract.
 specs / plans / doctrine
           |
           v
- blueprint + checked-in fabro/ package
+ blueprint + checked-in malinka/ package
           |
           v
       Raspberry
@@ -209,7 +211,7 @@ Then initialize or evolve a repo package:
 ```bash
 fabro install
 fabro synth create --target-repo /path/to/repo --program <program>
-raspberry plan --manifest /path/to/repo/fabro/programs/<program>.yaml
+raspberry plan --manifest /path/to/repo/malinka/programs/<program>.yaml
 ```
 
 For the fork-specific surfaces, start with:
@@ -218,6 +220,26 @@ For the fork-specific surfaces, start with:
 - [Raspberry Supervisory Plane](./docs/reference/raspberry.mdx)
 - [Paperclip Coordination](./docs/reference/paperclip.mdx)
 - [Raspberry Operator Runbook](./docs/guides/raspberry-operator-runbook.mdx)
+
+---
+
+## Contributing to Fabro
+
+Fabro uses an **issue-based contribution model**. Instead of accepting outside pull requests, we accept bug reports and feature requests as GitHub Issues.
+
+AI can rapidly write or edit large amounts of plausible-looking code. Accepting these patches from external sources opens up risks to security and quality. To mitigate these risks, we are tightly controlling the inputs into the software development process.
+
+Contributions follow these steps:
+
+1. **Open an issue** -- File an issue with a bug report or feature request. The more detail your issue contains, the easier it will be for us to address it quickly and successfully.
+
+2. **We build it** -- A Fabro maintainer will follow our software development process to create a patch, supervising AI coding agents and workflows.
+
+3. **You get credit** -- We will include you as a co-author on the commit which lands the change.
+
+As a result, you get the feature you need, without needing to keep a fork in sync.
+
+If you need a capability which is not in-scope for Fabro, you always have the option to maintain a fork of Fabro as it is distributed under the MIT license.
 
 ---
 

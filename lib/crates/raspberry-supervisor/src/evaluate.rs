@@ -55,7 +55,6 @@ impl fmt::Display for LaneExecutionStatus {
 pub struct EvaluatedProgram {
     pub program: String,
     pub max_parallel: usize,
-    pub runtime_max_parallel: Option<usize>,
     pub lanes: Vec<EvaluatedLane>,
 }
 
@@ -216,19 +215,11 @@ pub(crate) fn evaluate_program_internal(
     if refresh_program_state(&manifest_path, &manifest, &mut program_state)? {
         program_state.save(&state_path)?;
     }
-    let mut program = evaluate_with_state(&manifest_path, &manifest, Some(&program_state));
+    let program = evaluate_with_state(&manifest_path, &manifest, Some(&program_state));
     if sync_program_state_with_evaluated(&mut program_state, &program) {
         program_state.save(&state_path)?;
     }
     let _ = sync_autodev_report_with_program(&manifest_path, &manifest, &program);
-    if let Ok(Some(report)) =
-        crate::autodev::load_optional_autodev_report(&manifest_path, &manifest)
-    {
-        if let Some(runtime_parallel) = report.current.and_then(|current| current.max_parallel) {
-            program.runtime_max_parallel = Some(runtime_parallel);
-            program.max_parallel = runtime_parallel;
-        }
-    }
     if propagate_parents {
         refresh_parent_programs(&manifest_path, &manifest)?;
     }
@@ -337,7 +328,6 @@ pub fn evaluate_with_state(
     EvaluatedProgram {
         program: manifest.program.clone(),
         max_parallel: manifest.max_parallel,
-        runtime_max_parallel: None,
         lanes,
     }
 }
@@ -676,34 +666,19 @@ fn build_unit_statuses(
     manifest_path: &Path,
     manifest: &ProgramManifest,
 ) -> BTreeMap<String, UnitStatus> {
-    let target_repo = manifest.resolved_target_repo(manifest_path);
     manifest
         .units
         .iter()
-        .map(|(unit_id, unit)| {
-            (
-                unit_id.clone(),
-                evaluate_unit_status(manifest_path, &target_repo, unit),
-            )
-        })
+        .map(|(unit_id, unit)| (unit_id.clone(), evaluate_unit_status(manifest_path, unit)))
         .collect()
 }
 
-fn evaluate_unit_status(
-    manifest_path: &Path,
-    target_repo: &Path,
-    unit: &crate::manifest::UnitManifest,
-) -> UnitStatus {
+fn evaluate_unit_status(manifest_path: &Path, unit: &crate::manifest::UnitManifest) -> UnitStatus {
     let present_artifacts = unit
         .artifacts
         .iter()
-        .filter_map(|(artifact_id, path)| {
-            let absolute = artifact_path(manifest_path, unit, path);
-            if is_ignored_controller_artifact(target_repo, &absolute) || !absolute.is_file() {
-                return None;
-            }
-            Some(artifact_id.clone())
-        })
+        .filter(|(_, path)| artifact_path(manifest_path, unit, path).is_file())
+        .map(|(artifact_id, _)| artifact_id.clone())
         .collect::<Vec<_>>();
     let present_set = present_artifacts.iter().cloned().collect::<BTreeSet<_>>();
 
@@ -739,11 +714,6 @@ fn evaluate_unit_status(
         lifecycle,
         present_artifacts,
     }
-}
-
-fn is_ignored_controller_artifact(target_repo: &Path, artifact: &Path) -> bool {
-    let ignored_root = crate::autodev::autodev_cargo_target_dir(target_repo);
-    artifact.starts_with(&ignored_root)
 }
 
 fn lifecycle_reached(
@@ -799,7 +769,7 @@ fn runtime_record_map(state: Option<&ProgramRuntimeState>) -> BTreeMap<String, &
         .unwrap_or_default()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Mirrors the inputs needed to classify one evaluated lane.
 fn classify_lane(
     lane_key: &str,
     lane: &crate::manifest::LaneManifest,
@@ -905,7 +875,7 @@ fn dependencies_satisfied(dependencies: &[LaneDependency], satisfied: &BTreeSet<
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Keeps lane-detail generation aligned with lane classification inputs.
 fn lane_detail(
     lane_key: &str,
     lane: &crate::manifest::LaneManifest,
@@ -1872,11 +1842,7 @@ units:
             last_stdout_snippet: None,
             last_stderr_snippet: None,
         };
-        let unit_status = evaluate_unit_status(
-            &manifest_path,
-            &manifest.resolved_target_repo(&manifest_path),
-            unit,
-        );
+        let unit_status = evaluate_unit_status(&manifest_path, unit);
         let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
         let status = classify_lane(
             "complete:program",
@@ -1952,11 +1918,7 @@ units:
             last_stderr_snippet: None,
         };
 
-        let unit_status = evaluate_unit_status(
-            &manifest_path,
-            &manifest.resolved_target_repo(&manifest_path),
-            unit,
-        );
+        let unit_status = evaluate_unit_status(&manifest_path, unit);
         let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
         let satisfied = satisfied_milestones(
             &manifest_path,

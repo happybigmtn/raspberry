@@ -364,7 +364,7 @@ pub async fn run_with_args_and_client(
     let provider: Provider = args
         .provider
         .as_deref()
-        .unwrap_or("anthropic")
+        .unwrap_or("minimax")
         .parse()
         .map_err(|e: String| anyhow::anyhow!("{e}"))?;
 

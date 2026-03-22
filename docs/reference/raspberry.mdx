@@ -10,7 +10,7 @@ should evolve over repeated autonomous cycles.
 
 If your repo only has a prompt, spec, or plan right now, start with
 [From Specs To Blueprints](/guides/from-specs-to-blueprint) before trying to
-run Raspberry commands. Raspberry operates a checked-in `fabro/` package; it
+run Raspberry commands. Raspberry operates a checked-in `malinka/` package; it
 does not infer that package directly from raw planning docs on the fly.
 
 If you already understand `fabro run`, think of Raspberry as the repo-shaped
@@ -18,7 +18,7 @@ layer above it:
 
 - Fabro executes one workflow run
 - Raspberry supervises many lanes across one program
-- `fabro synth import/create/evolve` manages the checked-in `fabro/` package
+- `fabro synth import/create/evolve` manages the checked-in `malinka/` package
 - `raspberry plan/status/watch/execute/autodev/tui` operates that package
 - Paperclip can mirror that live frontier into a browser-based coordination dashboard
 
@@ -54,12 +54,12 @@ requirements/specs/doctrine
   blueprint (create/evolve)
         |
         v
-checked-in fabro/ package
+checked-in malinka/ package
         |
-        +--> fabro/programs/*.yaml
-        +--> fabro/run-configs/**/*.toml
-        +--> fabro/workflows/**/*.fabro
-        +--> fabro/prompts/**/*
+        +--> malinka/programs/*.yaml
+        +--> malinka/run-configs/**/*.toml
+        +--> malinka/workflows/**/*.fabro
+        +--> malinka/prompts/**/*
         |
         v
   raspberry supervisor
@@ -86,7 +86,7 @@ A Raspberry **program** is the supervised shape of a repository frontier. It is
 defined by a manifest such as:
 
 ```text
-fabro/programs/<program>.yaml
+malinka/programs/<program>.yaml
 ```
 
 A program owns:
@@ -146,10 +146,10 @@ only on transient agent output.
 
 ## Checked-In Package Layout
 
-Raspberry expects a repo-level `fabro/` package with stable paths:
+Raspberry expects a repo-level `malinka/` package with stable paths:
 
 ```text
-fabro/
+malinka/
   programs/
   run-configs/
   workflows/
@@ -168,10 +168,10 @@ Use these surfaces for different kinds of truth:
 
 | Surface | Purpose |
 |---|---|
-| `fabro/programs/*.yaml` | Program supervision contract |
-| `fabro/run-configs/**/*.toml` | Fabro run configuration |
-| `fabro/workflows/**/*.fabro` | Graph execution logic |
-| `fabro/prompts/**/*` | Durable lane prompts |
+| `malinka/programs/*.yaml` | Program supervision contract |
+| `malinka/run-configs/**/*.toml` | Fabro run configuration |
+| `malinka/workflows/**/*.fabro` | Graph execution logic |
+| `malinka/prompts/**/*` | Durable lane prompts |
 | `outputs/**/*` | Curated artifacts that prove milestones |
 | `.raspberry/*-state.json` | Program runtime truth |
 | `.raspberry/*-autodev.json` | Bounded autodev cycle reports |
@@ -179,10 +179,10 @@ Use these surfaces for different kinds of truth:
 
 ## Starting From Specs Instead Of A Package
 
-If a repo already has `fabro/programs/*.yaml`, you can start with:
+If a repo already has `malinka/programs/*.yaml`, you can start with:
 
 ```bash
-raspberry plan --manifest fabro/programs/<program>.yaml
+raspberry plan --manifest malinka/programs/<program>.yaml
 ```
 
 If it does not, the correct path is:
@@ -199,12 +199,12 @@ That create-mode bootstrap path is covered in
 Raspberry currently ships a read/write CLI around the supervisory plane:
 
 ```bash
-raspberry plan --manifest fabro/programs/<program>.yaml
-raspberry status --manifest fabro/programs/<program>.yaml
-raspberry watch --manifest fabro/programs/<program>.yaml
-raspberry execute --manifest fabro/programs/<program>.yaml
-raspberry autodev --manifest fabro/programs/<program>.yaml
-raspberry tui --manifest fabro/programs/<program>.yaml
+raspberry plan --manifest malinka/programs/<program>.yaml
+raspberry status --manifest malinka/programs/<program>.yaml
+raspberry watch --manifest malinka/programs/<program>.yaml
+raspberry execute --manifest malinka/programs/<program>.yaml
+raspberry autodev --manifest malinka/programs/<program>.yaml
+raspberry tui --manifest malinka/programs/<program>.yaml
 ```
 
 For the preferred human dashboard on a live supervised repo, pair Raspberry
@@ -215,6 +215,10 @@ fabro paperclip status --target-repo /path/to/repo --program <program>
 fabro paperclip wake --target-repo /path/to/repo --program <program> --agent raspberry-orchestrator
 fabro paperclip refresh --target-repo /path/to/repo --program <program>
 ```
+
+In this fork, `fabro synth evolve` is a bounded steering pass. It reconciles
+`genesis/`, current code, and recent runtime evidence, then steers the active
+`malinka/` package. It is not the older broad package rewrite loop.
 
 ### `raspberry plan`
 

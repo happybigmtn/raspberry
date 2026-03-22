@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::outcome::StageUsage;
-use fabro_agent::{AgentEvent, SandboxEvent};
+use fabro_agent::{AgentEvent, SandboxEvent, WorktreeEvent, WorktreeEventCallback};
 
 /// Events emitted during workflow run execution for observability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1074,6 +1075,22 @@ impl EventEmitter {
     pub fn touch(&self) {
         self.last_event_at.store(epoch_millis(), Ordering::Relaxed);
     }
+
+    /// Build a [`WorktreeEventCallback`] that forwards worktree lifecycle events as
+    /// [`WorkflowRunEvent`]s on this emitter.
+    pub fn worktree_callback(self: Arc<Self>) -> WorktreeEventCallback {
+        Arc::new(move |event| match event {
+            WorktreeEvent::BranchCreated { branch, sha } => {
+                self.emit(&WorkflowRunEvent::GitBranch { branch, sha });
+            }
+            WorktreeEvent::WorktreeAdded { path, branch } => {
+                self.emit(&WorkflowRunEvent::GitWorktreeAdd { path, branch });
+            }
+            WorktreeEvent::WorktreeRemoved { path } => {
+                self.emit(&WorkflowRunEvent::GitWorktreeRemove { path });
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1186,6 +1203,7 @@ mod tests {
                     cache_read_tokens: Some(800),
                     cache_write_tokens: Some(50),
                     reasoning_tokens: Some(100),
+                    speed: None,
                     raw: None,
                 },
                 tool_call_count: 3,
@@ -2277,6 +2295,7 @@ mod tests {
                 cache_read_tokens: Some(3000),
                 cache_write_tokens: Some(500),
                 reasoning_tokens: Some(800),
+                speed: None,
                 raw: None,
             }),
         };

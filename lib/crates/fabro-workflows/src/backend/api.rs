@@ -8,9 +8,9 @@ use fabro_agent::{
     AgentEvent, AnthropicProfile, GeminiProfile, OpenAiProfile, ProviderProfile, Sandbox, Session,
     SessionConfig, Turn,
 };
-use fabro_llm::catalog::FallbackTarget;
 use fabro_llm::client::Client;
-use fabro_llm::provider::Provider;
+use fabro_model::FallbackTarget;
+use fabro_model::Provider;
 
 use crate::context::Context;
 use crate::cost::compute_stage_cost;
@@ -153,12 +153,15 @@ impl AgentApiBackend {
 
     async fn create_session(
         &self,
-        model: &str,
-        provider: Provider,
         node: &Node,
         sandbox: &Arc<dyn Sandbox>,
         tool_hooks: Option<Arc<dyn fabro_agent::ToolHookCallback>>,
     ) -> Result<Session, FabroError> {
+        let model = node.model().unwrap_or(&self.model);
+        let provider = node
+            .provider()
+            .and_then(|p| p.parse::<Provider>().ok())
+            .unwrap_or(self.provider);
         Self::create_session_for(
             model,
             provider,
@@ -189,6 +192,7 @@ impl AgentApiBackend {
         let config = SessionConfig {
             max_tokens: node.max_tokens(),
             reasoning_effort: Some(node.reasoning_effort().to_string()),
+            speed: node.speed().map(String::from),
             tool_hooks,
             mcp_servers,
             ..SessionConfig::default()
@@ -275,9 +279,9 @@ impl CodergenBackend for AgentApiBackend {
             .map(String::from)
             .or_else(|| Some(self.provider.as_str().to_string()));
 
-        let max_tokens = node.max_tokens().or_else(|| {
-            fabro_llm::catalog::get_model_info(model).and_then(|m| m.limits.max_output)
-        });
+        let max_tokens = node
+            .max_tokens()
+            .or_else(|| fabro_model::get_model_info(model).and_then(|m| m.limits.max_output));
 
         let mut messages = Vec::new();
         if let Some(sys) = system_prompt {
@@ -290,6 +294,7 @@ impl CodergenBackend for AgentApiBackend {
             messages,
             provider,
             reasoning_effort: Some(node.reasoning_effort().to_string()),
+            speed: node.speed().map(String::from),
             tools: None,
             tool_choice: None,
             response_format: None,
@@ -350,8 +355,7 @@ impl CodergenBackend for AgentApiBackend {
                     );
 
                     let max_tokens = node.max_tokens().or_else(|| {
-                        fabro_llm::catalog::get_model_info(&target.model)
-                            .and_then(|m| m.limits.max_output)
+                        fabro_model::get_model_info(&target.model).and_then(|m| m.limits.max_output)
                     });
 
                     let fallback_request = fabro_llm::types::Request {
@@ -401,6 +405,7 @@ impl CodergenBackend for AgentApiBackend {
             cache_read_tokens: response.usage.cache_read_tokens,
             cache_write_tokens: response.usage.cache_write_tokens,
             reasoning_tokens: response.usage.reasoning_tokens,
+            speed: response.usage.speed.clone(),
             cost: None,
         };
         stage_usage.cost = compute_stage_cost(&stage_usage);
@@ -442,27 +447,15 @@ impl CodergenBackend for AgentApiBackend {
                 (s, true)
             } else {
                 (
-                    self.create_session(
-                        &effective_model,
-                        effective_provider,
-                        node,
-                        sandbox,
-                        tool_hooks.clone(),
-                    )
-                    .await?,
+                    self.create_session(node, sandbox, tool_hooks.clone())
+                        .await?,
                     false,
                 )
             }
         } else {
             (
-                self.create_session(
-                    &effective_model,
-                    effective_provider,
-                    node,
-                    sandbox,
-                    tool_hooks.clone(),
-                )
-                .await?,
+                self.create_session(node, sandbox, tool_hooks.clone())
+                    .await?,
                 false,
             )
         };
@@ -612,6 +605,7 @@ impl CodergenBackend for AgentApiBackend {
             cache_read_tokens: total_usage.cache_read_tokens,
             cache_write_tokens: total_usage.cache_write_tokens,
             reasoning_tokens: total_usage.reasoning_tokens,
+            speed: total_usage.speed.clone(),
             cost: None,
         };
         stage_usage.cost = compute_stage_cost(&stage_usage);

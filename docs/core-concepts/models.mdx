@@ -14,7 +14,8 @@ No single model is best at everything. Fabro lets you assign the right model to 
 | Model | Provider | Aliases | Context | Cost (in/out per Mtok) | Speed |
 |---|---|---|---|---|---|
 | `claude-opus-4-6` | anthropic | `opus`, `claude-opus` | 1M | $15.00 / $75.00 | 25 tok/s |
-| `claude-sonnet-4-5` | anthropic | `sonnet`, `claude-sonnet` | 200K | $3.00 / $15.00 | 50 tok/s |
+| `claude-sonnet-4-6` | anthropic | `sonnet`, `claude-sonnet` | 200K | $3.00 / $15.00 | 50 tok/s |
+| `claude-sonnet-4-5` | anthropic | | 200K | $3.00 / $15.00 | 50 tok/s |
 | `claude-haiku-4-5` | anthropic | `haiku`, `claude-haiku` | 200K | $0.80 / $4.00 | 100 tok/s |
 | `gpt-5.2` | openai | `gpt5` | 1M | $1.80 / $14.00 | 65 tok/s |
 | `gpt-5-mini` | openai | `gpt5-mini` | 1M | $0.20 / $2.00 | 70 tok/s |
@@ -38,8 +39,9 @@ Each provider requires its own API key set via environment variable (e.g. `ANTHR
 ## Default models
 
 When no model is specified for live writing paths, Fabro defaults to the
-Anthropic-compatible MiniMax path using `MiniMax-M2.7-highspeed`. Review-style
-nodes can still pin a different model explicitly, such as `gpt-5.4`.
+Pi/MiniMax path using `provider = "minimax"` and
+`model = "MiniMax-M2.7-highspeed"`. Review-style nodes can still pin a
+different model explicitly, such as `claude-opus-4-6`.
 
 If a different provider is selected explicitly, Fabro uses that provider's
 default model unless the run config or workflow stylesheet pins a model.

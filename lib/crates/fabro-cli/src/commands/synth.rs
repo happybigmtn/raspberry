@@ -1975,14 +1975,10 @@ fn run_opus_decomposition(
 
     // Count only mappings refreshed by this invocation.
     let wait_started = std::time::Instant::now();
-    let mut refreshed_paths = BTreeSet::new();
     let mut refreshed_seen_at = None;
-    let status = loop {
-        refreshed_paths = refreshed_opus_paths_for_run(
-            target_repo,
-            &composite_plans,
-            run_id.as_str(),
-        );
+    let (status, refreshed_paths) = loop {
+        let refreshed_paths =
+            refreshed_opus_paths_for_run(target_repo, &composite_plans, run_id.as_str());
         if refreshed_paths.len() == expected_paths.len() {
             refreshed_seen_at.get_or_insert_with(std::time::Instant::now);
             if refreshed_seen_at
@@ -1990,11 +1986,11 @@ fn run_opus_decomposition(
                 .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
             {
                 let _ = child.kill();
-                break child.wait()?;
+                break (child.wait()?, refreshed_paths);
             }
         }
         if let Some(status) = child.try_wait()? {
-            break status;
+            break (status, refreshed_paths);
         }
         if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
             let _ = child.kill();
@@ -2006,7 +2002,10 @@ fn run_opus_decomposition(
     let stderr_lines = stderr_handle.join().unwrap_or_default();
 
     if !status.success() && refreshed_paths.is_empty() {
-        anyhow::bail!("Opus decomposition failed: {}", stderr_lines.join("\n").trim());
+        anyhow::bail!(
+            "Opus decomposition failed: {}",
+            stderr_lines.join("\n").trim()
+        );
     }
 
     println!(
@@ -2021,7 +2020,7 @@ fn run_opus_decomposition(
 
 fn refreshed_opus_paths_for_run(
     target_repo: &std::path::Path,
-    composite_plans: &[PlanRecord],
+    composite_plans: &[&PlanRecord],
     run_id: &str,
 ) -> BTreeSet<PathBuf> {
     let mut refreshed_paths = BTreeSet::new();

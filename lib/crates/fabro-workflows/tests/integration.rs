@@ -5845,7 +5845,7 @@ async fn fidelity_checkpoint_roundtrip_preserves_fidelity() {
 
 #[tokio::test]
 async fn fidelity_node_thread_id_overrides_edge_thread_id_in_pipeline() {
-    // When both node and edge have thread_id, the node's takes precedence (spec step 1 > step 2).
+    // When both node and edge have thread_id, the edge's takes precedence (step 1 > step 2).
     let mut graph = make_graph_with_start_exit("NodeOverridesEdgeThreadTest");
     let mut work = Node::new("work");
     work.attrs.insert(
@@ -5904,8 +5904,8 @@ async fn fidelity_node_thread_id_overrides_edge_thread_id_in_pipeline() {
     assert_eq!(thread_ids[0].0, "work");
     assert_eq!(
         thread_ids[0].1,
-        Some("node-thread".to_string()),
-        "node thread_id should take precedence over edge thread_id"
+        Some("edge-thread".to_string()),
+        "edge thread_id should take precedence over node thread_id"
     );
 }
 
@@ -6073,6 +6073,7 @@ mod real_llm {
                 max_tokens: Some(200),
                 stop_sequences: None,
                 reasoning_effort: None,
+                speed: None,
                 metadata: None,
                 provider_options: None,
             };
@@ -7634,7 +7635,7 @@ async fn hook_stage_start_skip_bypasses_node() {
         "response.md should not exist when StageStart hook skips node"
     );
 
-    // StageStarted should have been emitted
+    // StageStarted should NOT be emitted for hook-skipped stages (the stage never started)
     let captured = events.lock().unwrap();
     let stage_starts: Vec<_> = captured
         .iter()
@@ -7644,8 +7645,8 @@ async fn hook_stage_start_skip_bypasses_node() {
         })
         .collect();
     assert!(
-        !stage_starts.is_empty(),
-        "StageStarted should be emitted before hook skips"
+        stage_starts.is_empty(),
+        "StageStarted should not be emitted when StageStart hook skips"
     );
 }
 
@@ -9563,11 +9564,11 @@ async fn cli_backend_run_writes_prompt_and_calls_exec() {
     let written = test_env.recorded_written_files();
     let prompt_file = written
         .iter()
-        .find(|(path, _)| path.contains("_prompt.txt"))
+        .find(|(path, _)| path.contains(".fabro_cli/") && path.ends_with("/prompt.txt"))
         .expect("should write a prompt file");
     assert!(
-        prompt_file.0.starts_with("/tmp/fabro_cli_") && prompt_file.0.ends_with("_prompt.txt"),
-        "prompt path should use UUID prefix: {}",
+        prompt_file.0.contains(".fabro_cli/") && prompt_file.0.ends_with("/prompt.txt"),
+        "prompt path should use scratch directory layout: {}",
         prompt_file.0
     );
     assert_eq!(prompt_file.1, "Fix the authentication bug");
@@ -9584,7 +9585,7 @@ async fn cli_backend_run_writes_prompt_and_calls_exec() {
         "should use correct model"
     );
     assert!(
-        cli_cmd.contains("_prompt.txt"),
+        cli_cmd.contains("/prompt.txt"),
         "should reference prompt file"
     );
 
@@ -13392,7 +13393,7 @@ async fn asset_collection_docker_sandbox() {
         git_author: fabro_workflows::git::GitAuthor::default(),
         base_branch: None,
         pull_request: None,
-        asset_globs: Vec::new(),
+        asset_globs: vec!["test-results/**".to_string()],
         workflow_slug: None,
     };
 

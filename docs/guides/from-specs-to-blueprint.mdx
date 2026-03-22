@@ -1,6 +1,6 @@
 ---
 title: "From Specs To Blueprints"
-description: "How to go from a prompt, spec, or plan to a blueprint, a checked-in fabro package, and a runnable Raspberry program"
+description: "How to go from a prompt, spec, or plan to a blueprint, a checked-in malinka package, and a runnable Raspberry program"
 ---
 
 This is the missing bridge between the planning docs and the control plane.
@@ -25,7 +25,7 @@ prompt / spec / plan
         ->
   blueprint
         ->
-checked-in fabro/ package
+checked-in malinka/ package
         ->
 raspberry plan/status/execute/autodev
 ```
@@ -41,7 +41,7 @@ first live plan
   ->
 blueprint
   ->
-checked-in fabro/ package
+checked-in malinka/ package
   ->
 Raspberry operation
 ```
@@ -53,21 +53,21 @@ There are only two real authoring modes.
 ### 1. Create mode
 
 Use create mode when the repo does **not** already have a useful checked-in
-`fabro/` package.
+`malinka/` package.
 
 Typical example:
 
-- a new repo with planning material but no checked-in `fabro/` package
-- a repo with specs and plans, but no `fabro/programs/*.yaml`
+- a new repo with planning material but no checked-in `malinka/` package
+- a repo with specs and plans, but no `malinka/programs/*.yaml`
 
 ### 2. Evolve mode
 
-Use evolve mode when the repo **does** already have a checked-in `fabro/`
+Use evolve mode when the repo **does** already have a checked-in `malinka/`
 package and you want to revise it from doctrine and run evidence.
 
 Typical example:
 
-- a repo with existing `fabro/`, `outputs/`, and `.raspberry/`
+- a repo with existing `malinka/`, `outputs/`, and `.raspberry/`
 - a lane contract that turned out to be too weak or too optimistic
 
 ## Current Behavior
@@ -75,21 +75,21 @@ Typical example:
 As of March 20, 2026, the CLI behavior is:
 
 - `fabro synth create`:
-  - if `--blueprint` is supplied, compile it
+  - if `--blueprint` is supplied, render that existing blueprint directly into `malinka/`
   - otherwise inspect the repo, choose the active plan, author a first
-    blueprint, save it under `fabro/blueprints/`, then compile it
+    blueprint, save it under `malinka/blueprints/`, then compile it
 - `fabro synth evolve`:
-  - if `--blueprint` is supplied, reconcile it
+  - if `--blueprint` is supplied, steer from that blueprint and current repo truth
   - otherwise import the current package, attach repo doctrine and evidence
-    inputs when present, save the generated blueprint under `fabro/blueprints/`,
-    then reconcile it
+    inputs when present, save the generated blueprint under `malinka/blueprints/`,
+    then write a bounded steering update for `malinka/`
 
 That means blueprint authoring is now folded into `synth create` and
 `synth evolve` themselves rather than living only in skill guidance.
 
 The biggest remaining limitation is not the existence of an authoring step
-anymore. The remaining limitation is how smart and how broad the deterministic
-front half should become over time:
+anymore. The remaining limitation is how smart the decomposition and steering
+layers should become over time without broad, destabilizing rewrites:
 
 - richer lane-intent decomposition
 - stronger family selection for multi-lane plans
@@ -130,7 +130,7 @@ blueprint -> synth create -> raspberry operate
 ## What A Blueprint Is
 
 A blueprint is the reviewable intermediate representation between high-level
-requirements and the final checked-in `fabro/` package.
+requirements and the final checked-in `malinka/` package.
 
 It is not the final workflow tree.
 
@@ -149,10 +149,10 @@ It describes:
 Think of it as the repo-level control-plane design document that a deterministic
 compiler can turn into:
 
-- `fabro/programs/*.yaml`
-- `fabro/run-configs/**/*.toml`
-- `fabro/workflows/**/*.fabro`
-- `fabro/prompts/**/*`
+- `malinka/programs/*.yaml`
+- `malinka/run-configs/**/*.toml`
+- `malinka/workflows/**/*.fabro`
+- `malinka/prompts/**/*`
 
 ## The Deterministic Workflow Catalog
 
@@ -229,7 +229,7 @@ The built-in `fabro-create-workflow` skill should:
 3. ask only targeted follow-up questions
 4. write the blueprint
 
-The skill should **not** free-write the final `fabro/` tree first.
+The skill should **not** free-write the final `malinka/` tree first.
 It also should not free-invent workflow topology if the plan can already be
 mapped to the deterministic catalog above.
 
