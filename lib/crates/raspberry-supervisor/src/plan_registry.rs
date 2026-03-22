@@ -680,7 +680,25 @@ fn contract_child_records(contract: &PlanMappingContract) -> Vec<PlanChildRecord
 fn normalized_dependency_ids(values: &[String]) -> Vec<String> {
     let mut dependency_ids = values
         .iter()
-        .map(|value| sanitize_identifier(value))
+        .map(|value| {
+            // Normalize through the same path as plan_id_from_path so that
+            // references like "004-casino-core-trait" resolve to "casino-core"
+            let sanitized = sanitize_identifier(value);
+            let mut parts = sanitized.splitn(2, '-');
+            let first = parts.next().unwrap_or_default();
+            let remainder =
+                if first.len() == 3 && first.chars().all(|ch| ch.is_ascii_digit()) {
+                    parts.next().unwrap_or_default()
+                } else {
+                    sanitized.as_str()
+                };
+            remainder
+                .trim_end_matches("-game")
+                .trim_end_matches("-plan")
+                .trim_end_matches("-crate")
+                .trim_end_matches("-trait")
+                .to_string()
+        })
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     dependency_ids.sort();
