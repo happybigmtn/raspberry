@@ -84,7 +84,7 @@ fn synth_create_authors_blueprint_from_repo_docs() {
     fs::create_dir_all(target.join("plans")).expect("plans dir");
     fs::create_dir_all(target.join("specs")).expect("specs dir");
     fs::write(target.join("README.md"), "# Zend\n").expect("readme");
-    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("GOAL.md"), "# Root Goal\n").expect("goal");
     fs::write(
         target.join("plans/2026-03-19-build-home-command-center.md"),
         "# Build the Zend Home Command Center\n\n- [ ] Create the first honest slice\n",
@@ -130,7 +130,7 @@ fn synth_create_writes_plan_mapping_snapshots() {
     let target = temp.path().join("rxmragent");
     fs::create_dir_all(target.join("plans")).expect("plans dir");
     fs::write(target.join("README.md"), "# rXMRagent\n").expect("readme");
-    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("GOAL.md"), "# Root Goal\n").expect("goal");
     fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
     fs::write(
         target.join("plans/005-craps-game.md"),
@@ -179,7 +179,7 @@ fn synth_create_refreshes_heuristic_mappings_when_plan_changes() {
     let target = temp.path().join("rxmragent");
     fs::create_dir_all(target.join("plans")).expect("plans dir");
     fs::write(target.join("README.md"), "# rXMRagent\n").expect("readme");
-    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("GOAL.md"), "# Root Goal\n").expect("goal");
     fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
     fs::write(
         target.join("plans/005-craps-game.md"),
@@ -232,7 +232,7 @@ fn synth_create_wipes_existing_fabro_directory_before_regenerating() {
     fs::create_dir_all(target.join("plans")).expect("plans dir");
     fs::create_dir_all(target.join("malinka")).expect("malinka dir");
     fs::write(target.join("README.md"), "# Demo\n").expect("readme");
-    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("GOAL.md"), "# Root Goal\n").expect("goal");
     fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
     fs::write(target.join("malinka/keep.txt"), "stale\n").expect("stale file");
 

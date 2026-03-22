@@ -16,9 +16,7 @@ use crate::error::PlanningError;
 
 const ROOT_DOCTRINE_FILES: &[&str] = &[
     "README.md",
-    "SPEC.md",
-    "SPECS.md",
-    "PLANS.md",
+    "GOAL.md",
     "DESIGN.md",
     "AGENTS.md",
     "CLAUDE.md",
@@ -254,8 +252,6 @@ fn load_planning_corpus(
         .collect::<Vec<_>>();
     let mut plan_docs = load_markdown_dir(target_repo, &planning_root, "plans")?;
     let spec_docs = load_markdown_dir(target_repo, &planning_root, "specs")?;
-    let root_spec = load_optional_document(target_repo, planning_root.join("SPEC.md").as_path())?;
-    let root_specs = load_optional_document(target_repo, planning_root.join("SPECS.md").as_path())?;
 
     // Merge genesis/plans/ into plan_docs when reading from repo root.
     // Genesis plans take precedence over repo-root plans with the same filename
@@ -282,24 +278,13 @@ fn load_planning_corpus(
     }
 
     let active_plan = select_primary_plan(&plan_docs, &planning_root);
-    let active_spec = spec_docs
-        .last()
-        .cloned()
-        .or(root_spec.clone())
-        .or(root_specs.clone());
+    let active_spec = spec_docs.last().cloned();
 
     let mut evidence_paths = spec_docs
         .iter()
         .map(|doc| doc.path.clone())
         .collect::<Vec<_>>();
     evidence_paths.extend(plan_docs.iter().map(|doc| doc.path.clone()));
-    if evidence_paths.is_empty() {
-        if let Some(spec) = &root_spec {
-            evidence_paths.push(spec.path.clone());
-        } else if let Some(specs) = &root_specs {
-            evidence_paths.push(specs.path.clone());
-        }
-    }
 
     if doctrine_files.is_empty() && evidence_paths.is_empty() {
         return Err(PlanningError::MissingPlanningCorpus {
@@ -434,17 +419,6 @@ fn load_markdown_dir(
         documents.push(load_document(target_repo, relative)?);
     }
     Ok(documents)
-}
-
-fn load_optional_document(
-    target_repo: &Path,
-    relative: &Path,
-) -> Result<Option<PlanningDocument>, PlanningError> {
-    let absolute = target_repo.join(relative);
-    if !absolute.is_file() {
-        return Ok(None);
-    }
-    load_document(target_repo, relative).map(Some)
 }
 
 fn load_document(target_repo: &Path, relative: &Path) -> Result<PlanningDocument, PlanningError> {
@@ -3118,7 +3092,7 @@ mod tests {
     fn create_authoring_uses_repo_doctrine_and_latest_plan() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::write(
@@ -3153,13 +3127,31 @@ mod tests {
             .inputs
             .doctrine_files
             .contains(&PathBuf::from("README.md")));
+        assert!(authored
+            .blueprint
+            .inputs
+            .doctrine_files
+            .contains(&PathBuf::from("GOAL.md")));
+    }
+
+    #[test]
+    fn create_authoring_ignores_root_spec_files_as_doctrine_inputs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("SPECS.md"), "# Root Specs\n").expect("specs");
+        fs::write(temp.path().join("PLANS.md"), "# Root Plans\n").expect("plans");
+
+        let error = author_blueprint_for_create(temp.path(), Some("zend"))
+            .expect_err("root spec files should not count as doctrine");
+
+        assert!(matches!(error, PlanningError::MissingPlanningCorpus { .. }));
     }
 
     #[test]
     fn create_authoring_decomposes_multi_front_plan_into_multiple_lanes() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::write(
@@ -3372,10 +3364,10 @@ units:
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
         fs::write(
-            temp.path().join("SPEC.md"),
-            "# Root Spec\n\nUse a spec before a plan.\n",
+            temp.path().join("GOAL.md"),
+            "# Root Goal\n\nUse a goal before a plan.\n",
         )
-        .expect("root spec");
+        .expect("root goal");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::write(
@@ -3477,10 +3469,10 @@ units:
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
         fs::write(
-            temp.path().join("SPEC.md"),
-            "# Root Spec\n\nThis repo builds a zero-human casino.\n",
+            temp.path().join("GOAL.md"),
+            "# Root Goal\n\nThis repo builds a zero-human casino.\n",
         )
-        .expect("root spec");
+        .expect("root goal");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::write(
@@ -3569,7 +3561,7 @@ units:
     fn create_authoring_promotes_workspace_setup_into_foundation_unit() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::write(
@@ -3631,7 +3623,7 @@ units:
     fn create_authoring_uses_shared_plan_registry_for_meta_and_composite_units() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::write(
             temp.path().join("plans/001-master-plan.md"),
@@ -3678,7 +3670,7 @@ units:
     fn create_authoring_skips_parent_bootstrap_for_implementation_ready_composites() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
         fs::write(
@@ -3778,7 +3770,7 @@ units:
     fn create_authoring_preserves_child_lane_kinds_from_mapping_contracts() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::write(
             temp.path().join("Cargo.toml"),
             "[workspace]\nmembers = []\n",
@@ -3881,10 +3873,10 @@ units:
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
         fs::write(
-            temp.path().join("SPEC.md"),
-            "# Root Spec\n\nThis repo builds a zero-human casino.\n",
+            temp.path().join("GOAL.md"),
+            "# Root Goal\n\nThis repo builds a zero-human casino.\n",
         )
-        .expect("root spec");
+        .expect("root goal");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::write(
             temp.path().join("specs/002-xmr-ecosystem-integration.md"),
@@ -3938,7 +3930,7 @@ units:
     fn create_authoring_master_plan_dependencies_use_explicit_depends_on_clauses() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
-        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
         fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
         fs::write(
