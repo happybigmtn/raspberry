@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMBEKNX0H03ZFGXN6JWWMFA7",
+  "workflow_name": "Branch",
+  "goal": "Implement and validate a feature",
+  "start_time": "2026-03-22T18:58:37.361264830Z",
+  "node_count": 6,
+  "edge_count": 6,
+  "run_branch": "fabro/run/01KMBEKNX0H03ZFGXN6JWWMFA7",
+  "base_sha": "c8dfda4253cb5ab757ccdd04ff949dcc7ec38c66",
+  "base_branch": "codex/minimax-pi-autodev-20260322",
+  "workflow_slug": "test",
+  "host_repo_path": "/tmp/fabro-push-m3GUST/lib/crates/fabro-cli"
+}
