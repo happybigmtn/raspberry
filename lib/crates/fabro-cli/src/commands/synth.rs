@@ -48,6 +48,9 @@ pub struct SynthCreateArgs {
     /// Skip Opus 4.6 decomposition pass (use deterministic heuristics only)
     #[arg(long)]
     pub no_decompose: bool,
+    /// Skip the eng-review pass after decomposition
+    #[arg(long)]
+    pub no_review: bool,
     #[arg(long, hide = true)]
     pub planning_root: Option<PathBuf>,
 }
@@ -64,6 +67,9 @@ pub struct SynthEvolveArgs {
     pub program: Option<String>,
     #[arg(long)]
     pub output_blueprint: Option<PathBuf>,
+    /// Skip the eng-review pass after reconciliation
+    #[arg(long)]
+    pub no_review: bool,
 }
 
 #[derive(Debug, Args)]
@@ -191,6 +197,202 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
         if !stdout.trim().is_empty() {
             println!("{}", stdout);
         }
+    }
+
+    Ok(())
+}
+
+fn run_decomposition_review(target_repo: &std::path::Path) -> anyhow::Result<()> {
+    let registry = load_plan_registry(target_repo)?;
+    let mappings_dir = target_repo
+        .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("plan-mappings");
+
+    if !mappings_dir.is_dir() {
+        return Ok(());
+    }
+
+    let composite_plans: Vec<_> = registry
+        .plans
+        .iter()
+        .filter(|plan| {
+            plan.composite
+                && !plan.children.is_empty()
+                && plan.category != raspberry_supervisor::PlanCategory::Meta
+        })
+        .collect();
+
+    if composite_plans.is_empty() {
+        return Ok(());
+    }
+
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        eprintln!("  [review] claude CLI not found; skipping decomposition review");
+        return Ok(());
+    }
+
+    let mut contracts = Vec::new();
+    for plan in &composite_plans {
+        let mapping_path = mapping_snapshot_path(plan);
+        let absolute = target_repo.join(&mapping_path);
+        if absolute.exists() {
+            let content = std::fs::read_to_string(&absolute).unwrap_or_default();
+            contracts.push(format!(
+                "## Plan: {} ({})\n\nMapping contract at `{}`:\n\n```yaml\n{}\n```\n",
+                plan.title, plan.plan_id, mapping_path.display(), content,
+            ));
+        }
+    }
+
+    if contracts.is_empty() {
+        return Ok(());
+    }
+
+    let review_prompt = format!(
+        r#"You are an adversarial eng-review agent. Your job is to review how plans were decomposed into workflow mapping contracts, and fix any problems you find.
+
+Working directory: `{target_repo}`
+
+## Mapping contracts to review
+
+{contracts}
+
+## Review criteria
+
+For EACH mapping contract, read the actual plan file and check:
+
+### Structural integrity
+1. **Milestone-to-child parity**: Does each child map to exactly one milestone in the plan's Progress section? Flag over-splits (one milestone became two children) and missing milestones (milestone has no child).
+2. **Child ID quality**: IDs should be concise (2-4 words, kebab-case). Flag verbose IDs.
+3. **Dependency ordering**: If two plans' children claim overlapping owned_surfaces, they need explicit dependency ordering or a shared foundation plan.
+
+### Archetype and profile accuracy
+4. **Archetype**: Almost everything is `implement`. Only `integration` for e2e/system tests. Only `orchestration` for meta-work spawning child programs. Only `report` for non-code artifacts. Flag misassignments.
+5. **Lane kind**: `service` for daemons/APIs/agents/handlers. `interface` for TUI/web/mobile/CLI. `platform` for libraries/core modules. `artifact` for documentation. Flag service/UI work flattened to platform.
+6. **Review profile**: `standard` for normal code. `foundation` for shared types/traits/SDK that downstream work depends on. `hardened` for security, crypto, financial logic, correctness-critical invariants. `ux` for user-facing surfaces. Flag misassignments — especially `hardened` being over-assigned to non-critical code.
+
+### Proof and surface quality
+7. **Proof commands**: Must appear verbatim in the plan text. Flag invented commands. Prefer specific test targets (`cargo test -p crate test_name`) over broad ones (`cargo test`).
+8. **Owned surfaces**: Must be precise repo-relative paths from the plan. Flag vague paths, invented paths, or paths that don't exist in the repo.
+9. **Cross-plan surface conflicts**: Do children from different plans claim the same owned surfaces? This is only valid with explicit dependency ordering.
+
+### Completeness
+10. **AC contract fields**: Every child should have where_surfaces, how_description, verification_plan, rollback_condition. Flag missing fields.
+11. **Failure mode**: Does the plan's Decision Log include at least one failure scenario? If not, flag it.
+
+### Engineering heuristics
+12. **Complexity smell**: If a single plan produced more than 8 children, challenge whether it should be split into multiple plans.
+13. **Boring by default**: Flag children that introduce novel infrastructure without justification. Default to proven technology.
+14. **Blast radius**: Flag children whose owned_surfaces span multiple unrelated crates or modules — they may be too broad.
+
+## Action
+
+For each finding:
+- If you can fix it (wrong archetype, missing field, bad ID), rewrite the mapping contract YAML directly using the Write tool.
+- If it requires human judgment (plan should be split, milestone is vague), note it in the review report.
+
+Write a structured review report to `{pkg_dir}/plan-mappings/review-report.md` with:
+- Summary: N contracts reviewed, N findings, N auto-fixed
+- Per-plan findings (cite specific child IDs)
+- Items needing human attention
+
+Be adversarial. The goal is to catch decomposition mistakes before they become workflow bugs."#,
+        target_repo = target_repo.display(),
+        contracts = contracts.join("\n---\n\n"),
+        pkg_dir = fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR,
+    );
+
+    let prompt_file = tempfile::NamedTempFile::new()?;
+    std::fs::write(prompt_file.path(), &review_prompt)?;
+
+    println!(
+        "Eng-reviewing {} decomposition contracts ...",
+        composite_plans.len()
+    );
+
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 50",
+            prompt_file.path().display(),
+            DECOMPOSE_MODEL,
+        ))
+        .current_dir(target_repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Stream stderr
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                eprintln!("  [review] {line}");
+            }
+        })
+    };
+
+    // Stream stdout JSON for live output
+    let stdout_handle = {
+        let stdout = child.stdout.take().expect("stdout piped");
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "assistant" {
+                    if let Some(content) = event
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        for block in content {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                    eprint!("{text}");
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                    let hint = block
+                                        .get("input")
+                                        .and_then(|i| {
+                                            i.get("file_path").or_else(|| i.get("command"))
+                                        })
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let short = if hint.len() > 60 { &hint[..60] } else { hint };
+                                    eprintln!("\n  [review-tool] {name}: {short}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let status = child.wait()?;
+    let _ = stderr_handle.join();
+    let _ = stdout_handle.join();
+    eprintln!();
+
+    if !status.success() {
+        eprintln!("  [review] review process exited with non-zero status; continuing with current mappings");
+    }
+
+    let report_path = mappings_dir.join("review-report.md");
+    if report_path.exists() {
+        println!("Decomposition review report: {}", report_path.display());
     }
 
     Ok(())
@@ -385,6 +587,7 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
             program: args.program.clone(),
             output_blueprint: None,
             no_decompose: false,
+            no_review: false,
             planning_root: Some(PathBuf::from("genesis")),
         };
         create_command(&create_args)?;
@@ -612,6 +815,24 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
             Some(&decomposed.refreshed_paths),
             Some(&decomposed.expected_paths),
         )?;
+
+        // Eng-review the decomposition before rendering into workflows
+        if !args.no_review {
+            run_decomposition_review(&args.target_repo)?;
+            // Re-author again in case review rewrote mapping contracts
+            let reviewed = author_blueprint_for_create_with_planning_root(
+                &args.target_repo,
+                Some(&blueprint.program.id),
+                Some(&planning_root),
+            )?;
+            save_blueprint(&blueprint_path, &reviewed.blueprint)?;
+        }
+
+        let re_authored = author_blueprint_for_create_with_planning_root(
+            &args.target_repo,
+            Some(&blueprint.program.id),
+            Some(&planning_root),
+        )?;
         let report = render_blueprint(RenderRequest {
             blueprint: &re_authored.blueprint,
             target_repo: &args.target_repo,
@@ -672,6 +893,10 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
         current_repo: &args.target_repo,
         output_repo,
     })?;
+
+    if !args.no_review {
+        run_decomposition_review(output_repo)?;
+    }
 
     println!("Program: {}", blueprint.program.id);
     println!("Mode: evolve");
