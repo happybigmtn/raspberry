@@ -252,10 +252,34 @@ fn load_planning_corpus(
         .map(PathBuf::from)
         .filter(|path| target_repo.join(path).is_file())
         .collect::<Vec<_>>();
-    let plan_docs = load_markdown_dir(target_repo, &planning_root, "plans")?;
+    let mut plan_docs = load_markdown_dir(target_repo, &planning_root, "plans")?;
     let spec_docs = load_markdown_dir(target_repo, &planning_root, "specs")?;
     let root_spec = load_optional_document(target_repo, planning_root.join("SPEC.md").as_path())?;
     let root_specs = load_optional_document(target_repo, planning_root.join("SPECS.md").as_path())?;
+
+    // Merge genesis/plans/ into plan_docs when reading from repo root.
+    // Genesis plans take precedence over repo-root plans with the same filename
+    // (genesis is the YC-reviewed version). Repo-root plans without a genesis
+    // counterpart are carried through unchanged.
+    if planning_root.as_os_str().is_empty() {
+        let genesis_root = PathBuf::from("genesis");
+        let genesis_plans = load_markdown_dir(target_repo, &genesis_root, "plans")?;
+        if !genesis_plans.is_empty() {
+            let existing_filenames: std::collections::BTreeSet<_> = genesis_plans
+                .iter()
+                .filter_map(|doc| doc.path.file_name().map(|f| f.to_os_string()))
+                .collect();
+            // Keep repo-root plans that don't have a genesis counterpart
+            plan_docs.retain(|doc| {
+                doc.path
+                    .file_name()
+                    .map(|f| !existing_filenames.contains(f))
+                    .unwrap_or(true)
+            });
+            plan_docs.extend(genesis_plans);
+            plan_docs.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+    }
 
     let active_plan = select_primary_plan(&plan_docs, &planning_root);
     let active_spec = spec_docs

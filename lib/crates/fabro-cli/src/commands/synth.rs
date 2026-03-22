@@ -257,6 +257,9 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
     // Verify outputs were written
     let spec_path = genesis_dir.join("SPEC.md");
     let plans_md = genesis_dir.join("PLANS.md");
+    let assessment_path = genesis_dir.join("ASSESSMENT.md");
+    let report_path = genesis_dir.join("GENESIS-REPORT.md");
+    let design_path = genesis_dir.join("DESIGN.md");
     let plans_dir = genesis_dir.join("plans");
 
     let plan_count = std::fs::read_dir(&plans_dir)
@@ -268,24 +271,23 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         })
         .unwrap_or(0);
 
+    let check = |path: &std::path::Path| {
+        if path.exists() {
+            "written"
+        } else {
+            "missing"
+        }
+    };
+
     println!("Genesis complete:");
-    println!(
-        "  SPEC.md: {}",
-        if spec_path.exists() {
-            "written"
-        } else {
-            "missing"
-        }
-    );
-    println!(
-        "  PLANS.md: {}",
-        if plans_md.exists() {
-            "written"
-        } else {
-            "missing"
-        }
-    );
+    println!("  ASSESSMENT.md: {}", check(&assessment_path));
+    println!("  SPEC.md: {}", check(&spec_path));
+    println!("  PLANS.md: {}", check(&plans_md));
     println!("  Plans: {plan_count} files in genesis/plans/");
+    if design_path.exists() {
+        println!("  DESIGN.md: written");
+    }
+    println!("  GENESIS-REPORT.md: {}", check(&report_path));
 
     if plan_count == 0 {
         anyhow::bail!("Genesis produced no plan files in genesis/plans/");
@@ -311,53 +313,152 @@ fn build_genesis_prompt(target_repo: &std::path::Path) -> String {
     format!(
         r#"You are the interim CEO/CTO of this codebase at `{target_repo}`. The board has asked you to prepare a detailed 180-day turnaround plan.
 
-Your mission: explore this codebase thoroughly, understand what exists, what's missing, and what's broken, then produce a comprehensive plan corpus.
+Run this as a full sprint: Think → Plan → Build → Review → Verify. Each phase feeds the next. Write all output files using the Write tool, never to stdout.
 
-## Process
+# Phase 1: THINK (Office Hours)
 
-1. **Explore the codebase**: Read Cargo.toml/package.json/pyproject.toml, src/ structure, existing docs (README, any specs), git log (recent 50 commits), test coverage, CI config, dependency graph. Use the plan-ceo-skill for strategic scope review, plan-eng-skill for architecture lockdown, and plan-design-skill for UX/design review. Spawn an agent team to review the codebase in parallel.
+Explore the codebase thoroughly. Spawn an agent team to read in parallel:
+- Build files: Cargo.toml / package.json / pyproject.toml / go.mod
+- Source structure: src/, lib/, app/ — module boundaries, public API surface
+- Existing docs: README, SPEC.md, SPECS.md
+- **Existing plans**: Read EVERY file in `plans/` and `specs/` directories. These are the team's current plans — your job is to assess, challenge, and enhance them, not start from scratch. Note which plans are strong, which are weak, which are missing, and which contradict each other.
+- Git history: recent 50 commits — who's active, what's changing, what's abandoned
+- Test coverage: test directories, CI config, what's tested vs. untested
+- Dependency graph: what does this project depend on, what depends on it
 
-2. **Assess the state**: What works? What's broken? What's half-built? What's the tech debt? What are the security risks? What's the test coverage? Who are the users?
+Then answer these six forcing questions (write answers to `genesis/ASSESSMENT.md`):
 
-3. **Write the plan corpus** to the `genesis/` directory:
+1. **Demand reality**: Who uses this? What specific behavior proves real demand — payments, daily usage, panic if it vanished? Or is it a side project, prototype, abandoned experiment?
+2. **Status quo**: What's the current workflow without this project? What pain does it solve? What duct-tape alternatives exist?
+3. **Desperate specificity**: Who is the ONE person this is for? What's their title, what keeps them up at night, what gets them promoted? Not "developers" — a real role with real constraints.
+4. **Narrowest wedge**: What's the smallest thing this codebase does that someone would pay for or depend on THIS WEEK? Strip away the vision — what's the kernel of value?
+5. **Observation & surprise**: What surprised you during exploration? What behavior exists that the original author probably didn't intend? What's half-built in a revealing way?
+6. **Future-fit**: How does this project compound as the world changes? Or does it decay? What bet is it making?
 
-   a. `genesis/SPEC.md` — Project specification:
-      - What this project is and does
-      - Who it's for (target users/operators)
-      - Architectural overview (major components, data flow, deployment model)
-      - Key design decisions already made
-      - Technology stack and dependencies
+## ASSESSMENT.md structure
 
-   b. `genesis/PLANS.md` — Planning conventions:
-      - ExecPlan format (Progress, Surprises & Discoveries, Decision Log, Outcomes & Retrospective)
-      - Milestone structure
-      - Proof command conventions for this project
-      - How plans reference each other
+Write `genesis/ASSESSMENT.md` with:
+- Answers to the six questions above
+- What works, what's broken, what's half-built
+- Tech debt inventory (with file paths)
+- Security risks found
+- Test coverage gaps (with specific untested modules)
+- The ONE sentence that captures what this project actually is
+- **Existing plan assessment**: For each plan in `plans/`, rate it (strong/weak/missing context/contradicts X) and state what genesis will do with it (carry forward as-is, enhance, split, merge, or replace with rationale)
 
-   c. `genesis/plans/001-master-plan.md` — 180-day turnaround roadmap:
-      - Phase 0 (days 1-30): Stabilization — fix critical bugs, add missing tests, document what exists
-      - Phase 1 (days 31-90): Foundation — establish shared patterns, build core abstractions
-      - Phase 2 (days 91-150): Growth — implement major features, expand test coverage
-      - Phase 3 (days 151-180): Polish — optimize performance, improve UX, prepare for release
-      - Each phase lists the numbered plans it depends on
+# Phase 2: PLAN (Strategic + Engineering + Design)
 
-   d. `genesis/plans/002-*.md` through `genesis/plans/N-*.md` — one ExecPlan per major work stream:
-      - Each plan has: Purpose, Progress (milestones with `- [ ]`), Decision Log, proof commands
-      - Plans should cover: existing tech debt, missing tests, broken features, new features, infrastructure, documentation
-      - Each plan should name specific files, crates, modules, functions — be concrete, not generic
-      - Proof commands should be real commands that work in this repo (cargo test, npm test, pytest, etc.)
+## 2a. Strategic Plan (CEO lens)
+
+For the master plan and each numbered plan, apply:
+
+- **Scope discipline**: What is the minimum change set? What can be deferred?
+- **Inversion reflex**: For each goal, also state what makes it fail. Put this in the Decision Log.
+- **Focus as subtraction**: 3-8 milestones per plan. A plan with 15 milestones is trying to do too much — split it.
+- **Reversibility**: Prefer plans that can be rolled back. Flag one-way doors explicitly.
+- **Existing code reuse**: Before proposing new abstractions, verify what already exists. Don't rebuild what you can extend.
+- **Narrowest wedge first**: Phase 0 plans should deliver value in 30 days, not prepare for value in 90.
+
+## 2b. Engineering Plan (Eng Manager lens)
+
+For every plan with technical content:
+
+- **ASCII architecture diagram**: Every plan gets a component/data flow diagram of affected modules. No exceptions.
+- **Complexity smell**: >8 files or >2 new abstractions = challenge whether simpler approach exists.
+- **Failure mode analysis**: For each new codepath, name one realistic production failure (timeout, nil, race condition, stale data) and how it's handled.
+- **Proof command quality**: Every milestone needs a specific proof command. `cargo test -p {{crate}} {{test_name}}` beats `cargo test`. Content assertions beat `test -f`.
+- **Boring by default**: Novel infrastructure needs explicit justification. Default to proven technology.
+- **Separate structural from behavioral**: Plans that refactor AND add features simultaneously are red flags. Split them.
+- **DRY across plans**: If two plans touch the same module, they need a shared dependency plan or explicit ordering.
+- **Test plan**: For each milestone, state which tests prove it's done — module, assertions, edge cases.
+
+## 2c. Design Plan (Designer lens)
+
+For any plan touching user-facing surfaces:
+
+- **Information architecture**: What does the user see first, second, third? Include ASCII mockups.
+- **Interaction states**: Loading, empty, error, success, partial — all specified. Empty states are features.
+- **Edge cases**: 47-char names, zero results, network failure mid-action, first-time vs. power user.
+- **Accessibility as scope**: Keyboard nav, screen reader, contrast, 44px+ touch targets — deliverables, not polish.
+- **Responsive intent**: Specific layout changes per viewport, not just "stacks on mobile."
+- **No AI slop**: "Clean modern dashboard" is a vibe, not a plan. Name specific layout choices and information hierarchy.
+
+If the project has user-facing surfaces and no existing design system, write `genesis/DESIGN.md` with:
+- Aesthetic direction and rationale
+- Typography: display, body, UI, code fonts with modular scale
+- Color palette: primary, secondary, neutrals, semantic (error/warning/success/info)
+- Spacing scale with base unit
+- Layout approach per breakpoint
+
+# Phase 3: BUILD (Write the Plan Corpus)
+
+Write to the `genesis/` directory:
+
+a. `genesis/SPEC.md` — What this project is, who it's for, architecture (with ASCII diagram), tech stack, key decisions already made. Write this based on the format of SPEC.md from the Root Directory.
+
+b. `genesis/PLANS.md` — ExecPlan conventions (Progress, Surprises & Discoveries, Decision Log, Outcomes & Retrospective), milestone structure, proof command conventions. Copy this file from the Root Directory.
+
+c. `genesis/plans/001-master-plan.md` — 180-day turnaround roadmap:
+   - Phase 0 (days 1-30): Stabilization — critical bugs, missing tests, documentation
+   - Phase 1 (days 31-90): Foundation — shared patterns, core abstractions
+   - Phase 2 (days 91-150): Growth — major features, expanded test coverage
+   - Phase 3 (days 151-180): Polish — performance, UX, release prep
+   - Each phase lists numbered plan dependencies
+
+d. `genesis/plans/002-*.md` through `genesis/plans/N-*.md` — one ExecPlan per work stream:
+   - Purpose, Progress (milestones with `- [ ]`), Decision Log, proof commands
+   - Cover: tech debt, missing tests, broken features, new features, infrastructure, docs
+   - Name specific files, crates, modules, functions — concrete, not generic
+   - ASCII diagrams for architecture and data flow
+   - 3-8 milestones per plan, each with a real proof command
+
+**Carry-forward rule**: Every existing plan in `plans/` must appear in `genesis/plans/`. For plans you assessed as strong, copy them into genesis with the same filename and number. For plans you enhanced, write the enhanced version. For plans you split or merged, write the new plans and note the provenance in the Decision Log. No existing plan should silently disappear — if you're dropping one, write a short `genesis/plans/NNN-dropped-*.md` explaining why.
+
+# Phase 4: REVIEW (Self-Review Pass)
+
+After writing all plans, review the corpus against these checklists:
+
+## Structural review
+- [ ] Every plan references specific file paths, not vague module descriptions
+- [ ] Every milestone has a proof command that would actually work in this repo
+- [ ] No two plans claim the same files without explicit dependency ordering
+- [ ] Master plan references all numbered plans
+- [ ] Each numbered plan has 3-8 milestones (not more, not fewer)
+
+## Completeness review
+- [ ] Tech debt identified during exploration is covered by at least one plan
+- [ ] Untested modules identified during exploration have test plans
+- [ ] Broken features identified during exploration have fix plans
+- [ ] If UI surfaces exist: design plan covers states, accessibility, responsive
+- [ ] Every plan has at least one failure scenario in its Decision Log
+
+## Adversarial review
+- [ ] Read each plan as a skeptical engineer: what's the first thing that would go wrong?
+- [ ] Check for plans that are secretly huge — >8 files touched = split it
+- [ ] Check for plans that depend on unstated assumptions — make them explicit
+- [ ] Check for vague milestones: "set up infrastructure" → what specifically?
+
+If any check fails, fix the plan before moving on. Do not write a plan you wouldn't approve as a reviewer.
+
+# Phase 5: VERIFY
+
+Write `genesis/GENESIS-REPORT.md` summarizing:
+- Total plans generated
+- Assessment highlights (from Phase 1)
+- Plans needing human attention (flagged during review)
+- Known gaps (things you couldn't assess without running the code)
+- Recommended next steps for the operator
 
 ## Rules
 
 - Be specific to THIS codebase. Don't write generic plans.
-- Reference actual file paths, module names, function names you found during exploration.
-- Plans must have concrete milestones with proof commands, not vague goals.
-- The master plan should have 10-20 numbered plan references.
-- Each numbered plan should have 3-8 milestones.
-- Use the ExecPlan format from PLANS.md for every plan.
+- Reference actual file paths, module names, function names from exploration.
+- Include ASCII diagrams for architecture, data flow, and state machines.
 - Write all files using the Write tool. Do NOT output content to stdout.
+- 10-20 numbered plans in the master plan. 3-8 milestones per plan.
+- Use the ExecPlan format from PLANS.md for every plan.
 
-Begin by exploring the codebase, then write the genesis documents."#,
+Begin with Phase 1: explore the codebase and write ASSESSMENT.md."#,
         target_repo = target_repo.display(),
     )
 }
