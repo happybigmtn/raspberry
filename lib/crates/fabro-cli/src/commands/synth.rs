@@ -123,19 +123,7 @@ fn decomposition_backend_shell_command(
     backend: SynthCliBackend,
     prompt_path: &std::path::Path,
 ) -> String {
-    match backend {
-        SynthCliBackend::ClaudeOpus46 => format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
-            prompt_path.display(),
-            DECOMPOSE_MODEL,
-        ),
-        SynthCliBackend::CodexGpt54Xhigh => format!(
-            "cat {} | codex exec --dangerously-bypass-approvals-and-sandbox -m {} -c 'model_reasoning_effort=\"{}\"'",
-            prompt_path.display(),
-            CODEX_FALLBACK_MODEL,
-            CODEX_FALLBACK_REASONING_EFFORT,
-        ),
-    }
+    text_backend_shell_command(backend, prompt_path, DECOMPOSE_MODEL, 200)
 }
 
 fn genesis_backend_shell_command(
@@ -148,12 +136,75 @@ fn genesis_backend_shell_command(
             prompt_path.display(),
             DECOMPOSE_MODEL,
         ),
+        SynthCliBackend::CodexGpt54Xhigh => text_backend_shell_command(
+            SynthCliBackend::CodexGpt54Xhigh,
+            prompt_path,
+            CODEX_FALLBACK_MODEL,
+            200,
+        ),
+    }
+}
+
+fn text_backend_shell_command(
+    backend: SynthCliBackend,
+    prompt_path: &std::path::Path,
+    claude_model: &str,
+    max_turns: u32,
+) -> String {
+    match backend {
+        SynthCliBackend::ClaudeOpus46 => format!(
+            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns {}",
+            prompt_path.display(),
+            claude_model,
+            max_turns,
+        ),
         SynthCliBackend::CodexGpt54Xhigh => format!(
             "cat {} | codex exec --dangerously-bypass-approvals-and-sandbox -m {} -c 'model_reasoning_effort=\"{}\"'",
             prompt_path.display(),
             CODEX_FALLBACK_MODEL,
             CODEX_FALLBACK_REASONING_EFFORT,
         ),
+    }
+}
+
+fn run_text_backend_with_fallback(
+    primary_backend: SynthCliBackend,
+    current_dir: &Path,
+    prompt_path: &Path,
+    claude_model: &str,
+    max_turns: u32,
+    label: &str,
+) -> anyhow::Result<std::process::Output> {
+    let mut backend = primary_backend;
+    let mut retried_with_codex = false;
+    loop {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(text_backend_shell_command(
+                backend,
+                prompt_path,
+                claude_model,
+                max_turns,
+            ))
+            .current_dir(current_dir)
+            .output()?;
+
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        if backend == SynthCliBackend::ClaudeOpus46 && codex_cli_available() && !retried_with_codex
+        {
+            eprintln!(
+                "  [{label}] claude-opus-4-6 did not complete successfully; retrying with {}",
+                SynthCliBackend::CodexGpt54Xhigh.display_name()
+            );
+            backend = SynthCliBackend::CodexGpt54Xhigh;
+            retried_with_codex = true;
+            continue;
+        }
+
+        return Ok(output);
     }
 }
 
@@ -182,12 +233,13 @@ pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!("claude CLI not found; required for synth review");
-    }
+    let primary_backend = if claude_cli_available() {
+        SynthCliBackend::ClaudeOpus46
+    } else if codex_cli_available() {
+        SynthCliBackend::CodexGpt54Xhigh
+    } else {
+        anyhow::bail!("no supported synthesis CLI found; install `claude` or `codex`");
+    };
 
     // Build a manifest of all mapping contracts for Opus to review
     let mut contracts = Vec::new();
@@ -243,22 +295,21 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     println!(
         "Eng-reviewing {} mapping contracts with {} ...",
         composite_plans.len(),
-        DECOMPOSE_MODEL
+        primary_backend.display_name()
     );
 
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 50",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(&args.target_repo)
-        .output()?;
+    let output = run_text_backend_with_fallback(
+        primary_backend,
+        &args.target_repo,
+        prompt_file.path(),
+        DECOMPOSE_MODEL,
+        50,
+        "review",
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Opus review failed: {}", stderr.trim());
+        anyhow::bail!("synth review failed: {}", stderr.trim());
     }
 
     let report_path = mappings_dir.join("review-report.md");
@@ -299,11 +350,15 @@ fn run_decomposition_review(target_repo: &std::path::Path) -> anyhow::Result<()>
         return Ok(());
     }
 
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        eprintln!("  [review] claude CLI not found; skipping decomposition review");
+    let primary_backend = if claude_cli_available() {
+        Some(SynthCliBackend::ClaudeOpus46)
+    } else if codex_cli_available() {
+        Some(SynthCliBackend::CodexGpt54Xhigh)
+    } else {
+        None
+    };
+    if primary_backend.is_none() {
+        eprintln!("  [review] no synthesis CLI found; skipping decomposition review");
         return Ok(());
     }
 
@@ -385,85 +440,31 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     std::fs::write(prompt_file.path(), &review_prompt)?;
 
     println!(
-        "Eng-reviewing {} decomposition contracts ...",
-        composite_plans.len()
+        "Eng-reviewing {} decomposition contracts with {} ...",
+        composite_plans.len(),
+        primary_backend.expect("checked above").display_name()
     );
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 50",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(target_repo)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let output = run_text_backend_with_fallback(
+        primary_backend.expect("checked above"),
+        target_repo,
+        prompt_file.path(),
+        DECOMPOSE_MODEL,
+        50,
+        "review",
+    )?;
 
-    // Stream stderr
-    let stderr_handle = {
-        let stderr = child.stderr.take().expect("stderr piped");
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                eprintln!("  [review] {line}");
-            }
-        })
-    };
-
-    // Stream stdout JSON for live output
-    let stdout_handle = {
-        let stdout = child.stdout.take().expect("stdout piped");
-        std::thread::spawn(move || {
-            use std::io::{BufRead, Write};
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if event_type == "assistant" {
-                    if let Some(content) = event
-                        .get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_array())
-                    {
-                        for block in content {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                    eprint!("{text}");
-                                    let _ = std::io::stderr().flush();
-                                }
-                            }
-                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                                    let hint = block
-                                        .get("input")
-                                        .and_then(|i| {
-                                            i.get("file_path").or_else(|| i.get("command"))
-                                        })
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let short = if hint.len() > 60 { &hint[..60] } else { hint };
-                                    eprintln!("\n  [review-tool] {name}: {short}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
-
-    let status = child.wait()?;
-    let _ = stderr_handle.join();
-    let _ = stdout_handle.join();
-    eprintln!();
-
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            eprintln!("  [review] {stderr}");
+        }
         eprintln!("  [review] review process exited with non-zero status; continuing with current mappings");
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            println!("{stdout}");
+        }
     }
 
     let report_path = mappings_dir.join("review-report.md");
@@ -1154,31 +1155,31 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let prompt_file = tempfile::NamedTempFile::new()?;
     std::fs::write(prompt_file.path(), &prompt)?;
 
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!("claude CLI not found; required for synth evolve steering");
-    }
+    let primary_backend = if claude_cli_available() {
+        SynthCliBackend::ClaudeOpus46
+    } else if codex_cli_available() {
+        SynthCliBackend::CodexGpt54Xhigh
+    } else {
+        anyhow::bail!("no supported synthesis CLI found; install `claude` or `codex`");
+    };
 
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 80",
-            prompt_file.path().display(),
-            STEERING_MODEL,
-        ))
-        .current_dir(&args.target_repo)
-        .output()?;
+    let output = run_text_backend_with_fallback(
+        primary_backend,
+        &args.target_repo,
+        prompt_file.path(),
+        STEERING_MODEL,
+        80,
+        "evolve",
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Opus steering failed: {}", stderr.trim());
+        anyhow::bail!("synth evolve steering failed: {}", stderr.trim());
     }
 
     let written_files = collect_malinka_written_files(output_repo)?;
     println!("Program: {program}");
-    println!("Mode: evolve (Opus steering)");
+    println!("Mode: evolve ({})", primary_backend.display_name());
     println!("Report: {}", report_path.display());
     if args.preview_root.is_some() {
         println!("Preview root: {}", output_repo.display());
