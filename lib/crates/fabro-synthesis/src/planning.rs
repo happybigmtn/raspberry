@@ -716,8 +716,8 @@ fn derive_registry_plan_intents(
                     .map(|child| LaneDependency {
                         unit: child_unit_id(&plan.plan_id, &child.child_id),
                         lane: None,
-                        milestone: Some(dependency_milestone_for_template(archetype_to_template(
-                            child.archetype,
+                        milestone: Some(dependency_milestone_for_template(child_template(
+                            plan, &child,
                         ))),
                     })
                     .collect()
@@ -1218,17 +1218,18 @@ fn derive_child_intents(
                 .title
                 .clone()
                 .unwrap_or_else(|| humanize_slug(&child.child_id));
-            let family = archetype_to_template(child.archetype);
+            let family = child_template(plan, child);
             let output_root = PathBuf::from("outputs").join(&child_unit_id);
             let kind = child
                 .lane_kind
                 .unwrap_or_else(|| infer_lane_kind_from_child_id(&child.child_id));
-            let kind =
-                if family == WorkflowTemplate::Implementation && kind == LaneKind::Integration {
-                    LaneKind::Platform
-                } else {
-                    kind
-                };
+            let kind = if family == WorkflowTemplate::Implementation
+                && matches!(kind, LaneKind::Integration | LaneKind::Artifact)
+            {
+                LaneKind::Platform
+            } else {
+                kind
+            };
             let verify_command = if !child.proof_commands.is_empty() {
                 Some(child.proof_commands.join(" && "))
             } else {
@@ -1285,6 +1286,25 @@ fn archetype_to_template(archetype: Option<WorkflowArchetype>) -> WorkflowTempla
         Some(WorkflowArchetype::Orchestration) => WorkflowTemplate::Orchestration,
         Some(WorkflowArchetype::Report) => WorkflowTemplate::RecurringReport,
     }
+}
+
+fn child_template(plan: &PlanRecord, child: &PlanChildRecord) -> WorkflowTemplate {
+    let template = archetype_to_template(child.archetype);
+    if template == WorkflowTemplate::RecurringReport
+        && !plan.bootstrap_required
+        && child_prefers_implementation(child)
+    {
+        return WorkflowTemplate::Implementation;
+    }
+    template
+}
+
+fn child_prefers_implementation(child: &PlanChildRecord) -> bool {
+    !child.owned_surfaces.is_empty()
+        || !child.proof_commands.is_empty()
+        || child.where_surfaces.is_some()
+        || child.required_tests.is_some()
+        || child.verification_plan.is_some()
 }
 
 fn child_artifacts_and_milestones(
@@ -3871,6 +3891,67 @@ units:
             .artifacts
             .iter()
             .any(|artifact| artifact.path == PathBuf::from("implementation.md")));
+    }
+
+    #[test]
+    fn create_authoring_promotes_report_children_to_implementation_when_bootstrap_skipped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/008-monero-infrastructure.md"),
+            "# Monero Infrastructure\n",
+        )
+        .expect("plan");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/008-monero-infrastructure.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: monero-infrastructure\n",
+                "title: Monero Infrastructure\n",
+                "category: infrastructure\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: false\n",
+                "children:\n",
+                "  - id: mining-ops\n",
+                "    title: Mining Operations\n",
+                "    archetype: report\n",
+                "    lane_kind: artifact\n",
+                "    proof_commands:\n",
+                "      - rg -n \"start_mining\" CHAIN.md\n",
+                "    owned_surfaces:\n",
+                "      - CHAIN.md\n",
+                "  - id: wallet-rpc-ref\n",
+                "    title: Wallet RPC Reference\n",
+                "    archetype: report\n",
+                "    lane_kind: artifact\n",
+                "    proof_commands:\n",
+                "      - rg -n \"get_balance\" CHAIN.md\n",
+                "    owned_surfaces:\n",
+                "      - CHAIN.md\n",
+            ),
+        )
+        .expect("mapping");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let child = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "monero-infrastructure-mining-ops")
+            .expect("child lane");
+
+        assert_eq!(child.lanes[0].template, WorkflowTemplate::Implementation);
     }
 
     #[test]
