@@ -222,7 +222,7 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
     let report_path = autodev_report_path(&args.manifest, &manifest);
     let fabro_bin = resolve_fabro_bin(&args.fabro_bin);
     println!("Autodev live report: {}", report_path.display());
-    let heartbeat_interval_ms = args.poll_interval_ms.clamp(100, 1_000);
+    let heartbeat_interval_ms = args.poll_interval_ms.max(100);
     let stop_heartbeat = Arc::new(AtomicBool::new(false));
     let heartbeat_handle = spawn_autodev_heartbeat(
         args.manifest.clone(),
