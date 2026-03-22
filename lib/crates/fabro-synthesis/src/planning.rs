@@ -1223,6 +1223,12 @@ fn derive_child_intents(
             let kind = child
                 .lane_kind
                 .unwrap_or_else(|| infer_lane_kind_from_child_id(&child.child_id));
+            let kind =
+                if family == WorkflowTemplate::Implementation && kind == LaneKind::Integration {
+                    LaneKind::Platform
+                } else {
+                    kind
+                };
             let verify_command = if !child.proof_commands.is_empty() {
                 Some(child.proof_commands.join(" && "))
             } else {
@@ -1275,7 +1281,7 @@ fn derive_child_intents(
 fn archetype_to_template(archetype: Option<WorkflowArchetype>) -> WorkflowTemplate {
     match archetype {
         Some(WorkflowArchetype::Implement) | None => WorkflowTemplate::Implementation,
-        Some(WorkflowArchetype::Integration) => WorkflowTemplate::Integration,
+        Some(WorkflowArchetype::Integration) => WorkflowTemplate::Implementation,
         Some(WorkflowArchetype::Orchestration) => WorkflowTemplate::Orchestration,
         Some(WorkflowArchetype::Report) => WorkflowTemplate::RecurringReport,
     }
@@ -3931,6 +3937,75 @@ units:
         assert!(dependency_units.iter().any(|(unit, milestone)| {
             unit == "build-fix-ci-verify-ci-main" && milestone.as_deref() == Some("merge_ready")
         }));
+    }
+
+    #[test]
+    fn create_authoring_maps_integration_children_to_implementation_lanes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/002-build-fix-ci.md"),
+            "# Build Fix & CI\n",
+        )
+        .expect("plan");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/002-build-fix-ci.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: build-fix-ci\n",
+                "title: Build Fix & CI\n",
+                "category: infrastructure\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "children:\n",
+                "  - id: add-ci-pipeline\n",
+                "    title: Add CI Pipeline\n",
+                "    archetype: implement\n",
+                "    lane_kind: artifact\n",
+                "    proof_commands:\n",
+                "      - cargo check --workspace\n",
+                "    owned_surfaces:\n",
+                "      - .github/workflows/ci.yml\n",
+                "  - id: verify-ci-main\n",
+                "    title: Verify CI Main\n",
+                "    archetype: integration\n",
+                "    lane_kind: integration\n",
+                "    proof_commands:\n",
+                "      - cargo test --workspace\n",
+                "    owned_surfaces:\n",
+                "      - .github/workflows/ci.yml\n",
+            ),
+        )
+        .expect("mapping");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let verify_ci = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "build-fix-ci-verify-ci-main")
+            .expect("verify ci unit");
+
+        assert_eq!(
+            verify_ci.lanes[0].template,
+            WorkflowTemplate::Implementation
+        );
+        assert_eq!(verify_ci.lanes[0].kind, LaneKind::Platform);
+        assert!(verify_ci
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.path == PathBuf::from("implementation.md")));
     }
 
     #[test]
