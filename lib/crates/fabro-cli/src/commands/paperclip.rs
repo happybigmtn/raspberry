@@ -4248,17 +4248,24 @@ async fn cleanup_generated_agent_duplicates(
             .collect::<Vec<_>>();
 
         for duplicate_id in duplicate_ids {
-            client
+            match client
                 .delete(format!("{api_base}/api/agents/{duplicate_id}"))
                 .send()
                 .await
-                .with_context(|| {
-                    format!("failed to delete duplicate paperclip agent {duplicate_id}")
-                })?
-                .error_for_status()
-                .with_context(|| {
-                    format!("paperclip duplicate agent delete failed for {duplicate_id}")
-                })?;
+            {
+                Ok(resp) if !resp.status().is_success() => {
+                    eprintln!(
+                        "warning: failed to delete duplicate agent {duplicate_id}: {}",
+                        resp.status()
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: failed to delete duplicate agent {duplicate_id}: {err}"
+                    );
+                }
+                _ => {}
+            }
         }
     }
 
