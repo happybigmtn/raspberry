@@ -121,6 +121,7 @@ struct PaperclipPaths {
     scripts_root: PathBuf,
     paperclip_cli_script_path: PathBuf,
     orchestrator_script_path: PathBuf,
+    minimax_agent_script_path: PathBuf,
     run_script_path: PathBuf,
     bootstrap_state_path: PathBuf,
 }
@@ -388,6 +389,7 @@ fn resolve_paperclip_paths(args: &PaperclipRepoArgs) -> PaperclipPaths {
         scripts_root: scripts_root.clone(),
         paperclip_cli_script_path: scripts_root.join("fabro-paperclip.sh"),
         orchestrator_script_path: scripts_root.join("raspberry-orchestrator.sh"),
+        minimax_agent_script_path: scripts_root.join("fabro-agent-minimax.sh"),
         run_script_path: scripts_root.join("run-paperclip.sh"),
         bootstrap_state_path: bundle_root.join("bootstrap-state.json"),
     }
@@ -401,6 +403,8 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
 
     let fabro_binary = current_fabro_binary()?;
     let raspberry_binary = current_raspberry_binary();
+    let fabro_agent_binary = current_fabro_agent_binary();
+    let fabro_repo = default_fabro_repo();
     write_paperclip_cli_script(
         &paths.paperclip_cli_script_path,
         &fabro_binary,
@@ -413,6 +417,11 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &paths.manifest_path,
         &fabro_binary,
         raspberry_binary.as_deref(),
+    )?;
+    write_minimax_agent_script(
+        &paths.minimax_agent_script_path,
+        fabro_agent_binary.as_deref(),
+        fabro_repo.as_deref(),
     )?;
     write_run_script(
         &paths.run_script_path,
@@ -441,6 +450,7 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &paths.company_name,
         &mission,
         &paths.orchestrator_script_path,
+        &paths.minimax_agent_script_path,
         &frontier,
         plan_matrix.as_ref(),
         plan_dashboard.as_ref(),
@@ -1377,6 +1387,7 @@ fn build_company_bundle(
     company_name: &str,
     mission: &BootstrapMission,
     orchestrator_script: &Path,
+    minimax_agent_script: &Path,
     frontier: &FrontierSyncModel,
     plan_matrix: Option<&PlanMatrix>,
     plan_dashboard: Option<&PlanDashboardModel>,
@@ -1395,7 +1406,7 @@ fn build_company_bundle(
         &mut manifest_agents,
         &mut agent_markdowns,
         &mut agents,
-        mission_ceo_draft(blueprint, target_repo, mission),
+        mission_ceo_draft(blueprint, target_repo, mission, minimax_agent_script),
     );
     push_bundle_agent(
         &mut manifest_agents,
@@ -1421,6 +1432,7 @@ fn build_company_bundle(
                     blueprint,
                     target_repo,
                     mission,
+                    minimax_agent_script,
                     frontier,
                     unit,
                     lane,
@@ -1675,9 +1687,14 @@ fn mission_ceo_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
     mission: &BootstrapMission,
+    minimax_agent_script: &Path,
 ) -> BundleAgentDraft {
     let slug = "mission-ceo";
     let name = "Mission CEO".to_string();
+    let prompt = format!(
+        "You own the company mission for `{}`.\n\nCompany goal:\n- {}\n\nPriorities:\n- keep work aligned to the repo blueprint\n- promote lane decomposition that matches the real plan\n- route execution through Raspberry rather than bypassing it\n- prefer honest progress over optimistic summaries\n",
+        blueprint.program.id, mission.goal_title,
+    );
     BundleAgentDraft {
         manifest: json!({
             "slug": slug,
@@ -1688,11 +1705,13 @@ fn mission_ceo_draft(
             "icon": "crown",
             "capabilities": "Own company mission, set priorities, and review lane strategy.",
             "reportsToSlug": serde_json::Value::Null,
-            "adapterType": "claude_local",
+            "adapterType": "process",
             "adapterConfig": {
+                "command": "bash",
+                "args": [minimax_agent_script.display().to_string()],
                 "cwd": target_repo.display().to_string(),
-                "model": PAPERCLIP_DEFAULT_AUTOMATION_MODEL,
-                "dangerouslySkipPermissions": true
+                "promptTemplate": prompt,
+                "timeoutSec": 1800
             },
             "runtimeConfig": {
                 "heartbeat": {
@@ -1710,19 +1729,11 @@ fn mission_ceo_draft(
             }
         }),
         relative_path: format!("agents/{slug}/AGENTS.md"),
-        markdown: build_agent_markdown(
-            &name,
-            slug,
-            "ceo",
-            format!(
-                "You own the company mission for `{}`.\n\nCompany goal:\n- {}\n\nPriorities:\n- keep work aligned to the repo blueprint\n- promote lane decomposition that matches the real plan\n- route execution through Raspberry rather than bypassing it\n- prefer honest progress over optimistic summaries\n",
-                blueprint.program.id, mission.goal_title,
-            ),
-        ),
+        markdown: build_agent_markdown(&name, slug, "ceo", prompt),
         agent: BundleAgent {
             slug: slug.to_string(),
             name,
-            adapter_type: "claude_local",
+            adapter_type: "process",
             metadata_type: Some("mission_ceo"),
             unit: None,
             lane_key: None,
@@ -1804,6 +1815,7 @@ fn lane_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
     mission: &BootstrapMission,
+    minimax_agent_script: &Path,
     frontier: &FrontierSyncModel,
     unit: &BlueprintUnit,
     lane: &fabro_synthesis::BlueprintLane,
@@ -1812,29 +1824,33 @@ fn lane_agent_draft(
     let slug = lane_agent_slug(unit, lane);
     let name = lane_agent_name(unit, lane);
     let role = lane_role(unit, lane);
-    let adapter_type = lane_adapter_type(unit, lane);
+    let adapter_type = "process";
     let lane_key = format!("{}:{}", unit.id, lane.id);
-    let model = json!(PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
-    let mut adapter_config = serde_json::Map::from_iter([
+    let prompt = format!(
+        "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nLive frontier inspection:\n- lane key: `{}`\n- sync key: `{}`\n- inspect current status with `{}` before asserting readiness, blockage, or completion\n- use `{}` after frontier movement to refresh Paperclip state\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Wake the Raspberry Orchestrator with `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Run `{}` as the direct repo-local fallback.\n- Keep the lane plan in the Paperclip `plan` document aligned with repo truth.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
+        lane.id,
+        blueprint.program.id,
+        mission.goal_title,
+        lane.goal,
+        lane_key,
+        lane_sync_key(&blueprint.program.id, &lane_key),
+        frontier.status_command,
+        frontier.refresh_command,
+        lane_artifact_block(frontier_entry, unit),
+        lane_dependency_block(frontier_entry, lane),
+        frontier.wake_command,
+        frontier.route_command,
+    );
+    let adapter_config = serde_json::Map::from_iter([
+        ("command".to_string(), json!("bash")),
+        (
+            "args".to_string(),
+            json!([minimax_agent_script.display().to_string()]),
+        ),
         ("cwd".to_string(), json!(target_repo.display().to_string())),
-        ("model".to_string(), model.clone()),
+        ("promptTemplate".to_string(), json!(prompt.clone())),
+        ("timeoutSec".to_string(), json!(1800)),
     ]);
-    if adapter_type == "claude_local" {
-        adapter_config.insert("dangerouslySkipPermissions".to_string(), json!(true));
-    } else if adapter_type == "codex_local" {
-        let codex_home = preferred_automation_codex_home()
-            .unwrap_or_else(|| target_repo.join(".paperclip").join("codex").join(&slug));
-        adapter_config.insert(
-            "env".to_string(),
-            json!({
-                "CODEX_HOME": codex_home.display().to_string()
-            }),
-        );
-        adapter_config.insert(
-            "dangerouslyBypassApprovalsAndSandbox".to_string(),
-            json!(true),
-        );
-    }
     BundleAgentDraft {
         manifest: json!({
             "slug": slug.clone(),
@@ -1866,26 +1882,7 @@ fn lane_agent_draft(
             }
         }),
         relative_path: format!("agents/{slug}/AGENTS.md"),
-        markdown: build_agent_markdown(
-            &name,
-            &slug,
-            role,
-            format!(
-                "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nLive frontier inspection:\n- lane key: `{}`\n- sync key: `{}`\n- inspect current status with `{}` before asserting readiness, blockage, or completion\n- use `{}` after frontier movement to refresh Paperclip state\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Wake the Raspberry Orchestrator with `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Run `{}` as the direct repo-local fallback.\n- Keep the lane plan in the Paperclip `plan` document aligned with repo truth.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
-                lane.id,
-                blueprint.program.id,
-                mission.goal_title,
-                lane.goal,
-                lane_key,
-                lane_sync_key(&blueprint.program.id, &lane_key),
-                frontier.status_command,
-                frontier.refresh_command,
-                lane_artifact_block(frontier_entry, unit),
-                lane_dependency_block(frontier_entry, lane),
-                frontier.wake_command,
-                frontier.route_command,
-            ),
-        ),
+        markdown: build_agent_markdown(&name, &slug, role, prompt),
         agent: BundleAgent {
             slug,
             name,
@@ -1902,6 +1899,7 @@ fn top_level_plan_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
     mission: &BootstrapMission,
+    minimax_agent_script: &Path,
     frontier: &FrontierSyncModel,
     unit: &BlueprintUnit,
     lane: &fabro_synthesis::BlueprintLane,
@@ -1911,6 +1909,7 @@ fn top_level_plan_agent_draft(
         blueprint,
         target_repo,
         mission,
+        minimax_agent_script,
         frontier,
         unit,
         lane,
@@ -2199,10 +2198,8 @@ fn lane_role(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> &'s
 
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_adapter_type(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> &'static str {
-    if lane.template == WorkflowTemplate::RecurringReport || unit.id.contains("proof") {
-        return "claude_local";
-    }
-    "codex_local"
+    let _ = (unit, lane);
+    "process"
 }
 
 fn write_bundle(root: &Path, bundle: &GeneratedBundle) -> Result<()> {
@@ -3241,6 +3238,40 @@ fn write_orchestrator_script(
     Ok(())
 }
 
+fn write_minimax_agent_script(
+    path: &Path,
+    fabro_agent_binary: Option<&Path>,
+    fabro_repo: Option<&Path>,
+) -> Result<()> {
+    let binary_resolution = fabro_agent_binary
+        .map(|path| {
+            format!(
+                "  if [ -x {fallback} ]; then\n    fabro_agent_bin={fallback}\n  elif command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n",
+                fallback = shell_quote(&path.display().to_string()),
+            )
+        })
+        .unwrap_or_else(|| {
+            "  if command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n".to_string()
+        });
+    let cargo_fallback = fabro_repo.map(|repo| {
+        format!(
+            "cd {repo}\nexec cargo run --quiet -p fabro-agent -- --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\n",
+            repo = shell_quote(&repo.display().to_string()),
+            model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
+        )
+    }).unwrap_or_else(|| {
+        "echo \"Unable to resolve fabro-agent. Set FABRO_AGENT_BIN or run from a fabro checkout.\" >&2\nexit 1\n".to_string()
+    });
+    let body = format!(
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nprompt=\"$(cat)\"\n\nfabro_agent_bin=\"${{FABRO_AGENT_BIN:-}}\"\nif [ -z \"$fabro_agent_bin\" ]; then\n{binary_resolution}fi\n\nif [ -n \"$fabro_agent_bin\" ]; then\n  exec \"$fabro_agent_bin\" --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\nfi\n\n{cargo_fallback}",
+        binary_resolution = binary_resolution,
+        model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
+        cargo_fallback = cargo_fallback,
+    );
+    std::fs::write(path, body)?;
+    Ok(())
+}
+
 fn write_run_script(path: &Path, paperclip_repo: Option<PathBuf>, data_dir: &Path) -> Result<()> {
     let tmp_dir = paperclip_instance_root(data_dir).join("tmp");
     let fallback_repo = paperclip_repo
@@ -3274,10 +3305,21 @@ fn current_fabro_binary() -> Result<PathBuf> {
     std::env::current_exe().context("failed to resolve current fabro binary")
 }
 
+fn current_fabro_agent_binary() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let sibling = current.with_file_name("fabro-agent");
+    sibling.exists().then_some(sibling)
+}
+
 fn current_raspberry_binary() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?;
     let sibling = current.with_file_name("raspberry");
     sibling.exists().then_some(sibling)
+}
+
+fn default_fabro_repo() -> Option<PathBuf> {
+    let local_repo = PathBuf::from("/home/r/coding/fabro");
+    local_repo.is_dir().then_some(local_repo)
 }
 
 fn default_paperclip_repo() -> Option<PathBuf> {
@@ -6867,7 +6909,7 @@ mod tests {
     }
 
     #[test]
-    fn lane_adapter_type_prefers_claude_for_reports() {
+    fn lane_adapter_type_uses_process_agents() {
         let lane = BlueprintLane {
             id: "proof".to_string(),
             kind: Default::default(),
@@ -6901,7 +6943,7 @@ mod tests {
         };
 
         assert_eq!(lane_role(&unit, &lane), "qa");
-        assert_eq!(lane_adapter_type(&unit, &lane), "claude_local");
+        assert_eq!(lane_adapter_type(&unit, &lane), "process");
     }
 
     #[test]
@@ -7183,6 +7225,9 @@ mod tests {
             &temp
                 .path()
                 .join("malinka/paperclip/zend/scripts/raspberry-orchestrator.sh"),
+            &temp
+                .path()
+                .join("malinka/paperclip/zend/scripts/fabro-agent-minimax.sh"),
             &frontier,
             None,
             None,
@@ -7198,13 +7243,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_local_lane_agents_prefer_dedicated_oauth_slot() {
+    fn process_lane_agents_use_minimax_wrapper_and_prompt_template() {
         let temp = tempdir().expect("tempdir");
-        let oauth_home = temp.path().join(".codex-slot2/.codex");
-        std::fs::create_dir_all(&oauth_home).expect("oauth slot dir");
-        std::fs::write(oauth_home.join("auth.json"), "{}").expect("oauth auth");
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", temp.path());
         let unit = BlueprintUnit {
             id: "wallet".to_string(),
             title: "Wallet".to_string(),
@@ -7277,33 +7317,44 @@ mod tests {
             },
             temp.path(),
             &mission,
+            &temp.path().join("fabro-agent-minimax.sh"),
             &frontier,
             &unit,
             lane,
             None,
         );
 
-        let env = draft
-            .manifest
-            .get("adapterConfig")
-            .and_then(|value| value.get("env"))
-            .and_then(|value| value.get("CODEX_HOME"))
+        let adapter_config = draft.manifest.get("adapterConfig").expect("adapter config");
+        let command = adapter_config
+            .get("command")
             .and_then(|value| value.as_str())
-            .expect("codex home");
-        let model = draft
-            .manifest
-            .get("adapterConfig")
-            .and_then(|value| value.get("model"))
+            .expect("command");
+        let first_arg = adapter_config
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
             .and_then(|value| value.as_str())
-            .expect("model");
+            .expect("arg");
+        let prompt_template = adapter_config
+            .get("promptTemplate")
+            .and_then(|value| value.as_str())
+            .expect("prompt template");
+        let timeout = adapter_config
+            .get("timeoutSec")
+            .and_then(|value| value.as_i64())
+            .expect("timeout");
 
-        assert_eq!(env, oauth_home.display().to_string());
-        assert_eq!(model, PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
+        assert_eq!(draft.agent.adapter_type, "process");
+        assert_eq!(command, "bash");
+        assert_eq!(
+            first_arg,
+            temp.path()
+                .join("fabro-agent-minimax.sh")
+                .display()
+                .to_string()
+        );
+        assert!(prompt_template.contains("You coordinate the `implement` frontier"));
+        assert_eq!(timeout, 1800);
     }
 
     #[test]
@@ -7363,7 +7414,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_ceo_agent_uses_default_automation_model() {
+    fn mission_ceo_agent_uses_minimax_process_wrapper() {
         let temp = tempdir().expect("tempdir");
         let blueprint = ProgramBlueprint {
             version: 1,
@@ -7386,15 +7437,38 @@ mod tests {
             workspace_name: "Demo".to_string(),
         };
 
-        let draft = mission_ceo_draft(&blueprint, temp.path(), &mission);
-        let model = draft
-            .manifest
-            .get("adapterConfig")
-            .and_then(|value| value.get("model"))
+        let draft = mission_ceo_draft(
+            &blueprint,
+            temp.path(),
+            &mission,
+            &temp.path().join("fabro-agent-minimax.sh"),
+        );
+        let adapter_config = draft.manifest.get("adapterConfig").expect("adapter config");
+        let command = adapter_config
+            .get("command")
             .and_then(|value| value.as_str())
-            .expect("model");
+            .expect("command");
+        let first_arg = adapter_config
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .and_then(|value| value.as_str())
+            .expect("arg");
+        let prompt_template = adapter_config
+            .get("promptTemplate")
+            .and_then(|value| value.as_str())
+            .expect("prompt");
 
-        assert_eq!(model, PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
+        assert_eq!(draft.agent.adapter_type, "process");
+        assert_eq!(command, "bash");
+        assert_eq!(
+            first_arg,
+            temp.path()
+                .join("fabro-agent-minimax.sh")
+                .display()
+                .to_string()
+        );
+        assert!(prompt_template.contains("You own the company mission for `demo`."));
     }
 
     #[test]
@@ -8238,6 +8312,9 @@ mod tests {
             &temp
                 .path()
                 .join("malinka/paperclip/zend/scripts/raspberry-orchestrator.sh"),
+            &temp
+                .path()
+                .join("malinka/paperclip/zend/scripts/fabro-agent-minimax.sh"),
             &frontier,
             None,
             None,
@@ -8650,6 +8727,7 @@ mod tests {
                 company_description: "Test company".to_string(),
             },
             &temp.path().join("orchestrator.sh"),
+            &temp.path().join("fabro-agent-minimax.sh"),
             &frontier,
             None,
             Some(&dashboard),
