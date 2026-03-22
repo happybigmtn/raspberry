@@ -359,17 +359,18 @@ fn resolve_paperclip_paths(args: &PaperclipRepoArgs) -> PaperclipPaths {
         .api_base
         .clone()
         .unwrap_or_else(|| "http://127.0.0.1:3100".to_string());
+    let pkg_dir = fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR;
     let bundle_root = target_repo
-        .join("fabro")
+        .join(pkg_dir)
         .join("paperclip")
         .join(&program_id);
     let scripts_root = bundle_root.join("scripts");
     let blueprint_path = target_repo
-        .join("fabro")
+        .join(pkg_dir)
         .join("blueprints")
         .join(format!("{program_id}.yaml"));
     let manifest_path = target_repo
-        .join("fabro")
+        .join(pkg_dir)
         .join("programs")
         .join(format!("{program_id}.yaml"));
 
