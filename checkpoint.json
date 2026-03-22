@@ -1,35 +1,38 @@
 {
-  "timestamp": "2026-03-22T18:58:38.134921614Z",
-  "current_node": "validate",
+  "timestamp": "2026-03-22T18:58:38.158757437Z",
+  "current_node": "gate",
   "completed_nodes": [
     "start",
     "plan",
     "implement",
-    "validate"
+    "validate",
+    "gate"
   ],
   "node_retries": {
     "validate": 1,
     "plan": 1,
     "implement": 1,
-    "start": 1
+    "start": 1,
+    "gate": 1
   },
   "context_values": {
+    "internal.retry_count.gate": 1,
     "graph.rankdir": "LR",
     "internal.retry_count.validate": 1,
-    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n",
+    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n- **validate**: success\n",
     "internal.node_visit_count": 1,
     "internal.work_dir": "/tmp/fabro-dry-run/01KMBEKNX0H03ZFGXN6JWWMFA7/worktree",
     "failure_class": "",
     "internal.fidelity": "compact",
     "failure_signature": "",
-    "current_node": "validate",
+    "current_node": "gate",
     "last_response": "[Simulated] Response for stage: validate",
     "thread.start.current_node": "plan",
     "last_stage": "validate",
     "internal.retry_count.start": 1,
     "response.plan": "[Simulated] Response for stage: plan",
     "graph.goal": "Implement and validate a feature",
-    "internal.thread_id": "implement",
+    "internal.thread_id": "validate",
     "internal.retry_count.implement": 1,
     "response.implement": "[Simulated] Response for stage: implement",
     "outcome": "success",
@@ -37,6 +40,7 @@
     "thread.implement.current_node": "validate",
     "response.validate": "[Simulated] Response for stage: validate",
     "internal.run_id": "01KMBEKNX0H03ZFGXN6JWWMFA7",
+    "thread.validate.current_node": "gate",
     "internal.retry_count.plan": 1
   },
   "logs": [],
@@ -61,6 +65,11 @@
       "notes": "[Simulated] validate",
       "duration_ms": 0
     },
+    "gate": {
+      "status": "success",
+      "notes": "[Simulated] gate",
+      "duration_ms": 0
+    },
     "implement": {
       "status": "success",
       "context_updates": {
@@ -77,9 +86,10 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "gate",
+  "next_node_id": "exit",
   "node_visits": {
     "implement": 1,
+    "gate": 1,
     "validate": 1,
     "plan": 1,
     "start": 1
