@@ -1430,18 +1430,18 @@ Each mapping contract must contain:
 mapping_source: opus
 generated_by_run: "{run_id}"
 title: "from the plan's H1 heading"
-category: one of meta, foundation, game, interface, service, infrastructure, verification, economic
+category: see category rules below
 composite: true
 bootstrap_required: true
 implementation_required: true
-dependency_plan_ids: [kebab-case IDs from "depends on:" in plan text]
+dependency_plan_ids: see dependency rules below
 children:
   - id: concise-kebab-case (2-4 words, e.g., casino-core, provably-fair, house-handler)
     title: human-readable milestone name
     archetype: one of implement, integration, orchestration, report
     lane_kind: one of platform, service, interface, artifact, integration, orchestration
     review_profile: one of standard, foundation, hardened, ux
-    proof_commands: [exact cargo test/build commands from plan text ONLY]
+    proof_commands: see proof command rules below
     owned_surfaces: [repo-relative paths from plan]
     where_surfaces: one-line summary
     how_description: one-line behavior change description
@@ -1450,15 +1450,50 @@ children:
     rollback_condition: what reopens this child
 ```
 
+## Category rules
+
+Pick the ONE category that best describes the plan's primary purpose:
+
+| Category | When to use | Examples |
+|----------|-------------|---------|
+| `foundation` | Shared types, traits, SDK, core abstractions that other plans depend on | casino-core trait, game-engine SDK, shared config |
+| `game` | Game logic, game engines, game-specific features | poker, blackjack, craps, any game implementation |
+| `interface` | User-facing surfaces: TUI, web, mobile, CLI, dashboards | TUI shell, web dashboard, CLI tools |
+| `service` | Long-running daemons, agents, APIs, binary entry points | miner binary, validator binary, house agent, RPC server |
+| `infrastructure` | Chain, networking, deployment, CI/CD, devops, monitoring | chain restart, CI pipeline, operational setup |
+| `verification` | Test suites, coverage, audits, formal verification | test coverage sprint, security audit |
+| `economic` | Financial logic, tokenomics, emission, staking, rewards | emission schedule, staking mechanics |
+| `meta` | Coordination plans, master plans (NEVER use for actual work plans) | master plan only |
+
+Do NOT default to `verification`. Most plans are `foundation`, `game`, `service`, or `infrastructure`.
+
+## Dependency rules
+
+Extract dependency_plan_ids from ALL of these signals in the plan text:
+- Explicit: "depends on:", "requires:", "blocked by:", "after:"
+- References: "plans/007-chain-restart.md", "see plan 007"
+- Implicit: "once the chain is running" → depends on chain-restart plan
+- Cross-references: "uses casino-core trait" → depends on casino-core
+
+Use the plan_id (kebab-case, no number prefix, no -game/-plan/-trait suffix). E.g., `plans/004-casino-core-trait.md` → `casino-core`.
+
+dependency_plan_ids must NEVER be empty for plans that clearly depend on other plans. Read the plan text carefully for implicit dependencies.
+
+## Proof command rules
+
+1. Use commands that appear verbatim in the plan text when available.
+2. If the plan doesn't contain a verbatim command but describes what should be tested, construct a reasonable proof command from the crate/module names mentioned. E.g., if the plan says "ensure myosu-miner builds" → `cargo build -p myosu-miner`.
+3. Every child MUST have at least one proof_command. Never leave this empty. At minimum use `cargo check -p {crate}` for Rust or the equivalent build command for the project.
+4. Prefer specific test targets (`cargo test -p crate -- test_name`) over broad ones (`cargo test`).
+
 ## Critical rules
 
 1. One child per milestone in the plan's Progress section. Do NOT duplicate or split.
-2. Do NOT invent proof commands — only use commands that appear verbatim in the plan.
-3. Child IDs must be concise. Bad: `craps-game-engine-state-machine-30-bet-types`. Good: `casino-core`.
-4. Archetype: almost everything is `implement`. Only use `integration` for e2e/system tests, `orchestration` for meta-work spawning child programs, `report` for non-code artifacts.
-5. Lane kind: `service` for daemons, APIs, agents, handlers, and anything with health/operator surfaces. `interface` for TUI/web/mobile/CLI user-facing work. `platform` for libraries and core modules.
-6. Review profile: `standard` for normal code. `foundation` for shared types/traits/SDK that downstream work depends on. `hardened` for security, crypto, financial logic, correctness-critical invariants — anything where bugs are catastrophic. `ux` for user-facing surfaces (TUI, web, mobile, CLI).
-7. Write each YAML file directly using the Write tool. Do NOT output YAML to stdout.
+2. Child IDs must be concise. Bad: `craps-game-engine-state-machine-30-bet-types`. Good: `casino-core`.
+3. Archetype: almost everything is `implement`. Only use `integration` for e2e/system tests, `orchestration` for meta-work spawning child programs, `report` for non-code artifacts.
+4. Lane kind: `service` for daemons, APIs, agents, handlers, and anything with health/operator surfaces. `interface` for TUI/web/mobile/CLI user-facing work. `platform` for libraries and core modules. `artifact` for documentation/reports.
+5. Review profile: `standard` for normal code. `foundation` for shared types/traits/SDK that downstream work depends on. `hardened` for security, crypto, financial logic, correctness-critical invariants — anything where bugs are catastrophic. `ux` for user-facing surfaces (TUI, web, mobile, CLI).
+6. Write each YAML file directly using the Write tool. Do NOT output YAML to stdout.
 
 Process all {plan_count} plans now. Use parallel agents for speed."#,
         target_repo = target_repo.display(),
