@@ -3041,8 +3041,7 @@ async fn import_company_package(
     if let Some(agents) = manifest.get("agents").and_then(|a| a.as_array()) {
         for agent in agents {
             if let Some(path) = agent.get("path").and_then(|p| p.as_str()) {
-                let content =
-                    std::fs::read_to_string(bundle_root.join(path)).unwrap_or_default();
+                let content = std::fs::read_to_string(bundle_root.join(path)).unwrap_or_default();
                 agent_files.insert(path.to_string(), json!(content));
             }
         }
@@ -3052,6 +3051,18 @@ async fn import_company_package(
     files.insert(company_path_str.to_string(), json!(company_md));
     for (path, content) in &agent_files {
         files.insert(path.clone(), content.clone());
+    }
+
+    // The Paperclip manifest schema expects source to be null or {companyId: uuid, companyName: string}.
+    // Our generated manifests have source: null which is valid.
+    let mut manifest = manifest;
+    if manifest
+        .get("company")
+        .and_then(|c| c.get("brandColor"))
+        .map(|v| v.is_null())
+        == Some(true)
+    {
+        manifest["company"]["brandColor"] = json!("");
     }
 
     let target = if let Some(company_id) = existing_company_id {
