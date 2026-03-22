@@ -130,6 +130,8 @@ pub fn classify_failure(
         || (combined.contains("could not update path") && combined.contains("codex_home"))
         || combined.contains("failed to create cli scratch dir")
         || combined.contains("failed to connect to websocket")
+        || combined.contains("no input provided via stdin")
+        || combined.contains("using the --prompt option")
     {
         return Some(FailureKind::TransientLaunchFailure);
     }
@@ -335,6 +337,20 @@ mod tests {
         assert_eq!(
             classify_failure(Some("{\"error\":\"rate_limit\"}"), None, None),
             Some(FailureKind::ProviderAccessLimited)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_gemini_prompt_launch_failures() {
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "No input provided via stdin. Input can be provided by piping data into gemini or using the --prompt option."
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
         );
     }
 

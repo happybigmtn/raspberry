@@ -300,6 +300,7 @@ pub fn orchestrate_program(
 
         cycle_number += 1;
         let manifest = ProgramManifest::load(&manifest_path)?;
+        reap_orphaned_program_workers(&manifest_path, &manifest)?;
         let program_before = evaluate_program(&manifest_path)?;
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);
@@ -461,6 +462,20 @@ pub fn orchestrate_program(
             .lanes
             .iter()
             .any(|lane| lane.status == LaneExecutionStatus::Running);
+        let replayable_failures_after = dispatchable_failed_lanes(&manifest, &program_after, false);
+        let regenerable_failures_after = regenerable_failed_lanes(&program_after);
+        let frontier_after = FrontierSignature {
+            ready: program_after
+                .lanes
+                .iter()
+                .filter(|lane| lane.status == LaneExecutionStatus::Ready)
+                .count(),
+            running: running_after,
+            replayable_failed: replayable_failures_after.len(),
+            regenerable_failed: regenerable_failures_after.len(),
+            complete: complete_after,
+            failed_recovery_keys: failed_recovery_keys(&program_after),
+        };
         let spare_child_slots = max_parallel.saturating_sub(running_after);
         if spare_child_slots > 0
             && advance_child_programs(
@@ -476,6 +491,23 @@ pub fn orchestrate_program(
             continue;
         }
         if !has_ready && !has_running {
+            if should_trigger_evolve(
+                last_evolve_at,
+                evolve_every,
+                &frontier_after,
+                max_parallel,
+                frontier_budget,
+                true,
+                doctrine_inputs_changed(&manifest_path, &manifest, settings)?,
+                !regenerable_failures_after.is_empty(),
+                last_evolve_frontier.as_ref(),
+            ) {
+                run_synth_evolve(&manifest_path, &manifest, settings)?;
+                last_evolve_at = Some(Instant::now());
+                last_evolve_frontier = Some(frontier_after);
+                thread::sleep(poll_interval);
+                continue;
+            }
             if let Some(interval) = settled_watchdog_interval(
                 max_cycles,
                 blocked_after,
@@ -705,12 +737,18 @@ fn should_trigger_evolve(
     recovery_needs_evolve: bool,
     last_evolve_frontier: Option<&FrontierSignature>,
 ) -> bool {
-    if frontier.total_work() >= frontier_budget {
-        return false;
-    }
     let spare_capacity = frontier.running < max_parallel;
     let frontier_progressed = last_evolve_frontier != Some(frontier);
     let no_active_work = frontier.running == 0;
+    let wedged_frontier = frontier.ready == 0
+        && spare_capacity
+        && (frontier.regenerable_failed > 0 || frontier.replayable_failed > 0);
+    if frontier.total_work() >= frontier_budget && !wedged_frontier {
+        return false;
+    }
+    if wedged_frontier && recovery_needs_evolve && frontier_progressed {
+        return true;
+    }
     let spare_capacity_trigger =
         spare_capacity && no_active_work && frontier.ready == 0 && frontier_progressed;
     if doctrine_changed && (locally_settled || spare_capacity_trigger) {
@@ -728,6 +766,81 @@ fn should_trigger_evolve(
         return true;
     }
     spare_capacity_trigger
+}
+
+fn reap_orphaned_program_workers(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+) -> Result<(), AutodevError> {
+    let state_path = manifest.resolved_state_path(manifest_path);
+    let tracked_state =
+        crate::program_state::ProgramRuntimeState::load_optional(&state_path).map_err(|error| {
+            AutodevError::ReadReport {
+                path: state_path.clone(),
+                source: std::io::Error::other(error.to_string()),
+            }
+        })?;
+    let Some(tracked_state) = tracked_state else {
+        return Ok(());
+    };
+    let active_run_ids = tracked_state
+        .lanes
+        .values()
+        .filter(|record| record.status == LaneExecutionStatus::Running)
+        .filter_map(|record| {
+            record
+                .current_fabro_run_id
+                .clone()
+                .or(record.current_run_id.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    for record in tracked_state.lanes.values() {
+        let Some(run_id) = record.last_run_id.as_deref() else {
+            continue;
+        };
+        if active_run_ids.contains(run_id) {
+            continue;
+        }
+        terminate_repo_run_if_active(run_id, &target_repo);
+    }
+    Ok(())
+}
+
+fn terminate_repo_run_if_active(run_id: &str, target_repo: &Path) {
+    let base = fabro_workflows::run_lookup::default_runs_base();
+    let Ok(inspection) = fabro_workflows::run_inspect::inspect_run(&base, run_id) else {
+        return;
+    };
+    if !inspection.status.is_active() {
+        return;
+    }
+    let Some(manifest) = inspection.manifest.as_ref() else {
+        return;
+    };
+    let Some(host_repo_path) = manifest.host_repo_path.as_deref() else {
+        return;
+    };
+    if normalize_path(Path::new(host_repo_path)) != normalize_path(target_repo) {
+        return;
+    }
+    terminate_run_pid(&inspection.run_dir);
+}
+
+fn terminate_run_pid(run_dir: &Path) {
+    let Ok(pid_raw) = fs::read_to_string(run_dir.join("run.pid")) else {
+        return;
+    };
+    let pid = pid_raw.trim();
+    if pid.is_empty() {
+        return;
+    }
+    let _ = Command::new("kill").arg("-TERM").arg(pid).status();
+    thread::sleep(Duration::from_millis(200));
+    #[cfg(target_os = "linux")]
+    if Path::new("/proc").join(pid).exists() {
+        let _ = Command::new("kill").arg("-KILL").arg(pid).status();
+    }
 }
 
 fn count_lanes_with_status(
@@ -2505,6 +2618,30 @@ units:
             false,
             true,
             Some(&frontier),
+        ));
+    }
+
+    #[test]
+    fn wedged_frontier_can_trigger_evolve_even_above_budget() {
+        let frontier = FrontierSignature {
+            ready: 0,
+            running: 1,
+            replayable_failed: 2,
+            regenerable_failed: 3,
+            complete: 4,
+            failed_recovery_keys: vec!["lane:proof_script_failure:regenerate_lane".to_string()],
+        };
+
+        assert!(should_trigger_evolve(
+            None,
+            Duration::from_secs(300),
+            &frontier,
+            8,
+            2,
+            false,
+            false,
+            true,
+            None,
         ));
     }
 

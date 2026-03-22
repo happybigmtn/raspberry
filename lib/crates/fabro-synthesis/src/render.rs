@@ -13,10 +13,10 @@ use crate::error::RenderError;
 
 const DEFAULT_WRITE_PROVIDER: &str = "minimax";
 const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
-const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_REVIEW_PROVIDER: &str = "openai";
+const DEFAULT_REVIEW_MODEL: &str = "gpt-5.4";
 const REVIEW_FALLBACK_SECTION: &str =
-    "\n[llm.fallbacks]\nminimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]\nanthropic = [\"openai\", \"gemini\", \"kimi\"]\n";
+    "\n[llm.fallbacks]\nminimax = [\"openai\", \"kimi\", \"anthropic\"]\nopenai = [\"anthropic\", \"kimi\"]\nanthropic = [\"openai\", \"kimi\"]\n";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -650,9 +650,11 @@ fn render_workflow_graph(
             );
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #fixup       {{ backend: cli; model: {}; provider: {}; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
+                DEFAULT_REVIEW_MODEL,
+                DEFAULT_REVIEW_PROVIDER,
                 DEFAULT_REVIEW_MODEL,
                 DEFAULT_REVIEW_PROVIDER,
                 DEFAULT_REVIEW_MODEL,
@@ -807,12 +809,12 @@ fn implementation_quality_command(
     }
     if surface_scan_lines.is_empty() {
         surface_scan_lines.push(
-            "changed_paths=\"$(git diff --name-only $(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)..HEAD | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"".to_string(),
+            "changed_paths=\"$(git diff --name-only $(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)..HEAD | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$' || true)\"".to_string(),
         );
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nQUALITY_BASE_REF=\"$(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  search_root=\"$surface\"\n  if [ -e \"$surface\" ] && [ -f \"$surface\" ]; then\n    search_root=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$search_root\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only \"$QUALITY_BASE_REF\"..HEAD -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$code_change_present\" = no ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nQUALITY_BASE_REF=\"$(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  scan_target=\"$surface\"\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' -g '*.md' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$scan_target\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only \"$QUALITY_BASE_REF\"..HEAD -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -1313,11 +1315,10 @@ reason: <one sentence>\n\
 next_action: <one sentence>\n\n\
 Only set `merge_ready: yes` when:\n\
 - `quality.md` says `quality_ready: yes`\n\
-- `quality.md` says `code_change_present: yes`\n\
 - automated proof is sufficient for this slice\n\
 - any required manual proof has actually been performed\n\
 - no unresolved failures undermine confidence\n\
-- the touched code under the owned surfaces matches the claimed slice.\n",
+- the touched code under the owned surfaces matches the claimed slice, or the review confirms the slice was already truthfully satisfied before implementation began.\n",
     );
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
@@ -5176,7 +5177,7 @@ The validator binary should emit structured log lines.
 
         let command = implementation_quality_command(&blueprint, "home-miner-service", &lane);
 
-        assert!(command.contains("git diff --name-only --"));
+        assert!(command.contains("git diff --name-only \"$QUALITY_BASE_REF\"..HEAD --"));
         assert!(command.contains("code_change_present"));
         assert!(!command.contains("artifact_mismatch_risk"));
     }
@@ -5517,10 +5518,13 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
         assert!(graph.contains(
-            "#challenge   { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+            "#fixup       { backend: cli; model: gpt-5.4; provider: openai; }"
         ));
         assert!(graph.contains(
-            "#review      { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+            "#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"
+        ));
+        assert!(graph.contains(
+            "#review      { backend: cli; model: gpt-5.4; provider: openai; }"
         ));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
@@ -5578,7 +5582,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5669,6 +5674,83 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn implementation_quality_command_counts_markdown_surfaces_as_changes() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "rxmragent".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![BlueprintUnit {
+                id: "monero-infrastructure-wallet-rpc-ref".to_string(),
+                title: "Wallet RPC Reference".to_string(),
+                output_root: PathBuf::from("outputs/monero-infrastructure-wallet-rpc-ref"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from(
+                            "outputs/monero-infrastructure-wallet-rpc-ref/implementation.md",
+                        ),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from(
+                            "outputs/monero-infrastructure-wallet-rpc-ref/verification.md",
+                        ),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from(
+                            "outputs/monero-infrastructure-wallet-rpc-ref/quality.md",
+                        ),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "monero-infrastructure-wallet-rpc-ref".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Wallet RPC Reference".to_string(),
+                    family: "implementation".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("monero-infrastructure-wallet-rpc-ref".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Wallet RPC reference\n\nOwned surfaces:\n- `CHAIN.md`\n".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                    ],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let lane = &blueprint.units[0].lanes[0];
+        let command =
+            implementation_quality_command(&blueprint, "monero-infrastructure-wallet-rpc-ref", lane);
+
+        assert!(command.contains("scan_surface 'CHAIN.md'"));
+        assert!(command.contains("-g '*.md'"));
+        assert!(command.contains("\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$"));
+        assert!(!command.contains("code_change_present: yes ] ||"));
+    }
+
+    #[test]
     fn bootstrap_run_config_uses_minimax_defaults_and_direct_integration() {
         let lane = BlueprintLane {
             id: "private-control-plane".to_string(),
@@ -5704,7 +5786,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5751,7 +5834,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
+        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
