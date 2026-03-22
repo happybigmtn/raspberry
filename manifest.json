@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMBEKNX6SGNZZM5E0F4G7RZA",
+  "workflow_name": "Simple",
+  "goal": "Run tests and report results",
+  "start_time": "2026-03-22T18:58:37.357807669Z",
+  "node_count": 4,
+  "edge_count": 3,
+  "run_branch": "fabro/run/01KMBEKNX6SGNZZM5E0F4G7RZA",
+  "base_sha": "c8dfda4253cb5ab757ccdd04ff949dcc7ec38c66",
+  "base_branch": "codex/minimax-pi-autodev-20260322",
+  "workflow_slug": "test",
+  "host_repo_path": "/tmp/fabro-push-m3GUST/lib/crates/fabro-cli"
+}
