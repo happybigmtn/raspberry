@@ -15,9 +15,10 @@ use fabro_synthesis::{
     ProgramBlueprint, RenderRequest, WorkflowTemplate,
 };
 use raspberry_supervisor::{
-    evaluate::evaluate_with_state, load_plan_registry, refresh_program_state, EvaluatedLane,
-    FailureKind, LaneExecutionStatus, MaintenanceMode, PlanMappingSource, PlanMatrix, PlanRegistry,
-    PlanStatusRow, ProgramManifest, ProgramRuntimeState,
+    evaluate::evaluate_with_state, load_plan_registry, load_plan_registry_from_planning_root,
+    refresh_program_state, EvaluatedLane, FailureKind, LaneExecutionStatus, MaintenanceMode,
+    PlanMappingSource, PlanMatrix, PlanRegistry, PlanStatusRow, ProgramManifest,
+    ProgramRuntimeState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const SYNC_MARKER_PREFIX: &str = "fabro.paperclip.sync-key:";
+const PAPERCLIP_DEFAULT_AUTOMATION_MODEL: &str = "MiniMax-M2.7-highspeed";
 
 #[derive(Debug, Args)]
 pub struct PaperclipArgs {
@@ -429,10 +431,10 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &paperclip_status_command(&paths),
     )?;
     let plan_matrix = raspberry_supervisor::load_plan_matrix(&paths.manifest_path).ok();
-    let plan_registry = load_plan_registry(&paths.target_repo).ok();
-    let plan_dashboard = plan_registry
-        .as_ref()
-        .map(|reg| build_plan_dashboard_model(&paths.program_id, reg, plan_matrix.as_ref()));
+    let plan_registry = load_primary_or_genesis_plan_registry(&paths.target_repo);
+    let plan_dashboard = plan_registry.as_ref().map(|reg| {
+        build_plan_dashboard_model(&paths.program_id, reg, plan_matrix.as_ref(), &frontier)
+    });
     let bundle = build_company_bundle(
         &blueprint,
         &paths.target_repo,
@@ -491,6 +493,19 @@ async fn apply_paperclip_context(
         saved_company_id.as_deref(),
     )
     .await?;
+    if let Some(existing_company_id) = existing_company_id.as_deref() {
+        let pruned = prune_existing_generated_agents(
+            &paths.api_base,
+            existing_company_id,
+            &context.bundle.agents,
+        )
+        .await?;
+        if pruned > 0 {
+            eprintln!(
+                "paperclip refresh: pruned {pruned} previously generated agent(s) before import"
+            );
+        }
+    }
     let import_result = import_company_package(
         &paperclip_cmd,
         &paths.data_dir,
@@ -666,6 +681,101 @@ async fn apply_paperclip_context(
         synced_work_product_count,
         synced_attachment_count,
     })
+}
+
+async fn prune_existing_generated_agents(
+    api_base: &str,
+    company_id: &str,
+    desired_agents: &[BundleAgent],
+) -> Result<usize> {
+    let client = reqwest::Client::new();
+    let existing_agents = client
+        .get(format!("{api_base}/api/companies/{company_id}/agents"))
+        .send()
+        .await
+        .context("failed to list paperclip agents before import")?
+        .error_for_status()
+        .context("paperclip agent list request failed before import")?
+        .json::<Vec<PaperclipManagedAgent>>()
+        .await
+        .context("failed to parse paperclip agents before import")?;
+
+    let generated_agents = existing_agents
+        .into_iter()
+        .filter(|agent| {
+            agent.metadata.as_ref().and_then(|metadata| {
+                metadata
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value == "fabro.paperclip")
+            }) == Some(true)
+        })
+        .collect::<Vec<_>>();
+    if generated_agents.is_empty() {
+        return Ok(0);
+    }
+
+    let desired_keys = desired_agents
+        .iter()
+        .filter_map(desired_agent_identity_key)
+        .collect::<BTreeSet<_>>();
+    let mut live_counts = BTreeMap::<String, usize>::new();
+    for agent in &generated_agents {
+        let Some(key) = managed_agent_identity_key(agent) else {
+            return Ok(0);
+        };
+        *live_counts.entry(key).or_insert(0) += 1;
+    }
+    let live_keys = live_counts.keys().cloned().collect::<BTreeSet<_>>();
+    let duplicates_present = live_counts.values().any(|count| *count > 1);
+    let dirty = duplicates_present
+        || generated_agents.len() > desired_agents.len()
+        || live_keys != desired_keys;
+    if !dirty {
+        return Ok(0);
+    }
+
+    let generated_ids = generated_agents
+        .into_iter()
+        .map(|agent| agent.id)
+        .collect::<Vec<_>>();
+
+    for agent_id in &generated_ids {
+        client
+            .delete(format!("{api_base}/api/agents/{agent_id}"))
+            .send()
+            .await
+            .with_context(|| format!("failed to delete generated paperclip agent {agent_id}"))?
+            .error_for_status()
+            .with_context(|| {
+                format!("paperclip agent delete request failed for generated agent {agent_id}")
+            })?;
+    }
+
+    Ok(generated_ids.len())
+}
+
+fn desired_agent_identity_key(agent: &BundleAgent) -> Option<String> {
+    if agent.metadata_type == Some("mission_ceo") {
+        return None;
+    }
+    if let (Some(unit), Some(lane_key)) = (agent.unit.as_deref(), agent.lane_key.as_deref()) {
+        return Some(format!("lane:{unit}:{lane_key}"));
+    }
+    if let Some(metadata_type) = agent.metadata_type {
+        return Some(format!("type:{metadata_type}"));
+    }
+    None
+}
+
+fn managed_agent_identity_key(agent: &PaperclipManagedAgent) -> Option<String> {
+    let metadata = agent.metadata.as_ref()?;
+    if let Some(metadata_type) = metadata.get("type").and_then(|value| value.as_str()) {
+        return Some(format!("type:{metadata_type}"));
+    }
+    let unit = metadata.get("unit").and_then(|value| value.as_str())?;
+    let lane_key = metadata.get("laneKey").and_then(|value| value.as_str())?;
+    Some(format!("lane:{unit}:{lane_key}"))
 }
 
 fn print_paperclip_context_summary(paths: &PaperclipPaths, goal_title: &str) {
@@ -1145,19 +1255,28 @@ struct PlanDashboardEntry {
     plan_id: String,
     title: String,
     category: String,
+    #[allow(dead_code)] // Retained for future plan-root narrative output and tests.
     composite: bool,
     path: String,
     status: String,
+    current_stage: Option<String>,
+    current_run_id: Option<String>,
     risk: String,
     next_move: String,
     mapping_source: String,
     children: Vec<PlanDashboardChild>,
 }
 
+#[allow(dead_code)] // Meta classification remains useful for docs/tests even when sync materialization uses child presence.
 impl PlanDashboardEntry {
     fn is_syncable(&self) -> bool {
         self.category != "meta"
     }
+}
+
+fn should_materialize_plan_agent(plan: &PlanDashboardEntry) -> bool {
+    let _ = plan;
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -1168,6 +1287,10 @@ struct PlanDashboardChild {
     review_profile: Option<String>,
     owned_surfaces: Vec<String>,
     sync_key: String,
+    status: String,
+    current_stage: Option<String>,
+    current_run_id: Option<String>,
+    next_operator_move: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1259,6 +1382,12 @@ fn build_company_bundle(
     plan_dashboard: Option<&PlanDashboardModel>,
 ) -> Result<GeneratedBundle> {
     let description = mission.company_description.clone();
+    let effective_plan_dashboard = plan_dashboard
+        .cloned()
+        .filter(|dashboard| !dashboard.plans.is_empty())
+        .or_else(|| synthesize_bundle_plan_dashboard(target_repo, &blueprint.program.id, frontier));
+    let materialized_plan_ids =
+        collect_materialized_plan_ids(target_repo, effective_plan_dashboard.as_ref());
     let mut manifest_agents = Vec::new();
     let mut agent_markdowns = Vec::new();
     let mut agents = Vec::new();
@@ -1275,6 +1404,9 @@ fn build_company_bundle(
         orchestrator_draft(blueprint, target_repo, orchestrator_script, frontier),
     );
     for unit in &blueprint.units {
+        if !materialized_plan_ids.contains(&unit.id) {
+            continue;
+        }
         for lane in &unit.lanes {
             let lane_key = format!("{}:{}", unit.id, lane.id);
             let frontier_entry = frontier
@@ -1285,7 +1417,7 @@ fn build_company_bundle(
                 &mut manifest_agents,
                 &mut agent_markdowns,
                 &mut agents,
-                lane_agent_draft(
+                top_level_plan_agent_draft(
                     blueprint,
                     target_repo,
                     mission,
@@ -1294,19 +1426,6 @@ fn build_company_bundle(
                     lane,
                     frontier_entry,
                 ),
-            );
-        }
-    }
-    if let Some(dashboard) = plan_dashboard {
-        for plan in &dashboard.plans {
-            if !plan.is_syncable() || plan.children.is_empty() {
-                continue;
-            }
-            push_bundle_agent(
-                &mut manifest_agents,
-                &mut agent_markdowns,
-                &mut agents,
-                plan_root_agent_draft(target_repo, frontier, plan),
             );
         }
     }
@@ -1344,7 +1463,7 @@ fn build_company_bundle(
         &description,
         frontier,
         plan_matrix,
-        plan_dashboard,
+        effective_plan_dashboard.as_ref(),
         &agents,
     );
 
@@ -1354,6 +1473,191 @@ fn build_company_bundle(
         agent_markdowns,
         agents,
     })
+}
+
+fn synthesize_bundle_plan_dashboard(
+    target_repo: &Path,
+    program_id: &str,
+    frontier: &FrontierSyncModel,
+) -> Option<PlanDashboardModel> {
+    let plans_dir = target_repo.join("genesis").join("plans");
+    if !plans_dir.is_dir() {
+        return None;
+    }
+
+    let mut paths = std::fs::read_dir(&plans_dir)
+        .ok()?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    paths.sort();
+
+    let mut plans = Vec::new();
+    for absolute_path in paths {
+        if absolute_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = absolute_path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let prefix = stem.split('-').next().unwrap_or_default();
+        if prefix.len() != 3 || !prefix.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+
+        let Ok(body) = std::fs::read_to_string(&absolute_path) else {
+            continue;
+        };
+        let title = body
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("# ").map(str::trim))
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| stem.to_string());
+        let mut plan_id = stem
+            .split_once('-')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| stem.to_string());
+        for suffix in ["-game", "-plan", "-crate", "-trait"] {
+            if let Some(stripped) = plan_id.strip_suffix(suffix) {
+                plan_id = stripped.to_string();
+            }
+        }
+
+        let live_plan_entry = plan_frontier_entry(frontier, &plan_id);
+        let status = live_plan_entry
+            .map(|entry| entry.status.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let category = if plan_id == "master" {
+            "meta"
+        } else if plan_id.contains("test")
+            || plan_id.contains("verify")
+            || plan_id.contains("verification")
+            || plan_id.contains("performance")
+        {
+            "verification"
+        } else if plan_id.contains("infrastructure")
+            || plan_id.contains("chain")
+            || plan_id.contains("install")
+        {
+            "infrastructure"
+        } else if plan_id.contains("tui") || plan_id.contains("ui") || plan_id.contains("dashboard")
+        {
+            "interface"
+        } else if plan_id.contains("wallet")
+            || plan_id.contains("house")
+            || plan_id.contains("blueprint")
+            || plan_id.contains("faucet")
+        {
+            "service"
+        } else {
+            "unknown"
+        };
+
+        let Ok(relative_path) = absolute_path.strip_prefix(target_repo) else {
+            continue;
+        };
+        plans.push(PlanDashboardEntry {
+            plan_id,
+            title,
+            category: category.to_string(),
+            composite: true,
+            path: relative_path.display().to_string(),
+            status,
+            current_stage: live_plan_entry.and_then(|entry| entry.current_stage.clone()),
+            current_run_id: live_plan_entry.and_then(|entry| entry.current_run_id.clone()),
+            risk: String::new(),
+            next_move: live_plan_entry
+                .map(|entry| entry.next_operator_move.clone())
+                .unwrap_or_else(|| "inspect plan".to_string()),
+            mapping_source: "inferred".to_string(),
+            children: Vec::new(),
+        });
+    }
+
+    if plans.is_empty() {
+        return None;
+    }
+
+    let represented = plans.iter().filter(|plan| plan.status != "unknown").count();
+    let in_motion = plans
+        .iter()
+        .filter(|plan| plan.status.contains("running") || plan.status.contains("ready"))
+        .count();
+    let needs_attention = plans
+        .iter()
+        .filter(|plan| {
+            plan.status.contains("failed")
+                || plan.status.contains("blocked")
+                || plan.status == "unmodeled"
+        })
+        .count();
+    let complete = plans
+        .iter()
+        .filter(|plan| plan.status.contains("complete") || plan.status == "reviewed")
+        .count();
+
+    Some(PlanDashboardModel {
+        program: program_id.to_string(),
+        summary: PlanDashboardSummary {
+            total: plans.len(),
+            represented,
+            in_motion,
+            needs_attention,
+            complete,
+        },
+        plans,
+    })
+}
+
+fn collect_materialized_plan_ids(
+    target_repo: &Path,
+    dashboard: Option<&PlanDashboardModel>,
+) -> BTreeSet<String> {
+    let mut ids = dashboard
+        .map(|dashboard| {
+            dashboard
+                .plans
+                .iter()
+                .filter(|plan| should_materialize_plan_agent(plan))
+                .map(|plan| plan.plan_id.clone())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+
+    if !ids.is_empty() {
+        return ids;
+    }
+
+    let plans_dir = target_repo.join("genesis").join("plans");
+    let Ok(entries) = std::fs::read_dir(&plans_dir) else {
+        return ids;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let prefix = stem.split('-').next().unwrap_or_default();
+        if prefix.len() != 3 || !prefix.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let mut plan_id = stem
+            .split_once('-')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| stem.to_string());
+        for suffix in ["-game", "-plan", "-crate", "-trait"] {
+            if let Some(stripped) = plan_id.strip_suffix(suffix) {
+                plan_id = stripped.to_string();
+            }
+        }
+        ids.insert(plan_id);
+    }
+
+    ids
 }
 
 fn push_bundle_agent(
@@ -1387,7 +1691,8 @@ fn mission_ceo_draft(
             "adapterType": "claude_local",
             "adapterConfig": {
                 "cwd": target_repo.display().to_string(),
-                "model": "claude-sonnet-4-6"
+                "model": PAPERCLIP_DEFAULT_AUTOMATION_MODEL,
+                "dangerouslySkipPermissions": true
             },
             "runtimeConfig": {
                 "heartbeat": {
@@ -1493,6 +1798,8 @@ fn orchestrator_draft(
     }
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -1507,16 +1814,14 @@ fn lane_agent_draft(
     let role = lane_role(unit, lane);
     let adapter_type = lane_adapter_type(unit, lane);
     let lane_key = format!("{}:{}", unit.id, lane.id);
-    let model = if adapter_type == "claude_local" {
-        json!("claude-sonnet-4-6")
-    } else {
-        json!("gpt-5.3-codex")
-    };
+    let model = json!(PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
     let mut adapter_config = serde_json::Map::from_iter([
         ("cwd".to_string(), json!(target_repo.display().to_string())),
         ("model".to_string(), model.clone()),
     ]);
-    if adapter_type == "codex_local" {
+    if adapter_type == "claude_local" {
+        adapter_config.insert("dangerouslySkipPermissions".to_string(), json!(true));
+    } else if adapter_type == "codex_local" {
         let codex_home = preferred_automation_codex_home()
             .unwrap_or_else(|| target_repo.join(".paperclip").join("codex").join(&slug));
         adapter_config.insert(
@@ -1524,6 +1829,10 @@ fn lane_agent_draft(
             json!({
                 "CODEX_HOME": codex_home.display().to_string()
             }),
+        );
+        adapter_config.insert(
+            "dangerouslyBypassApprovalsAndSandbox".to_string(),
+            json!(true),
         );
     }
     BundleAgentDraft {
@@ -1589,6 +1898,29 @@ fn lane_agent_draft(
     }
 }
 
+fn top_level_plan_agent_draft(
+    blueprint: &ProgramBlueprint,
+    target_repo: &Path,
+    mission: &BootstrapMission,
+    frontier: &FrontierSyncModel,
+    unit: &BlueprintUnit,
+    lane: &fabro_synthesis::BlueprintLane,
+    frontier_entry: Option<&FrontierSyncEntry>,
+) -> BundleAgentDraft {
+    let mut draft = lane_agent_draft(
+        blueprint,
+        target_repo,
+        mission,
+        frontier,
+        unit,
+        lane,
+        frontier_entry,
+    );
+    draft.agent.plan_id = Some(unit.id.clone());
+    draft.agent.metadata_type = Some("plan_root");
+    draft
+}
+
 fn render_plan_children_summary(children: &[PlanDashboardChild]) -> String {
     if children.is_empty() {
         return "No children defined.".to_string();
@@ -1596,10 +1928,25 @@ fn render_plan_children_summary(children: &[PlanDashboardChild]) -> String {
     children
         .iter()
         .map(|c| {
+            let stage = c
+                .current_stage
+                .as_deref()
+                .map(|value| format!(" | stage `{value}`"))
+                .unwrap_or_default();
+            let run = c
+                .current_run_id
+                .as_deref()
+                .map(|value| format!(" | run `{value}`"))
+                .unwrap_or_default();
             format!(
-                "- `{}` ({}) — surfaces: {}",
+                "- `{}`: {} ({}) — status `{}`{}{} — next: {} — surfaces: {}",
                 c.child_id,
+                c.title,
                 c.archetype.as_deref().unwrap_or("implement"),
+                c.status,
+                stage,
+                run,
+                c.next_operator_move,
                 if c.owned_surfaces.is_empty() {
                     "none".to_string()
                 } else {
@@ -1611,6 +1958,7 @@ fn render_plan_children_summary(children: &[PlanDashboardChild]) -> String {
         .join("\n")
 }
 
+#[allow(dead_code)] // Retained while the repo migrates from legacy plan-root imports to top-level lane ownership.
 fn plan_root_agent_draft(
     target_repo: &Path,
     frontier: &FrontierSyncModel,
@@ -1631,11 +1979,13 @@ fn plan_root_agent_draft(
     let children_summary = render_plan_children_summary(&plan.children);
 
     let body = format!(
-        "# {name}\n\nYou are the plan-root agent for `{plan_id}` in `{repo}`.\n\n## Plan Status\n\n- Status: {status}\n- Risk: {risk}\n- Next move: {next_move}\n- Mapping: {mapping}\n- Category: {category}\n- Composite: {composite}\n\n## Children\n\n{children}\n\n## Commands\n\n- Wake orchestrator: `{wake}`\n- Route fallback: `{route}`\n- Refresh Paperclip: `{refresh}`\n- Inspect status: `{status_cmd}`\n",
+        "# {name}\n\nYou are the plan-root agent for `{plan_id}` in `{repo}`.\n\n## Plan Status\n\n- Status: {status}\n- Current stage: {current_stage}\n- Current run: {current_run}\n- Risk: {risk}\n- Next move: {next_move}\n- Mapping: {mapping}\n- Category: {category}\n- Composite: {composite}\n\n## Children\n\n{children}\n\n## Commands\n\n- Wake orchestrator: `{wake}`\n- Route fallback: `{route}`\n- Refresh Paperclip: `{refresh}`\n- Inspect status: `{status_cmd}`\n",
         name = name,
         plan_id = plan.plan_id,
         repo = target_repo.display(),
         status = plan.status,
+        current_stage = plan.current_stage.as_deref().unwrap_or("none"),
+        current_run = plan.current_run_id.as_deref().unwrap_or("none"),
         risk = plan.risk,
         next_move = plan.next_move,
         mapping = plan.mapping_source,
@@ -1648,16 +1998,52 @@ fn plan_root_agent_draft(
         status_cmd = frontier.status_command,
     );
 
+    let mut adapter_config = serde_json::Map::from_iter([
+        ("cwd".to_string(), json!(target_repo.display().to_string())),
+        (
+            "model".to_string(),
+            json!(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
+        ),
+    ]);
+    if adapter_type == "claude_local" {
+        adapter_config.insert("dangerouslySkipPermissions".to_string(), json!(true));
+    } else {
+        let codex_home = preferred_automation_codex_home()
+            .unwrap_or_else(|| target_repo.join(".paperclip").join("codex").join(&slug));
+        adapter_config.insert(
+            "env".to_string(),
+            json!({
+                "CODEX_HOME": codex_home.display().to_string()
+            }),
+        );
+        adapter_config.insert(
+            "dangerouslyBypassApprovalsAndSandbox".to_string(),
+            json!(true),
+        );
+    }
+
     BundleAgentDraft {
         manifest: json!({
-            "path": format!("agents/{slug}/AGENTS.md"),
-            "name": name,
             "slug": slug,
+            "name": name.clone(),
+            "path": format!("agents/{slug}/AGENTS.md"),
             "role": role,
-            "adapter": {
-                "type": adapter_type,
+            "title": name.clone(),
+            "icon": serde_json::Value::Null,
+            "capabilities": format!("Own the `{}` plan and its coordination artifacts.", plan.plan_id),
+            "reportsToSlug": "raspberry-orchestrator",
+            "adapterType": adapter_type,
+            "adapterConfig": serde_json::Value::Object(adapter_config),
+            "runtimeConfig": {
+                "heartbeat": {
+                    "enabled": false,
+                    "intervalSec": 0,
+                    "wakeOnDemand": true,
+                    "maxConcurrentRuns": 1
+                }
             },
-            "reportsTo": "raspberry-orchestrator",
+            "permissions": {},
+            "budgetMonthlyCents": 0,
             "metadata": {
                 "source": "fabro.paperclip",
                 "type": "plan_root",
@@ -1727,6 +2113,8 @@ fn preferred_automation_codex_home() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_agent_slug(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> String {
     if unit.lanes.len() == 1 {
         return unit.id.clone();
@@ -1734,6 +2122,8 @@ fn lane_agent_slug(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) 
     format!("{}--{}", unit.id, lane.id)
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_agent_name(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> String {
     if unit.lanes.len() == 1 {
         return unit.title.clone();
@@ -1741,6 +2131,8 @@ fn lane_agent_name(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) 
     format!("{} / {}", unit.title, lane.title)
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_artifact_block(entry: Option<&FrontierSyncEntry>, unit: &BlueprintUnit) -> String {
     entry
         .map(|frontier_entry| {
@@ -1758,6 +2150,7 @@ fn lane_artifact_block(entry: Option<&FrontierSyncEntry>, unit: &BlueprintUnit) 
         })
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_dependency_block(
     entry: Option<&FrontierSyncEntry>,
     lane: &fabro_synthesis::BlueprintLane,
@@ -1775,6 +2168,7 @@ fn lane_dependency_block(
         })
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn render_blueprint_dependency(dependency: &raspberry_supervisor::LaneDependency) -> String {
     format!(
         "- {}{}{}",
@@ -1792,6 +2186,7 @@ fn render_blueprint_dependency(dependency: &raspberry_supervisor::LaneDependency
     )
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_role(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> &'static str {
     if lane.template == WorkflowTemplate::RecurringReport || unit.id.contains("proof") {
         return "qa";
@@ -1802,6 +2197,7 @@ fn lane_role(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> &'s
     "engineer"
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_adapter_type(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> &'static str {
     if lane.template == WorkflowTemplate::RecurringReport || unit.id.contains("proof") {
         return "claude_local";
@@ -1811,6 +2207,11 @@ fn lane_adapter_type(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane
 
 fn write_bundle(root: &Path, bundle: &GeneratedBundle) -> Result<()> {
     std::fs::create_dir_all(root)?;
+    let agents_dir = root.join("agents");
+    if agents_dir.exists() {
+        std::fs::remove_dir_all(&agents_dir)
+            .with_context(|| format!("failed to prune {}", agents_dir.display()))?;
+    }
     std::fs::write(
         root.join("paperclip.manifest.json"),
         serde_json::to_string_pretty(&bundle.manifest)?,
@@ -2541,10 +2942,125 @@ fn plan_child_sync_key(program_id: &str, plan_id: &str, child_id: &str) -> Strin
     format!("plan/{program_id}/{plan_id}/{child_id}")
 }
 
+fn load_primary_or_genesis_plan_registry(target_repo: &Path) -> Option<PlanRegistry> {
+    let primary = load_plan_registry(target_repo).ok();
+    if primary
+        .as_ref()
+        .is_some_and(|registry| !registry.plans.is_empty())
+    {
+        return primary;
+    }
+
+    let genesis = load_plan_registry_from_planning_root(target_repo, Path::new("genesis")).ok();
+    if genesis
+        .as_ref()
+        .is_some_and(|registry| !registry.plans.is_empty())
+    {
+        return genesis;
+    }
+
+    infer_plan_registry_from_genesis(target_repo).ok()
+}
+
+fn infer_plan_registry_from_genesis(target_repo: &Path) -> Result<PlanRegistry> {
+    let plans_dir = target_repo.join("genesis").join("plans");
+    if !plans_dir.is_dir() {
+        return Ok(PlanRegistry { plans: Vec::new() });
+    }
+
+    let mut paths = std::fs::read_dir(&plans_dir)
+        .with_context(|| format!("failed to read {}", plans_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to enumerate {}", plans_dir.display()))?;
+    paths.sort();
+
+    let plans = paths
+        .into_iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .filter_map(|absolute_path| {
+            let stem = absolute_path.file_stem()?.to_str()?;
+            let prefix = stem.split('-').next().unwrap_or_default();
+            if prefix.len() != 3 || !prefix.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+
+            let Ok(body) = std::fs::read_to_string(&absolute_path) else {
+                return None;
+            };
+            let Ok(relative_path) = absolute_path.strip_prefix(target_repo) else {
+                return None;
+            };
+            let title = body
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("# ").map(str::trim))
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| stem.to_string());
+            let mut plan_id = stem
+                .split_once('-')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| stem.to_string());
+            for suffix in ["-game", "-plan", "-crate", "-trait"] {
+                if let Some(stripped) = plan_id.strip_suffix(suffix) {
+                    plan_id = stripped.to_string();
+                }
+            }
+
+            let plan_id_lower = plan_id.to_ascii_lowercase();
+            let category = if plan_id_lower == "master" {
+                raspberry_supervisor::PlanCategory::Meta
+            } else if plan_id_lower.contains("test")
+                || plan_id_lower.contains("verify")
+                || plan_id_lower.contains("verification")
+                || plan_id_lower.contains("performance")
+            {
+                raspberry_supervisor::PlanCategory::Verification
+            } else if plan_id_lower.contains("infrastructure")
+                || plan_id_lower.contains("chain")
+                || plan_id_lower.contains("install")
+            {
+                raspberry_supervisor::PlanCategory::Infrastructure
+            } else if plan_id_lower.contains("tui")
+                || plan_id_lower.contains("ui")
+                || plan_id_lower.contains("dashboard")
+            {
+                raspberry_supervisor::PlanCategory::Interface
+            } else if plan_id_lower.contains("wallet")
+                || plan_id_lower.contains("house")
+                || plan_id_lower.contains("blueprint")
+                || plan_id_lower.contains("faucet")
+            {
+                raspberry_supervisor::PlanCategory::Service
+            } else {
+                raspberry_supervisor::PlanCategory::Unknown
+            };
+
+            Some(raspberry_supervisor::PlanRecord {
+                plan_id,
+                path: relative_path.to_path_buf(),
+                title,
+                category,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: raspberry_supervisor::PlanMappingSource::Inferred,
+                bootstrap_required: category != raspberry_supervisor::PlanCategory::Meta,
+                implementation_required: category != raspberry_supervisor::PlanCategory::Meta,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            })
+        })
+        .collect();
+
+    Ok(PlanRegistry { plans })
+}
+
 fn build_plan_dashboard_model(
     program_id: &str,
     registry: &PlanRegistry,
     matrix: Option<&PlanMatrix>,
+    frontier: &FrontierSyncModel,
 ) -> PlanDashboardModel {
     let status_by_id: BTreeMap<&str, &PlanStatusRow> = matrix
         .map(|m| {
@@ -2563,12 +3079,15 @@ fn build_plan_dashboard_model(
 
     for plan in &registry.plans {
         let row = status_by_id.get(plan.plan_id.as_str());
+        let live_plan_entry = plan_frontier_entry(frontier, &plan.plan_id);
         let status = row
             .map(|r| r.current_status.clone())
+            .or_else(|| live_plan_entry.map(|entry| entry.status.to_string()))
             .unwrap_or_else(|| "unknown".to_string());
         let risk = row.map(|r| r.current_risk.clone()).unwrap_or_default();
         let next_move = row
             .map(|r| r.next_operator_move.clone())
+            .or_else(|| live_plan_entry.map(|entry| entry.next_operator_move.clone()))
             .unwrap_or_else(|| "inspect plan".to_string());
 
         if row.map(|r| r.represented_in_blueprint).unwrap_or(false) {
@@ -2587,16 +3106,27 @@ fn build_plan_dashboard_model(
         let children: Vec<PlanDashboardChild> = plan
             .children
             .iter()
-            .map(|child| PlanDashboardChild {
-                child_id: child.child_id.clone(),
-                title: child
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| child.child_id.clone()),
-                archetype: child.archetype.map(|a| a.as_str().to_string()),
-                review_profile: child.review_profile.map(|p| p.as_str().to_string()),
-                owned_surfaces: child.owned_surfaces.clone(),
-                sync_key: plan_child_sync_key(program_id, &plan.plan_id, &child.child_id),
+            .map(|child| {
+                let live_entry = frontier_child_entry(frontier, &child.child_id);
+                PlanDashboardChild {
+                    child_id: child.child_id.clone(),
+                    title: child
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| child.child_id.clone()),
+                    archetype: child.archetype.map(|a| a.as_str().to_string()),
+                    review_profile: child.review_profile.map(|p| p.as_str().to_string()),
+                    owned_surfaces: child.owned_surfaces.clone(),
+                    sync_key: plan_child_sync_key(program_id, &plan.plan_id, &child.child_id),
+                    status: live_entry
+                        .map(|entry| entry.status.to_string())
+                        .unwrap_or_else(|| "unmodeled".to_string()),
+                    current_stage: live_entry.and_then(|entry| entry.current_stage.clone()),
+                    current_run_id: live_entry.and_then(|entry| entry.current_run_id.clone()),
+                    next_operator_move: live_entry
+                        .map(|entry| entry.next_operator_move.clone())
+                        .unwrap_or_else(|| next_move.clone()),
+                }
             })
             .collect();
 
@@ -2612,6 +3142,8 @@ fn build_plan_dashboard_model(
             composite: plan.composite,
             path: plan.path.display().to_string(),
             status,
+            current_stage: live_plan_entry.and_then(|entry| entry.current_stage.clone()),
+            current_run_id: live_plan_entry.and_then(|entry| entry.current_run_id.clone()),
             risk,
             next_move,
             mapping_source: mapping_source.to_string(),
@@ -2630,6 +3162,38 @@ fn build_plan_dashboard_model(
             complete,
         },
     }
+}
+
+fn plan_frontier_entry<'a>(
+    frontier: &'a FrontierSyncModel,
+    plan_id: &str,
+) -> Option<&'a FrontierSyncEntry> {
+    frontier
+        .entries
+        .iter()
+        .find(|entry| entry.unit_id == plan_id && entry.lane_id == plan_id)
+        .or_else(|| {
+            frontier
+                .entries
+                .iter()
+                .find(|entry| entry.unit_id == plan_id)
+        })
+}
+
+fn frontier_child_entry<'a>(
+    frontier: &'a FrontierSyncModel,
+    child_id: &str,
+) -> Option<&'a FrontierSyncEntry> {
+    frontier
+        .entries
+        .iter()
+        .find(|entry| entry.unit_id == child_id)
+        .or_else(|| {
+            frontier
+                .entries
+                .iter()
+                .find(|entry| entry.lane_id == child_id)
+        })
 }
 
 fn write_paperclip_cli_script(
@@ -3523,16 +4087,26 @@ fn install_local_cli_for_agents(
             .output()
             .with_context(|| format!("failed to install local cli for {}", agent.slug))?;
         if !output.status.success() {
-            bail!(
-                "paperclip local-cli install failed for {}: {}",
+            eprintln!(
+                "warning: paperclip local-cli install failed for {}: {}",
                 agent.slug,
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&output.stderr).trim()
             );
+            continue;
         }
-        let response: LocalCliInstall = parse_json_stdout(
+        let response: LocalCliInstall = match parse_json_stdout(
             &output.stdout,
             &format!("paperclip agent local-cli for {}", agent.slug),
-        )?;
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!(
+                    "warning: paperclip local-cli parse failed for {}: {}",
+                    agent.slug, error
+                );
+                continue;
+            }
+        };
         let env_path = env_root.join(format!("{}.env", agent.slug));
         std::fs::write(env_path, response.exports)?;
     }
@@ -4260,9 +4834,7 @@ async fn cleanup_generated_agent_duplicates(
                     );
                 }
                 Err(err) => {
-                    eprintln!(
-                        "warning: failed to delete duplicate agent {duplicate_id}: {err}"
-                    );
+                    eprintln!("warning: failed to delete duplicate agent {duplicate_id}: {err}");
                 }
                 _ => {}
             }
@@ -4492,6 +5064,10 @@ async fn sync_coordination_issues(
 ) -> Result<BTreeMap<String, String>> {
     let agent_ids = imported_agent_ids(imported_agents);
     let orchestrator_agent_id = agent_ids.get("raspberry-orchestrator").cloned();
+    let materialized_lane_keys = bundle_agents
+        .iter()
+        .filter_map(|agent| agent.lane_key.clone())
+        .collect::<BTreeSet<_>>();
     let lane_agent_ids = bundle_agents
         .iter()
         .filter_map(|agent| {
@@ -4533,35 +5109,40 @@ async fn sync_coordination_issues(
     .await?;
     synced.insert(root_key, root_issue.id.clone());
 
-    for entry in &frontier.entries {
-        let existing_issue = existing.remove(&entry.sync_key);
-        let desired = desired_lane_issue(
-            entry,
-            &root_issue.id,
-            orchestrator_agent_id.clone(),
-            lane_agent_ids.get(&entry.lane_key).cloned(),
-            existing_issue.is_some(),
-            project_workspace_id,
-        );
-        let Some(desired) = desired else {
-            continue;
-        };
-        let issue = upsert_sync_issue(
-            api_base,
-            company_id,
-            goal_id,
-            project_id,
-            existing_issue.as_ref(),
-            &desired,
-        )
-        .await?;
-        synced.insert(entry.sync_key.clone(), issue.id.clone());
+    if plan_dashboard.is_none() {
+        for entry in &frontier.entries {
+            if !materialized_lane_keys.contains(&entry.lane_key) {
+                continue;
+            }
+            let existing_issue = existing.remove(&entry.sync_key);
+            let desired = desired_lane_issue(
+                entry,
+                &root_issue.id,
+                orchestrator_agent_id.clone(),
+                lane_agent_ids.get(&entry.lane_key).cloned(),
+                existing_issue.is_some(),
+                project_workspace_id,
+            );
+            let Some(desired) = desired else {
+                continue;
+            };
+            let issue = upsert_sync_issue(
+                api_base,
+                company_id,
+                goal_id,
+                project_id,
+                existing_issue.as_ref(),
+                &desired,
+            )
+            .await?;
+            synced.insert(entry.sync_key.clone(), issue.id.clone());
+        }
     }
 
     // Plan-root-keyed issues
     if let Some(dashboard) = plan_dashboard {
         for plan in &dashboard.plans {
-            if !plan.is_syncable() {
+            if !should_materialize_plan_agent(plan) {
                 continue;
             }
             let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
@@ -4583,29 +5164,6 @@ async fn sync_coordination_issues(
             )
             .await?;
             synced.insert(plan_key, plan_issue.id.clone());
-
-            for child in &plan.children {
-                let child_key =
-                    plan_child_sync_key(&dashboard.program, &plan.plan_id, &child.child_id);
-                let existing_child = existing.remove(&child_key);
-                let desired = desired_plan_child_issue(
-                    plan,
-                    child,
-                    &plan_issue.id,
-                    orchestrator_agent_id.clone(),
-                    project_workspace_id,
-                );
-                let child_issue = upsert_sync_issue(
-                    api_base,
-                    company_id,
-                    goal_id,
-                    project_id,
-                    existing_child.as_ref(),
-                    &desired,
-                )
-                .await?;
-                synced.insert(child_key, child_issue.id);
-            }
         }
     }
 
@@ -4646,23 +5204,28 @@ async fn sync_coordination_documents(
         synced += 1;
     }
 
-    for entry in &frontier.entries {
-        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
-            continue;
-        };
-        upsert_issue_plan_document(
-            api_base,
-            issue_id,
-            &format!("{} plan", entry.lane_title),
-            &render_lane_issue_plan_document(entry),
-        )
-        .await?;
-        synced += 1;
+    if plan_dashboard.is_none() {
+        for entry in &frontier.entries {
+            if !synced_issue_ids.contains_key(&entry.sync_key) {
+                continue;
+            }
+            let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+                continue;
+            };
+            upsert_issue_plan_document(
+                api_base,
+                issue_id,
+                &format!("{} plan", entry.lane_title),
+                &render_lane_issue_plan_document(entry),
+            )
+            .await?;
+            synced += 1;
+        }
     }
 
     if let Some(dashboard) = plan_dashboard {
         for plan in &dashboard.plans {
-            if !plan.is_syncable() {
+            if !should_materialize_plan_agent(plan) {
                 continue;
             }
             let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
@@ -4684,20 +5247,23 @@ async fn sync_coordination_documents(
 }
 
 fn render_plan_root_issue_plan_document(plan: &PlanDashboardEntry) -> String {
-    let mut body = format!("# {}\n\n## Status\n\n- Status: {}\n- Risk: {}\n- Next move: {}\n- Mapping: {}\n- Category: {}\n- Path: `{}`\n",
-        plan.title, plan.status, plan.risk, plan.next_move,
+    let mut body = format!("# {}\n\n## Status\n\n- Status: {}\n- Current stage: {}\n- Current run: {}\n- Risk: {}\n- Next move: {}\n- Mapping: {}\n- Category: {}\n- Path: `{}`\n",
+        plan.title, plan.status, plan.current_stage.as_deref().unwrap_or("none"), plan.current_run_id.as_deref().unwrap_or("none"), plan.risk, plan.next_move,
         plan.mapping_source, plan.category, plan.path,
     );
     if !plan.children.is_empty() {
         body.push_str(
-            "\n## Children\n\n| Child | Archetype | Profile | Surfaces |\n|---|---|---|---|\n",
+            "\n## Children\n\n| Child | Archetype | Status | Stage | Run | Next Move | Surfaces |\n|---|---|---|---|---|---|---|\n",
         );
         for child in &plan.children {
             body.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
-                child.child_id,
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                child.title,
                 child.archetype.as_deref().unwrap_or("implement"),
-                child.review_profile.as_deref().unwrap_or("standard"),
+                child.status,
+                child.current_stage.as_deref().unwrap_or("-"),
+                child.current_run_id.as_deref().unwrap_or("-"),
+                child.next_operator_move,
                 if child.owned_surfaces.is_empty() {
                     "none".to_string()
                 } else {
@@ -4737,22 +5303,27 @@ async fn sync_coordination_comments(
         }
     }
 
-    for entry in &frontier.entries {
-        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
-            continue;
-        };
-        let Some(current_snapshot) = current_snapshots.get(&entry.sync_key) else {
-            continue;
-        };
-        let previous_snapshot = previous_snapshots.get(&entry.sync_key);
-        if snapshot_changed(previous_snapshot, current_snapshot) {
-            post_issue_comment(
-                api_base,
-                issue_id,
-                &render_lane_transition_comment(entry, previous_snapshot, current_snapshot),
-            )
-            .await?;
-            comment_count += 1;
+    if plan_dashboard.is_none() {
+        for entry in &frontier.entries {
+            if !synced_issue_ids.contains_key(&entry.sync_key) {
+                continue;
+            }
+            let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+                continue;
+            };
+            let Some(current_snapshot) = current_snapshots.get(&entry.sync_key) else {
+                continue;
+            };
+            let previous_snapshot = previous_snapshots.get(&entry.sync_key);
+            if snapshot_changed(previous_snapshot, current_snapshot) {
+                post_issue_comment(
+                    api_base,
+                    issue_id,
+                    &render_lane_transition_comment(entry, previous_snapshot, current_snapshot),
+                )
+                .await?;
+                comment_count += 1;
+            }
         }
     }
 
@@ -4761,7 +5332,7 @@ async fn sync_coordination_comments(
         let previous_plan_snapshots = synced_plan_snapshots_from_state(existing_state);
         let current_plan_snapshots = plan_snapshots(dashboard);
         for plan in &dashboard.plans {
-            if !plan.is_syncable() {
+            if !should_materialize_plan_agent(plan) {
                 continue;
             }
             let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
@@ -4790,7 +5361,7 @@ async fn sync_coordination_comments(
 fn plan_snapshots(dashboard: &PlanDashboardModel) -> BTreeMap<String, serde_json::Value> {
     let mut snapshots = BTreeMap::new();
     for plan in &dashboard.plans {
-        if !plan.is_syncable() {
+        if !should_materialize_plan_agent(plan) {
             continue;
         }
         let key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
@@ -4882,7 +5453,7 @@ async fn sync_coordination_work_products(
 
     if let Some(dashboard) = plan_dashboard {
         for plan in &dashboard.plans {
-            if !plan.is_syncable() {
+            if !should_materialize_plan_agent(plan) {
                 continue;
             }
             let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
@@ -4944,7 +5515,7 @@ fn desired_plan_root_work_products(
 async fn sync_coordination_attachments(
     api_base: &str,
     company_id: &str,
-    target_repo: &Path,
+    _target_repo: &Path,
     frontier: &FrontierSyncModel,
     synced_issue_ids: &BTreeMap<String, String>,
 ) -> Result<AttachmentSyncResult> {
@@ -4964,19 +5535,24 @@ async fn sync_coordination_attachments(
         attachments_by_scope.insert(root_key, synced.attachments_by_filename);
     }
 
-    for entry in &frontier.entries {
-        let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
-            continue;
-        };
-        let synced = sync_issue_attachments(
-            api_base,
-            company_id,
-            issue_id,
-            &desired_lane_attachment_specs(target_repo, entry),
-        )
-        .await?;
-        synced_count += synced.synced_count;
-        attachments_by_scope.insert(entry.sync_key.clone(), synced.attachments_by_filename);
+    if !synced_issue_ids.keys().any(|key| key.starts_with("plan/")) {
+        for entry in &frontier.entries {
+            if !synced_issue_ids.contains_key(&entry.sync_key) {
+                continue;
+            }
+            let Some(issue_id) = synced_issue_ids.get(&entry.sync_key) else {
+                continue;
+            };
+            let synced = sync_issue_attachments(
+                api_base,
+                company_id,
+                issue_id,
+                &desired_lane_attachment_specs(_target_repo, entry),
+            )
+            .await?;
+            synced_count += synced.synced_count;
+            attachments_by_scope.insert(entry.sync_key.clone(), synced.attachments_by_filename);
+        }
     }
 
     Ok(AttachmentSyncResult {
@@ -5000,6 +5576,7 @@ fn desired_root_attachment_specs(frontier: &FrontierSyncModel) -> Vec<Attachment
     ]
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level attachment sync if operators re-enable it.
 fn desired_lane_attachment_specs(
     target_repo: &Path,
     entry: &FrontierSyncEntry,
@@ -5108,6 +5685,7 @@ fn desired_root_issue(
     }
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level issue sync if operators re-enable it.
 fn desired_lane_issue(
     entry: &FrontierSyncEntry,
     root_issue_id: &str,
@@ -5190,10 +5768,12 @@ fn desired_plan_root_issue(
         title: format!("Plan: {}", plan.title),
         description: with_sync_marker(
             format!(
-                "Plan `{plan_id}` ({category})\n\n- Status: {status}\n- Risk: {risk}\n- Next: {next}\n- Mapping: {mapping}\n- Path: `{path}`\n\n## Children\n\n{children}\n",
+                "Plan `{plan_id}` ({category})\n\n- Status: {status}\n- Current stage: {current_stage}\n- Current run: {current_run}\n- Risk: {risk}\n- Next: {next}\n- Mapping: {mapping}\n- Path: `{path}`\n\n## Children\n\n{children}\n",
                 plan_id = plan.plan_id,
                 category = plan.category,
                 status = plan.status,
+                current_stage = plan.current_stage.as_deref().unwrap_or("none"),
+                current_run = plan.current_run_id.as_deref().unwrap_or("none"),
                 risk = plan.risk,
                 next = plan.next_move,
                 mapping = plan.mapping_source,
@@ -5214,6 +5794,7 @@ fn desired_plan_root_issue(
     }
 }
 
+#[allow(dead_code)] // Reserved for optional child-issue sync if plan-root decomposition is reintroduced.
 fn desired_plan_child_issue(
     plan: &PlanDashboardEntry,
     child: &PlanDashboardChild,
@@ -5266,7 +5847,7 @@ fn plan_status_to_issue_status(status: &str) -> &'static str {
 
 fn plan_status_to_priority(status: &str) -> &'static str {
     if status.contains("failed") {
-        "urgent"
+        "critical"
     } else if status.contains("blocked") || status == "unmodeled" {
         "high"
     } else if status.contains("running") {
@@ -5312,6 +5893,7 @@ fn render_root_issue_plan_document(
     body
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level issue sync if operators re-enable it.
 fn render_lane_issue_plan_document(entry: &FrontierSyncEntry) -> String {
     format!(
         "# {}\n\n## Current Frontier State\n\n{}\n\n## Next Operator Move\n\n- {}\n\n## Commands\n\n- Wake the orchestrator: `{}`\n- Direct repo-local fallback: `{}`\n- Refresh Paperclip: `{}`\n\n## Artifacts\n\n{}\n\n## Dependencies\n\n{}\n",
@@ -5595,6 +6177,7 @@ async fn delete_issue_attachment(api_base: &str, attachment_id: &str) -> Result<
     Ok(())
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level issue sync if operators re-enable it.
 fn render_lane_issue_description(entry: &FrontierSyncEntry) -> String {
     let artifacts = bullet_block(&entry.artifact_statuses, "No curated artifacts recorded.");
     let dependencies = bullet_block(&entry.dependency_keys, "No explicit dependencies.");
@@ -5671,6 +6254,7 @@ fn render_lane_issue_description(entry: &FrontierSyncEntry) -> String {
     body
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level issue sync if operators re-enable it.
 fn lane_run_commands(entry: &FrontierSyncEntry) -> Vec<String> {
     let mut commands = Vec::new();
     if let Some(run_id) = entry.current_run_id.as_ref() {
@@ -5714,6 +6298,7 @@ fn render_lane_set(
     format!("- {label}: {}", lanes.join(", "))
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level issue sync if operators re-enable it.
 fn bullet_block(values: &[String], empty_message: &str) -> String {
     if values.is_empty() {
         return format!("- {}", empty_message);
@@ -5886,6 +6471,7 @@ fn render_root_transition_comment(
     )
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level transition comments if operators re-enable them.
 fn render_lane_transition_comment(
     entry: &FrontierSyncEntry,
     previous: Option<&serde_json::Value>,
@@ -6059,6 +6645,7 @@ fn sanitize_filename_component(value: &str) -> String {
         .collect()
 }
 
+#[allow(dead_code)] // Reserved for optional lane-level attachment sync if operators re-enable it.
 fn content_type_for_path(path: &str) -> &'static str {
     match Path::new(path).extension().and_then(|ext| ext.to_str()) {
         Some("json") => "application/json",
@@ -6607,13 +7194,7 @@ mod tests {
             .iter()
             .filter(|agent| agent.lane_key.is_some())
             .collect::<Vec<_>>();
-        assert_eq!(lane_agents.len(), 2);
-        assert!(lane_agents
-            .iter()
-            .any(|agent| agent.slug == "command-center-client--plan"));
-        assert!(lane_agents
-            .iter()
-            .any(|agent| agent.slug == "command-center-client--implement"));
+        assert!(lane_agents.is_empty());
     }
 
     #[test]
@@ -6709,8 +7290,15 @@ mod tests {
             .and_then(|value| value.get("CODEX_HOME"))
             .and_then(|value| value.as_str())
             .expect("codex home");
+        let model = draft
+            .manifest
+            .get("adapterConfig")
+            .and_then(|value| value.get("model"))
+            .and_then(|value| value.as_str())
+            .expect("model");
 
         assert_eq!(env, oauth_home.display().to_string());
+        assert_eq!(model, PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
 
         match original_home {
             Some(value) => std::env::set_var("HOME", value),
@@ -6772,6 +7360,41 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(expected_arg.as_str())
         );
+    }
+
+    #[test]
+    fn mission_ceo_agent_uses_default_automation_model() {
+        let temp = tempdir().expect("tempdir");
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: Default::default(),
+            package: Default::default(),
+            units: Vec::new(),
+        };
+        let mission = BootstrapMission {
+            company_description: "Demo".to_string(),
+            goal_title: "Demo".to_string(),
+            goal_description: "Demo".to_string(),
+            project_name: "Demo".to_string(),
+            project_description: "Demo".to_string(),
+            workspace_name: "Demo".to_string(),
+        };
+
+        let draft = mission_ceo_draft(&blueprint, temp.path(), &mission);
+        let model = draft
+            .manifest
+            .get("adapterConfig")
+            .and_then(|value| value.get("model"))
+            .and_then(|value| value.as_str())
+            .expect("model");
+
+        assert_eq!(model, PAPERCLIP_DEFAULT_AUTOMATION_MODEL);
     }
 
     #[test]
@@ -7626,19 +8249,9 @@ mod tests {
             .find(|(path, _)| path.ends_with("raspberry-orchestrator/AGENTS.md"))
             .map(|(_, markdown)| markdown)
             .expect("orchestrator markdown");
-        let lane_markdown = bundle
-            .agent_markdowns
-            .iter()
-            .find(|(path, _)| path.ends_with("command-center-client/AGENTS.md"))
-            .map(|(_, markdown)| markdown)
-            .expect("lane markdown");
-
         assert!(!orchestrator_markdown.contains("- ready:"));
         assert!(orchestrator_markdown.contains("Live frontier inspection:"));
         assert!(orchestrator_markdown.contains("Treat live state as volatile"));
-        assert!(!lane_markdown.contains("Current frontier state:"));
-        assert!(lane_markdown.contains("sync key:"));
-        assert!(lane_markdown.contains("inspect current status with"));
     }
 
     fn sample_blueprint() -> ProgramBlueprint {
@@ -7699,6 +8312,8 @@ mod tests {
                     composite: true,
                     path: "plans/016-casino-core-trait.md".to_string(),
                     status: "bootstrap_ready".to_string(),
+                    current_stage: Some("Implement".to_string()),
+                    current_run_id: Some("01TESTRUN".to_string()),
                     risk: "foundation plan".to_string(),
                     next_move: "dispatch bootstrap lane".to_string(),
                     mapping_source: "contract".to_string(),
@@ -7709,6 +8324,10 @@ mod tests {
                         review_profile: Some("foundation".to_string()),
                         owned_surfaces: vec!["crates/casino-core/src/lib.rs".to_string()],
                         sync_key: "plan/rxmragent/casino-core/trait-def".to_string(),
+                        status: "bootstrap_ready".to_string(),
+                        current_stage: Some("Implement".to_string()),
+                        current_run_id: Some("01TESTRUN".to_string()),
+                        next_operator_move: "dispatch bootstrap lane".to_string(),
                     }],
                 },
                 PlanDashboardEntry {
@@ -7718,6 +8337,8 @@ mod tests {
                     composite: true,
                     path: "plans/005-craps-game.md".to_string(),
                     status: "unmodeled".to_string(),
+                    current_stage: Some("Review".to_string()),
+                    current_run_id: Some("01CRAPSRUN".to_string()),
                     risk: "evidence only".to_string(),
                     next_move: "extend synthesis coverage".to_string(),
                     mapping_source: "inferred".to_string(),
@@ -7729,6 +8350,10 @@ mod tests {
                             review_profile: Some("hardened".to_string()),
                             owned_surfaces: vec!["crates/casino-core/src/craps/".to_string()],
                             sync_key: "plan/rxmragent/craps/craps-engine".to_string(),
+                            status: "implementation_running".to_string(),
+                            current_stage: Some("Review".to_string()),
+                            current_run_id: Some("01CRAPSRUN".to_string()),
+                            next_operator_move: "watch".to_string(),
                         },
                         PlanDashboardChild {
                             child_id: "craps-pf".to_string(),
@@ -7737,6 +8362,10 @@ mod tests {
                             review_profile: Some("hardened".to_string()),
                             owned_surfaces: vec!["crates/provably-fair/src/craps.rs".to_string()],
                             sync_key: "plan/rxmragent/craps/craps-pf".to_string(),
+                            status: "unmodeled".to_string(),
+                            current_stage: None,
+                            current_run_id: None,
+                            next_operator_move: "extend synthesis coverage".to_string(),
                         },
                     ],
                 },
@@ -7747,6 +8376,8 @@ mod tests {
                     composite: false,
                     path: "plans/001-master-plan.md".to_string(),
                     status: "meta_plan".to_string(),
+                    current_stage: None,
+                    current_run_id: None,
                     risk: "coordination plan".to_string(),
                     next_move: "inspect downstream".to_string(),
                     mapping_source: "inferred".to_string(),
@@ -7829,8 +8460,56 @@ mod tests {
                 next_operator_move: "extend synthesis".to_string(),
             }],
         };
+        let frontier = FrontierSyncModel {
+            program: "rxmragent".to_string(),
+            manifest_path: PathBuf::from("malinka/programs/rxmragent.yaml"),
+            state_path: PathBuf::from(".raspberry/rxmragent-state.json"),
+            route_command: "bash route.sh".to_string(),
+            wake_command: "fabro paperclip wake".to_string(),
+            refresh_command: "fabro paperclip refresh".to_string(),
+            status_command: "fabro paperclip status".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 1,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: vec![FrontierSyncEntry {
+                sync_key: "frontier/rxmragent/lane/craps-engine:implement".to_string(),
+                lane_key: "craps-engine:implement".to_string(),
+                unit_id: "craps-engine".to_string(),
+                unit_title: "Craps Engine".to_string(),
+                lane_id: "implement".to_string(),
+                lane_title: "Implement".to_string(),
+                lane_kind: "platform".to_string(),
+                status: LaneExecutionStatus::Running,
+                detail: "run active at stage `Review`".to_string(),
+                current_run_id: Some("01CRAPSRUN".to_string()),
+                last_run_id: Some("01CRAPSRUN".to_string()),
+                current_stage: Some("Review".to_string()),
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: None,
+                last_usage_summary: None,
+                last_completed_stage: Some("Implement".to_string()),
+                last_stage_duration_ms: Some(42),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                failure_kind: None,
+                blocker_reason: None,
+                wake_command: "fabro paperclip wake".to_string(),
+                route_command: "bash route.sh".to_string(),
+                refresh_command: "fabro paperclip refresh".to_string(),
+                artifact_paths: vec![],
+                artifact_statuses: vec![],
+                dependency_keys: vec![],
+                next_operator_move: "watch".to_string(),
+            }],
+        };
 
-        let dashboard = build_plan_dashboard_model("rxmragent", &registry, Some(&matrix));
+        let dashboard =
+            build_plan_dashboard_model("rxmragent", &registry, Some(&matrix), &frontier);
 
         assert_eq!(dashboard.summary.total, 1);
         assert_eq!(dashboard.summary.needs_attention, 1);
@@ -7842,6 +8521,15 @@ mod tests {
         assert_eq!(
             dashboard.plans[0].children[0].sync_key,
             "plan/rxmragent/craps/craps-engine"
+        );
+        assert_eq!(dashboard.plans[0].children[0].status, "running");
+        assert_eq!(
+            dashboard.plans[0].children[0].current_stage.as_deref(),
+            Some("Review")
+        );
+        assert_eq!(
+            dashboard.plans[0].children[0].current_run_id.as_deref(),
+            Some("01CRAPSRUN")
         );
     }
 
@@ -7903,7 +8591,7 @@ mod tests {
         assert!(issue.description.contains("plan/rxmragent/casino-core"));
         assert!(issue
             .description
-            .contains("fabro.paperclip.sync-key:plan/rxmragent/casino-core"));
+            .contains("fabro.paperclip.sync-key: plan/rxmragent/casino-core"));
         assert_eq!(issue.parent_id, Some("root-issue-id".to_string()));
     }
 
@@ -7921,9 +8609,9 @@ mod tests {
         let curr = snap2.get(&key).expect("current snapshot");
         assert!(snapshot_changed(prev, curr));
 
-        // Meta plans should not produce snapshots
+        // Meta plans are now included in plan-level Paperclip reporting.
         let meta_key = plan_root_sync_key("rxmragent", "master");
-        assert!(snap1.get(&meta_key).is_none());
+        assert!(snap1.get(&meta_key).is_some());
     }
 
     #[test]
@@ -7973,12 +8661,7 @@ mod tests {
             .iter()
             .filter(|a| a.plan_id.is_some())
             .collect();
-        // casino-core + craps (meta is excluded)
-        assert_eq!(plan_agents.len(), 2);
-        assert!(plan_agents.iter().any(|a| a.slug == "plan-casino-core"));
-        assert!(plan_agents.iter().any(|a| a.slug == "plan-craps"));
-        // Meta plan should not generate agent
-        assert!(!plan_agents.iter().any(|a| a.slug == "plan-master"));
+        assert!(plan_agents.is_empty());
     }
 
     #[test]

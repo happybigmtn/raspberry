@@ -320,22 +320,32 @@ pub fn load_plan_registry_from_planning_root(
     } else {
         target_repo.join(planning_root).join("plans")
     };
-    if !plans_dir.is_dir() {
-        return Ok(PlanRegistry { plans: Vec::new() });
+    let mut paths = collect_plan_paths(&plans_dir)?;
+
+    // Keep plan registry semantics aligned with planning-corpus loading:
+    // when reading from repo root, merge genesis plans and let them override
+    // same-named repo-root plans.
+    if planning_root.as_os_str().is_empty() {
+        let genesis_plans_dir = target_repo.join("genesis").join("plans");
+        let genesis_paths = collect_plan_paths(&genesis_plans_dir)?;
+        if !genesis_paths.is_empty() {
+            let genesis_filenames = genesis_paths
+                .iter()
+                .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+                .collect::<std::collections::BTreeSet<_>>();
+            paths.retain(|path| {
+                path.file_name()
+                    .map(|name| !genesis_filenames.contains(name))
+                    .unwrap_or(true)
+            });
+            paths.extend(genesis_paths);
+            paths.sort();
+        }
     }
 
-    let mut paths = std::fs::read_dir(&plans_dir)
-        .map_err(|source| PlanRegistryError::ReadPlans {
-            path: plans_dir.clone(),
-            source,
-        })?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| PlanRegistryError::ReadPlans {
-            path: plans_dir.clone(),
-            source,
-        })?;
-    paths.sort();
+    if paths.is_empty() {
+        return Ok(PlanRegistry { plans: Vec::new() });
+    }
 
     let mut raw_plans = Vec::new();
     let mut id_by_path = BTreeMap::new();
@@ -454,6 +464,26 @@ pub fn load_plan_registry_from_planning_root(
         .collect::<Result<Vec<_>, PlanRegistryError>>()?;
 
     Ok(PlanRegistry { plans })
+}
+
+fn collect_plan_paths(plans_dir: &Path) -> Result<Vec<PathBuf>, PlanRegistryError> {
+    if !plans_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = std::fs::read_dir(plans_dir)
+        .map_err(|source| PlanRegistryError::ReadPlans {
+            path: plans_dir.to_path_buf(),
+            source,
+        })?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| PlanRegistryError::ReadPlans {
+            path: plans_dir.to_path_buf(),
+            source,
+        })?;
+    paths.sort();
+    Ok(paths)
 }
 
 pub fn plan_id_from_path(path: &Path) -> String {
@@ -686,12 +716,11 @@ fn normalized_dependency_ids(values: &[String]) -> Vec<String> {
             let sanitized = sanitize_identifier(value);
             let mut parts = sanitized.splitn(2, '-');
             let first = parts.next().unwrap_or_default();
-            let remainder =
-                if first.len() == 3 && first.chars().all(|ch| ch.is_ascii_digit()) {
-                    parts.next().unwrap_or_default()
-                } else {
-                    sanitized.as_str()
-                };
+            let remainder = if first.len() == 3 && first.chars().all(|ch| ch.is_ascii_digit()) {
+                parts.next().unwrap_or_default()
+            } else {
+                sanitized.as_str()
+            };
             remainder
                 .trim_end_matches("-game")
                 .trim_end_matches("-plan")
@@ -744,7 +773,15 @@ fn dependency_plan_ids(
 ) -> Vec<String> {
     let mut plan_ids = explicit_plan_dependency_paths(body, planning_root)
         .into_iter()
-        .filter_map(|path| id_by_path.get(&path).cloned())
+        .filter_map(|path| {
+            id_by_path.get(&path).cloned().or_else(|| {
+                planning_root
+                    .as_os_str()
+                    .is_empty()
+                    .then(|| PathBuf::from("genesis").join(&path))
+                    .and_then(|genesis_path| id_by_path.get(&genesis_path).cloned())
+            })
+        })
         .collect::<Vec<_>>();
     plan_ids.sort();
     plan_ids.dedup();
@@ -1129,6 +1166,41 @@ mod tests {
             .find(|plan| plan.plan_id == "house-agent")
             .expect("house record");
 
+        assert_eq!(
+            house.path,
+            PathBuf::from("genesis/plans/013-house-agent.md")
+        );
+        assert_eq!(house.dependency_plan_ids, vec!["provably-fair".to_string()]);
+    }
+
+    #[test]
+    fn load_plan_registry_merges_genesis_plans_when_repo_root_has_no_plans() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("genesis/plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("genesis/plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("genesis/plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate\n",
+        )
+        .expect("provably fair");
+        fs::write(
+            temp.path().join("genesis/plans/013-house-agent.md"),
+            "# House Agent\n\nThis plan depends on: `plans/002-provably-fair-crate.md`.\n",
+        )
+        .expect("house");
+
+        let registry = load_plan_registry(temp.path()).expect("registry");
+        let house = registry
+            .plans
+            .iter()
+            .find(|plan| plan.plan_id == "house-agent")
+            .expect("house record");
+
+        assert_eq!(registry.plans.len(), 3);
         assert_eq!(
             house.path,
             PathBuf::from("genesis/plans/013-house-agent.md")

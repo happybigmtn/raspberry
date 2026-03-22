@@ -1,14 +1,19 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use raspberry_supervisor::{
-    evaluate_program, evaluate_program_local, execute_selected_lanes, load_plan_matrix,
-    orchestrate_program, render_grouped_summary, render_plan_matrix, render_status_table,
-    sync_autodev_report_with_program, AutodevSettings, AutodevStopReason, DispatchSettings,
-    LaneExecutionStatus, ProgramManifest,
+    autodev_report_path, evaluate_program, evaluate_program_local, execute_selected_lanes,
+    load_optional_autodev_report, load_plan_matrix, orchestrate_program, render_grouped_summary,
+    render_plan_matrix, render_status_table, sync_autodev_report_with_program, AutodevCycleReport,
+    AutodevReport, AutodevSettings, AutodevStopReason, DispatchSettings, LaneExecutionStatus,
+    ProgramManifest,
 };
 
 #[derive(Debug, Parser)]
@@ -67,7 +72,11 @@ struct AutodevArgs {
     max_parallel: Option<usize>,
     #[arg(long)]
     frontier_budget: Option<usize>,
-    #[arg(long, default_value_t = 5)]
+    #[arg(
+        long,
+        default_value_t = 5,
+        help = "Maximum scheduler cycles before stopping (0 = unlimited)"
+    )]
     max_cycles: usize,
     #[arg(long, default_value_t = 500)]
     poll_interval_ms: u64,
@@ -156,6 +165,7 @@ fn run_watch(args: WatchArgs) -> Result<()> {
 fn run_execute(args: ExecuteArgs) -> Result<()> {
     let manifest = ProgramManifest::load(&args.manifest)?;
     let program = evaluate_program(&args.manifest)?;
+    let fabro_bin = resolve_fabro_bin(&args.fabro_bin);
     let selected = if args.lanes.is_empty() {
         program
             .lanes
@@ -175,7 +185,7 @@ fn run_execute(args: ExecuteArgs) -> Result<()> {
         &args.manifest,
         &selected,
         &DispatchSettings {
-            fabro_bin: args.fabro_bin.clone(),
+            fabro_bin,
             max_parallel_override: args.max_parallel,
             doctrine_files: Vec::new(),
             evidence_paths: Vec::new(),
@@ -208,10 +218,23 @@ fn run_execute(args: ExecuteArgs) -> Result<()> {
 }
 
 fn run_autodev(args: AutodevArgs) -> Result<()> {
+    let manifest = ProgramManifest::load(&args.manifest)?;
+    let report_path = autodev_report_path(&args.manifest, &manifest);
+    let fabro_bin = resolve_fabro_bin(&args.fabro_bin);
+    println!("Autodev live report: {}", report_path.display());
+    let heartbeat_interval_ms = args.poll_interval_ms.clamp(100, 1_000);
+    let stop_heartbeat = Arc::new(AtomicBool::new(false));
+    let heartbeat_handle = spawn_autodev_heartbeat(
+        args.manifest.clone(),
+        manifest,
+        Arc::clone(&stop_heartbeat),
+        Duration::from_millis(heartbeat_interval_ms),
+    );
+
     let report = orchestrate_program(
         &args.manifest,
         &AutodevSettings {
-            fabro_bin: args.fabro_bin.clone(),
+            fabro_bin,
             max_parallel_override: args.max_parallel,
             frontier_budget: args.frontier_budget,
             max_cycles: args.max_cycles,
@@ -222,7 +245,11 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
             preview_evolve_root: args.preview_evolve_root.clone(),
             manifest_stack: Vec::new(),
         },
-    )?;
+    );
+
+    stop_heartbeat.store(true, Ordering::Relaxed);
+    let _ = heartbeat_handle.join();
+    let report = report?;
 
     println!("Program: {}", report.program);
     println!("Autodev cycles: {}", report.cycles.len());
@@ -263,6 +290,69 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
     };
     println!("Stop reason: {stop_reason}");
     Ok(())
+}
+
+fn resolve_fabro_bin(requested: &Path) -> PathBuf {
+    if requested != Path::new("fabro") {
+        return requested.to_path_buf();
+    }
+
+    let local_debug =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target-local/debug/fabro");
+    if local_debug.exists() {
+        return local_debug;
+    }
+
+    requested.to_path_buf()
+}
+
+fn spawn_autodev_heartbeat(
+    manifest_path: PathBuf,
+    manifest: ProgramManifest,
+    stop: Arc<AtomicBool>,
+    interval: Duration,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut printed_cycles = 0usize;
+        loop {
+            if let Some(report) = read_autodev_report(&manifest_path, &manifest) {
+                for cycle in report.cycles.iter().skip(printed_cycles) {
+                    println!("{}", format_autodev_cycle_heartbeat(cycle));
+                }
+                printed_cycles = report.cycles.len();
+            }
+
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            thread::sleep(interval);
+        }
+
+        if let Some(report) = read_autodev_report(&manifest_path, &manifest) {
+            for cycle in report.cycles.iter().skip(printed_cycles) {
+                println!("{}", format_autodev_cycle_heartbeat(cycle));
+            }
+        }
+    })
+}
+
+fn read_autodev_report(manifest_path: &Path, manifest: &ProgramManifest) -> Option<AutodevReport> {
+    load_optional_autodev_report(manifest_path, manifest)
+        .ok()
+        .flatten()
+}
+
+fn format_autodev_cycle_heartbeat(cycle: &AutodevCycleReport) -> String {
+    let evolve = if cycle.evolved { "applied" } else { "skipped" };
+    let ready = cycle.ready_lanes.len();
+    let replayed = cycle.replayed_lanes.len();
+    let dispatched = cycle.dispatched.len();
+
+    format!(
+        "[autodev] cycle={} evolve={} ready={} replayed={} dispatched={} running={} complete={}",
+        cycle.cycle, evolve, ready, replayed, dispatched, cycle.running_after, cycle.complete_after
+    )
 }
 
 fn run_tui(args: TuiArgs) -> Result<()> {

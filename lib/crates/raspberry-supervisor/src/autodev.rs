@@ -274,7 +274,7 @@ pub fn orchestrate_program(
         return Ok(report);
     }
     let _lease = acquire_autodev_lease(&manifest_path, &initial_manifest)?;
-    let max_cycles = settings.max_cycles.max(1);
+    let max_cycles = cycle_limit(settings.max_cycles);
     let poll_interval = Duration::from_millis(settings.poll_interval_ms.max(1));
     let evolve_every = Duration::from_secs(settings.evolve_every_seconds);
     let mut last_evolve_at = None::<Instant>;
@@ -288,9 +288,16 @@ pub fn orchestrate_program(
         cycles: Vec::new(),
     };
 
-    for cycle_index in 0..max_cycles {
+    let mut cycle_number = 0usize;
+    loop {
+        if let Some(limit) = max_cycles {
+            if cycle_number >= limit {
+                break;
+            }
+        }
+
+        cycle_number += 1;
         let manifest = ProgramManifest::load(&manifest_path)?;
-        let cycle_number = cycle_index + 1;
         let program_before = evaluate_program(&manifest_path)?;
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);
@@ -451,7 +458,7 @@ pub fn orchestrate_program(
                 &program_after,
                 spare_child_slots,
             )? {
-                if cycle_number < max_cycles {
+                if has_more_cycles(max_cycles, cycle_number) {
                     thread::sleep(poll_interval);
                     continue;
                 }
@@ -471,7 +478,7 @@ pub fn orchestrate_program(
             return Ok(report);
         }
 
-        if cycle_number < max_cycles {
+        if has_more_cycles(max_cycles, cycle_number) {
             thread::sleep(poll_interval);
         }
     }
@@ -490,6 +497,21 @@ pub fn orchestrate_program(
     );
     drop(guard);
     Ok(report)
+}
+
+fn cycle_limit(max_cycles: usize) -> Option<usize> {
+    if max_cycles == 0 {
+        None
+    } else {
+        Some(max_cycles)
+    }
+}
+
+fn has_more_cycles(max_cycles: Option<usize>, cycle_number: usize) -> bool {
+    match max_cycles {
+        Some(limit) => cycle_number < limit,
+        None => true,
+    }
 }
 
 fn enter_orchestration_scope(
@@ -2136,6 +2158,19 @@ units:
                 ],
             }),
         ));
+    }
+
+    #[test]
+    fn cycle_limit_treats_zero_as_unbounded() {
+        assert_eq!(cycle_limit(0), None);
+        assert_eq!(cycle_limit(3), Some(3));
+    }
+
+    #[test]
+    fn has_more_cycles_respects_bounded_and_unbounded_limits() {
+        assert!(has_more_cycles(None, 1));
+        assert!(has_more_cycles(Some(3), 2));
+        assert!(!has_more_cycles(Some(3), 3));
     }
 
     #[test]

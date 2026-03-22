@@ -3777,6 +3777,64 @@ units:
     }
 
     #[test]
+    fn create_authoring_uses_genesis_registry_by_default_when_root_plans_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(
+            temp.path().join("SPEC.md"),
+            "# Root Spec\n\nThis repo builds a zero-human casino.\n",
+        )
+        .expect("root spec");
+        fs::create_dir_all(temp.path().join("specs")).expect("specs dir");
+        fs::write(
+            temp.path().join("specs/002-xmr-ecosystem-integration.md"),
+            "# Active Spec\n\nKeep the monorepo spec available.\n",
+        )
+        .expect("active spec");
+        fs::create_dir_all(temp.path().join("genesis/plans")).expect("plans dir");
+        fs::write(temp.path().join("genesis/SPEC.md"), "# Genesis Spec\n").expect("spec");
+        fs::write(
+            temp.path().join("genesis/plans/001-master-plan.md"),
+            concat!(
+                "# Master Plan\n\n",
+                "Phase 0:\n",
+                "- [ ] Provably fair crate (plan 002)\n",
+                "- [ ] House agent skeleton with WebSocket server (plan 013)\n",
+            ),
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("genesis/plans/002-provably-fair-crate.md"),
+            "# Provably Fair Crate\n",
+        )
+        .expect("provably fair");
+        fs::write(
+            temp.path().join("genesis/plans/013-house-agent.md"),
+            "# House Agent\n",
+        )
+        .expect("house");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            authored.active_plan,
+            Some(PathBuf::from("genesis/plans/001-master-plan.md"))
+        );
+        assert!(unit_ids.contains(&"master".to_string()));
+        assert!(unit_ids.contains(&"provably-fair".to_string()));
+        assert!(unit_ids.contains(&"house-agent".to_string()));
+        assert!(!unit_ids.contains(&"foundations".to_string()));
+        assert!(!unit_ids.contains(&"proof-and-validation".to_string()));
+    }
+
+    #[test]
     fn create_authoring_master_plan_dependencies_use_explicit_depends_on_clauses() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");

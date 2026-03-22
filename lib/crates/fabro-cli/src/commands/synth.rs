@@ -97,10 +97,7 @@ pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
     let composite_plans: Vec<_> = registry
         .plans
         .iter()
-        .filter(|plan| {
-            plan.composite
-                && plan.category != raspberry_supervisor::PlanCategory::Meta
-        })
+        .filter(|plan| plan.composite && plan.category != raspberry_supervisor::PlanCategory::Meta)
         .collect();
 
     if composite_plans.is_empty() {
@@ -241,7 +238,10 @@ fn run_decomposition_review(target_repo: &std::path::Path) -> anyhow::Result<()>
             let content = std::fs::read_to_string(&absolute).unwrap_or_default();
             contracts.push(format!(
                 "## Plan: {} ({})\n\nMapping contract at `{}`:\n\n```yaml\n{}\n```\n",
-                plan.title, plan.plan_id, mapping_path.display(), content,
+                plan.title,
+                plan.plan_id,
+                mapping_path.display(),
+                content,
             ));
         }
     }
@@ -487,19 +487,28 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
                     "assistant" => {
                         // Text content from Claude
                         if let Some(message) = event.get("message") {
-                            if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                            if let Some(content) = message.get("content").and_then(|c| c.as_array())
+                            {
                                 for block in content {
                                     if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|v| v.as_str())
+                                        {
                                             eprint!("{text}");
                                             let _ = std::io::stderr().flush();
                                         }
                                     }
-                                    if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                    if block.get("type").and_then(|v| v.as_str())
+                                        == Some("tool_use")
+                                    {
+                                        if let Some(name) =
+                                            block.get("name").and_then(|v| v.as_str())
+                                        {
                                             let path_hint = block
                                                 .get("input")
-                                                .and_then(|i| i.get("file_path").or_else(|| i.get("command")))
+                                                .and_then(|i| {
+                                                    i.get("file_path").or_else(|| i.get("command"))
+                                                })
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
                                             let short = if path_hint.len() > 60 {
@@ -1300,10 +1309,7 @@ fn run_opus_decomposition(
     let composite_plans: Vec<_> = registry
         .plans
         .iter()
-        .filter(|plan| {
-            plan.composite
-                && plan.category != raspberry_supervisor::PlanCategory::Meta
-        })
+        .filter(|plan| plan.composite && plan.category != raspberry_supervisor::PlanCategory::Meta)
         .collect();
 
     if composite_plans.is_empty() {
