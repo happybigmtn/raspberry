@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::process::Stdio;
 
 use clap::{Args, Subcommand};
 use fabro_synthesis::{
@@ -238,8 +239,9 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         args.target_repo.display()
     );
     println!("Opus is exploring the codebase and drafting a 180-day turnaround plan.");
+    println!();
 
-    let output = std::process::Command::new("sh")
+    let mut child = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
             "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
@@ -247,10 +249,70 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
             DECOMPOSE_MODEL,
         ))
         .current_dir(&args.target_repo)
-        .output()?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
+    // Stream stderr to show live progress while Opus works
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            let mut collected = Vec::new();
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                eprintln!("  [genesis] {line}");
+                collected.push(line);
+            }
+            collected
+        })
+    };
+
+    // Monitor genesis/ directory for new files while Opus runs
+    let monitor_dir = genesis_dir.clone();
+    let monitor_handle = std::thread::spawn(move || {
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let Ok(entries) = std::fs::read_dir(&monitor_dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if seen.contains(&path) {
+                    continue;
+                }
+                seen.insert(path.clone());
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    eprintln!("  [genesis] wrote {name}");
+                }
+                // Also scan plans/ subdirectory
+                if path.is_dir() {
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if seen.contains(&sub_path) {
+                                continue;
+                            }
+                            seen.insert(sub_path.clone());
+                            if let Some(name) = sub_path.file_name().and_then(|n| n.to_str()) {
+                                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                eprintln!("  [genesis] wrote {dir_name}/{name}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let output = child.wait_with_output()?;
+    drop(monitor_handle); // monitor thread exits when main continues
+
+    let stderr_lines = stderr_handle.join().unwrap_or_default();
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr_lines.join("\n");
         anyhow::bail!("Genesis failed: {}", stderr.trim());
     }
 
