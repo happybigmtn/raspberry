@@ -35,7 +35,8 @@ pub use plan_cutover::{
     compare_legacy_and_plan_truth, render_parity_report, CutoverPhase, PlanCutoverParity,
 };
 pub use plan_registry::{
-    load_plan_registry, load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord,
+    load_plan_registry, load_plan_registry_from_planning_root,
+    load_plan_registry_relaxed_from_planning_root, PlanCategory, PlanChildRecord,
     PlanMappingSource, PlanRecord, PlanRegistry, PlanRegistryError, ReviewProfile,
     WorkflowArchetype,
 };

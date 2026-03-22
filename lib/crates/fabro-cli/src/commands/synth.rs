@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
@@ -9,7 +9,8 @@ use fabro_synthesis::{
     render_blueprint, save_blueprint, ImportRequest, RenderRequest,
 };
 use raspberry_supervisor::{
-    load_plan_registry, load_plan_registry_from_planning_root, PlanRecord, ProgramRuntimeState,
+    load_plan_registry, load_plan_registry_from_planning_root,
+    load_plan_registry_relaxed_from_planning_root, PlanRecord, ProgramRuntimeState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -332,7 +333,7 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
         std::thread::spawn(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 eprintln!("  [review] {line}");
             }
         })
@@ -344,7 +345,7 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
             let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
                 };
@@ -455,6 +456,7 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let success_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Stream stderr for CLI-level messages
     let stderr_handle = {
@@ -475,10 +477,10 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
     // Stream stdout JSON lines for real-time Claude output
     let stdout_handle = {
         let stdout = child.stdout.take().expect("stdout piped");
+        let success_seen = success_seen.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
             let reader = std::io::BufReader::new(stdout);
-            let mut success = false;
             for line in reader.lines() {
                 let Ok(line) = line else { break };
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -530,18 +532,58 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
                         if let Some(sub) = event.get("subtype").and_then(|v| v.as_str()) {
                             eprintln!("\n  [genesis] result: {sub}");
                             if sub == "success" {
-                                success = true;
+                                success_seen.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
                     }
                     _ => {}
                 }
             }
-            success
+            success_seen.load(std::sync::atomic::Ordering::Relaxed)
         })
     };
 
-    let status = child.wait()?;
+    let outputs_ready = |genesis_dir: &Path| -> bool {
+        let plans_dir = genesis_dir.join("plans");
+        let plan_count = std::fs::read_dir(&plans_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        plan_count > 0
+            && genesis_dir.join("SPEC.md").is_file()
+            && genesis_dir.join("PLANS.md").is_file()
+            && genesis_dir.join("ASSESSMENT.md").is_file()
+            && genesis_dir.join("GENESIS-REPORT.md").is_file()
+    };
+    let wait_started = std::time::Instant::now();
+    let mut success_seen_at = None;
+    let status = loop {
+        if let Some(exit_status) = child.try_wait()? {
+            break exit_status;
+        }
+        if success_seen.load(std::sync::atomic::Ordering::Relaxed) && outputs_ready(&genesis_dir) {
+            success_seen_at.get_or_insert_with(std::time::Instant::now);
+            if success_seen_at
+                .as_ref()
+                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                let _ = child.kill();
+                break child.wait()?;
+            }
+        }
+        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Genesis timed out after 20 minutes waiting for Claude to exit");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
     let genesis_success = stdout_handle.join().unwrap_or(false);
     let stderr_lines = stderr_handle.join().unwrap_or_default();
 
@@ -711,6 +753,8 @@ d. `genesis/plans/002-*.md` through `genesis/plans/N-*.md` — one ExecPlan per 
 
 **Carry-forward rule**: Every existing plan in `plans/` must appear in `genesis/plans/`. For plans you assessed as strong, copy them into genesis with the same filename and number. For plans you enhanced, write the enhanced version. For plans you split or merged, write the new plans and note the provenance in the Decision Log. No existing plan should silently disappear — if you're dropping one, write a short `genesis/plans/NNN-dropped-*.md` explaining why.
 
+**Implementation-ready rule**: If an existing or genesis plan already names owned surfaces, concrete proof commands, and explicit validation or acceptance criteria, preserve it as implementation-ready. Do NOT rewrite it into a bootstrap-only plan whose only deliverables are `spec.md` and `review.md`. Bootstrap is only for plans that are still strategy-heavy and need a narrower executable slice first.
+
 # Phase 4: REVIEW (Self-Review Pass)
 
 After writing all plans, review the corpus against these checklists:
@@ -776,18 +820,105 @@ pub fn import_command(args: &SynthImportArgs) -> anyhow::Result<()> {
 pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
     let planning_root = normalize_planning_root(&args.target_repo, args.planning_root.as_deref())?;
     let (blueprint, blueprint_path, notes) = if let Some(path) = &args.blueprint {
-        (load_blueprint(path)?, path.clone(), Vec::new())
+        (load_blueprint(path)?, path.clone(), Vec::<String>::new())
     } else {
+        let program_id = args
+            .program
+            .clone()
+            .unwrap_or_else(|| infer_program_id_from_repo_name(&args.target_repo));
+        let blueprint_path = args
+            .output_blueprint
+            .clone()
+            .unwrap_or_else(|| default_blueprint_path(&args.target_repo, &program_id));
+
+        if !args.no_decompose {
+            let decomposed = run_opus_decomposition(&args.target_repo, &planning_root)?;
+            println!(
+                "Opus decomposition: decomposed {} composite plan(s)",
+                decomposed.refreshed_paths.len()
+            );
+
+            let _ = write_plan_mapping_snapshots(
+                &args.target_repo,
+                &planning_root,
+                Some(&decomposed.refreshed_paths),
+                Some(&decomposed.expected_paths),
+            )?;
+            validate_plan_mapping_snapshots(&args.target_repo, &planning_root)?;
+
+            let mut authored = author_blueprint_for_create_with_planning_root(
+                &args.target_repo,
+                Some(&program_id),
+                Some(&planning_root),
+            )?;
+            save_blueprint(&blueprint_path, &authored.blueprint)?;
+
+            let _ = write_plan_mapping_snapshots(
+                &args.target_repo,
+                &planning_root,
+                Some(&decomposed.refreshed_paths),
+                Some(&decomposed.expected_paths),
+            )?;
+            validate_plan_mapping_snapshots(&args.target_repo, &planning_root)?;
+
+            if !args.no_review {
+                run_decomposition_review(&args.target_repo)?;
+                validate_plan_mapping_snapshots(&args.target_repo, &planning_root)?;
+                authored = author_blueprint_for_create_with_planning_root(
+                    &args.target_repo,
+                    Some(&program_id),
+                    Some(&planning_root),
+                )?;
+                save_blueprint(&blueprint_path, &authored.blueprint)?;
+            }
+
+            let report = render_blueprint(RenderRequest {
+                blueprint: &authored.blueprint,
+                target_repo: &args.target_repo,
+            })?;
+
+            println!("Program: {}", authored.blueprint.program.id);
+            println!("Mode: create (Opus decomposition)");
+            println!("Blueprint: {}", blueprint_path.display());
+            println!("Written files:");
+            for path in report.written_files {
+                println!("  {}", path.display());
+            }
+            return Ok(());
+        }
+
+        let written_mapping_files =
+            write_plan_mapping_snapshots(&args.target_repo, &planning_root, None, None)?;
+        validate_plan_mapping_snapshots(&args.target_repo, &planning_root)?;
         let authored = author_blueprint_for_create_with_planning_root(
             &args.target_repo,
-            args.program.as_deref(),
+            Some(&program_id),
             Some(&planning_root),
         )?;
-        let path = args.output_blueprint.clone().unwrap_or_else(|| {
-            default_blueprint_path(&args.target_repo, &authored.blueprint.program.id)
-        });
-        save_blueprint(&path, &authored.blueprint)?;
-        (authored.blueprint, path, authored.notes)
+        save_blueprint(&blueprint_path, &authored.blueprint)?;
+        let report = render_blueprint(RenderRequest {
+            blueprint: &authored.blueprint,
+            target_repo: &args.target_repo,
+        })?;
+
+        println!("Program: {}", authored.blueprint.program.id);
+        println!("Mode: create (deterministic only)");
+        println!("Blueprint: {}", blueprint_path.display());
+        if !authored.notes.is_empty() {
+            println!("Notes:");
+            for note in authored.notes {
+                println!("  - {note}");
+            }
+        }
+        println!("Written files:");
+        for path in report
+            .written_files
+            .into_iter()
+            .chain(written_mapping_files.into_iter())
+        {
+            println!("  {}", path.display());
+        }
+        return Ok(());
     };
     if args.blueprint.is_some()
         && (blueprint_path.starts_with(
@@ -797,59 +928,13 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
     {
         save_blueprint(&blueprint_path, &blueprint)?;
     }
-    if !args.no_decompose {
-        let decomposed = run_opus_decomposition(&args.target_repo, &planning_root)?;
-        println!(
-            "Opus decomposition: decomposed {} composite plan(s)",
-            decomposed.refreshed_paths.len()
-        );
-
-        // Write heuristic mappings only for plans Opus didn't decompose
-        let _ = write_plan_mapping_snapshots(
-            &args.target_repo,
-            &planning_root,
-            Some(&decomposed.refreshed_paths),
-            Some(&decomposed.expected_paths),
-        )?;
-
-        // Re-author blueprint consuming the Opus-written mapping contracts
-        let re_authored = author_blueprint_for_create_with_planning_root(
-            &args.target_repo,
-            Some(&blueprint.program.id),
-            Some(&planning_root),
-        )?;
-        save_blueprint(&blueprint_path, &re_authored.blueprint)?;
-        let _ = write_plan_mapping_snapshots(
-            &args.target_repo,
-            &planning_root,
-            Some(&decomposed.refreshed_paths),
-            Some(&decomposed.expected_paths),
-        )?;
-
-        // Eng-review the decomposition before rendering into workflows
-        if !args.no_review {
-            run_decomposition_review(&args.target_repo)?;
-            // Re-author again in case review rewrote mapping contracts
-            let reviewed = author_blueprint_for_create_with_planning_root(
-                &args.target_repo,
-                Some(&blueprint.program.id),
-                Some(&planning_root),
-            )?;
-            save_blueprint(&blueprint_path, &reviewed.blueprint)?;
-        }
-
-        let re_authored = author_blueprint_for_create_with_planning_root(
-            &args.target_repo,
-            Some(&blueprint.program.id),
-            Some(&planning_root),
-        )?;
+    if args.blueprint.is_some() {
         let report = render_blueprint(RenderRequest {
-            blueprint: &re_authored.blueprint,
+            blueprint: &blueprint,
             target_repo: &args.target_repo,
         })?;
-
-        println!("Program: {}", re_authored.blueprint.program.id);
-        println!("Mode: create (Opus decomposition)");
+        println!("Program: {}", blueprint.program.id);
+        println!("Mode: create (existing blueprint)");
         println!("Blueprint: {}", blueprint_path.display());
         println!("Written files:");
         for path in report.written_files {
@@ -857,17 +942,8 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
         }
         return Ok(());
     }
-
-    // Fallback: deterministic heuristics only (--no-decompose)
-    let written_mapping_files =
-        write_plan_mapping_snapshots(&args.target_repo, &planning_root, None, None)?;
-    let report = render_blueprint(RenderRequest {
-        blueprint: &blueprint,
-        target_repo: &args.target_repo,
-    })?;
-
     println!("Program: {}", blueprint.program.id);
-    println!("Mode: create (deterministic only)");
+    println!("Mode: create (existing blueprint)");
     println!("Blueprint: {}", blueprint_path.display());
     if !notes.is_empty() {
         println!("Notes:");
@@ -875,20 +951,36 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
             println!("  - {note}");
         }
     }
-    println!("Written files:");
-    for path in report
-        .written_files
-        .into_iter()
-        .chain(written_mapping_files.into_iter())
-    {
-        println!("  {}", path.display());
-    }
     Ok(())
+}
+
+fn infer_program_id_from_repo_name(target_repo: &std::path::Path) -> String {
+    let repo_name = target_repo
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repo");
+    repo_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let output_repo = args.preview_root.as_ref().unwrap_or(&args.target_repo);
     let program = resolve_existing_program_id(&args.target_repo, args.program.as_deref())?;
+    if args.preview_root.is_some() {
+        seed_preview_root_from_current_package(&args.target_repo, output_repo, &program)?;
+    }
     let manifest_path = default_program_manifest_path(output_repo, &program);
     if !manifest_path.exists() {
         anyhow::bail!(
@@ -920,6 +1012,9 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         println!("Program: {program}");
         println!("Mode: evolve (deterministic steering report)");
+        if args.preview_root.is_some() {
+            println!("Preview root: {}", output_repo.display());
+        }
         println!("Report: {}", report_path.display());
         return Ok(());
     }
@@ -987,6 +1082,46 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
 
 const STEERING_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_STEERING_LOOKBACK_HOURS: u64 = 6;
+
+fn seed_preview_root_from_current_package(
+    target_repo: &std::path::Path,
+    output_repo: &std::path::Path,
+    program: &str,
+) -> anyhow::Result<()> {
+    let target_manifest = default_program_manifest_path(target_repo, program);
+    let output_manifest = default_program_manifest_path(output_repo, program);
+    if output_manifest.exists() || !target_manifest.exists() {
+        return Ok(());
+    }
+    let source_root = target_repo.join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR);
+    let destination_root = output_repo.join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR);
+    copy_directory_recursive(&source_root, &destination_root)
+}
+
+fn copy_directory_recursive(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> anyhow::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else {
+            if let Some(parent) = destination_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
 
 fn default_program_manifest_path(target_repo: &std::path::Path, program: &str) -> PathBuf {
     target_repo
@@ -1138,7 +1273,7 @@ fn deterministic_steering_report(
     body.push_str(
         "Deterministic mode only. This report did not rewrite malinka and should be treated as advisory.\n\n",
     );
-    body.push_str("## Inputs\n\n");
+    body.push_str("## Evidence\n\n");
     body.push_str(&format!(
         "- Program manifest: `{}`\n",
         manifest_path.display()
@@ -1152,9 +1287,16 @@ fn deterministic_steering_report(
             body.push_str(&format!("  - {line}\n"));
         }
     }
+    body.push_str("\n## Changes Made\n\n");
+    body.push_str("- None. Deterministic mode is advisory-only.\n");
+    body.push_str("\n## Why These Changes Preserve Genesis Strategy\n\n");
+    body.push_str("- No malinka execution steer was rewritten in deterministic mode.\n");
+    body.push_str("\n## Next Risks\n\n");
+    body.push_str("- This report may be stale unless followed by a reviewed steering pass.\n");
     body
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_steering_prompt(
     target_repo: &std::path::Path,
     output_repo: &std::path::Path,
@@ -1321,6 +1463,7 @@ struct MappingSnapshot {
     mapping_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     generated_by_run: Option<String>,
+    plan_id: String,
     title: String,
     category: String,
     composite: bool,
@@ -1356,6 +1499,14 @@ struct MappingMetadata {
     generated_by_run: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct MappingValidationContract {
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    dependency_plan_ids: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 struct OpusDecompositionReport {
     refreshed_paths: BTreeSet<PathBuf>,
@@ -1368,7 +1519,7 @@ fn write_plan_mapping_snapshots(
     refreshed_opus_paths: Option<&BTreeSet<PathBuf>>,
     expected_opus_paths: Option<&BTreeSet<PathBuf>>,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let registry = load_plan_registry_from_planning_root(target_repo, planning_root)?;
+    let registry = load_plan_registry_relaxed_from_planning_root(target_repo, planning_root)?;
     let mut written = Vec::new();
     for plan in registry.plans {
         let relative_path = mapping_snapshot_path(&plan);
@@ -1409,6 +1560,7 @@ fn write_plan_mapping_snapshots(
         let snapshot = MappingSnapshot {
             mapping_source: "heuristic".to_string(),
             generated_by_run: None,
+            plan_id: plan.plan_id.clone(),
             title: plan.title.clone(),
             category: plan.category.as_str().to_string(),
             composite: plan.composite,
@@ -1424,6 +1576,77 @@ fn write_plan_mapping_snapshots(
         written.push(absolute_path);
     }
     Ok(written)
+}
+
+fn validate_plan_mapping_snapshots(
+    target_repo: &std::path::Path,
+    planning_root: &std::path::Path,
+) -> anyhow::Result<()> {
+    let registry = load_plan_registry_relaxed_from_planning_root(target_repo, planning_root)?;
+    let known_plan_ids = registry
+        .plans
+        .iter()
+        .map(|plan| plan.plan_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut errors = Vec::new();
+
+    for plan in &registry.plans {
+        let relative_path = mapping_snapshot_path(plan);
+        let absolute_path = target_repo.join(&relative_path);
+        if !absolute_path.exists() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&absolute_path)?;
+        let contract: MappingValidationContract = serde_yaml::from_str(&raw).map_err(|error| {
+            anyhow::anyhow!("failed to parse {}: {error}", absolute_path.display())
+        })?;
+
+        match contract
+            .plan_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(plan_id) if plan_id == plan.plan_id => {}
+            Some(plan_id) => errors.push(format!(
+                "{}: plan_id `{plan_id}` does not match filename-derived id `{}`",
+                relative_path.display(),
+                plan.plan_id
+            )),
+            None => errors.push(format!(
+                "{}: missing required plan_id (expected `{}`)",
+                relative_path.display(),
+                plan.plan_id
+            )),
+        }
+
+        let unknown_dependencies = contract
+            .dependency_plan_ids
+            .iter()
+            .filter(|dependency| !known_plan_ids.contains(dependency.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown_dependencies.is_empty() {
+            errors.push(format!(
+                "{}: dependency_plan_ids must use exact known plan ids; unknown {:?}",
+                relative_path.display(),
+                unknown_dependencies
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "plan mapping validation failed:\n{}",
+        errors
+            .into_iter()
+            .map(|error| format!("- {error}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 fn infer_child_snapshots(
@@ -1723,7 +1946,7 @@ fn run_opus_decomposition(
         DECOMPOSE_MODEL
     );
 
-    let output = std::process::Command::new("sh")
+    let mut child = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
             "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
@@ -1731,25 +1954,59 @@ fn run_opus_decomposition(
             DECOMPOSE_MODEL,
         ))
         .current_dir(target_repo)
-        .output()?;
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Opus decomposition failed: {}", stderr.trim());
-    }
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            let mut collected = Vec::new();
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                eprintln!("  [decompose] {line}");
+                collected.push(line);
+            }
+            collected
+        })
+    };
 
     // Count only mappings refreshed by this invocation.
+    let wait_started = std::time::Instant::now();
     let mut refreshed_paths = BTreeSet::new();
-    for plan in &composite_plans {
-        let mapping_path = mapping_snapshot_path(plan);
-        let absolute_path = target_repo.join(&mapping_path);
-        if let Some(metadata) = load_mapping_metadata(&absolute_path) {
-            if metadata.mapping_source.as_deref() == Some("opus")
-                && metadata.generated_by_run.as_deref() == Some(run_id.as_str())
+    let mut refreshed_seen_at = None;
+    let status = loop {
+        refreshed_paths = refreshed_opus_paths_for_run(
+            target_repo,
+            &composite_plans,
+            run_id.as_str(),
+        );
+        if refreshed_paths.len() == expected_paths.len() {
+            refreshed_seen_at.get_or_insert_with(std::time::Instant::now);
+            if refreshed_seen_at
+                .as_ref()
+                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
             {
-                refreshed_paths.insert(mapping_path);
+                let _ = child.kill();
+                break child.wait()?;
             }
         }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Opus decomposition timed out after 20 minutes");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    let stderr_lines = stderr_handle.join().unwrap_or_default();
+
+    if !status.success() && refreshed_paths.is_empty() {
+        anyhow::bail!("Opus decomposition failed: {}", stderr_lines.join("\n").trim());
     }
 
     println!(
@@ -1760,6 +2017,26 @@ fn run_opus_decomposition(
         refreshed_paths,
         expected_paths,
     })
+}
+
+fn refreshed_opus_paths_for_run(
+    target_repo: &std::path::Path,
+    composite_plans: &[PlanRecord],
+    run_id: &str,
+) -> BTreeSet<PathBuf> {
+    let mut refreshed_paths = BTreeSet::new();
+    for plan in composite_plans {
+        let mapping_path = mapping_snapshot_path(plan);
+        let absolute_path = target_repo.join(&mapping_path);
+        if let Some(metadata) = load_mapping_metadata(&absolute_path) {
+            if metadata.mapping_source.as_deref() == Some("opus")
+                && metadata.generated_by_run.as_deref() == Some(run_id)
+            {
+                refreshed_paths.insert(mapping_path);
+            }
+        }
+    }
+    refreshed_paths
 }
 
 fn build_batch_decomposition_prompt(
@@ -1789,11 +2066,12 @@ Each mapping contract must contain:
 ```yaml
 mapping_source: opus
 generated_by_run: "{run_id}"
+plan_id: exact plan_id from the manifest above
 title: "from the plan's H1 heading"
 category: see category rules below
 composite: true
-bootstrap_required: true
-implementation_required: true
+bootstrap_required: true or false per bootstrap rules below
+implementation_required: true unless the plan is truly meta/report-only
 dependency_plan_ids: see dependency rules below
 children:
   - id: concise-kebab-case (2-4 words, e.g., casino-core, provably-fair, house-handler)
@@ -1835,9 +2113,18 @@ Extract dependency_plan_ids from ALL of these signals in the plan text:
 - Implicit: "once the chain is running" → depends on chain-restart plan
 - Cross-references: "uses casino-core trait" → depends on casino-core
 
-Use the plan_id (kebab-case, no number prefix, no -game/-plan/-trait suffix). E.g., `plans/004-casino-core-trait.md` → `casino-core`.
+Use ONLY exact `plan_id` values that appear in the manifest above. Copy them verbatim. Do NOT invent semantic slugs. Do NOT emit numbered filenames. Do NOT shorten or normalize beyond the exact listed ids.
 
 dependency_plan_ids must NEVER be empty for plans that clearly depend on other plans. Read the plan text carefully for implicit dependencies.
+
+## Bootstrap rules
+
+- Set `bootstrap_required: false` when the plan is already implementation-ready:
+  - names owned surfaces or exact file paths
+  - names concrete proof commands or tests
+  - names explicit validation / acceptance criteria
+- Set `bootstrap_required: true` only when the plan is still strategic, ambiguous, or missing the executable details above.
+- For dropped plans, still emit the exact full `plan_id` from the manifest above.
 
 ## Proof command rules
 
@@ -1877,4 +2164,54 @@ fn mapping_snapshot_path(plan: &PlanRecord) -> PathBuf {
     PathBuf::from(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
         .join("plan-mappings")
         .join(format!("{stem}.yaml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_decomposition_prompt_requires_exact_plan_ids() {
+        let prompt = build_batch_decomposition_prompt(
+            "- plan_id: casino-core\n  path: plans/004-casino-core-trait.md\n  category: foundation\n  dependency_plan_ids: []\n  output: malinka/plan-mappings/004-casino-core-trait.yaml",
+            Path::new("/tmp/repo"),
+            "opus-test",
+        );
+        assert!(prompt.contains("plan_id: exact plan_id from the manifest above"));
+        assert!(prompt.contains("Use ONLY exact `plan_id` values"));
+        assert!(prompt.contains("bootstrap_required: false"));
+    }
+
+    #[test]
+    fn validate_plan_mapping_snapshots_rejects_missing_plan_id_and_unknown_dependencies() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        std::fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mappings dir");
+        std::fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        std::fs::write(
+            temp.path().join("plans/005-craps-game.md"),
+            "# Craps Game\n",
+        )
+        .expect("craps");
+        std::fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/005-craps-game.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "dependency_plan_ids:\n",
+                "  - phase-1-devnet-endurance\n",
+            ),
+        )
+        .expect("mapping");
+
+        let error =
+            validate_plan_mapping_snapshots(temp.path(), Path::new("")).expect_err("should fail");
+        let rendered = error.to_string();
+        assert!(rendered.contains("missing required plan_id"));
+        assert!(rendered.contains("unknown [\"phase-1-devnet-endurance\"]"));
+    }
 }
