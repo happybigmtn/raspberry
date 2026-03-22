@@ -498,7 +498,8 @@ async fn apply_paperclip_context(
         &paths.bundle_root,
         &paths.company_name,
         existing_company_id.as_deref(),
-    )?;
+    )
+    .await?;
     let company_id = import_result.company.id.clone();
     let existing_state = load_bootstrap_state(&paths.bootstrap_state_path).ok();
     let existing_goal_id = existing_state
@@ -3014,41 +3015,89 @@ async fn paperclip_server_ready(api_base: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn import_company_package(
-    paperclip_cmd: &str,
-    data_dir: &Path,
+async fn import_company_package(
+    _paperclip_cmd: &str,
+    _data_dir: &Path,
     api_base: &str,
     bundle_root: &Path,
     company_name: &str,
     existing_company_id: Option<&str>,
 ) -> Result<PaperclipImportResult> {
-    let mut import_cmd = format!(
-        "{} company import --json --data-dir {} --api-base {} --from {} --include company,agents",
-        paperclip_cmd,
-        shell_quote(&data_dir.display().to_string()),
-        shell_quote(api_base),
-        shell_quote(&bundle_root.display().to_string()),
-    );
-    if let Some(company_id) = existing_company_id {
-        import_cmd.push_str(" --target existing --company-id ");
-        import_cmd.push_str(&shell_quote(company_id));
-        import_cmd.push_str(" --collision replace");
+    let manifest_path = bundle_root.join("paperclip.manifest.json");
+    let manifest_raw = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+
+    let company_path_str = manifest
+        .get("company")
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("COMPANY.md");
+    let company_md =
+        std::fs::read_to_string(bundle_root.join(company_path_str)).unwrap_or_default();
+
+    let mut agent_files = serde_json::Map::new();
+    if let Some(agents) = manifest.get("agents").and_then(|a| a.as_array()) {
+        for agent in agents {
+            if let Some(path) = agent.get("path").and_then(|p| p.as_str()) {
+                let content =
+                    std::fs::read_to_string(bundle_root.join(path)).unwrap_or_default();
+                agent_files.insert(path.to_string(), json!(content));
+            }
+        }
+    }
+
+    let mut files = serde_json::Map::new();
+    files.insert(company_path_str.to_string(), json!(company_md));
+    for (path, content) in &agent_files {
+        files.insert(path.clone(), content.clone());
+    }
+
+    let target = if let Some(company_id) = existing_company_id {
+        json!({
+            "mode": "existing_company",
+            "companyId": company_id,
+            "collision": "replace"
+        })
     } else {
-        import_cmd.push_str(" --target new --new-company-name ");
-        import_cmd.push_str(&shell_quote(company_name));
+        json!({
+            "mode": "new_company",
+            "name": company_name
+        })
+    };
+
+    let body = json!({
+        "source": {
+            "type": "inline",
+            "manifest": manifest,
+            "files": files,
+        },
+        "target": target,
+        "include": {
+            "company": true,
+            "agents": true
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{api_base}/api/companies/import"))
+        .json(&body)
+        .send()
+        .await
+        .context("failed to send import request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("paperclip company import failed ({}): {}", status, text);
     }
-    let output = Command::new("bash")
-        .arg("-lc")
-        .arg(import_cmd)
-        .output()
-        .context("failed to import paperclip company package")?;
-    if !output.status.success() {
-        bail!(
-            "paperclip company import failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parse_json_stdout(&output.stdout, "paperclip company import")
+
+    response
+        .json::<PaperclipImportResult>()
+        .await
+        .context("failed to parse import response")
 }
 
 async fn sync_company_secrets(
