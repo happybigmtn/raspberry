@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
-use fabro_llm::provider::Provider;
+use fabro_model::Provider;
 use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
@@ -23,6 +23,7 @@ pub enum AgentCli {
     Claude,
     Codex,
     Gemini,
+    Pi,
 }
 
 impl AgentCli {
@@ -30,11 +31,8 @@ impl AgentCli {
         match provider {
             Provider::Anthropic => Self::Claude,
             Provider::Gemini => Self::Gemini,
-            Provider::OpenAi
-            | Provider::Kimi
-            | Provider::Zai
-            | Provider::Minimax
-            | Provider::Inception => Self::Codex,
+            Provider::Minimax => Self::Pi,
+            Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => Self::Codex,
         }
     }
 
@@ -43,6 +41,7 @@ impl AgentCli {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Gemini => "gemini",
+            Self::Pi => "pi",
         }
     }
 
@@ -51,6 +50,7 @@ impl AgentCli {
             Self::Claude => "@anthropic-ai/claude-code",
             Self::Codex => "@openai/codex",
             Self::Gemini => "@anthropic-ai/gemini-cli",
+            Self::Pi => "@mariozechner/pi-coding-agent",
         }
     }
 }
@@ -171,34 +171,48 @@ pub fn is_cli_only_model(model: &str) -> bool {
 /// is piped into the command's stdin via `cat`.
 #[must_use]
 pub fn cli_command_for_provider(provider: Provider, model: &str, prompt_file: &str) -> String {
-    let model_flag = if model.is_empty() {
-        String::new()
-    } else {
-        match provider {
-            Provider::OpenAi
-            | Provider::Gemini
-            | Provider::Kimi
-            | Provider::Zai
-            | Provider::Minimax
-            | Provider::Inception => {
-                format!(" -m {model}")
-            }
-            Provider::Anthropic => format!(" --model {model}"),
-        }
-    };
     // Use `cat | command` instead of `command < file` because the background
     // launch wrapper (`setsid sh -c '...' </dev/null`) can clobber stdin
     // redirects in nested shells. A pipe creates an explicit new stdin.
     match provider {
         // --yolo: auto-approve all tool calls and bypass sandbox prompts
-        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
+        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => {
+            let model_flag = if model.is_empty() {
+                String::new()
+            } else {
+                format!(" -m {model}")
+            };
             format!("cat {prompt_file} | codex exec --json --yolo{model_flag}")
         }
+        Provider::Minimax => {
+            let model_flag = if model.is_empty() {
+                String::new()
+            } else {
+                format!(" --model {model}")
+            };
+            format!(
+                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls{model_flag} \"$prompt\""
+            )
+        }
         // --yolo: auto-approve all tool calls
-        Provider::Gemini => format!("cat {prompt_file} | gemini -o json --yolo{model_flag}"),
+        Provider::Gemini => {
+            let model_flag = if model.is_empty() {
+                String::new()
+            } else {
+                format!(" -m {model}")
+            };
+            format!("cat {prompt_file} | gemini -o json --yolo{model_flag}")
+        }
         // --dangerously-skip-permissions: bypass all permission checks (required for non-interactive use).
         // CLAUDECODE= unset to allow running inside a Claude Code session.
-        Provider::Anthropic => format!("cat {prompt_file} | CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag}"),
+        Provider::Anthropic => {
+            let model_flag = if model.is_empty() {
+                String::new()
+            } else {
+                format!(" --model {model}")
+            };
+            format!("cat {prompt_file} | CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag}")
+        }
     }
 }
 
@@ -363,14 +377,85 @@ fn parse_gemini_json(output: &str) -> Option<CliResponse> {
     })
 }
 
+fn parse_pi_message(value: &serde_json::Value) -> Option<CliResponse> {
+    let message = value.get("message")?;
+    if message.get("role").and_then(|role| role.as_str()) != Some("assistant") {
+        return None;
+    }
+
+    let content = message.get("content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter(|block| block.get("type").and_then(|kind| kind.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|text| text.as_str()))
+        .collect::<String>();
+    let input_tokens = message
+        .pointer("/usage/input")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let output_tokens = message
+        .pointer("/usage/output")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let served_model = message
+        .get("model")
+        .and_then(|model| model.as_str())
+        .map(ToString::to_string);
+
+    Some(CliResponse {
+        text,
+        input_tokens,
+        output_tokens,
+        served_model,
+    })
+}
+
+fn parse_pi_json(output: &str) -> Option<CliResponse> {
+    let mut last_assistant: Option<CliResponse> = None;
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let event_type = value.get("type").and_then(|value| value.as_str());
+
+        match event_type {
+            Some("message_end") => {
+                if let Some(parsed) = parse_pi_message(&value) {
+                    last_assistant = Some(parsed);
+                }
+            }
+            Some("agent_end") => {
+                let messages = value.get("messages").and_then(|value| value.as_array());
+                if let Some(messages) = messages {
+                    for message in messages {
+                        let wrapped = serde_json::json!({ "message": message });
+                        if let Some(parsed) = parse_pi_message(&wrapped) {
+                            last_assistant = Some(parsed);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    last_assistant
+}
+
 /// Parse CLI output, choosing the right parser based on provider.
 pub fn parse_cli_response(provider: Provider, output: &str) -> Option<CliResponse> {
     match provider {
-        Provider::OpenAi
-        | Provider::Kimi
-        | Provider::Zai
-        | Provider::Minimax
-        | Provider::Inception => parse_codex_ndjson(output),
+        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => {
+            parse_codex_ndjson(output)
+        }
+        Provider::Minimax => parse_pi_json(output),
         Provider::Gemini => parse_gemini_json(output),
         Provider::Anthropic => parse_claude_ndjson(output),
     }
@@ -381,32 +466,33 @@ fn shell_escape(val: &str) -> String {
     val.replace('\'', "'\\''")
 }
 
-async fn write_provider_used_json(
-    stage_dir: &Path,
+struct ProviderUsedJson<'a> {
     requested_provider: Provider,
-    requested_model: &str,
+    requested_model: &'a str,
     provider: Provider,
-    model: &str,
-    served_model: Option<&str>,
-    fallback_reason: Option<&str>,
-    codex_slot: Option<&CodexSlotSelection>,
-    command: &str,
-) {
+    model: &'a str,
+    served_model: Option<&'a str>,
+    fallback_reason: Option<&'a str>,
+    codex_slot: Option<&'a CodexSlotSelection>,
+    command: &'a str,
+}
+
+async fn write_provider_used_json(stage_dir: &Path, details: ProviderUsedJson<'_>) {
     let provider_used = serde_json::json!({
         "mode": "cli",
-        "requested_provider": requested_provider.as_str(),
-        "requested_model": requested_model,
-        "provider": provider.as_str(),
-        "model": model,
-        "served_model": served_model,
-        "fallback_reason": fallback_reason,
-        "codex_slot": codex_slot.map(|slot| serde_json::json!({
+        "requested_provider": details.requested_provider.as_str(),
+        "requested_model": details.requested_model,
+        "provider": details.provider.as_str(),
+        "model": details.model,
+        "served_model": details.served_model,
+        "fallback_reason": details.fallback_reason,
+        "codex_slot": details.codex_slot.map(|slot| serde_json::json!({
             "slot_name": slot.slot_name,
             "codex_home": slot.codex_home,
             "config_path": slot.config_path,
             "state_path": slot.state_path,
         })),
-        "command": command,
+        "command": details.command,
     });
     if let Ok(json) = serde_json::to_string_pretty(&provider_used) {
         let _ = tokio::fs::write(stage_dir.join("provider_used.json"), json).await;
@@ -563,12 +649,17 @@ fn slot_key(name: &str) -> String {
         .collect()
 }
 
-fn automation_codex_home_allowed(path: &Path) -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
+fn automation_codex_home_allowed_with_home(path: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
         return true;
     };
-    let primary_home = PathBuf::from(home).join(".codex");
+    let primary_home = home.join(".codex");
     path != primary_home
+}
+
+fn automation_codex_home_allowed(path: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    automation_codex_home_allowed_with_home(path, home.as_deref())
 }
 
 fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
@@ -657,11 +748,7 @@ fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
     })
 }
 
-fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return None;
-    };
-    let home = PathBuf::from(home);
+fn fallback_codex_slot_selection_with_home(home: &Path) -> Option<CodexSlotSelection> {
     let candidates = [
         ("slot1", home.join(".codex-slot1/.codex")),
         ("slot2", home.join(".codex-slot2/.codex")),
@@ -682,6 +769,11 @@ fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
         })
 }
 
+fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    fallback_codex_slot_selection_with_home(&home)
+}
+
 fn save_codex_rotator_state(path: &Path, state: &CodexRotatorState) {
     let Ok(json) = serde_json::to_string_pretty(state) else {
         return;
@@ -693,7 +785,7 @@ fn save_codex_rotator_state(path: &Path, state: &CodexRotatorState) {
 }
 
 fn mark_codex_slot_selected(selection: &CodexSlotSelection) {
-    if selection.config_path == PathBuf::from("<fallback>") {
+    if selection.config_path == Path::new("<fallback>") {
         return;
     }
     let mut state = std::fs::read_to_string(&selection.state_path)
@@ -738,7 +830,7 @@ fn should_rotate_away_from_failed_slot(reason: &str) -> bool {
 }
 
 fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
-    if selection.config_path == PathBuf::from("<fallback>") {
+    if selection.config_path == Path::new("<fallback>") {
         return;
     }
     let mut state = std::fs::read_to_string(&selection.state_path)
@@ -759,7 +851,7 @@ fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
 }
 
 fn mark_codex_slot_succeeded(selection: &CodexSlotSelection) {
-    if selection.config_path == PathBuf::from("<fallback>") {
+    if selection.config_path == Path::new("<fallback>") {
         return;
     }
     let mut state = std::fs::read_to_string(&selection.state_path)
@@ -970,14 +1062,16 @@ impl CodergenBackend for AgentCliBackend {
         let _ = tokio::fs::create_dir_all(stage_dir).await;
         write_provider_used_json(
             stage_dir,
-            requested_provider,
-            &requested_model,
-            provider,
-            &model,
-            None,
-            fallback_reason.as_deref(),
-            codex_slot.as_ref(),
-            &command,
+            ProviderUsedJson {
+                requested_provider,
+                requested_model: &requested_model,
+                provider,
+                model: &model,
+                served_model: None,
+                fallback_reason: fallback_reason.as_deref(),
+                codex_slot: codex_slot.as_ref(),
+                command: &command,
+            },
         )
         .await;
         if let Some(reason) = &fallback_reason {
@@ -1139,14 +1233,16 @@ impl CodergenBackend for AgentCliBackend {
             .ok_or_else(|| FabroError::handler("Failed to parse CLI output".to_string()))?;
         write_provider_used_json(
             stage_dir,
-            requested_provider,
-            &requested_model,
-            provider,
-            &model,
-            parsed.served_model.as_deref(),
-            fallback_reason.as_deref(),
-            codex_slot.as_ref(),
-            &command,
+            ProviderUsedJson {
+                requested_provider,
+                requested_model: &requested_model,
+                provider,
+                model: &model,
+                served_model: parsed.served_model.as_deref(),
+                fallback_reason: fallback_reason.as_deref(),
+                codex_slot: codex_slot.as_ref(),
+                command: &command,
+            },
         )
         .await;
 
@@ -1188,6 +1284,7 @@ impl CodergenBackend for AgentCliBackend {
             cache_read_tokens: None,
             cache_write_tokens: None,
             reasoning_tokens: None,
+            speed: None,
             cost: None,
         };
         stage_usage.cost = compute_stage_cost(&stage_usage);
@@ -1282,6 +1379,7 @@ impl CodergenBackend for BackendRouter {
 mod tests {
     use super::*;
     use fabro_graphviz::graph::AttrValue;
+    use std::sync::Mutex;
 
     // -- AgentCli --
 
@@ -1295,7 +1393,7 @@ mod tests {
         assert_eq!(AgentCli::for_provider(Provider::Gemini), AgentCli::Gemini);
         assert_eq!(AgentCli::for_provider(Provider::Kimi), AgentCli::Codex);
         assert_eq!(AgentCli::for_provider(Provider::Zai), AgentCli::Codex);
-        assert_eq!(AgentCli::for_provider(Provider::Minimax), AgentCli::Codex);
+        assert_eq!(AgentCli::for_provider(Provider::Minimax), AgentCli::Pi);
         assert_eq!(AgentCli::for_provider(Provider::Inception), AgentCli::Codex);
     }
 
@@ -1304,6 +1402,7 @@ mod tests {
         assert_eq!(AgentCli::Claude.name(), "claude");
         assert_eq!(AgentCli::Codex.name(), "codex");
         assert_eq!(AgentCli::Gemini.name(), "gemini");
+        assert_eq!(AgentCli::Pi.name(), "pi");
     }
 
     #[test]
@@ -1311,6 +1410,7 @@ mod tests {
         assert!(!inherit_host_provider_credentials(AgentCli::Claude));
         assert!(!inherit_host_provider_credentials(AgentCli::Codex));
         assert!(inherit_host_provider_credentials(AgentCli::Gemini));
+        assert!(inherit_host_provider_credentials(AgentCli::Pi));
     }
 
     #[test]
@@ -1318,6 +1418,7 @@ mod tests {
         assert_eq!(AgentCli::Claude.npm_package(), "@anthropic-ai/claude-code");
         assert_eq!(AgentCli::Codex.npm_package(), "@openai/codex");
         assert_eq!(AgentCli::Gemini.npm_package(), "@anthropic-ai/gemini-cli");
+        assert_eq!(AgentCli::Pi.npm_package(), "@mariozechner/pi-coding-agent");
     }
 
     #[test]
@@ -1549,14 +1650,10 @@ mod tests {
     #[test]
     fn choose_codex_slot_skips_primary_shared_home() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", temp.path());
-
-        let primary = temp.path().join(".codex");
+        let home = dirs::home_dir().expect("home dir");
+        let primary = home.join(".codex");
         let slot1 = temp.path().join(".codex-slot1/.codex");
-        std::fs::create_dir_all(&primary).expect("primary dir");
         std::fs::create_dir_all(&slot1).expect("slot1 dir");
-        std::fs::write(primary.join("auth.json"), "{}").expect("primary auth");
         std::fs::write(slot1.join("auth.json"), "{}").expect("slot1 auth");
 
         let rotator = CodexRotator {
@@ -1585,11 +1682,6 @@ mod tests {
         let selected = choose_codex_slot(&rotator).expect("slot selected");
         assert_eq!(selected.slot_name, "slot1");
         assert_eq!(selected.codex_home, slot1);
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
     }
 
     #[test]
@@ -1617,24 +1709,13 @@ mod tests {
     #[test]
     fn fallback_codex_slot_selection_picks_first_available_auth_home() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", temp.path());
-
-        let primary = temp.path().join(".codex");
         let slot3 = temp.path().join(".codex-slot3/.codex");
-        std::fs::create_dir_all(&primary).expect("primary dir");
         std::fs::create_dir_all(&slot3).expect("slot3 dir");
-        std::fs::write(primary.join("auth.json"), "{}").expect("primary auth");
         std::fs::write(slot3.join("auth.json"), "{}").expect("slot3 auth");
 
-        let selected = fallback_codex_slot_selection().expect("fallback slot");
+        let selected = fallback_codex_slot_selection_with_home(temp.path()).expect("fallback slot");
         assert_eq!(selected.slot_name, "slot3");
         assert_eq!(selected.codex_home, slot3);
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
     }
 
     #[test]
@@ -1676,7 +1757,6 @@ mod tests {
 
     use fabro_agent::sandbox::{DirEntry, GrepOptions};
     use std::collections::VecDeque;
-    use std::sync::Mutex;
 
     /// Mock sandbox that returns pre-configured ExecResults in FIFO order.
     struct CliMockSandbox {
@@ -1871,6 +1951,19 @@ mod tests {
     }
 
     #[test]
+    fn cli_command_for_pi_minimax() {
+        let cmd = cli_command_for_provider(
+            Provider::Minimax,
+            "MiniMax-M2.7-highspeed",
+            "/tmp/prompt.txt",
+        );
+        assert!(cmd.starts_with("prompt=\"$(cat /tmp/prompt.txt)\" && pi --provider minimax"));
+        assert!(cmd.contains("--mode json -p --no-session"));
+        assert!(cmd.contains("--tools read,bash,edit,write,grep,find,ls"));
+        assert!(cmd.contains("--model MiniMax-M2.7-highspeed"));
+    }
+
+    #[test]
     fn cli_command_omits_model_when_empty() {
         let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt");
         assert!(cmd.contains("codex exec --json --yolo"));
@@ -1881,6 +1974,9 @@ mod tests {
         let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt");
         assert!(cmd.contains("--yolo"));
         assert!(!cmd.contains("-m "));
+        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt");
+        assert!(cmd.contains("pi --provider minimax"));
+        assert!(!cmd.contains("--model "));
     }
 
     // -- Cycle 2: is_cli_only_model --
@@ -1892,7 +1988,7 @@ mod tests {
         assert!(!is_cli_only_model("gemini-3.1-pro-preview"));
     }
 
-    // -- Cycle 3: parse_cli_response — Claude/Gemini NDJSON --
+    // -- Cycle 3: parse_cli_response — Claude/Gemini/Pi --
 
     #[test]
     fn parse_claude_ndjson_extracts_text_and_usage() {
@@ -1946,6 +2042,21 @@ mod tests {
     #[test]
     fn parse_gemini_json_returns_none_for_invalid_json() {
         assert!(parse_cli_response(Provider::Gemini, "not json").is_none());
+    }
+
+    #[test]
+    fn parse_pi_json_extracts_last_assistant_message_and_usage() {
+        let output = r#"{"type":"session","version":3}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","arguments":{"path":"/tmp/x"}}],"provider":"minimax","model":"MiniMax-M2.7-highspeed","usage":{"input":4,"output":52},"stopReason":"toolUse"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"done"},{"type":"text","text":"pi minimax ok"}],"provider":"minimax","model":"MiniMax-M2.7-highspeed","usage":{"input":90,"output":11},"stopReason":"stop"}}"#;
+        let response = parse_cli_response(Provider::Minimax, output).unwrap();
+        assert_eq!(response.text, "pi minimax ok");
+        assert_eq!(response.input_tokens, 90);
+        assert_eq!(response.output_tokens, 11);
+        assert_eq!(
+            response.served_model.as_deref(),
+            Some("MiniMax-M2.7-highspeed")
+        );
     }
 
     // -- Cycle 4: parse_cli_response — Codex NDJSON --

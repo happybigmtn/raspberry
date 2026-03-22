@@ -6,7 +6,7 @@ use crate::{
 };
 use clap::{Args, Parser};
 use fabro_llm::client::Client;
-use fabro_llm::provider::{ModelId, Provider};
+use fabro_model::{ModelId, Provider};
 use fabro_util::terminal::Styles;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -60,7 +60,7 @@ struct Cli {
 
 pub use fabro_config::cli::{OutputFormat, PermissionLevel};
 
-const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
+const DEFAULT_WRITE_PROVIDER: &str = "minimax";
 const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
 
 impl AgentArgs {
@@ -389,10 +389,10 @@ pub async fn run_with_args_and_client(
 
     // Resolve model and build profile
     let model = args.model.unwrap_or_else(|| {
-        if provider == Provider::Anthropic {
+        if provider == Provider::Minimax {
             DEFAULT_WRITE_MODEL.to_string()
         } else {
-            fabro_llm::catalog::default_model_for_provider(provider.as_str())
+            fabro_model::default_model_for_provider(provider.as_str())
                 .map(|m| m.id)
                 .unwrap_or_else(|| provider.as_str().to_string())
         }
@@ -546,7 +546,6 @@ pub async fn run_with_args_and_client(
                             task,
                             ..
                         } => {
-                            let short_id = &agent_id[..8.min(agent_id.len())];
                             let task_preview = if task.len() > 60 {
                                 &task[..crate::truncation::floor_char_boundary(task, 60)]
                             } else {
@@ -555,7 +554,7 @@ pub async fn run_with_args_and_client(
                             eprintln!(
                                 "  {}",
                                 s.dim.apply_to(format!(
-                                    "\u{25b6} subagent {short_id} spawned (depth={depth}) task={task_preview:?}"
+                                    "\u{25b6} subagent {agent_id} spawned (depth={depth}) task={task_preview:?}"
                                 )),
                             );
                         }
@@ -565,11 +564,10 @@ pub async fn run_with_args_and_client(
                             success,
                             turns_used,
                         } => {
-                            let short_id = &agent_id[..8.min(agent_id.len())];
                             eprintln!(
                                 "  {}",
                                 s.dim.apply_to(format!(
-                                    "\u{25a0} subagent {short_id} completed (depth={depth}, success={success}, turns={turns_used})"
+                                    "\u{25a0} subagent {agent_id} completed (depth={depth}, success={success}, turns={turns_used})"
                                 )),
                             );
                         }
@@ -578,20 +576,18 @@ pub async fn run_with_args_and_client(
                             depth,
                             error,
                         } => {
-                            let short_id = &agent_id[..8.min(agent_id.len())];
                             eprintln!(
                                 "  {}",
                                 s.red.apply_to(format!(
-                                    "\u{2717} subagent {short_id} failed (depth={depth}): {error}"
+                                    "\u{2717} subagent {agent_id} failed (depth={depth}): {error}"
                                 )),
                             );
                         }
                         AgentEvent::SubAgentClosed { agent_id, depth } => {
-                            let short_id = &agent_id[..8.min(agent_id.len())];
                             eprintln!(
                                 "  {}",
                                 s.dim.apply_to(format!(
-                                    "\u{25a0} subagent {short_id} closed (depth={depth})"
+                                    "\u{25a0} subagent {agent_id} closed (depth={depth})"
                                 )),
                             );
                         }
@@ -600,11 +596,10 @@ pub async fn run_with_args_and_client(
                             event: child_event,
                             ..
                         } if verbose => {
-                            let short_id = &agent_id[..8.min(agent_id.len())];
                             eprintln!(
                                 "  {}",
                                 s.dim
-                                    .apply_to(format!("[subagent {short_id}] {child_event:?}")),
+                                    .apply_to(format!("[subagent {agent_id}] {child_event:?}")),
                             );
                         }
                         _ => {}
@@ -641,7 +636,7 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fabro_llm::provider::Provider;
+    use fabro_model::Provider;
     use serde_json::json;
 
     static NO_COLOR: std::sync::LazyLock<Styles> = std::sync::LazyLock::new(|| Styles::new(false));
@@ -768,7 +763,7 @@ mod tests {
 
         args.apply_cli_defaults(None, None, None, None);
 
-        assert_eq!(args.provider.as_deref(), Some("anthropic"));
+        assert_eq!(args.provider.as_deref(), Some("minimax"));
         assert_eq!(args.model, None);
     }
 

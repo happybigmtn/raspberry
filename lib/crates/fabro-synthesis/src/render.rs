@@ -11,7 +11,7 @@ use crate::blueprint::{
 };
 use crate::error::RenderError;
 
-const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
+const DEFAULT_WRITE_PROVIDER: &str = "minimax";
 const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
 const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
 const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
@@ -853,6 +853,10 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
 }
 
+fn toml_multiline_literal(value: &str) -> String {
+    format!("'''\n{}\n'''", value.trim_end())
+}
+
 fn template_supports_direct_integration(template: WorkflowTemplate) -> bool {
     matches!(
         template,
@@ -910,14 +914,14 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        format!("\n[sandbox.env]\nFABRO_STRICT_PROVIDER = \"1\"\n",)
+        "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\n".to_string()
     } else {
         String::new()
     };
     let mut config = format!(
-        "version = 1\ngraph = \"{}\"\ngoal = \"\"\"\n{}\n\"\"\"\ndirectory = \"../../..\"\n\n{}[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"{}\"\n{}",
+        "version = 1\ngraph = \"{}\"\ngoal = {}\ndirectory = \"../../..\"\n\n{}[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"{}\"\n{}",
         graph_rel,
-        lane.goal.trim_end(),
+        toml_multiline_literal(&lane.goal),
         llm_config,
         worktree_mode,
         sandbox_env,
@@ -1049,10 +1053,7 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
             "# {} — Plan\n\nLane: `{}`\n\nGoal:\n- {}\n\nContext:\n- {}\n",
             lane.title, lane.id, lane.goal, context
         ),
-        "review" => format!(
-            "{}",
-            render_general_review_prompt(lane, context)
-        ),
+        "review" => render_general_review_prompt(lane, context).to_string(),
         "polish" => format!(
             "# {} — Polish\n\nPolish the durable artifacts for `{}` so they are clear, repo-specific, and ready for the supervisory plane.\n",
             lane.title, lane.id
@@ -1061,6 +1062,7 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_plan_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1179,6 +1181,7 @@ fn append_prompt_section(output: &mut String, title: &str, lines: &[String], cod
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_review_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1287,6 +1290,7 @@ Only set `merge_ready: yes` when:\n\
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_challenge_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1357,6 +1361,7 @@ fn render_implementation_challenge_prompt(
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_fixup_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -3086,6 +3091,7 @@ fn implementation_goal(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn implementation_prompt_context(
     spec_path: &Path,
     review_path: &Path,
@@ -3204,10 +3210,10 @@ fn execution_guidance_from_slice_notes(slice_notes: &[String]) -> Vec<String> {
 
 fn trim_list_prefix(value: &str) -> &str {
     let trimmed = value.trim();
-    let mut chars = trimmed.chars();
+    let chars = trimmed.chars();
     let mut consumed = 0usize;
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if ch.is_ascii_digit() {
             consumed += ch.len_utf8();
             continue;
@@ -5522,12 +5528,12 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         );
         assert!(run_config.contains("worktree_mode = \"always\""));
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
         assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
@@ -5568,12 +5574,12 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
         assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("worktree_mode = \"clean\""));
         assert!(run_config.contains("[integration]"));
@@ -5615,11 +5621,11 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
         assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));
