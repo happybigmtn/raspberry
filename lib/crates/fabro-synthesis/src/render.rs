@@ -16,7 +16,7 @@ const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
 const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
 const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
 const REVIEW_FALLBACK_SECTION: &str =
-    "\n[llm.fallbacks]\nminimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]\n";
+    "\n[llm.fallbacks]\nminimax = [\"openai\", \"gemini\", \"kimi\", \"anthropic\"]\nanthropic = [\"openai\", \"gemini\", \"kimi\"]\n";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
