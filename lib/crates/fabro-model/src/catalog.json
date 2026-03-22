@@ -310,6 +310,22 @@
     "default": true
   },
   {
+    "id": "MiniMax-M2.7-highspeed",
+    "provider": "minimax",
+    "family": "minimax-m2",
+    "display_name": "MiniMax M2.7 Highspeed",
+    "limits": { "context_window": 196608, "max_output": 16384 },
+    "training": null,
+    "features": { "tools": true, "vision": false, "reasoning": true, "effort": true },
+    "costs": {
+      "input_cost_per_mtok": null,
+      "output_cost_per_mtok": null,
+      "cache_input_cost_per_mtok": null
+    },
+    "estimated_output_tps": 80,
+    "aliases": ["MiniMax-M2.7", "minimax-m2.7", "minimax-m2.7-highspeed"]
+  },
+  {
     "id": "mercury-2",
     "provider": "inception",
     "family": "mercury",

@@ -1373,6 +1373,16 @@ fn build_child_prompt_context(
     child_unit_id: &str,
     artifacts: &[BlueprintArtifact],
 ) -> Option<String> {
+    let owned_surfaces = if child.owned_surfaces.is_empty() {
+        corpus
+            .plan_docs
+            .iter()
+            .find(|doc| doc.path == plan.path)
+            .map(|doc| infer_owned_surfaces_from_plan(child_unit_id, &doc.body))
+            .unwrap_or_default()
+    } else {
+        child.owned_surfaces.clone()
+    };
     let mut sections = vec![
         format!("Plan file:\n- `{}`", plan.path.display()),
         format!("Child work item: `{child_unit_id}`"),
@@ -1391,6 +1401,16 @@ fn build_child_prompt_context(
     }
     if let Some(profile) = child.review_profile {
         sections.push(format!("Review profile: {}", profile.as_str()));
+    }
+    if !owned_surfaces.is_empty() {
+        sections.push(format!(
+            "Touch first:\n{}",
+            owned_surfaces
+                .iter()
+                .map(|surface| format!("- `{surface}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
 
     if let Some(active_plan) = &corpus.active_plan {
@@ -1464,6 +1484,12 @@ fn build_registry_plan_prompt_context(
     artifacts: &[BlueprintArtifact],
 ) -> Option<String> {
     let mut sections = vec![format!("Plan file:\n- `{}`", plan.path.display())];
+    let inferred_owned_surfaces = corpus
+        .plan_docs
+        .iter()
+        .find(|doc| doc.path == plan.path)
+        .map(|doc| infer_owned_surfaces_from_plan(&plan.plan_id, &doc.body))
+        .unwrap_or_default();
 
     // Inject full plan content so bootstrap workers have domain context
     if let Some(plan_doc) = corpus.plan_docs.iter().find(|doc| doc.path == plan.path) {
@@ -1478,6 +1504,16 @@ fn build_registry_plan_prompt_context(
     }
     if let Some(active_spec) = &corpus.active_spec {
         sections.push(format!("Active spec:\n- `{}`", active_spec.path.display()));
+    }
+    if !inferred_owned_surfaces.is_empty() {
+        sections.push(format!(
+            "Touch first:\n{}",
+            inferred_owned_surfaces
+                .iter()
+                .map(|surface| format!("- `{surface}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
     if plan.composite && plan.mapping_contract_path.is_none() {
         sections.push(
@@ -3817,6 +3853,16 @@ units:
             house_session.lanes[0].template,
             WorkflowTemplate::Implementation
         );
+        assert!(casino_core.lanes[0]
+            .prompt_context
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Touch first:"));
+        assert!(casino_core.lanes[0]
+            .prompt_context
+            .as_deref()
+            .unwrap_or_default()
+            .contains("crates/casino-core/src/craps.rs"));
         assert!(casino_core
             .artifacts
             .iter()

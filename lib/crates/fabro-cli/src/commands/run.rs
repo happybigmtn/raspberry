@@ -485,6 +485,14 @@ fn resolve_fallback_chain(
     }
 }
 
+fn resolve_fallback_map(
+    run_cfg: Option<&WorkflowRunConfig>,
+) -> Option<HashMap<String, Vec<String>>> {
+    run_cfg
+        .and_then(|c| c.llm.as_ref())
+        .and_then(|l| l.fallbacks.clone())
+}
+
 /// Mint a GitHub App Installation Access Token with the given permissions.
 ///
 /// Signs a JWT, resolves `owner/repo` from `origin_url`, and requests a
@@ -1489,6 +1497,7 @@ pub async fn run_command(
 
     // Resolve fallback chain from config
     let fallback_chain = resolve_fallback_chain(provider_enum, &model, run_cfg.as_ref());
+    let fallback_map = resolve_fallback_map(run_cfg.as_ref());
 
     // 7. Build engine
     // Devcontainer env is layered underneath TOML env (TOML wins on conflict)
@@ -1567,10 +1576,12 @@ pub async fn run_command(
             } else {
                 let api =
                     AgentApiBackend::new(model.clone(), provider_enum, fallback_chain.clone())
+                        .with_fallback_map(fallback_map.clone())
                         .with_env(sandbox_env.clone())
                         .with_mcp_servers(mcp_servers.clone());
                 let cli = AgentCliBackend::new(model.clone(), provider_enum)
                     .with_fallback_chain(fallback_chain.clone())
+                    .with_fallback_map(fallback_map.clone())
                     .with_env(sandbox_env.clone());
                 Some(Box::new(BackendRouter::new(Box::new(api), cli)))
             }

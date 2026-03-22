@@ -121,6 +121,7 @@ pub struct AgentApiBackend {
     model: String,
     provider: Provider,
     fallback_chain: Vec<FallbackTarget>,
+    fallback_map: Option<HashMap<String, Vec<String>>>,
     sessions: Mutex<HashMap<String, Session>>,
     env: HashMap<String, String>,
     mcp_servers: Vec<fabro_mcp::config::McpServerConfig>,
@@ -133,10 +134,17 @@ impl AgentApiBackend {
             model,
             provider,
             fallback_chain,
+            fallback_map: None,
             sessions: Mutex::new(HashMap::new()),
             env: HashMap::new(),
             mcp_servers: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_fallback_map(mut self, fallback_map: Option<HashMap<String, Vec<String>>>) -> Self {
+        self.fallback_map = fallback_map;
+        self
     }
 
     #[must_use]
@@ -245,6 +253,16 @@ impl AgentApiBackend {
 
         Ok(session)
     }
+
+    fn resolved_fallback_chain(&self, provider: Provider, model: &str) -> Vec<FallbackTarget> {
+        if let Some(fallback_map) = &self.fallback_map {
+            let chain = fabro_model::build_fallback_chain(provider.as_str(), model, fallback_map);
+            if !chain.is_empty() {
+                return chain;
+            }
+        }
+        self.fallback_chain.clone()
+    }
 }
 
 fn resolved_model_provider(
@@ -278,6 +296,10 @@ impl CodergenBackend for AgentApiBackend {
             .provider()
             .map(String::from)
             .or_else(|| Some(self.provider.as_str().to_string()));
+        let fallback_provider = provider
+            .as_deref()
+            .and_then(|value| value.parse::<Provider>().ok())
+            .unwrap_or(self.provider);
 
         let max_tokens = node
             .max_tokens()
@@ -311,13 +333,7 @@ impl CodergenBackend for AgentApiBackend {
             let _ = tokio::fs::write(stage_dir.join("api_request.json"), json).await;
         }
 
-        // Build per-request fallback chain: if the node overrides the provider,
-        // no failover is available; otherwise use the backend's.
-        let fallback_chain: &[FallbackTarget] = if node.provider().is_some() {
-            &[]
-        } else {
-            &self.fallback_chain
-        };
+        let fallback_chain = self.resolved_fallback_chain(fallback_provider, model);
 
         let result = client.complete(&request).await;
 
@@ -343,7 +359,7 @@ impl CodergenBackend for AgentApiBackend {
                 let mut last_err = sdk_err;
                 let mut found = None;
 
-                for target in fallback_chain {
+                for target in &fallback_chain {
                     tracing::warn!(
                         stage = node.id.as_str(),
                         from_provider = from_provider.as_str(),
@@ -499,11 +515,13 @@ impl CodergenBackend for AgentApiBackend {
         // On failover-eligible error, try fallback providers.
         let result = match result {
             Ok(()) => Ok(()),
-            Err(fabro_agent::AgentError::Llm(ref sdk_err))
-                if sdk_err.failover_eligible()
-                    && !self.fallback_chain.is_empty()
-                    && node.provider().is_none() =>
+            Err(fabro_agent::AgentError::Llm(ref sdk_err)) if sdk_err.failover_eligible() => 
             {
+                let fallback_chain =
+                    self.resolved_fallback_chain(effective_provider, &effective_model);
+                if fallback_chain.is_empty() {
+                    Err(FabroError::Llm(sdk_err.clone()))
+                } else {
                 let error_msg = sdk_err.to_string();
                 let from_provider = effective_provider.as_str().to_string();
                 let from_model = effective_model.clone();
@@ -511,7 +529,7 @@ impl CodergenBackend for AgentApiBackend {
                 let mut last_err = FabroError::Llm(sdk_err.clone());
                 let mut succeeded = false;
 
-                for target in &self.fallback_chain {
+                for target in &fallback_chain {
                     emitter.emit(&WorkflowRunEvent::Failover {
                         stage: node.id.clone(),
                         from_provider: from_provider.clone(),
@@ -574,10 +592,11 @@ impl CodergenBackend for AgentApiBackend {
                     }
                 }
 
-                if succeeded {
-                    Ok(())
-                } else {
-                    Err(last_err)
+                    if succeeded {
+                        Ok(())
+                    } else {
+                        Err(last_err)
+                    }
                 }
             }
             Err(fabro_agent::AgentError::Llm(sdk_err)) => Err(FabroError::Llm(sdk_err)),

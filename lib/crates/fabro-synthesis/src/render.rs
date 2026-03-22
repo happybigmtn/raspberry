@@ -792,16 +792,7 @@ fn implementation_quality_command(
             .display()
             .to_string(),
     );
-    let touch_first = lane
-        .prompt_context
-        .as_deref()
-        .map(|context| prompt_context_block(context, "Touch first:"))
-        .unwrap_or_default();
-    let touched_surfaces = touch_first
-        .iter()
-        .map(|line| normalize_prompt_path_item(line))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
+    let touched_surfaces = implementation_touched_surfaces(lane);
     let touched_surface_section = if touched_surfaces.is_empty() {
         "- (none declared)\n".to_string()
     } else {
@@ -812,14 +803,16 @@ fn implementation_quality_command(
     };
     let mut surface_scan_lines = Vec::new();
     for surface in &touched_surfaces {
-        surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
+        surface_scan_lines.push(format!("scan_surface {}", shell_single_quote(surface)));
     }
     if surface_scan_lines.is_empty() {
-        surface_scan_lines.push("scan_surface .".to_string());
+        surface_scan_lines.push(
+            "changed_paths=\"$(git diff --name-only $(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)..HEAD | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"".to_string(),
+        );
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  search_root=\"$surface\"\n  if [ -e \"$surface\" ] && [ -f \"$surface\" ]; then\n    search_root=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$search_root\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$code_change_present\" = no ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nQUALITY_BASE_REF=\"$(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  search_root=\"$surface\"\n  if [ -e \"$surface\" ] && [ -f \"$surface\" ]; then\n    search_root=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$search_root\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only \"$QUALITY_BASE_REF\"..HEAD -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$code_change_present\" = no ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -847,6 +840,51 @@ fn normalize_prompt_path_item(line: &str) -> String {
         .trim_matches('`')
         .trim()
         .to_string()
+}
+
+fn goal_block_lines(goal: &str, heading: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut capture = false;
+    for line in goal.lines() {
+        let trimmed = line.trim();
+        if capture && !trimmed.starts_with("- ") {
+            break;
+        }
+        if trimmed == heading {
+            capture = true;
+            continue;
+        }
+        if !capture {
+            continue;
+        }
+        if trimmed.is_empty() {
+            break;
+        }
+        lines.push(trimmed.to_string());
+    }
+    lines
+}
+
+fn implementation_touched_surfaces(lane: &BlueprintLane) -> Vec<String> {
+    let mut touched_surfaces = lane
+        .prompt_context
+        .as_deref()
+        .map(|context| prompt_context_block(context, "Touch first:"))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|line| normalize_prompt_path_item(&line))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if touched_surfaces.is_empty() {
+        touched_surfaces = goal_block_lines(&lane.goal, "Owned surfaces:")
+            .into_iter()
+            .map(|line| normalize_prompt_path_item(&line))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+    }
+    touched_surfaces.sort();
+    touched_surfaces.dedup();
+    touched_surfaces
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -1545,6 +1583,14 @@ fn render_general_review_prompt(lane: &BlueprintLane, context: &str) -> String {
         "# {} — Review\n\nReview the lane outcome for `{}`.\n\nFocus on:\n- correctness\n- milestone fit\n- remaining blockers\n",
         lane.title, lane.id
     );
+    let touch_first = prompt_context_block(context, "Touch first:");
+    if !touch_first.is_empty() {
+        append_prompt_section(&mut output, "Touched surfaces", &touch_first, true);
+    }
+    output.push_str(
+        "\nIf a small direct source fix is needed to make the review judgment truthful and unblock the lane, you may make it, but stay inside the touched surfaces.\n",
+    );
+    output.push_str(&format!("\n\nLane context:\n{}\n", context));
     let security_items = general_security_review_items(lane, context);
     append_prompt_section(
         &mut output,
@@ -5540,6 +5586,86 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));
         assert!(run_config.contains("artifact_path = \"../../../outputs/play/tui/integration.md\""));
+    }
+
+    #[test]
+    fn implementation_quality_command_uses_owned_surfaces_from_goal() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "rxmragent".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![BlueprintUnit {
+                id: "chain-operations-deploy-port-rename".to_string(),
+                title: "Deploy Port Rename".to_string(),
+                output_root: PathBuf::from("outputs/chain-operations-deploy-port-rename"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from(
+                            "outputs/chain-operations-deploy-port-rename/implementation.md",
+                        ),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from(
+                            "outputs/chain-operations-deploy-port-rename/verification.md",
+                        ),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from(
+                            "outputs/chain-operations-deploy-port-rename/quality.md",
+                        ),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "chain-operations-deploy-port-rename".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Deploy Port Rename".to_string(),
+                    family: "implementation".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("chain-operations-deploy-port-rename".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Deploy rXMR port rename\n\nOwned surfaces:\n- `scripts/deploy-rxmr.sh`\n".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                    ],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let lane = &blueprint.units[0].lanes[0];
+        let command = implementation_quality_command(
+            &blueprint,
+            "chain-operations-deploy-port-rename",
+            lane,
+        );
+
+        assert!(command.contains("scan_surface 'scripts/deploy-rxmr.sh'"));
+        assert!(!command.contains("scan_surface ."));
+        assert!(command.contains("## Touched Surfaces\n- scripts/deploy-rxmr.sh"));
+        assert!(command.contains("QUALITY_BASE_REF"));
     }
 
     #[test]

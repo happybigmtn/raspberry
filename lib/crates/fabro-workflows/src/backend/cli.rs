@@ -878,6 +878,7 @@ pub struct AgentCliBackend {
     model: String,
     provider: Provider,
     fallback_chain: Vec<FallbackTarget>,
+    fallback_map: Option<HashMap<String, Vec<String>>>,
     env: HashMap<String, String>,
     poll_interval: std::time::Duration,
 }
@@ -889,6 +890,7 @@ impl AgentCliBackend {
             model,
             provider,
             fallback_chain: Vec::new(),
+            fallback_map: None,
             env: HashMap::new(),
             poll_interval: std::time::Duration::from_secs(5),
         }
@@ -897,6 +899,12 @@ impl AgentCliBackend {
     #[must_use]
     pub fn with_fallback_chain(mut self, fallback_chain: Vec<FallbackTarget>) -> Self {
         self.fallback_chain = fallback_chain;
+        self
+    }
+
+    #[must_use]
+    pub fn with_fallback_map(mut self, fallback_map: Option<HashMap<String, Vec<String>>>) -> Self {
+        self.fallback_map = fallback_map;
         self
     }
 
@@ -959,6 +967,16 @@ impl AgentCliBackend {
         files.sort();
         files.dedup();
         files
+    }
+
+    fn resolved_fallback_chain(&self, provider: Provider, model: &str) -> Vec<FallbackTarget> {
+        if let Some(fallback_map) = &self.fallback_map {
+            let chain = fabro_model::build_fallback_chain(provider.as_str(), model, fallback_map);
+            if !chain.is_empty() {
+                return chain;
+            }
+        }
+        self.fallback_chain.clone()
     }
 }
 
@@ -1129,6 +1147,9 @@ async fn run_cli_attempt(
         duration_ms,
     };
 
+    let _ = tokio::fs::write(stage_dir.join("cli_stdout.log"), &result.stdout).await;
+    let _ = tokio::fs::write(stage_dir.join("cli_stderr.log"), &result.stderr).await;
+
     if let Some(selection) = codex_slot.as_ref() {
         if result.exit_code == 0 {
             mark_codex_slot_succeeded(selection);
@@ -1207,6 +1228,7 @@ impl CodergenBackend for AgentCliBackend {
             .provider()
             .and_then(|s| s.parse::<Provider>().ok())
             .unwrap_or(self.provider);
+        let fallback_chain = self.resolved_fallback_chain(requested_provider, &requested_model);
 
         // Forward custom env vars to the CLI tool. For local Codex and Claude
         // runs, preserve each tool's own local-login/subscription auth by
@@ -1278,7 +1300,7 @@ impl CodergenBackend for AgentCliBackend {
                 &attempt.result.stderr,
             )
         {
-            for target in &self.fallback_chain {
+            for target in &fallback_chain {
                 let Ok(fallback_provider) = target.provider.parse::<Provider>() else {
                     continue;
                 };
@@ -1317,8 +1339,9 @@ impl CodergenBackend for AgentCliBackend {
                     reasoning_effort,
                 )
                 .await?;
-                if fallback_attempt.result.exit_code == 0 {
-                    attempt = fallback_attempt;
+                let fallback_succeeded = fallback_attempt.result.exit_code == 0;
+                attempt = fallback_attempt;
+                if fallback_succeeded {
                     break;
                 }
             }

@@ -83,6 +83,7 @@ const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
+const SETTLED_WATCHDOG_MIN_SECS: u64 = 900;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -421,6 +422,16 @@ pub fn orchestrate_program(
             .iter()
             .filter(|lane| lane.status == LaneExecutionStatus::Complete)
             .count();
+        let failed_after = program_after
+            .lanes
+            .iter()
+            .filter(|lane| lane.status == LaneExecutionStatus::Failed)
+            .count();
+        let blocked_after = program_after
+            .lanes
+            .iter()
+            .filter(|lane| lane.status == LaneExecutionStatus::Blocked)
+            .count();
 
         report.cycles.push(AutodevCycleReport {
             cycle: cycle_number,
@@ -465,6 +476,25 @@ pub fn orchestrate_program(
             continue;
         }
         if !has_ready && !has_running {
+            if let Some(interval) = settled_watchdog_interval(
+                max_cycles,
+                blocked_after,
+                failed_after,
+                complete_after,
+                program_after.lanes.len(),
+            ) {
+                report.current = Some(current_snapshot(&program_after));
+                report.updated_at = Utc::now();
+                save_autodev_report(&manifest_path, &manifest, &report)?;
+                maybe_refresh_paperclip_dashboard(
+                    &manifest_path,
+                    &manifest,
+                    settings,
+                    &mut last_paperclip_refresh_at,
+                );
+                thread::sleep(interval);
+                continue;
+            }
             report.stop_reason = AutodevStopReason::Settled;
             report.current = Some(current_snapshot(&program_after));
             report.updated_at = Utc::now();
@@ -512,6 +542,22 @@ fn has_more_cycles(max_cycles: Option<usize>, cycle_number: usize) -> bool {
         Some(limit) => cycle_number < limit,
         None => true,
     }
+}
+
+fn settled_watchdog_interval(
+    max_cycles: Option<usize>,
+    blocked: usize,
+    failed: usize,
+    complete: usize,
+    total: usize,
+) -> Option<Duration> {
+    if max_cycles.is_some() {
+        return None;
+    }
+    if total > 0 && complete < total && (blocked > 0 || failed > 0) {
+        return Some(Duration::from_secs(SETTLED_WATCHDOG_MIN_SECS));
+    }
+    None
 }
 
 fn enter_orchestration_scope(
@@ -2399,6 +2445,20 @@ units:
         assert!(has_more_cycles(None, 1));
         assert!(has_more_cycles(Some(3), 2));
         assert!(!has_more_cycles(Some(3), 3));
+    }
+
+    #[test]
+    fn settled_watchdog_interval_keeps_unbounded_unfinished_frontier_alive() {
+        assert_eq!(
+            settled_watchdog_interval(None, 3, 2, 4, 10),
+            Some(Duration::from_secs(SETTLED_WATCHDOG_MIN_SECS))
+        );
+    }
+
+    #[test]
+    fn settled_watchdog_interval_allows_true_settlement_and_bounded_exit() {
+        assert_eq!(settled_watchdog_interval(None, 0, 0, 10, 10), None);
+        assert_eq!(settled_watchdog_interval(Some(5), 3, 2, 4, 10), None);
     }
 
     #[test]

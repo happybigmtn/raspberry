@@ -153,7 +153,16 @@ pub fn build_fallback_chain(
     fallback_providers
         .iter()
         .filter_map(|provider| {
-            closest_model(provider, &reference).map(|m| FallbackTarget {
+            let preferred = if canonical_provider(provider) == "openai" {
+                get_model_info("gpt-5.4").filter(|m| {
+                    m.provider == "openai"
+                        && m.features.tools == reference.features.tools
+                        && m.features.reasoning == reference.features.reasoning
+                })
+            } else {
+                None
+            };
+            preferred.or_else(|| closest_model(provider, &reference)).map(|m| FallbackTarget {
                 provider: provider.clone(),
                 model: m.id,
             })
@@ -444,6 +453,12 @@ mod tests {
     }
 
     #[test]
+    fn minimax_m2_7_highspeed_in_catalog() {
+        let m = get_model_info("MiniMax-M2.7-highspeed").unwrap();
+        assert_eq!(m.provider, "minimax");
+    }
+
+    #[test]
     fn mercury_2_in_catalog() {
         let m = get_model_info("mercury-2").unwrap();
         insta::assert_debug_snapshot!(m, @r#"
@@ -727,6 +742,18 @@ mod tests {
         assert_eq!(chain[0].model, "gemini-3.1-pro-preview");
         assert_eq!(chain[1].provider, "openai");
         assert_eq!(chain[1].model, "gpt-5.4");
+    }
+
+    #[test]
+    fn build_fallback_chain_minimax_highspeed() {
+        let fallbacks = HashMap::from([(
+            "minimax".to_string(),
+            vec!["openai".to_string(), "gemini".to_string(), "kimi".to_string()],
+        )]);
+        let chain = build_fallback_chain("minimax", "MiniMax-M2.7-highspeed", &fallbacks);
+        assert!(!chain.is_empty());
+        assert_eq!(chain[0].provider, "openai");
+        assert_eq!(chain[0].model, "gpt-5.4");
     }
 
     #[test]
