@@ -1483,7 +1483,7 @@ dependency_plan_ids must NEVER be empty for plans that clearly depend on other p
 
 1. Use commands that appear verbatim in the plan text when available.
 2. If the plan doesn't contain a verbatim command but describes what should be tested, construct a reasonable proof command from the crate/module names mentioned. E.g., if the plan says "ensure myosu-miner builds" → `cargo build -p myosu-miner`.
-3. Every child MUST have at least one proof_command. Never leave this empty. At minimum use `cargo check -p {crate}` for Rust or the equivalent build command for the project.
+3. Every child MUST have at least one proof_command. Never leave this empty. At minimum use `cargo check -p <crate>` for Rust or the equivalent build command for the project.
 4. Prefer specific test targets (`cargo test -p crate -- test_name`) over broad ones (`cargo test`).
 
 ## Critical rules
