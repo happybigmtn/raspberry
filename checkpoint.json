@@ -1,11 +1,13 @@
 {
-  "timestamp": "2026-03-22T18:58:37.360548259Z",
-  "current_node": "fork",
+  "timestamp": "2026-03-22T18:58:37.728658965Z",
+  "current_node": "merge",
   "completed_nodes": [
     "start",
-    "fork"
+    "fork",
+    "merge"
   ],
   "node_retries": {
+    "merge": 1,
     "fork": 1,
     "start": 1
   },
@@ -25,13 +27,17 @@
     ],
     "failure_signature": "",
     "internal.retry_count.fork": 1,
+    "parallel.fan_in.best_id": "branch1",
+    "internal.retry_count.merge": 1,
+    "parallel.fan_in.best_outcome": "success",
     "failure_class": "",
     "thread.start.current_node": "fork",
     "graph.goal": "Test parallel and fan-in execution",
-    "internal.thread_id": "start",
-    "current.preamble": "Goal: Test parallel and fan-in execution\n",
+    "internal.thread_id": "fork",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
     "parallel.branch_count": 2,
-    "current_node": "fork",
+    "current_node": "merge",
+    "thread.fork.current_node": "merge",
     "internal.retry_count.start": 1,
     "outcome": "success",
     "internal.work_dir": "/tmp/fabro-dry-run/01KMBEKNWYZ6CMTH1XRP7YKQP4/worktree"
@@ -44,15 +50,25 @@
       "jump_to_node": "merge",
       "duration_ms": 0
     },
+    "merge": {
+      "status": "success",
+      "context_updates": {
+        "parallel.fan_in.best_id": "branch1",
+        "parallel.fan_in.best_outcome": "success"
+      },
+      "notes": "[Simulated] Selected best candidate: branch1",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
       "duration_ms": 0
     }
   },
-  "next_node_id": "merge",
+  "next_node_id": "review",
   "node_visits": {
     "fork": 1,
-    "start": 1
+    "start": 1,
+    "merge": 1
   }
 }
