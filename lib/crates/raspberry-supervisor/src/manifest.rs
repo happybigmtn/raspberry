@@ -857,15 +857,16 @@ mod tests {
 
     #[test]
     fn resolve_relative_normalizes_nested_parent_segments() {
-        let manifest_path = Path::new("/tmp/repo/fabro/programs/../../fabro/programs/myosu.yaml");
+        let manifest_path =
+            Path::new("/tmp/repo/malinka/programs/../../malinka/programs/myosu.yaml");
         let resolved = resolve_relative(
             manifest_path,
-            Path::new("../../fabro/programs/myosu-bootstrap.yaml"),
+            Path::new("../../malinka/programs/myosu-bootstrap.yaml"),
         );
 
         assert_eq!(
             resolved,
-            PathBuf::from("/tmp/repo/fabro/programs/myosu-bootstrap.yaml")
+            PathBuf::from("/tmp/repo/malinka/programs/myosu-bootstrap.yaml")
         );
     }
 }

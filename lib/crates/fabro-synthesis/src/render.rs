@@ -11,8 +11,12 @@ use crate::blueprint::{
 };
 use crate::error::RenderError;
 
-const DEFAULT_WRITE_PROVIDER: &str = "openai";
-const DEFAULT_WRITE_MODEL: &str = "gpt-5.4";
+const DEFAULT_WRITE_PROVIDER: &str = "anthropic";
+const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
+const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
+const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
+const REVIEW_FALLBACK_SECTION: &str =
+    "\n[llm.fallbacks]\nanthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]\n";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -268,7 +272,9 @@ fn augment_with_discovered_program_manifests(blueprint: &mut ProgramBlueprint, t
         .flat_map(|unit| unit.lanes.iter())
         .filter_map(|lane| lane.program_manifest.as_ref().cloned())
         .collect::<BTreeSet<_>>();
-    let programs_dir = target_repo.join("fabro").join("programs");
+    let programs_dir = target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs");
     let Ok(entries) = std::fs::read_dir(&programs_dir) else {
         return;
     };
@@ -519,6 +525,7 @@ fn render_lane(
     if lane.template != WorkflowTemplate::Integration {
         let plan_prompt = render_prompt("plan", lane);
         let review_prompt = render_prompt("review", lane);
+        let challenge_prompt = render_prompt("challenge", lane);
         let polish_prompt = render_prompt("polish", lane);
         write_file(
             &prompt_dir.join("plan.md"),
@@ -530,6 +537,13 @@ fn render_lane(
             &review_prompt,
             &mut written_files,
         )?;
+        if lane.template == WorkflowTemplate::Implementation {
+            write_file(
+                &prompt_dir.join("challenge.md"),
+                &challenge_prompt,
+                &mut written_files,
+            )?;
+        }
         write_file(
             &prompt_dir.join("polish.md"),
             &polish_prompt,
@@ -583,24 +597,34 @@ fn render_workflow_graph(
 
     match lane.template {
         WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: api; model: gpt-5.4; provider: openai; }}\n            #polish {{ backend: api; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> specify -> review -> polish -> verify -> exit\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> specify -> review -> polish -> verify -> exit\n}}\n",
             graph_name(lane),
             goal,
+            DEFAULT_REVIEW_MODEL,
+            DEFAULT_REVIEW_PROVIDER,
+            DEFAULT_WRITE_MODEL,
+            DEFAULT_WRITE_PROVIDER,
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
             escape_graph_attr(verify_command),
         ),
         WorkflowTemplate::ServiceBootstrap => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: api; model: gpt-5.4; provider: openai; }}\n            #polish {{ backend: api; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs -> exit\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs -> exit\n}}\n",
             graph_name(lane),
             goal,
+            DEFAULT_REVIEW_MODEL,
+            DEFAULT_REVIEW_PROVIDER,
+            DEFAULT_WRITE_MODEL,
+            DEFAULT_WRITE_PROVIDER,
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
             escape_graph_attr(verify_command),
         ),
         WorkflowTemplate::Implementation => {
+            let profile = lane.proof_profile.as_deref().unwrap_or("standard");
+            let max_visits = profile_max_visits(profile);
             let service_health = lane.kind == raspberry_supervisor::manifest::LaneKind::Service
                 && health_command != "true";
             let health_node = if service_health {
@@ -616,19 +640,40 @@ fn render_workflow_graph(
             } else {
                 "    verify -> quality [condition=\"outcome=success\"]\n"
             };
+
+            // Profile-specific extra nodes and edges
+            let (extra_nodes, extra_edges) = profile_extra_graph_elements(
+                profile,
+                &prompt_path,
+                verify_command,
+                health_command,
+            );
+
             format!(
-                "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: gpt-5.4; provider: openai; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits=3]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> review [condition=\"outcome=success\"]\n    quality -> fixup\n    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
+                DEFAULT_REVIEW_MODEL,
+                DEFAULT_REVIEW_PROVIDER,
+                DEFAULT_REVIEW_MODEL,
+                DEFAULT_REVIEW_PROVIDER,
+                DEFAULT_REVIEW_MODEL,
+                DEFAULT_REVIEW_PROVIDER,
+                DEFAULT_REVIEW_MODEL,
+                DEFAULT_REVIEW_PROVIDER,
                 escape_graph_attr(&preflight_command(verify_command)),
                 prompt_path("plan"),
                 escape_graph_attr(verify_command),
                 health_node,
                 escape_graph_attr(quality_command),
                 prompt_path("polish"),
+                max_visits,
+                prompt_path("challenge"),
                 prompt_path("review"),
                 escape_graph_attr(audit_command),
+                extra_nodes,
                 success_edges,
+                extra_edges,
             )
         }
         WorkflowTemplate::Integration => format!(
@@ -641,6 +686,46 @@ fn render_workflow_graph(
             graph_name(lane),
             goal,
         ),
+    }
+}
+
+fn profile_max_visits(profile: &str) -> u32 {
+    match profile {
+        "hardened" => 5,
+        "foundation" => 4,
+        _ => 3,
+    }
+}
+
+fn profile_extra_graph_elements(
+    profile: &str,
+    _prompt_path: &dyn Fn(&str) -> String,
+    verify_command: &str,
+    _health_command: &str,
+) -> (String, String) {
+    match profile {
+        "hardened" => {
+            // Adversarial deep review for security + correctness critical work
+            let nodes = format!(
+                "    deep_review [label=\"Deep Review\", prompt=\"You are an adversarial reviewer. Challenge every trust boundary, invariant, edge case, and correctness assumption. Re-run proof commands independently. Write deep-review-findings.md.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
+                verify = escape_graph_attr(verify_command),
+            );
+            let edges = "    challenge -> deep_review [condition=\"outcome=success\"]\n    deep_review -> recheck [condition=\"outcome=success\"]\n    deep_review -> fixup\n    recheck -> review [condition=\"outcome=success\"]\n    recheck -> fixup\n".to_string();
+            (nodes, edges)
+        }
+        "foundation" => {
+            let nodes =
+                "    escalation [label=\"Opus Signoff\", prompt=\"This child modifies shared foundation code. Review for downstream compatibility. Approve only if backward-compatible or all consumers updated. Write escalation-verdict.md.\", reasoning_effort=\"high\"]\n"
+                .to_string();
+            let edges = "    challenge -> escalation [condition=\"outcome=success\"]\n    escalation -> review [condition=\"outcome=success\"]\n    escalation -> fixup\n".to_string();
+            (nodes, edges)
+        }
+        "ux" => {
+            let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f acceptance-evidence.md && grep -q 'accepted: yes' acceptance-evidence.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
+            let edges = "    review -> acceptance_gate [condition=\"outcome=success\"]\n    acceptance_gate -> audit [condition=\"outcome=success\"]\n    acceptance_gate -> fixup\n".to_string();
+            (nodes, edges)
+        }
+        _ => (String::new(), String::new()),
     }
 }
 
@@ -812,8 +897,8 @@ fn render_run_config(
             | WorkflowTemplate::Implementation
     ) {
         format!(
-            "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n\n",
-            DEFAULT_WRITE_PROVIDER, DEFAULT_WRITE_MODEL
+            "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n{}\n",
+            DEFAULT_WRITE_PROVIDER, DEFAULT_WRITE_MODEL, REVIEW_FALLBACK_SECTION
         )
     } else {
         String::new()
@@ -825,9 +910,7 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        format!(
-            "\n[sandbox.env]\nFABRO_STRICT_PROVIDER = \"1\"\n",
-        )
+        format!("\n[sandbox.env]\nFABRO_STRICT_PROVIDER = \"1\"\n",)
     } else {
         String::new()
     };
@@ -911,6 +994,22 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
                 &verification_artifact_expectations,
             ),
             "review" => render_implementation_review_prompt(
+                lane,
+                context,
+                &implement_now,
+                &touch_first,
+                &build_slice,
+                &setup_first,
+                &first_proof_gate,
+                &first_health_gate,
+                &execution_guidance,
+                &manual_notes,
+                &health_surfaces,
+                &observability_surfaces,
+                &implementation_artifact_expectations,
+                &verification_artifact_expectations,
+            ),
+            "challenge" => render_implementation_challenge_prompt(
                 lane,
                 context,
                 &implement_now,
@@ -1184,6 +1283,76 @@ Only set `merge_ready: yes` when:\n\
     );
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
+    );
+    output
+}
+
+fn render_implementation_challenge_prompt(
+    lane: &BlueprintLane,
+    context: &str,
+    implement_now: &[String],
+    touch_first: &[String],
+    build_slice: &[String],
+    setup_first: &[String],
+    first_proof_gate: &[String],
+    first_health_gate: &[String],
+    execution_guidance: &[String],
+    manual_notes: &[String],
+    health_surfaces: &[String],
+    observability_surfaces: &[String],
+    implementation_artifact_expectations: &[String],
+    verification_artifact_expectations: &[String],
+) -> String {
+    let mut output = format!(
+        "# {} — Challenge\n\nPerform a cheap adversarial review of the current slice for `{}` before the expensive final review runs.\n",
+        lane.title, lane.id
+    );
+    output.push_str(
+        "\nYour job is to challenge assumptions, find obvious scope drift, identify weak proof, and catch mismatches between code and artifacts. Do not bless the slice as merge-ready; that belongs to the final review gate.\n",
+    );
+    append_prompt_section(&mut output, "Current slice", implement_now, false);
+    append_prompt_section(&mut output, "Touched surfaces", touch_first, true);
+    append_prompt_section(&mut output, "Slice work", build_slice, false);
+    append_prompt_section(&mut output, "Setup checks", setup_first, false);
+    append_prompt_section(&mut output, "First proof gate", first_proof_gate, true);
+    append_prompt_section(&mut output, "First health gate", first_health_gate, true);
+    append_prompt_section(&mut output, "Execution guidance", execution_guidance, false);
+    append_prompt_section(
+        &mut output,
+        "Manual proof still required",
+        manual_notes,
+        false,
+    );
+    append_prompt_section(
+        &mut output,
+        "Health surfaces to preserve",
+        health_surfaces,
+        false,
+    );
+    append_prompt_section(
+        &mut output,
+        "Observability surfaces to preserve",
+        observability_surfaces,
+        false,
+    );
+    append_prompt_section(
+        &mut output,
+        "Implementation artifact must cover",
+        implementation_artifact_expectations,
+        false,
+    );
+    append_prompt_section(
+        &mut output,
+        "Verification artifact must cover",
+        verification_artifact_expectations,
+        false,
+    );
+    output.push_str(&format!("\n\nCurrent Slice Contract:\n{}\n", context));
+    output.push_str(
+        "\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
+    );
+    output.push_str(
+        "\nWrite a short challenge note in `verification.md` or amend it if needed, focusing on concrete gaps and the next fixup target. Do not write `promotion.md` here.\n",
     );
     output
 }
@@ -2573,7 +2742,9 @@ fn lane_has_check_on_path(lane: &BlueprintLane, expected: &Path) -> bool {
 
 fn lane_catalog(target_repo: &Path) -> BTreeMap<String, LaneCatalogEntry> {
     let mut catalog = BTreeMap::new();
-    let programs_dir = target_repo.join("fabro").join("programs");
+    let programs_dir = target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs");
     let Ok(entries) = std::fs::read_dir(programs_dir) else {
         return catalog;
     };
@@ -2663,9 +2834,12 @@ fn implementation_program_manifest_path(
     target_repo: &Path,
 ) -> PathBuf {
     let repo_prefix = program_id.split('-').next().unwrap_or(program_id);
-    target_repo.join("fabro").join("programs").join(format!(
-        "{repo_prefix}-{unit_id}-{lane_id}-implementation.yaml"
-    ))
+    target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs")
+        .join(format!(
+            "{repo_prefix}-{unit_id}-{lane_id}-implementation.yaml"
+        ))
 }
 
 fn dependency_satisfied(
@@ -3896,12 +4070,12 @@ fn missing_implementation_package(
 
 fn implementation_package_paths(target_repo: &Path, lane: &BlueprintLane) -> (PathBuf, PathBuf) {
     let run_config = target_repo
-        .join("fabro")
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
         .join("run-configs")
         .join("implement")
         .join(format!("{}.toml", lane.slug()));
     let workflow = target_repo
-        .join("fabro")
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
         .join("workflows")
         .join("implement")
         .join(format!("{}.fabro", lane.slug()));
@@ -4016,7 +4190,9 @@ fn raw_lane_refs(text: &str) -> Vec<String> {
 
 fn known_lane_refs(target_repo: &Path) -> BTreeSet<String> {
     let mut refs = BTreeSet::new();
-    let programs_dir = target_repo.join("fabro").join("programs");
+    let programs_dir = target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs");
     let Ok(entries) = std::fs::read_dir(programs_dir) else {
         return refs;
     };
@@ -4312,7 +4488,7 @@ Required before validator:oracle implementation-family workflow:
         assert_eq!(
             program_lane.program_manifest.as_deref(),
             Some(Path::new(
-                "fabro/programs/zend-private-control-plane-private-control-plane-implementation.yaml"
+                "malinka/programs/zend-private-control-plane-private-control-plane-implementation.yaml"
             ))
         );
 
@@ -5023,6 +5199,40 @@ The validator binary should emit structured log lines.
     }
 
     #[test]
+    fn implementation_challenge_prompt_marks_non_final_gate() {
+        let lane = BlueprintLane {
+            id: "service-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "Miner Service Implementation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("miner-service".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement the next approved `miner:service` slice.".to_string(),
+            managed_milestone: "verified".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some("Implement now:\n- Slice 1: miner CLI skeleton".to_string()),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let challenge = render_prompt("challenge", &lane);
+
+        assert!(challenge.contains("cheap adversarial review"));
+        assert!(challenge.contains("Do not bless the slice as merge-ready"));
+        assert!(challenge.contains("Challenge checklist"));
+        assert!(challenge.contains("Do not write `promotion.md` here"));
+    }
+
+    #[test]
     fn backticked_segments_extracts_multiple_paths() {
         let line = "**Files**: `crates/myosu-sdk/Cargo.toml`, `crates/myosu-sdk/src/lib.rs`";
         let segments = backticked_segments(line);
@@ -5251,11 +5461,20 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(graph.contains("label=\"Health\""));
         assert!(graph.contains("label=\"Quality Gate\""));
+        assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
+        assert!(graph.contains(
+            "#challenge   { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+        ));
+        assert!(graph.contains(
+            "#review      { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+        ));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
-        assert!(graph.contains("quality -> review [condition=\"outcome=success\"]"));
+        assert!(graph.contains("quality -> challenge [condition=\"outcome=success\"]"));
+        assert!(graph.contains("challenge -> review [condition=\"outcome=success\"]"));
         assert!(graph.contains("review -> audit [condition=\"outcome=success\"]"));
+        assert!(graph.contains("challenge -> fixup"));
         assert!(graph.contains("review -> fixup"));
         assert!(graph.contains("audit -> fixup"));
         assert!(!graph.contains("label=\"Settle\""));
@@ -5303,8 +5522,10 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         );
         assert!(run_config.contains("worktree_mode = \"always\""));
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"openai\""));
-        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("[llm.fallbacks]"));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5315,7 +5536,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
-    fn bootstrap_run_config_uses_openai_defaults_and_direct_integration() {
+    fn bootstrap_run_config_uses_minimax_defaults_and_direct_integration() {
         let lane = BlueprintLane {
             id: "private-control-plane".to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -5347,8 +5568,10 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"openai\""));
-        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("[llm.fallbacks]"));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5392,10 +5615,11 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let run_config = render_run_config(&lane, None, temp.path());
 
         assert!(run_config.contains("[llm]"));
-        assert!(run_config.contains("provider = \"openai\""));
-        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("provider = \"anthropic\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+        assert!(run_config.contains("[llm.fallbacks]"));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
-        assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));

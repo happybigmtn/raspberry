@@ -1731,5 +1731,6 @@ fn autodev_stop_reason(reason: AutodevStopReason) -> &'static str {
     match reason {
         AutodevStopReason::Settled => "settled",
         AutodevStopReason::CycleLimit => "cycle_limit",
+        AutodevStopReason::Maintenance => "maintenance",
     }
 }

@@ -10,6 +10,7 @@ pub enum FailureKind {
     IntegrationTargetUnavailable,
     DeterministicVerifyCycle,
     TransientLaunchFailure,
+    ProviderAccessLimited,
     CapabilityContractMismatch,
     StallWatchdog,
     ProviderPolicyMismatch,
@@ -27,6 +28,7 @@ impl fmt::Display for FailureKind {
             Self::IntegrationTargetUnavailable => "integration_target_unavailable",
             Self::DeterministicVerifyCycle => "deterministic_verify_cycle",
             Self::TransientLaunchFailure => "transient_launch_failure",
+            Self::ProviderAccessLimited => "provider_access_limited",
             Self::CapabilityContractMismatch => "capability_contract_mismatch",
             Self::StallWatchdog => "stall_watchdog",
             Self::ProviderPolicyMismatch => "provider_policy_mismatch",
@@ -127,13 +129,16 @@ pub fn classify_failure(
         || combined.contains("codex_home points to")
         || (combined.contains("could not update path") && combined.contains("codex_home"))
         || combined.contains("failed to connect to websocket")
-        || combined.contains("api.responses.write")
+    {
+        return Some(FailureKind::TransientLaunchFailure);
+    }
+    if combined.contains("api.responses.write")
         || combined.contains("insufficient permissions for this operation")
         || combined.contains("401 unauthorized")
         || combined.contains("you've hit your usage limit")
         || combined.contains("try again at")
     {
-        return Some(FailureKind::TransientLaunchFailure);
+        return Some(FailureKind::ProviderAccessLimited);
     }
     if combined.contains("gatewayunauthorized")
         || combined.contains("lacks 'control' capability")
@@ -188,6 +193,7 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
         FailureKind::EnvironmentCollision
         | FailureKind::StallWatchdog
         | FailureKind::TransientLaunchFailure => FailureRecoveryAction::BackoffRetry,
+        FailureKind::ProviderAccessLimited => FailureRecoveryAction::SurfaceBlocked,
         FailureKind::DeterministicVerifyCycle
         | FailureKind::CapabilityContractMismatch
         | FailureKind::ProofScriptFailure => FailureRecoveryAction::RegenerateLane,
@@ -289,13 +295,17 @@ mod tests {
             ),
             Some(FailureKind::TransientLaunchFailure)
         );
+    }
+
+    #[test]
+    fn classify_failure_detects_provider_access_limits() {
         assert_eq!(
             classify_failure(
                 Some("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 21st, 2026 7:31 PM."),
                 None,
                 None,
             ),
-            Some(FailureKind::TransientLaunchFailure)
+            Some(FailureKind::ProviderAccessLimited)
         );
         assert_eq!(
             classify_failure(
@@ -303,7 +313,7 @@ mod tests {
                 None,
                 None,
             ),
-            Some(FailureKind::TransientLaunchFailure)
+            Some(FailureKind::ProviderAccessLimited)
         );
     }
 
@@ -366,6 +376,10 @@ mod tests {
         assert_eq!(
             default_recovery_action(FailureKind::TransientLaunchFailure),
             FailureRecoveryAction::BackoffRetry
+        );
+        assert_eq!(
+            default_recovery_action(FailureKind::ProviderAccessLimited),
+            FailureRecoveryAction::SurfaceBlocked
         );
         assert_eq!(
             default_recovery_action(FailureKind::IntegrationTargetUnavailable),

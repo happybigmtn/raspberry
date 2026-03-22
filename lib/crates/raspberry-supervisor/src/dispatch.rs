@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::autodev::{autodev_cargo_target_dir, orchestrate_program, AutodevSettings};
 use crate::evaluate::{evaluate_program, LaneExecutionStatus};
 use crate::integration::{integrate_lane, IntegrationRequest};
+use crate::maintenance::{load_active_maintenance, MaintenanceError};
 use crate::manifest::{LaneKind, ProgramManifest};
 use crate::program_state::{
     mark_lane_dispatch_failed, mark_lane_finished, mark_lane_started, mark_lane_submitted,
@@ -43,6 +44,8 @@ pub enum DispatchError {
     Evaluate(#[from] crate::evaluate::EvaluateError),
     #[error(transparent)]
     ProgramState(#[from] ProgramStateError),
+    #[error(transparent)]
+    Maintenance(#[from] MaintenanceError),
     #[error("selected lane `{lane}` does not exist")]
     MissingLane { lane: String },
     #[error("lane `{lane}` is not ready to execute")]
@@ -70,6 +73,8 @@ pub enum DispatchError {
     WorkerPanicked { lane: String },
     #[error("fabro detach for lane `{lane}` exited successfully but returned no run id")]
     MissingRunId { lane: String },
+    #[error("program `{program}` is in maintenance mode: {reason}")]
+    MaintenanceMode { program: String, reason: String },
 }
 
 pub fn execute_selected_lanes(
@@ -78,6 +83,12 @@ pub fn execute_selected_lanes(
     settings: &DispatchSettings,
 ) -> Result<Vec<DispatchOutcome>, DispatchError> {
     let manifest = ProgramManifest::load(manifest_path)?;
+    if let Some(maintenance) = load_active_maintenance(manifest_path, &manifest)? {
+        return Err(DispatchError::MaintenanceMode {
+            program: manifest.program.clone(),
+            reason: maintenance.reason,
+        });
+    }
     let evaluated = evaluate_program(manifest_path)?;
     let mut state =
         ProgramRuntimeState::load_optional(&manifest.resolved_state_path(manifest_path))?
@@ -201,6 +212,70 @@ pub fn execute_selected_lanes(
     }
 
     Ok(outcomes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execute_selected_lanes_refuses_dispatch_during_maintenance() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+units:
+  - id: docs
+    title: Docs
+    output_root: ../../outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+    milestones:
+      - id: reviewed
+        requires: [plan]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: ../run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan]
+"#,
+        )
+        .expect("manifest");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest");
+        let maintenance_path = crate::maintenance::maintenance_path(&manifest_path, &manifest);
+        std::fs::create_dir_all(maintenance_path.parent().expect("parent")).expect("state dir");
+        std::fs::write(
+            maintenance_path,
+            r#"{"enabled":true,"reason":"framework redesign in progress"}"#,
+        )
+        .expect("maintenance");
+
+        let error = execute_selected_lanes(
+            &manifest_path,
+            &["docs:lane".to_string()],
+            &DispatchSettings {
+                fabro_bin: PathBuf::from("fabro"),
+                max_parallel_override: None,
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        )
+        .expect_err("maintenance should block dispatch");
+
+        assert!(matches!(error, DispatchError::MaintenanceMode { .. }));
+        assert!(error.to_string().contains("framework redesign in progress"));
+    }
 }
 
 fn build_integration_request(

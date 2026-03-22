@@ -193,7 +193,7 @@ pub fn validate_blueprint(path: &Path, blueprint: &ProgramBlueprint) -> Result<(
 pub fn import_existing_package(req: ImportRequest<'_>) -> Result<ProgramBlueprint, BlueprintError> {
     let manifest_path = req
         .target_repo
-        .join("fabro")
+        .join(DEFAULT_PACKAGE_DIR)
         .join("programs")
         .join(format!("{}.yaml", req.program));
     if !manifest_path.exists() {
@@ -713,8 +713,10 @@ fn default_version() -> u32 {
     SUPPORTED_BLUEPRINT_VERSION
 }
 
+pub const DEFAULT_PACKAGE_DIR: &str = "malinka";
+
 fn default_fabro_root() -> PathBuf {
-    PathBuf::from("fabro")
+    PathBuf::from(DEFAULT_PACKAGE_DIR)
 }
 
 const fn default_max_parallel() -> usize {
@@ -980,15 +982,16 @@ mod tests {
     fn import_existing_package_preserves_implementation_template() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path();
-        std::fs::create_dir_all(repo.join("fabro/programs")).expect("program dir");
-        std::fs::create_dir_all(repo.join("fabro/run-configs/implement")).expect("run-config dir");
+        std::fs::create_dir_all(repo.join("malinka/programs")).expect("program dir");
+        std::fs::create_dir_all(repo.join("malinka/run-configs/implement"))
+            .expect("run-config dir");
         std::fs::write(
-            repo.join("fabro/run-configs/implement/demo.toml"),
+            repo.join("malinka/run-configs/implement/demo.toml"),
             "version = 1\ngraph = \"../../workflows/implement/demo.fabro\"\ngoal = \"Implement demo\"\ndirectory = \"../../..\"\n\n[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"clean\"\n",
         )
         .expect("run config");
         std::fs::write(
-            repo.join("fabro/programs/demo-implementation.yaml"),
+            repo.join("malinka/programs/demo-implementation.yaml"),
             r#"
 version: 1
 program: demo-implementation
@@ -1103,13 +1106,13 @@ units:
         let lane = raspberry_supervisor::manifest::LaneManifest {
             kind: LaneKind::Orchestration,
             title: "Program Lane".to_string(),
-            run_config: PathBuf::from("fabro/run-configs/orchestrate/program.toml"),
+            run_config: PathBuf::from("malinka/run-configs/orchestrate/program.toml"),
             managed_milestone: "coordinated".to_string(),
             dependencies: Vec::new(),
             produces: Vec::new(),
             proof_profile: None,
             proof_state_path: None,
-            program_manifest: Some(PathBuf::from("fabro/programs/demo.yaml")),
+            program_manifest: Some(PathBuf::from("malinka/programs/demo.yaml")),
             service_state_path: None,
             orchestration_state_path: None,
             checks: Vec::new(),

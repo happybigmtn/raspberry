@@ -2123,11 +2123,11 @@ mod tests {
     #[test]
     fn refresh_program_state_uses_child_state_without_running_child_checks() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
-        std::fs::create_dir_all(temp.path().join("fabro/.raspberry")).expect("state dir");
+        std::fs::create_dir_all(temp.path().join("malinka/programs")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("malinka/.raspberry")).expect("state dir");
         let marker_path = temp.path().join("child-check-ran.txt");
-        let parent_manifest_path = temp.path().join("fabro/programs/parent.yaml");
-        let child_manifest_path = temp.path().join("fabro/programs/child.yaml");
+        let parent_manifest_path = temp.path().join("malinka/programs/parent.yaml");
+        let child_manifest_path = temp.path().join("malinka/programs/child.yaml");
 
         std::fs::write(
             &parent_manifest_path,
@@ -2180,7 +2180,7 @@ units:
         )
         .expect("child manifest");
         std::fs::write(
-            temp.path().join("fabro/.raspberry/child-state.json"),
+            temp.path().join("malinka/.raspberry/child-state.json"),
             serde_json::json!({
                 "schema_version": "raspberry.program.v2",
                 "program": "child",
@@ -2243,14 +2243,14 @@ units:
             &mut state,
             "demo:lane",
             Path::new(
-                "/home/r/coding/zend/fabro/programs/../../fabro/programs/../../fabro/run-configs/implement/demo.toml",
+                "/home/r/coding/zend/malinka/programs/../../malinka/programs/../../malinka/run-configs/implement/demo.toml",
             ),
         );
 
         assert_eq!(
             record.run_config.as_deref(),
             Some(Path::new(
-                "/home/r/coding/zend/fabro/run-configs/implement/demo.toml"
+                "/home/r/coding/zend/malinka/run-configs/implement/demo.toml"
             ))
         );
     }

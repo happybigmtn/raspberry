@@ -17,6 +17,7 @@ use crate::evaluate::{evaluate_program, EvaluateError, LaneExecutionStatus};
 use crate::failure::{
     classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction,
 };
+use crate::maintenance::{load_active_maintenance, MaintenanceError};
 use crate::manifest::{ManifestError, ProgramManifest};
 
 thread_local! {
@@ -95,6 +96,7 @@ const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
 pub enum AutodevStopReason {
     Settled,
     CycleLimit,
+    Maintenance,
 }
 
 #[derive(Debug, Error)]
@@ -198,6 +200,8 @@ pub enum AutodevError {
     RecursiveProgramCycle { cycle: String },
     #[error(transparent)]
     ControllerLease(#[from] ControllerLeaseError),
+    #[error(transparent)]
+    Maintenance(#[from] MaintenanceError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +258,21 @@ pub fn orchestrate_program(
     }
     let guard = enter_orchestration_scope(&manifest_path)?;
     let initial_manifest = ProgramManifest::load(&manifest_path)?;
+    if let Some(_maintenance) = load_active_maintenance(&manifest_path, &initial_manifest)? {
+        let current = evaluate_program(&manifest_path)
+            .ok()
+            .map(|program| current_snapshot(&program));
+        let report = AutodevReport {
+            program: initial_manifest.program.clone(),
+            stop_reason: AutodevStopReason::Maintenance,
+            updated_at: Utc::now(),
+            current,
+            cycles: Vec::new(),
+        };
+        save_autodev_report(&manifest_path, &initial_manifest, &report)?;
+        drop(guard);
+        return Ok(report);
+    }
     let _lease = acquire_autodev_lease(&manifest_path, &initial_manifest)?;
     let max_cycles = settings.max_cycles.max(1);
     let poll_interval = Duration::from_millis(settings.poll_interval_ms.max(1));
@@ -1218,7 +1237,7 @@ fn maybe_refresh_paperclip_dashboard(
 fn paperclip_bundle_root(manifest_path: &Path, manifest: &ProgramManifest) -> Option<PathBuf> {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     let root = target_repo
-        .join("fabro")
+        .join("malinka")
         .join("paperclip")
         .join(&manifest.program);
     root.exists().then_some(root)
@@ -1351,7 +1370,7 @@ mod tests {
             detail: String::new(),
             managed_milestone: "reviewed".to_string(),
             proof_profile: None,
-            run_config: PathBuf::from("fabro/run-configs/bootstrap/demo.toml"),
+            run_config: PathBuf::from("malinka/run-configs/bootstrap/demo.toml"),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -1429,7 +1448,7 @@ mod tests {
     fn child_program_manifests_to_advance_uses_spare_slots_for_failed_children() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest_path = temp.path().join("program.yaml");
-        std::fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("malinka/programs")).expect("program dir");
         std::fs::write(
             &manifest_path,
             r#"
@@ -1448,9 +1467,9 @@ units:
       - id: program
         kind: orchestration
         title: Alpha Program
-        run_config: fabro/programs/alpha.yaml
+        run_config: malinka/programs/alpha.yaml
         managed_milestone: coordinated
-        program_manifest: fabro/programs/alpha.yaml
+        program_manifest: malinka/programs/alpha.yaml
   - id: beta
     title: Beta
     output_root: out/beta
@@ -1460,9 +1479,9 @@ units:
       - id: program
         kind: orchestration
         title: Beta Program
-        run_config: fabro/programs/beta.yaml
+        run_config: malinka/programs/beta.yaml
         managed_milestone: coordinated
-        program_manifest: fabro/programs/beta.yaml
+        program_manifest: malinka/programs/beta.yaml
   - id: gamma
     title: Gamma
     output_root: out/gamma
@@ -1472,9 +1491,9 @@ units:
       - id: program
         kind: orchestration
         title: Gamma Program
-        run_config: fabro/programs/gamma.yaml
+        run_config: malinka/programs/gamma.yaml
         managed_milestone: coordinated
-        program_manifest: fabro/programs/gamma.yaml
+        program_manifest: malinka/programs/gamma.yaml
 "#,
         )
         .expect("manifest written");
@@ -1498,7 +1517,7 @@ units:
                     detail: String::new(),
                     managed_milestone: "coordinated".to_string(),
                     proof_profile: None,
-                    run_config: PathBuf::from("fabro/programs/alpha.yaml"),
+                    run_config: PathBuf::from("malinka/programs/alpha.yaml"),
                     run_id: None,
                     current_run_id: None,
                     current_fabro_run_id: None,
@@ -1537,7 +1556,7 @@ units:
                     detail: String::new(),
                     managed_milestone: "coordinated".to_string(),
                     proof_profile: None,
-                    run_config: PathBuf::from("fabro/programs/beta.yaml"),
+                    run_config: PathBuf::from("malinka/programs/beta.yaml"),
                     run_id: None,
                     current_run_id: None,
                     current_fabro_run_id: None,
@@ -1576,7 +1595,7 @@ units:
                     detail: String::new(),
                     managed_milestone: "coordinated".to_string(),
                     proof_profile: None,
-                    run_config: PathBuf::from("fabro/programs/gamma.yaml"),
+                    run_config: PathBuf::from("malinka/programs/gamma.yaml"),
                     run_id: None,
                     current_run_id: Some("01RUNNING".to_string()),
                     current_fabro_run_id: Some("01RUNNING".to_string()),
@@ -1606,7 +1625,7 @@ units:
         let manifests = child_program_manifests_to_advance(&manifest_path, &manifest, &program, 1);
 
         assert_eq!(manifests.len(), 1);
-        assert!(manifests[0].ends_with("fabro/programs/alpha.yaml"));
+        assert!(manifests[0].ends_with("malinka/programs/alpha.yaml"));
     }
 
     #[test]
@@ -1670,7 +1689,7 @@ units:
             detail: String::new(),
             managed_milestone: "integrated".to_string(),
             proof_profile: None,
-            run_config: PathBuf::from("fabro/run-configs/integrate/demo.toml"),
+            run_config: PathBuf::from("malinka/run-configs/integrate/demo.toml"),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -1818,6 +1837,32 @@ units:
     }
 
     #[test]
+    fn replayable_failed_lanes_skip_provider_access_limits() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane(
+            "blocked:lane",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 25th, 2026 1:07 PM.",
+        );
+        lane.failure_kind = Some(FailureKind::ProviderAccessLimited);
+        lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            lanes: vec![lane],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert!(lanes.is_empty());
+    }
+
+    #[test]
     fn replayed_lanes_can_fill_available_capacity_before_ready_work() {
         let ready_lane = EvaluatedLane {
             lane_key: "ready:lane".to_string(),
@@ -1834,7 +1879,7 @@ units:
             detail: String::new(),
             managed_milestone: "reviewed".to_string(),
             proof_profile: None,
-            run_config: PathBuf::from("fabro/run-configs/bootstrap/demo.toml"),
+            run_config: PathBuf::from("malinka/run-configs/bootstrap/demo.toml"),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -1893,7 +1938,7 @@ units:
             detail: String::new(),
             managed_milestone: "integrated".to_string(),
             proof_profile: None,
-            run_config: PathBuf::from("fabro/run-configs/integrate/demo.toml"),
+            run_config: PathBuf::from("malinka/run-configs/integrate/demo.toml"),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -1948,7 +1993,7 @@ units:
             detail: String::new(),
             managed_milestone: "reviewed".to_string(),
             proof_profile: None,
-            run_config: PathBuf::from("fabro/run-configs/bootstrap/demo.toml"),
+            run_config: PathBuf::from("malinka/run-configs/bootstrap/demo.toml"),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -1988,7 +2033,7 @@ units:
             "# Demo Plan\n\n- [ ] Keep moving\n",
         )
         .expect("plan");
-        let manifest_path = temp.path().join("fabro/programs/demo.yaml");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
         std::fs::create_dir_all(
             manifest_path
                 .parent()
@@ -2143,7 +2188,7 @@ units:
     #[test]
     fn orchestrate_program_reports_recursive_child_program_cycles() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let programs_dir = temp.path().join("fabro/programs");
+        let programs_dir = temp.path().join("malinka/programs");
         std::fs::create_dir_all(&programs_dir).expect("program dir");
         let parent_manifest = programs_dir.join("parent.yaml");
         let child_manifest = programs_dir.join("child.yaml");
@@ -2165,9 +2210,9 @@ units:
       - id: program
         kind: orchestration
         title: Child Program
-        run_config: ../../fabro/programs/child.yaml
+        run_config: ../../malinka/programs/child.yaml
         managed_milestone: coordinated
-        program_manifest: ../../fabro/programs/child.yaml
+        program_manifest: ../../malinka/programs/child.yaml
 "#,
         )
         .expect("parent manifest");
@@ -2189,9 +2234,9 @@ units:
       - id: program
         kind: orchestration
         title: Parent Program
-        run_config: ../../fabro/programs/parent.yaml
+        run_config: ../../malinka/programs/parent.yaml
         managed_milestone: coordinated
-        program_manifest: ../../fabro/programs/parent.yaml
+        program_manifest: ../../malinka/programs/parent.yaml
 "#,
         )
         .expect("child manifest");
@@ -2217,11 +2262,74 @@ units:
     }
 
     #[test]
+    fn orchestrate_program_returns_maintenance_stop_reason_when_locked() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let programs_dir = temp.path().join("malinka/programs");
+        let raspberry_dir = temp.path().join(".raspberry");
+        std::fs::create_dir_all(&programs_dir).expect("program dir");
+        std::fs::create_dir_all(&raspberry_dir).expect("raspberry dir");
+        let manifest_path = programs_dir.join("demo.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: docs
+    title: Docs
+    output_root: ../../outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+    milestones:
+      - id: reviewed
+        requires: [plan]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: ../run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan]
+"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            raspberry_dir.join("maintenance.json"),
+            r#"{"enabled":true,"reason":"core redesign in progress","set_by":"codex"}"#,
+        )
+        .expect("maintenance");
+
+        let report = orchestrate_program(
+            &manifest_path,
+            &AutodevSettings {
+                fabro_bin: PathBuf::from("/bin/false"),
+                max_parallel_override: None,
+                frontier_budget: None,
+                max_cycles: 1,
+                poll_interval_ms: 1,
+                evolve_every_seconds: 0,
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        )
+        .expect("maintenance should return report");
+
+        assert_eq!(report.stop_reason, AutodevStopReason::Maintenance);
+        assert!(report.cycles.is_empty());
+    }
+
+    #[test]
     fn paperclip_bundle_root_detects_existing_bundle() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let manifest_path = temp.path().join("fabro/programs/demo.yaml");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
         std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
-        std::fs::create_dir_all(temp.path().join("fabro/paperclip/raspberry-demo"))
+        std::fs::create_dir_all(temp.path().join("malinka/paperclip/raspberry-demo"))
             .expect("paperclip dir");
         let manifest = ProgramManifest {
             program: "raspberry-demo".to_string(),
@@ -2233,6 +2341,6 @@ units:
         };
 
         let root = paperclip_bundle_root(&manifest_path, &manifest).expect("bundle root");
-        assert_eq!(root, temp.path().join("fabro/paperclip/raspberry-demo"));
+        assert_eq!(root, temp.path().join("malinka/paperclip/raspberry-demo"));
     }
 }

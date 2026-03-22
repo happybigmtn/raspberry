@@ -268,7 +268,7 @@ pub(crate) fn refresh_parent_programs(
 ) -> Result<(), EvaluateError> {
     let programs_dir = manifest
         .resolved_target_repo(manifest_path)
-        .join("fabro")
+        .join("malinka")
         .join("programs");
     let Ok(entries) = std::fs::read_dir(&programs_dir) else {
         return Ok(());
@@ -624,7 +624,7 @@ fn evaluate_lane(
 fn satisfied_milestones(
     manifest_path: &Path,
     manifest: &ProgramManifest,
-    runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
+    _runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
     unit_statuses: &BTreeMap<String, UnitStatus>,
 ) -> BTreeSet<String> {
     let mut satisfied = BTreeSet::new();
@@ -639,16 +639,12 @@ fn satisfied_milestones(
         }
         for (lane_id, lane) in &unit.lanes {
             let lane_key = lane_key(unit_id, lane_id);
-            let managed_complete = runtime_records
-                .get(&lane_key)
-                .map(|record| record.status == LaneExecutionStatus::Complete)
+            let managed_complete = lane
+                .program_manifest
+                .as_ref()
+                .and_then(|_| summarize_child_program(manifest_path, lane))
+                .map(|summary| summary.complete == summary.total && summary.total > 0)
                 .unwrap_or(false)
-                || lane
-                    .program_manifest
-                    .as_ref()
-                    .and_then(|_| summarize_child_program(manifest_path, lane))
-                    .map(|summary| summary.complete == summary.total && summary.total > 0)
-                    .unwrap_or(false)
                 || unit
                     .milestones
                     .iter()
@@ -806,11 +802,7 @@ fn classify_lane(
     {
         return LaneExecutionStatus::Blocked;
     }
-    if runtime_record
-        .map(|record| record.status == LaneExecutionStatus::Complete)
-        .unwrap_or(false)
-        || satisfied.contains(&managed_milestone_key(lane_key, &lane.managed_milestone))
-    {
+    if satisfied.contains(&managed_milestone_key(lane_key, &lane.managed_milestone)) {
         return LaneExecutionStatus::Complete;
     }
     if dependencies_satisfied(&lane.dependencies, satisfied) {
@@ -1707,10 +1699,10 @@ mod tests {
     fn evaluating_child_program_refreshes_parent_state() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path();
-        std::fs::create_dir_all(repo.join("fabro/programs")).expect("programs dir");
+        std::fs::create_dir_all(repo.join("malinka/programs")).expect("programs dir");
         std::fs::create_dir_all(repo.join(".raspberry")).expect("state dir");
 
-        let child_manifest_path = repo.join("fabro/programs/child.yaml");
+        let child_manifest_path = repo.join("malinka/programs/child.yaml");
         std::fs::write(
             &child_manifest_path,
             r#"
@@ -1750,7 +1742,7 @@ units:
                     "work:task": {
                         "lane_key": "work:task",
                         "status": "running",
-                        "run_config": "fabro/run-configs/bootstrap/task.toml",
+                        "run_config": "malinka/run-configs/bootstrap/task.toml",
                         "current_run_id": "01KMCHILD000000000000000000"
                     }
                 }
@@ -1759,7 +1751,7 @@ units:
         )
         .expect("child state");
 
-        let parent_manifest_path = repo.join("fabro/programs/parent.yaml");
+        let parent_manifest_path = repo.join("malinka/programs/parent.yaml");
         std::fs::write(
             &parent_manifest_path,
             r#"
@@ -1809,7 +1801,7 @@ units:
         let runtime_record = LaneRuntimeRecord {
             lane_key: "complete:program".to_string(),
             status: LaneExecutionStatus::Running,
-            run_config: Some(PathBuf::from("fabro/programs/complete-program.yaml")),
+            run_config: Some(PathBuf::from("malinka/programs/complete-program.yaml")),
             current_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
             current_fabro_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
             current_stage_label: Some("Promote".to_string()),
@@ -1846,13 +1838,96 @@ units:
     }
 
     #[test]
+    fn stale_runtime_complete_does_not_satisfy_managed_milestone_without_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+units:
+  - id: docs
+    title: Docs
+    output_root: outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [plan, review]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: malinka/run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan, review]
+"#,
+        )
+        .expect("manifest");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let unit = &manifest.units["docs"];
+        let lane = &unit.lanes["lane"];
+        let runtime_record = LaneRuntimeRecord {
+            lane_key: "docs:lane".to_string(),
+            status: LaneExecutionStatus::Complete,
+            run_config: Some(PathBuf::from("malinka/run-configs/bootstrap/docs.toml")),
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage_label: None,
+            last_run_id: Some("01KMTESTCOMPLETE000000000000".to_string()),
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: Some(0),
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: Some("Review".to_string()),
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+        };
+
+        let unit_status = evaluate_unit_status(&manifest_path, unit);
+        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let satisfied = satisfied_milestones(
+            &manifest_path,
+            &manifest,
+            &BTreeMap::from([("docs:lane".to_string(), &runtime_record)]),
+            &BTreeMap::from([("docs".to_string(), unit_status.clone())]),
+        );
+        let status = classify_lane(
+            "docs:lane",
+            lane,
+            &satisfied,
+            &unit_status,
+            Some(&runtime_record),
+            &RunSnapshot::default(),
+            &check_result,
+            lane_orchestration_state(&manifest_path, lane),
+            None,
+        );
+
+        assert!(!satisfied.contains("docs:lane@reviewed"));
+        assert_eq!(status, LaneExecutionStatus::Ready);
+    }
+
+    #[test]
     fn evaluating_parent_with_missing_child_state_uses_local_child_summary() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path();
-        std::fs::create_dir_all(repo.join("fabro/programs")).expect("programs dir");
+        std::fs::create_dir_all(repo.join("malinka/programs")).expect("programs dir");
         std::fs::create_dir_all(repo.join("outputs/child")).expect("outputs dir");
 
-        let child_manifest_path = repo.join("fabro/programs/child.yaml");
+        let child_manifest_path = repo.join("malinka/programs/child.yaml");
         std::fs::write(
             &child_manifest_path,
             r#"
@@ -1883,7 +1958,7 @@ units:
         )
         .expect("child manifest");
 
-        let parent_manifest_path = repo.join("fabro/programs/parent.yaml");
+        let parent_manifest_path = repo.join("malinka/programs/parent.yaml");
         std::fs::write(
             &parent_manifest_path,
             r#"

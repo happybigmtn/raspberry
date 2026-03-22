@@ -729,6 +729,8 @@ async fn main_inner() -> (String, Result<()>) {
             commands::synth::SynthCommand::Import(_) => "synth import",
             commands::synth::SynthCommand::Create(_) => "synth create",
             commands::synth::SynthCommand::Evolve(_) => "synth evolve",
+            commands::synth::SynthCommand::Review(_) => "synth review",
+            commands::synth::SynthCommand::Genesis(_) => "synth genesis",
         },
         Command::Paperclip(args) => match args.command {
             commands::paperclip::PaperclipCommand::Bootstrap(_) => "paperclip bootstrap",
@@ -1105,6 +1107,12 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 commands::synth::SynthCommand::Evolve(args) => {
                     commands::synth::evolve_command(&args)?;
+                }
+                commands::synth::SynthCommand::Review(args) => {
+                    commands::synth::review_command(&args)?;
+                }
+                commands::synth::SynthCommand::Genesis(args) => {
+                    commands::synth::genesis_command(&args)?;
                 }
             },
             Command::Paperclip(args) => match args.command {

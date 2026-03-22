@@ -5,9 +5,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use raspberry_supervisor::{
-    evaluate_program, evaluate_program_local, execute_selected_lanes, orchestrate_program,
-    render_grouped_summary, render_status_table, sync_autodev_report_with_program, AutodevSettings,
-    AutodevStopReason, DispatchSettings, LaneExecutionStatus, ProgramManifest,
+    evaluate_program, evaluate_program_local, execute_selected_lanes, load_plan_matrix,
+    orchestrate_program, render_grouped_summary, render_plan_matrix, render_status_table,
+    sync_autodev_report_with_program, AutodevSettings, AutodevStopReason, DispatchSettings,
+    LaneExecutionStatus, ProgramManifest,
 };
 
 #[derive(Debug, Parser)]
@@ -20,6 +21,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Plan(ManifestArgs),
+    PlanMatrix(ManifestArgs),
     Status(ManifestArgs),
     Watch(WatchArgs),
     Execute(ExecuteArgs),
@@ -89,6 +91,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Plan(args) => run_plan(&args.manifest),
+        Commands::PlanMatrix(args) => run_plan_matrix(&args.manifest),
         Commands::Status(args) => run_status(&args.manifest),
         Commands::Watch(args) => run_watch(args),
         Commands::Execute(args) => run_execute(args),
@@ -102,6 +105,12 @@ fn run_plan(manifest_path: &Path) -> Result<()> {
     let program = evaluate_program_local(manifest_path)?;
     sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
     println!("{}", render_grouped_summary(&program));
+    Ok(())
+}
+
+fn run_plan_matrix(manifest_path: &Path) -> Result<()> {
+    let matrix = load_plan_matrix(manifest_path)?;
+    println!("{}", render_plan_matrix(&matrix));
     Ok(())
 }
 
@@ -250,6 +259,7 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
     let stop_reason = match report.stop_reason {
         AutodevStopReason::Settled => "settled",
         AutodevStopReason::CycleLimit => "cycle_limit",
+        AutodevStopReason::Maintenance => "maintenance",
     };
     println!("Stop reason: {stop_reason}");
     Ok(())

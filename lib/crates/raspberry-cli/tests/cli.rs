@@ -90,6 +90,15 @@ fn help_shows_tui_subcommand() {
 }
 
 #[test]
+fn help_shows_plan_matrix_subcommand() {
+    raspberry()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plan-matrix"));
+}
+
+#[test]
 fn plan_supports_myouso_shaped_manifest() {
     raspberry()
         .args([
@@ -150,6 +159,84 @@ fn status_supports_myouso_shaped_manifest() {
         .stdout(predicate::str::contains(
             "error: terminal snapshot mismatch",
         ));
+}
+
+#[test]
+fn plan_matrix_reports_plan_level_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path();
+    fs::create_dir_all(repo.join("plans")).expect("plans dir");
+    fs::create_dir_all(repo.join("malinka/programs")).expect("programs dir");
+    fs::create_dir_all(repo.join("malinka/blueprints")).expect("blueprints dir");
+    fs::write(repo.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master plan");
+    fs::write(
+        repo.join("plans/004-blackjack-game.md"),
+        "# Blackjack Game\n",
+    )
+    .expect("leaf plan");
+    fs::write(
+        repo.join("malinka/blueprints/demo.yaml"),
+        r#"
+version: 1
+program:
+  id: demo
+units:
+  - id: blackjack
+    title: Blackjack
+    output_root: outputs/blackjack
+    artifacts: []
+    milestones: []
+    lanes: []
+"#,
+    )
+    .expect("blueprint");
+    fs::write(
+        repo.join("malinka/programs/demo.yaml"),
+        r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: blackjack
+    title: Blackjack
+    output_root: ../../outputs/blackjack
+    artifacts:
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [review]
+    lanes:
+      - id: blackjack
+        kind: interface
+        title: Blackjack Lane
+        run_config: ../run-configs/bootstrap/blackjack.toml
+        managed_milestone: reviewed
+        produces: [review]
+"#,
+    )
+    .expect("manifest");
+
+    raspberry()
+        .args([
+            "plan-matrix",
+            "--manifest",
+            repo.join("malinka/programs/demo.yaml")
+                .to_str()
+                .expect("utf-8 manifest"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "plan file | plan id | mapping | children",
+        ))
+        .stdout(predicate::str::contains("plans/004-blackjack-game.md"))
+        .stdout(predicate::str::contains(
+            "blackjack | inferred | 1 | yes | yes | no",
+        ))
+        .stdout(predicate::str::contains("plans/001-master-plan.md"));
 }
 
 #[test]

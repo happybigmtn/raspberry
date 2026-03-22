@@ -1,7 +1,7 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "raspberry-demo",
-  "updated_at": "2026-03-20T19:00:19.015559720Z",
+  "updated_at": "2026-03-22T00:30:55.363580270Z",
   "lanes": {
     "consensus:chapter": {
       "lane_key": "consensus:chapter",
@@ -37,8 +37,8 @@
       "last_finished_at": "2026-03-18T22:10:00Z",
       "last_exit_status": 1,
       "last_error": "tracked run remained active after its worker process disappeared",
-      "failure_kind": "unknown",
-      "recovery_action": "surface_blocked",
+      "failure_kind": "transient_launch_failure",
+      "recovery_action": "backoff_retry",
       "last_completed_stage_label": "Draft",
       "last_stage_duration_ms": 8200,
       "last_usage_summary": "gpt-5.4: 1200 in / 800 out",

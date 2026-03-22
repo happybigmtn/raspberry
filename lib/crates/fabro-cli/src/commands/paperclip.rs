@@ -15,8 +15,9 @@ use fabro_synthesis::{
     ProgramBlueprint, RenderRequest, WorkflowTemplate,
 };
 use raspberry_supervisor::{
-    evaluate::evaluate_with_state, refresh_program_state, EvaluatedLane, LaneExecutionStatus,
-    ProgramManifest, ProgramRuntimeState,
+    evaluate::evaluate_with_state, load_plan_registry, refresh_program_state, EvaluatedLane,
+    FailureKind, LaneExecutionStatus, MaintenanceMode, PlanMappingSource, PlanMatrix, PlanRegistry,
+    PlanStatusRow, ProgramManifest, ProgramRuntimeState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -116,6 +117,7 @@ struct PaperclipPaths {
     manifest_path: PathBuf,
     bundle_root: PathBuf,
     scripts_root: PathBuf,
+    paperclip_cli_script_path: PathBuf,
     orchestrator_script_path: PathBuf,
     run_script_path: PathBuf,
     bootstrap_state_path: PathBuf,
@@ -125,6 +127,8 @@ struct PaperclipRepoContext {
     paths: PaperclipPaths,
     mission: BootstrapMission,
     frontier: FrontierSyncModel,
+    plan_matrix: Option<PlanMatrix>,
+    plan_dashboard: Option<PlanDashboardModel>,
     bundle: GeneratedBundle,
 }
 
@@ -155,7 +159,7 @@ struct GitTransientCleanupResult {
 const BOOTSTRAP_GITIGNORE_LINES: &[&str] = &[
     ".raspberry/",
     ".paperclip/",
-    "fabro/paperclip/*/bootstrap-state.json",
+    "malinka/paperclip/*/bootstrap-state.json",
 ];
 
 struct PaperclipServerStatus {
@@ -167,6 +171,7 @@ struct PaperclipServerStatus {
     controller_acquired_at: Option<String>,
     bootstrap_state: Option<serde_json::Value>,
     frontier: Option<FrontierSyncModel>,
+    plan_matrix: Option<PlanMatrix>,
     openai_api_key_present: bool,
     anthropic_api_key_present: bool,
     local_cli_export_count: usize,
@@ -176,6 +181,7 @@ struct PaperclipServerStatus {
     cost_summary: Option<PaperclipCostSummary>,
     budget_overview: Option<PaperclipBudgetOverview>,
     pending_approvals: usize,
+    maintenance: Option<MaintenanceMode>,
 }
 
 pub async fn bootstrap_command(args: &PaperclipBootstrapArgs) -> Result<()> {
@@ -261,6 +267,17 @@ pub async fn logs_command(args: &PaperclipLogsArgs) -> Result<()> {
 
 pub async fn wake_command(args: &PaperclipWakeArgs) -> Result<()> {
     let paths = resolve_paperclip_paths(&args.repo);
+    if let Some(maintenance) = load_paperclip_maintenance(&paths)? {
+        println!("Program: {}", paths.program_id);
+        println!("Agent: {}", args.agent);
+        println!("Maintenance: enabled");
+        println!("Reason: {}", maintenance.reason);
+        println!(
+            "Wake command skipped while maintenance mode is enabled. Use `{}` to inspect current state.",
+            paperclip_status_command(&paths)
+        );
+        return Ok(());
+    }
     ensure_private_data_dir(&paths.data_dir, &paths.target_repo)?;
     ensure_paperclip_server(
         args.repo.paperclip_cmd.as_deref(),
@@ -366,6 +383,7 @@ fn resolve_paperclip_paths(args: &PaperclipRepoArgs) -> PaperclipPaths {
         manifest_path,
         bundle_root: bundle_root.clone(),
         scripts_root: scripts_root.clone(),
+        paperclip_cli_script_path: scripts_root.join("fabro-paperclip.sh"),
         orchestrator_script_path: scripts_root.join("raspberry-orchestrator.sh"),
         run_script_path: scripts_root.join("run-paperclip.sh"),
         bootstrap_state_path: bundle_root.join("bootstrap-state.json"),
@@ -379,17 +397,23 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
     std::fs::create_dir_all(&paths.scripts_root)?;
 
     let fabro_binary = current_fabro_binary()?;
-    let raspberry_command = raspberry_command();
+    let raspberry_binary = current_raspberry_binary();
+    write_paperclip_cli_script(
+        &paths.paperclip_cli_script_path,
+        &fabro_binary,
+        &paths.target_repo,
+        &paths.program_id,
+    )?;
     write_orchestrator_script(
         &paths.orchestrator_script_path,
         &paths.target_repo,
         &paths.manifest_path,
         &fabro_binary,
-        &raspberry_command,
+        raspberry_binary.as_deref(),
     )?;
     write_run_script(
         &paths.run_script_path,
-        &paperclip_command(args.paperclip_cmd.as_deref()),
+        default_paperclip_repo(),
         &paths.data_dir,
     )?;
 
@@ -403,6 +427,11 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &paperclip_refresh_command(&paths),
         &paperclip_status_command(&paths),
     )?;
+    let plan_matrix = raspberry_supervisor::load_plan_matrix(&paths.manifest_path).ok();
+    let plan_registry = load_plan_registry(&paths.target_repo).ok();
+    let plan_dashboard = plan_registry
+        .as_ref()
+        .map(|reg| build_plan_dashboard_model(&paths.program_id, reg, plan_matrix.as_ref()));
     let bundle = build_company_bundle(
         &blueprint,
         &paths.target_repo,
@@ -410,6 +439,8 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &mission,
         &paths.orchestrator_script_path,
         &frontier,
+        plan_matrix.as_ref(),
+        plan_dashboard.as_ref(),
     )?;
     write_bundle(&paths.bundle_root, &bundle)?;
 
@@ -417,6 +448,8 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         paths,
         mission,
         frontier,
+        plan_matrix,
+        plan_dashboard,
         bundle,
     })
 }
@@ -515,16 +548,24 @@ async fn apply_paperclip_context(
         &project_sync.project.id,
         &project_sync.workspace.id,
         &context.frontier,
+        context.plan_dashboard.as_ref(),
         &context.bundle.agents,
         &import_result.agents,
         existing_state.as_ref(),
     )
     .await?;
-    let synced_document_count =
-        sync_coordination_documents(&paths.api_base, &context.frontier, &synced_issue_ids).await?;
+    let synced_document_count = sync_coordination_documents(
+        &paths.api_base,
+        &context.frontier,
+        context.plan_matrix.as_ref(),
+        context.plan_dashboard.as_ref(),
+        &synced_issue_ids,
+    )
+    .await?;
     let synced_comment_count = sync_coordination_comments(
         &paths.api_base,
         &context.frontier,
+        context.plan_dashboard.as_ref(),
         &synced_issue_ids,
         existing_state.as_ref(),
     )
@@ -540,6 +581,7 @@ async fn apply_paperclip_context(
     let synced_work_product_count = sync_coordination_work_products(
         &paths.api_base,
         &context.frontier,
+        context.plan_dashboard.as_ref(),
         &synced_issue_ids,
         &attachment_sync.attachments_by_scope,
     )
@@ -585,6 +627,20 @@ async fn apply_paperclip_context(
         "attachmentsSynced": synced_attachment_count,
         "updatedAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
     });
+    if let Some(dashboard) = context.plan_dashboard.as_ref() {
+        let plan_issue_ids: BTreeMap<String, String> = synced_issue_ids
+            .iter()
+            .filter(|(key, _)| key.starts_with("plan/"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        bootstrap_state["planSync"] = json!({
+            "program": dashboard.program,
+            "planCount": dashboard.plans.len(),
+            "snapshots": plan_snapshots_json(dashboard),
+            "issueIds": plan_issue_ids,
+            "updatedAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        });
+    }
     bootstrap_state["secrets"] = synced_secrets_to_json(&synced_secrets);
     save_bootstrap_state(&paths.bootstrap_state_path, &bootstrap_state)?;
     install_local_cli_for_agents(
@@ -698,6 +754,12 @@ async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<Paper
     } else {
         0
     };
+    let plan_matrix = if paths.manifest_path.exists() {
+        raspberry_supervisor::load_plan_matrix(&paths.manifest_path).ok()
+    } else {
+        None
+    };
+    let maintenance = load_paperclip_maintenance(paths).ok().flatten();
 
     Ok(PaperclipServerStatus {
         pid,
@@ -708,6 +770,7 @@ async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<Paper
         controller_acquired_at: controller.acquired_at,
         bootstrap_state,
         frontier,
+        plan_matrix,
         openai_api_key_present: std::env::var_os("OPENAI_API_KEY").is_some(),
         anthropic_api_key_present: std::env::var_os("ANTHROPIC_API_KEY").is_some(),
         local_cli_export_count: count_local_cli_exports(&paths.data_dir),
@@ -717,6 +780,7 @@ async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<Paper
         cost_summary,
         budget_overview,
         pending_approvals,
+        maintenance,
     })
 }
 
@@ -767,6 +831,10 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
         );
     }
     println!("Pending approvals: {}", status.pending_approvals);
+    if let Some(maintenance) = status.maintenance.as_ref() {
+        println!("Maintenance mode: enabled");
+        println!("Maintenance reason: {}", maintenance.reason);
+    }
     if let Some(frontier) = status.frontier.as_ref() {
         println!("Frontier summary:");
         println!("{}", render_frontier_summary(frontier));
@@ -777,6 +845,10 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
             println!("Frontier details:");
             println!("{details}");
         }
+    }
+    if let Some(plan_matrix) = status.plan_matrix.as_ref() {
+        println!("Plan matrix:");
+        println!("{}", raspberry_supervisor::render_plan_matrix(plan_matrix));
     }
     if let Some(state) = status.bootstrap_state.as_ref() {
         if let Some(company_id) = state.get("companyId").and_then(|value| value.as_str()) {
@@ -804,6 +876,15 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
             println!("Last sync: {updated_at}");
         }
     }
+}
+
+fn load_paperclip_maintenance(paths: &PaperclipPaths) -> Result<Option<MaintenanceMode>> {
+    if !paths.manifest_path.exists() {
+        return Ok(None);
+    }
+    let manifest = ProgramManifest::load(&paths.manifest_path)?;
+    raspberry_supervisor::load_active_maintenance(&paths.manifest_path, &manifest)
+        .map_err(anyhow::Error::from)
 }
 
 fn render_pid_status(pid: Option<u32>, pid_live: bool) -> String {
@@ -1035,6 +1116,58 @@ struct FrontierSyncEntry {
     next_operator_move: String,
 }
 
+// ---------------------------------------------------------------------------
+// Plan dashboard model — plan-root-keyed sync layer
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)] // Summary metrics are retained for the upcoming plan-root dashboard output.
+#[derive(Debug, Clone)]
+struct PlanDashboardModel {
+    program: String,
+    plans: Vec<PlanDashboardEntry>,
+    summary: PlanDashboardSummary,
+}
+
+#[allow(dead_code)] // Summary metrics are retained for the upcoming plan-root dashboard output.
+#[derive(Debug, Clone)]
+struct PlanDashboardSummary {
+    total: usize,
+    represented: usize,
+    in_motion: usize,
+    needs_attention: usize,
+    complete: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PlanDashboardEntry {
+    plan_id: String,
+    title: String,
+    category: String,
+    composite: bool,
+    path: String,
+    status: String,
+    risk: String,
+    next_move: String,
+    mapping_source: String,
+    children: Vec<PlanDashboardChild>,
+}
+
+impl PlanDashboardEntry {
+    fn is_syncable(&self) -> bool {
+        self.category != "meta"
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PlanDashboardChild {
+    child_id: String,
+    title: String,
+    archetype: Option<String>,
+    review_profile: Option<String>,
+    owned_surfaces: Vec<String>,
+    sync_key: String,
+}
+
 #[derive(Debug, Clone)]
 struct DesiredIssue {
     title: String,
@@ -1096,6 +1229,7 @@ struct BundleAgent {
     metadata_type: Option<&'static str>,
     unit: Option<String>,
     lane_key: Option<String>,
+    plan_id: Option<String>,
 }
 
 struct GeneratedBundle {
@@ -1119,6 +1253,8 @@ fn build_company_bundle(
     mission: &BootstrapMission,
     orchestrator_script: &Path,
     frontier: &FrontierSyncModel,
+    plan_matrix: Option<&PlanMatrix>,
+    plan_dashboard: Option<&PlanDashboardModel>,
 ) -> Result<GeneratedBundle> {
     let description = mission.company_description.clone();
     let mut manifest_agents = Vec::new();
@@ -1159,6 +1295,19 @@ fn build_company_bundle(
             );
         }
     }
+    if let Some(dashboard) = plan_dashboard {
+        for plan in &dashboard.plans {
+            if !plan.is_syncable() || plan.children.is_empty() {
+                continue;
+            }
+            push_bundle_agent(
+                &mut manifest_agents,
+                &mut agent_markdowns,
+                &mut agents,
+                plan_root_agent_draft(target_repo, frontier, plan),
+            );
+        }
+    }
 
     let manifest = json!({
         "schemaVersion": 1,
@@ -1188,7 +1337,14 @@ fn build_company_bundle(
             }
         ]
     });
-    let company_markdown = build_company_markdown(company_name, &description, frontier, &agents);
+    let company_markdown = build_company_markdown(
+        company_name,
+        &description,
+        frontier,
+        plan_matrix,
+        plan_dashboard,
+        &agents,
+    );
 
     Ok(GeneratedBundle {
         manifest,
@@ -1263,6 +1419,7 @@ fn mission_ceo_draft(
             metadata_type: Some("mission_ceo"),
             unit: None,
             lane_key: None,
+            plan_id: None,
         },
     }
 }
@@ -1314,9 +1471,9 @@ fn orchestrator_draft(
             slug,
             "pm",
             format!(
-                "You operate the repo-local Raspberry control plane for `{}`.\n\nCurrent frontier:\n{}\n\nExecution route:\n- Wake the orchestrator with `{}` to let Paperclip invoke the Raspberry control loop.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}` after package or frontier changes.\n- Do not create parallel execution flows outside Raspberry.\n- Use Paperclip for coordination, escalation, review, and handoff only.\n",
+                "You operate the repo-local Raspberry control plane for `{}`.\n\nLive frontier inspection:\n- run `{}` for the current frontier summary\n- use `{}` to ask Paperclip to wake Raspberry\n- use `{}` as the direct repo-local fallback\n- run `{}` after frontier movement or package changes\n\nExecution route:\n- Do not create parallel execution flows outside Raspberry.\n- Use Paperclip for coordination, escalation, review, and handoff only.\n- Treat live state as volatile; inspect current status before making claims about counts or lane settlement.\n",
                 blueprint.program.id,
-                render_frontier_summary(frontier),
+                frontier.status_command,
                 frontier.wake_command,
                 frontier.route_command,
                 frontier.refresh_command,
@@ -1329,6 +1486,7 @@ fn orchestrator_draft(
             metadata_type: Some("raspberry_orchestrator"),
             unit: None,
             lane_key: None,
+            plan_id: None,
         },
     }
 }
@@ -1357,12 +1515,8 @@ fn lane_agent_draft(
         ("model".to_string(), model.clone()),
     ]);
     if adapter_type == "codex_local" {
-        let codex_home = preferred_automation_codex_home().unwrap_or_else(|| {
-            target_repo
-                .join(".paperclip")
-                .join("codex")
-                .join(&slug)
-        });
+        let codex_home = preferred_automation_codex_home()
+            .unwrap_or_else(|| target_repo.join(".paperclip").join("codex").join(&slug));
         adapter_config.insert(
             "env".to_string(),
             json!({
@@ -1406,17 +1560,19 @@ fn lane_agent_draft(
             &slug,
             role,
             format!(
-                "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nCurrent frontier state:\n{}\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Wake the Raspberry Orchestrator with `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Run `{}` as the direct repo-local fallback.\n- Refresh Paperclip with `{}` after route execution or package changes.\n- Keep the lane plan in the Paperclip `plan` document aligned with repo truth.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
+                "You coordinate the `{}` frontier in repo `{}`.\n\nCompany goal:\n{}\n\nLane goal:\n{}\n\nLive frontier inspection:\n- lane key: `{}`\n- sync key: `{}`\n- inspect current status with `{}` before asserting readiness, blockage, or completion\n- use `{}` after frontier movement to refresh Paperclip state\n\nArtifacts:\n{}\n\nDependencies:\n{}\n\nExecution route:\n- Wake the Raspberry Orchestrator with `{}` when this frontier needs Raspberry to evaluate or advance work.\n- Run `{}` as the direct repo-local fallback.\n- Keep the lane plan in the Paperclip `plan` document aligned with repo truth.\n- Use Paperclip to triage, review, escalate, and explain blockers.\n- Do not bypass Raspberry with direct ad hoc execution.\n",
                 lane.id,
                 blueprint.program.id,
                 mission.goal_title,
                 lane.goal,
-                render_frontier_entry(frontier_entry),
+                lane_key,
+                lane_sync_key(&blueprint.program.id, &lane_key),
+                frontier.status_command,
+                frontier.refresh_command,
                 lane_artifact_block(frontier_entry, unit),
                 lane_dependency_block(frontier_entry, lane),
                 frontier.wake_command,
                 frontier.route_command,
-                frontier.refresh_command,
             ),
         ),
         agent: BundleAgent {
@@ -1426,6 +1582,97 @@ fn lane_agent_draft(
             metadata_type: None,
             unit: Some(unit.id.clone()),
             lane_key: Some(lane_key),
+            plan_id: None,
+        },
+    }
+}
+
+fn render_plan_children_summary(children: &[PlanDashboardChild]) -> String {
+    if children.is_empty() {
+        return "No children defined.".to_string();
+    }
+    children
+        .iter()
+        .map(|c| {
+            format!(
+                "- `{}` ({}) — surfaces: {}",
+                c.child_id,
+                c.archetype.as_deref().unwrap_or("implement"),
+                if c.owned_surfaces.is_empty() {
+                    "none".to_string()
+                } else {
+                    c.owned_surfaces.join(", ")
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn plan_root_agent_draft(
+    target_repo: &Path,
+    frontier: &FrontierSyncModel,
+    plan: &PlanDashboardEntry,
+) -> BundleAgentDraft {
+    let slug = format!("plan-{}", plan.plan_id);
+    let name = format!("Plan: {}", plan.title);
+    let role = match plan.category.as_str() {
+        "meta" => "pm",
+        "verification" => "qa",
+        _ => "engineer",
+    };
+    let adapter_type = match plan.category.as_str() {
+        "meta" | "verification" => "claude_local",
+        _ => "codex_local",
+    };
+
+    let children_summary = render_plan_children_summary(&plan.children);
+
+    let body = format!(
+        "# {name}\n\nYou are the plan-root agent for `{plan_id}` in `{repo}`.\n\n## Plan Status\n\n- Status: {status}\n- Risk: {risk}\n- Next move: {next_move}\n- Mapping: {mapping}\n- Category: {category}\n- Composite: {composite}\n\n## Children\n\n{children}\n\n## Commands\n\n- Wake orchestrator: `{wake}`\n- Route fallback: `{route}`\n- Refresh Paperclip: `{refresh}`\n- Inspect status: `{status_cmd}`\n",
+        name = name,
+        plan_id = plan.plan_id,
+        repo = target_repo.display(),
+        status = plan.status,
+        risk = plan.risk,
+        next_move = plan.next_move,
+        mapping = plan.mapping_source,
+        category = plan.category,
+        composite = plan.composite,
+        children = children_summary,
+        wake = frontier.wake_command,
+        route = frontier.route_command,
+        refresh = frontier.refresh_command,
+        status_cmd = frontier.status_command,
+    );
+
+    BundleAgentDraft {
+        manifest: json!({
+            "path": format!("agents/{slug}/AGENTS.md"),
+            "name": name,
+            "slug": slug,
+            "role": role,
+            "adapter": {
+                "type": adapter_type,
+            },
+            "reportsTo": "raspberry-orchestrator",
+            "metadata": {
+                "source": "fabro.paperclip",
+                "type": "plan_root",
+                "planId": plan.plan_id,
+                "category": plan.category,
+            }
+        }),
+        relative_path: format!("agents/{slug}/AGENTS.md"),
+        markdown: build_agent_markdown(&name, &slug, role, body),
+        agent: BundleAgent {
+            slug,
+            name,
+            adapter_type,
+            metadata_type: Some("plan_root"),
+            unit: None,
+            lane_key: None,
+            plan_id: Some(plan.plan_id.clone()),
         },
     }
 }
@@ -1581,22 +1828,61 @@ fn build_company_markdown(
     name: &str,
     description: &str,
     frontier: &FrontierSyncModel,
+    plan_matrix: Option<&PlanMatrix>,
+    plan_dashboard: Option<&PlanDashboardModel>,
     agents: &[BundleAgent],
 ) -> String {
-    let mut body = format!(
-        "# {}\n\n{}\n\n# Frontier\n\n{}\n\n## Lane Sets\n\n{}\n",
-        name,
-        description,
+    let mut body = format!("# {}\n\n{}\n", name, description);
+    if let Some(plan_matrix) = plan_matrix {
+        body.push_str(&format!(
+            "\n# Plans\n\n## Plan Status Summary\n\n{}\n",
+            render_plan_matrix_summary(plan_matrix)
+        ));
+        let needing_attention =
+            render_plan_attention_section(plan_matrix, "Plans Needing Attention", |row| {
+                row.current_status.contains("failed")
+                    || row.current_status.contains("blocked")
+                    || row.current_status == "unmodeled"
+            });
+        if let Some(section) = needing_attention {
+            body.push_str(&format!("\n{}\n", section));
+        }
+        let in_motion = render_plan_attention_section(plan_matrix, "Plans In Motion", |row| {
+            row.current_status.contains("running")
+                || row.current_status.contains("ready")
+                || row.current_status.contains("implementation_")
+        });
+        if let Some(section) = in_motion {
+            body.push_str(&format!("\n{}\n", section));
+        }
+        body.push_str(&format!(
+            "\n## Plan Matrix\n\n```\n{}\n```\n",
+            raspberry_supervisor::render_plan_matrix(plan_matrix)
+        ));
+    }
+    if let Some(dashboard) = plan_dashboard {
+        body.push_str(&render_plan_category_sections(dashboard));
+    }
+    body.push_str(&format!(
+        "\n# Frontier (Lane Detail)\n\n{}\n\n## Lane Sets\n\n{}\n",
         render_frontier_summary(frontier),
         render_frontier_lane_sets(frontier),
-    );
+    ));
     let details = render_frontier_detail_sections(frontier);
     if !details.is_empty() {
         body.push_str(&format!("\n## Live Details\n\n{}\n", details));
     }
-    body.push_str("\n# Agents\n");
+    body.push_str("\n# Agents\n\n## Plan Agents\n");
     for agent in agents {
-        body.push_str(&format!("- {} - {}\n", agent.slug, agent.name));
+        if agent.plan_id.is_some() {
+            body.push_str(&format!("- {} - {}\n", agent.slug, agent.name));
+        }
+    }
+    body.push_str("\n## Lane Agents\n");
+    for agent in agents {
+        if agent.plan_id.is_none() {
+            body.push_str(&format!("- {} - {}\n", agent.slug, agent.name));
+        }
     }
     format!(
         "---\nkind: company\nname: {}\ndescription: {}\nbrandColor: null\nrequireBoardApprovalForNewAgents: true\n---\n\n{}",
@@ -1604,6 +1890,104 @@ fn build_company_markdown(
         serde_json::to_string(description).expect("json"),
         body
     )
+}
+
+fn render_plan_category_sections(dashboard: &PlanDashboardModel) -> String {
+    let categories = [
+        "foundation",
+        "game",
+        "interface",
+        "service",
+        "infrastructure",
+        "verification",
+        "economic",
+        "unknown",
+    ];
+    let mut sections = Vec::new();
+    for category in &categories {
+        let plans: Vec<&PlanDashboardEntry> = dashboard
+            .plans
+            .iter()
+            .filter(|p| p.category == *category)
+            .collect();
+        if plans.is_empty() {
+            continue;
+        }
+        let label = format!("{}{}", category[..1].to_uppercase(), &category[1..]);
+        let mut lines = vec![format!("\n## {} Plans\n", label)];
+        for plan in plans {
+            lines.push(format!(
+                "- `{}`: {} / {} / next: {}",
+                plan.plan_id, plan.status, plan.mapping_source, plan.next_move
+            ));
+        }
+        sections.push(lines.join("\n"));
+    }
+    sections.join("\n")
+}
+
+fn render_plan_matrix_summary(plan_matrix: &PlanMatrix) -> String {
+    let total = plan_matrix.rows.len();
+    let represented = plan_matrix
+        .rows
+        .iter()
+        .filter(|row| row.represented_in_blueprint)
+        .count();
+    let mapped = plan_matrix
+        .rows
+        .iter()
+        .filter(|row| row.mapping_status == "mapped")
+        .count();
+    let contract_backed = plan_matrix
+        .rows
+        .iter()
+        .filter(|row| row.current_risk.contains("mapping exists"))
+        .count();
+    let in_motion = plan_matrix
+        .rows
+        .iter()
+        .filter(|row| {
+            row.current_status.contains("running")
+                || row.current_status.contains("ready")
+                || row.current_status.contains("implementation_")
+        })
+        .count();
+
+    [
+        format!("- total plans: {total}"),
+        format!("- represented in blueprint: {represented}"),
+        format!("- mapped plans: {mapped}"),
+        format!("- contract-backed mappings surfaced in status: {contract_backed}"),
+        format!("- currently in motion: {in_motion}"),
+    ]
+    .join("\n")
+}
+
+fn render_plan_attention_section<F>(
+    plan_matrix: &PlanMatrix,
+    title: &str,
+    predicate: F,
+) -> Option<String>
+where
+    F: Fn(&PlanStatusRow) -> bool,
+{
+    let rows = plan_matrix
+        .rows
+        .iter()
+        .filter(|row| predicate(row))
+        .take(8)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut body = vec![format!("## {title}")];
+    for row in rows {
+        body.push(format!(
+            "- `{}`: {} / {} / next: {}",
+            row.plan_id, row.mapping_status, row.current_status, row.next_operator_move
+        ));
+    }
+    Some(body.join("\n"))
 }
 
 fn build_agent_markdown(name: &str, slug: &str, role: &str, body: String) -> String {
@@ -2012,6 +2396,11 @@ fn next_operator_move_for_lane(
             "Resolve the blocker in repo truth, then rerun `{wake_command}` and `{refresh_command}`."
         ),
         LaneExecutionStatus::Failed => {
+            if lane.failure_kind == Some(FailureKind::ProviderAccessLimited) {
+                return format!(
+                    "Restore provider auth or credits for this lane's configured agent, then rerun `{wake_command}` and `{refresh_command}`."
+                );
+            }
             if let Some(run_id) = lane.last_run_id.as_ref() {
                 return format!(
                     "Inspect `fabro inspect {run_id}` and `fabro logs {run_id}`, fix the underlying cause, then rerun `{wake_command}` and `{refresh_command}`."
@@ -2114,26 +2503,23 @@ fn normalize_storage_path(path: &Path) -> PathBuf {
 
 fn paperclip_wake_command(paths: &PaperclipPaths, agent_slug: &str) -> String {
     format!(
-        "fabro paperclip wake --target-repo {} --program {} --agent {}",
-        shell_quote(&paths.target_repo.display().to_string()),
-        shell_quote(&paths.program_id),
+        "bash {} wake --agent {}",
+        repo_relative_display(&paths.paperclip_cli_script_path, &paths.target_repo),
         shell_quote(agent_slug),
     )
 }
 
 fn paperclip_refresh_command(paths: &PaperclipPaths) -> String {
     format!(
-        "fabro paperclip refresh --target-repo {} --program {}",
-        shell_quote(&paths.target_repo.display().to_string()),
-        shell_quote(&paths.program_id),
+        "bash {} refresh",
+        repo_relative_display(&paths.paperclip_cli_script_path, &paths.target_repo),
     )
 }
 
 fn paperclip_status_command(paths: &PaperclipPaths) -> String {
     format!(
-        "fabro paperclip status --target-repo {} --program {}",
-        shell_quote(&paths.target_repo.display().to_string()),
-        shell_quote(&paths.program_id),
+        "bash {} status",
+        repo_relative_display(&paths.paperclip_cli_script_path, &paths.target_repo),
     )
 }
 
@@ -2145,32 +2531,174 @@ fn lane_sync_key(program_id: &str, lane_key: &str) -> String {
     format!("frontier/{program_id}/lane/{lane_key}")
 }
 
-fn write_orchestrator_script(
+fn plan_root_sync_key(program_id: &str, plan_id: &str) -> String {
+    format!("plan/{program_id}/{plan_id}")
+}
+
+fn plan_child_sync_key(program_id: &str, plan_id: &str, child_id: &str) -> String {
+    format!("plan/{program_id}/{plan_id}/{child_id}")
+}
+
+fn build_plan_dashboard_model(
+    program_id: &str,
+    registry: &PlanRegistry,
+    matrix: Option<&PlanMatrix>,
+) -> PlanDashboardModel {
+    let status_by_id: BTreeMap<&str, &PlanStatusRow> = matrix
+        .map(|m| {
+            m.rows
+                .iter()
+                .map(|row| (row.plan_id.as_str(), row))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut plans = Vec::new();
+    let mut represented = 0usize;
+    let mut in_motion = 0usize;
+    let mut needs_attention = 0usize;
+    let mut complete = 0usize;
+
+    for plan in &registry.plans {
+        let row = status_by_id.get(plan.plan_id.as_str());
+        let status = row
+            .map(|r| r.current_status.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let risk = row.map(|r| r.current_risk.clone()).unwrap_or_default();
+        let next_move = row
+            .map(|r| r.next_operator_move.clone())
+            .unwrap_or_else(|| "inspect plan".to_string());
+
+        if row.map(|r| r.represented_in_blueprint).unwrap_or(false) {
+            represented += 1;
+        }
+        if status.contains("running") || status.contains("ready") {
+            in_motion += 1;
+        }
+        if status.contains("failed") || status.contains("blocked") || status == "unmodeled" {
+            needs_attention += 1;
+        }
+        if status.contains("complete") || status == "reviewed" {
+            complete += 1;
+        }
+
+        let children: Vec<PlanDashboardChild> = plan
+            .children
+            .iter()
+            .map(|child| PlanDashboardChild {
+                child_id: child.child_id.clone(),
+                title: child
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| child.child_id.clone()),
+                archetype: child.archetype.map(|a| a.as_str().to_string()),
+                review_profile: child.review_profile.map(|p| p.as_str().to_string()),
+                owned_surfaces: child.owned_surfaces.clone(),
+                sync_key: plan_child_sync_key(program_id, &plan.plan_id, &child.child_id),
+            })
+            .collect();
+
+        let mapping_source = match plan.mapping_source {
+            PlanMappingSource::Contract => "contract",
+            PlanMappingSource::Inferred => "inferred",
+        };
+
+        plans.push(PlanDashboardEntry {
+            plan_id: plan.plan_id.clone(),
+            title: plan.title.clone(),
+            category: plan.category.as_str().to_string(),
+            composite: plan.composite,
+            path: plan.path.display().to_string(),
+            status,
+            risk,
+            next_move,
+            mapping_source: mapping_source.to_string(),
+            children,
+        });
+    }
+
+    PlanDashboardModel {
+        program: program_id.to_string(),
+        plans,
+        summary: PlanDashboardSummary {
+            total: registry.plans.len(),
+            represented,
+            in_motion,
+            needs_attention,
+            complete,
+        },
+    }
+}
+
+fn write_paperclip_cli_script(
     path: &Path,
-    target_repo: &Path,
-    manifest_path: &Path,
     fabro_binary: &Path,
-    raspberry_command: &str,
+    target_repo: &Path,
+    program_id: &str,
 ) -> Result<()> {
     let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\ncd {}\n{} autodev --manifest {} --fabro-bin {} --max-cycles 1 --poll-interval-ms 1 --evolve-every-seconds 0\n",
-        shell_quote(&target_repo.display().to_string()),
-        raspberry_command,
-        shell_quote(&manifest_path.display().to_string()),
-        shell_quote(&fabro_binary.display().to_string()),
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nfabro_bin=\"${{FABRO_BIN:-}}\"\nif [ -z \"$fabro_bin\" ]; then\n  if [ -x {fabro_fallback} ]; then\n    fabro_bin={fabro_fallback}\n  elif command -v fabro >/dev/null 2>&1; then\n    fabro_bin=\"$(command -v fabro)\"\n  else\n    echo \"Unable to resolve fabro binary. Set FABRO_BIN or install/build fabro.\" >&2\n    exit 1\n  fi\nfi\n\nexec \"$fabro_bin\" paperclip \"$@\" --target-repo {target_repo} --program {program}\n",
+        fabro_fallback = shell_quote(&fabro_binary.display().to_string()),
+        target_repo = shell_quote(&target_repo.display().to_string()),
+        program = shell_quote(program_id),
     );
     std::fs::write(path, body)?;
     Ok(())
 }
 
-fn write_run_script(path: &Path, paperclip_cmd: &str, data_dir: &Path) -> Result<()> {
-    let tmp_dir = paperclip_instance_root(data_dir).join("tmp");
+fn write_orchestrator_script(
+    path: &Path,
+    target_repo: &Path,
+    manifest_path: &Path,
+    fabro_binary: &Path,
+    raspberry_binary: Option<&Path>,
+) -> Result<()> {
+    let fabro_fallback = shell_quote(&fabro_binary.display().to_string());
+    let raspberry_resolution = raspberry_binary
+        .map(|path| {
+            format!(
+                "  if [ -x {fallback} ]; then\n    raspberry_bin={fallback}\n  elif command -v raspberry >/dev/null 2>&1; then\n    raspberry_bin=\"$(command -v raspberry)\"\n  else\n    echo \"Unable to resolve raspberry binary. Set RASPBERRY_BIN or install/build raspberry.\" >&2\n    exit 1\n  fi\n",
+                fallback = shell_quote(&path.display().to_string()),
+            )
+        })
+        .unwrap_or_else(|| {
+            "  if command -v raspberry >/dev/null 2>&1; then\n    raspberry_bin=\"$(command -v raspberry)\"\n  else\n    echo \"Unable to resolve raspberry binary. Set RASPBERRY_BIN or install/build raspberry.\" >&2\n    exit 1\n  fi\n".to_string()
+        });
     let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p {}\nexport TMPDIR={}\nexec {} run --data-dir {}\n",
-        shell_quote(&tmp_dir.display().to_string()),
-        shell_quote(&tmp_dir.display().to_string()),
-        paperclip_cmd,
-        shell_quote(&data_dir.display().to_string()),
+        "#!/usr/bin/env bash\nset -euo pipefail\ncd {repo}\n\nfabro_bin=\"${{FABRO_BIN:-}}\"\nif [ -z \"$fabro_bin\" ]; then\n  if [ -x {fabro_fallback} ]; then\n    fabro_bin={fabro_fallback}\n  elif command -v fabro >/dev/null 2>&1; then\n    fabro_bin=\"$(command -v fabro)\"\n  else\n    echo \"Unable to resolve fabro binary. Set FABRO_BIN or install/build fabro.\" >&2\n    exit 1\n  fi\nfi\n\nraspberry_bin=\"${{RASPBERRY_BIN:-}}\"\nif [ -z \"$raspberry_bin\" ]; then\n{raspberry_resolution}fi\n\nexec \"$raspberry_bin\" autodev --manifest {manifest} --fabro-bin \"$fabro_bin\" --max-cycles 1 --poll-interval-ms 1 --evolve-every-seconds 0\n",
+        repo = shell_quote(&target_repo.display().to_string()),
+        fabro_fallback = fabro_fallback,
+        raspberry_resolution = raspberry_resolution,
+        manifest = shell_quote(&manifest_path.display().to_string()),
+    );
+    std::fs::write(path, body)?;
+    Ok(())
+}
+
+fn write_run_script(path: &Path, paperclip_repo: Option<PathBuf>, data_dir: &Path) -> Result<()> {
+    let tmp_dir = paperclip_instance_root(data_dir).join("tmp");
+    let fallback_repo = paperclip_repo
+        .as_ref()
+        .map(|path| shell_quote(&path.display().to_string()));
+    let resolution = fallback_repo
+        .map(|repo| {
+            format!(
+                "elif [ -n \"${{PAPERCLIP_REPO:-}}\" ]; then\n  exec pnpm --silent --dir \"$PAPERCLIP_REPO\" paperclipai run --data-dir {data_dir}\nelif [ -d {repo} ]; then\n  exec pnpm --silent --dir {repo} paperclipai run --data-dir {data_dir}\nelse\n  echo \"Unable to resolve Paperclip CLI. Set PAPERCLIP_CMD, set PAPERCLIP_REPO, or install paperclipai.\" >&2\n  exit 1\nfi\n",
+                repo = repo,
+                data_dir = shell_quote(&data_dir.display().to_string()),
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "elif [ -n \"${{PAPERCLIP_REPO:-}}\" ]; then\n  exec pnpm --silent --dir \"$PAPERCLIP_REPO\" paperclipai run --data-dir {data_dir}\nelse\n  echo \"Unable to resolve Paperclip CLI. Set PAPERCLIP_CMD, set PAPERCLIP_REPO, or install paperclipai.\" >&2\n  exit 1\nfi\n",
+                data_dir = shell_quote(&data_dir.display().to_string()),
+            )
+        });
+    let body = format!(
+        "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p {tmp_dir}\nexport TMPDIR={tmp_dir}\n\nif [ -n \"${{PAPERCLIP_CMD:-}}\" ]; then\n  exec bash -lc \"$PAPERCLIP_CMD run --data-dir {data_dir}\"\nelif command -v paperclipai >/dev/null 2>&1; then\n  exec paperclipai run --data-dir {data_dir}\n{resolution}",
+        tmp_dir = shell_quote(&tmp_dir.display().to_string()),
+        data_dir = shell_quote(&data_dir.display().to_string()),
+        resolution = resolution,
     );
     std::fs::write(path, body)?;
     Ok(())
@@ -2180,24 +2708,15 @@ fn current_fabro_binary() -> Result<PathBuf> {
     std::env::current_exe().context("failed to resolve current fabro binary")
 }
 
-fn raspberry_command() -> String {
-    let current = std::env::current_exe().ok();
-    if let Some(path) = current
-        .as_ref()
-        .map(|path| path.with_file_name("raspberry"))
-    {
-        if path.exists() {
-            return shell_quote(&path.display().to_string());
-        }
-    }
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .components()
-        .collect::<PathBuf>();
-    format!(
-        "cargo run -q --manifest-path {} -p raspberry-cli --",
-        shell_quote(&workspace_root.join("Cargo.toml").display().to_string())
-    )
+fn current_raspberry_binary() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let sibling = current.with_file_name("raspberry");
+    sibling.exists().then_some(sibling)
+}
+
+fn default_paperclip_repo() -> Option<PathBuf> {
+    let local_repo = PathBuf::from("/home/r/coding/paperclip");
+    local_repo.is_dir().then_some(local_repo)
 }
 
 fn paperclip_command(override_value: Option<&str>) -> String {
@@ -3898,6 +4417,7 @@ async fn sync_coordination_issues(
     project_id: &str,
     project_workspace_id: &str,
     frontier: &FrontierSyncModel,
+    plan_dashboard: Option<&PlanDashboardModel>,
     bundle_agents: &[BundleAgent],
     imported_agents: &[PaperclipImportAgent],
     existing_state: Option<&serde_json::Value>,
@@ -3914,6 +4434,16 @@ async fn sync_coordination_issues(
             })
         })
         .collect::<BTreeMap<_, _>>();
+    let plan_agent_ids: BTreeMap<String, String> = bundle_agents
+        .iter()
+        .filter_map(|agent| {
+            agent.plan_id.as_ref().and_then(|plan_id| {
+                agent_ids
+                    .get(&agent.slug)
+                    .map(|agent_id| (plan_id.clone(), agent_id.clone()))
+            })
+        })
+        .collect();
     let mut synced = BTreeMap::new();
     let mut existing =
         collect_existing_sync_issues(api_base, company_id, project_id, existing_state).await?;
@@ -3960,6 +4490,57 @@ async fn sync_coordination_issues(
         synced.insert(entry.sync_key.clone(), issue.id.clone());
     }
 
+    // Plan-root-keyed issues
+    if let Some(dashboard) = plan_dashboard {
+        for plan in &dashboard.plans {
+            if !plan.is_syncable() {
+                continue;
+            }
+            let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
+            let existing_plan_issue = existing.remove(&plan_key);
+            let desired = desired_plan_root_issue(
+                &dashboard.program,
+                plan,
+                &root_issue.id,
+                plan_agent_ids.get(&plan.plan_id).cloned(),
+                project_workspace_id,
+            );
+            let plan_issue = upsert_sync_issue(
+                api_base,
+                company_id,
+                goal_id,
+                project_id,
+                existing_plan_issue.as_ref(),
+                &desired,
+            )
+            .await?;
+            synced.insert(plan_key, plan_issue.id.clone());
+
+            for child in &plan.children {
+                let child_key =
+                    plan_child_sync_key(&dashboard.program, &plan.plan_id, &child.child_id);
+                let existing_child = existing.remove(&child_key);
+                let desired = desired_plan_child_issue(
+                    plan,
+                    child,
+                    &plan_issue.id,
+                    orchestrator_agent_id.clone(),
+                    project_workspace_id,
+                );
+                let child_issue = upsert_sync_issue(
+                    api_base,
+                    company_id,
+                    goal_id,
+                    project_id,
+                    existing_child.as_ref(),
+                    &desired,
+                )
+                .await?;
+                synced.insert(child_key, child_issue.id);
+            }
+        }
+    }
+
     for (sync_key, issue) in existing {
         let desired = desired_archived_issue(sync_key.clone(), &issue);
         let archived = upsert_sync_issue(
@@ -3980,6 +4561,8 @@ async fn sync_coordination_issues(
 async fn sync_coordination_documents(
     api_base: &str,
     frontier: &FrontierSyncModel,
+    plan_matrix: Option<&PlanMatrix>,
+    plan_dashboard: Option<&PlanDashboardModel>,
     synced_issue_ids: &BTreeMap<String, String>,
 ) -> Result<usize> {
     let mut synced = 0usize;
@@ -3989,7 +4572,7 @@ async fn sync_coordination_documents(
             api_base,
             issue_id,
             "Frontier plan",
-            &render_root_issue_plan_document(frontier),
+            &render_root_issue_plan_document(frontier, plan_matrix),
         )
         .await?;
         synced += 1;
@@ -4009,12 +4592,59 @@ async fn sync_coordination_documents(
         synced += 1;
     }
 
+    if let Some(dashboard) = plan_dashboard {
+        for plan in &dashboard.plans {
+            if !plan.is_syncable() {
+                continue;
+            }
+            let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
+            let Some(issue_id) = synced_issue_ids.get(&plan_key) else {
+                continue;
+            };
+            upsert_issue_plan_document(
+                api_base,
+                issue_id,
+                &format!("{} plan", plan.title),
+                &render_plan_root_issue_plan_document(plan),
+            )
+            .await?;
+            synced += 1;
+        }
+    }
+
     Ok(synced)
+}
+
+fn render_plan_root_issue_plan_document(plan: &PlanDashboardEntry) -> String {
+    let mut body = format!("# {}\n\n## Status\n\n- Status: {}\n- Risk: {}\n- Next move: {}\n- Mapping: {}\n- Category: {}\n- Path: `{}`\n",
+        plan.title, plan.status, plan.risk, plan.next_move,
+        plan.mapping_source, plan.category, plan.path,
+    );
+    if !plan.children.is_empty() {
+        body.push_str(
+            "\n## Children\n\n| Child | Archetype | Profile | Surfaces |\n|---|---|---|---|\n",
+        );
+        for child in &plan.children {
+            body.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                child.child_id,
+                child.archetype.as_deref().unwrap_or("implement"),
+                child.review_profile.as_deref().unwrap_or("standard"),
+                if child.owned_surfaces.is_empty() {
+                    "none".to_string()
+                } else {
+                    child.owned_surfaces.join(", ")
+                },
+            ));
+        }
+    }
+    body
 }
 
 async fn sync_coordination_comments(
     api_base: &str,
     frontier: &FrontierSyncModel,
+    plan_dashboard: Option<&PlanDashboardModel>,
     synced_issue_ids: &BTreeMap<String, String>,
     existing_state: Option<&serde_json::Value>,
 ) -> Result<usize> {
@@ -4058,12 +4688,103 @@ async fn sync_coordination_comments(
         }
     }
 
+    // Plan status transition comments
+    if let Some(dashboard) = plan_dashboard {
+        let previous_plan_snapshots = synced_plan_snapshots_from_state(existing_state);
+        let current_plan_snapshots = plan_snapshots(dashboard);
+        for plan in &dashboard.plans {
+            if !plan.is_syncable() {
+                continue;
+            }
+            let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
+            let Some(issue_id) = synced_issue_ids.get(&plan_key) else {
+                continue;
+            };
+            let Some(current) = current_plan_snapshots.get(&plan_key) else {
+                continue;
+            };
+            let previous = previous_plan_snapshots.get(&plan_key);
+            if snapshot_changed(previous, current) {
+                post_issue_comment(
+                    api_base,
+                    issue_id,
+                    &render_plan_transition_comment(plan, previous, current),
+                )
+                .await?;
+                comment_count += 1;
+            }
+        }
+    }
+
     Ok(comment_count)
+}
+
+fn plan_snapshots(dashboard: &PlanDashboardModel) -> BTreeMap<String, serde_json::Value> {
+    let mut snapshots = BTreeMap::new();
+    for plan in &dashboard.plans {
+        if !plan.is_syncable() {
+            continue;
+        }
+        let key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
+        snapshots.insert(
+            key,
+            json!({
+                "status": plan.status,
+                "risk": plan.risk,
+                "childCount": plan.children.len(),
+                "nextMove": plan.next_move,
+            }),
+        );
+    }
+    snapshots
+}
+
+fn plan_snapshots_json(dashboard: &PlanDashboardModel) -> serde_json::Value {
+    let mut values = serde_json::Map::new();
+    for (key, value) in plan_snapshots(dashboard) {
+        values.insert(key, value);
+    }
+    serde_json::Value::Object(values)
+}
+
+fn synced_plan_snapshots_from_state(
+    existing_state: Option<&serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    existing_state
+        .and_then(|state| state.get("planSync"))
+        .and_then(|value| value.get("snapshots"))
+        .and_then(|value| value.as_object())
+        .map(|values| {
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn render_plan_transition_comment(
+    plan: &PlanDashboardEntry,
+    previous: Option<&serde_json::Value>,
+    current: &serde_json::Value,
+) -> String {
+    let mut body = format!("## Plan Sync Update\n\n- plan: `{}`\n", plan.plan_id);
+    body.push_str(&format!(
+        "- previous snapshot: `{}`\n",
+        compact_snapshot(previous)
+    ));
+    body.push_str(&format!(
+        "- current snapshot: `{}`\n- next move: {}\n",
+        compact_snapshot(Some(current)),
+        plan.next_move,
+    ));
+    body
 }
 
 async fn sync_coordination_work_products(
     api_base: &str,
     frontier: &FrontierSyncModel,
+    plan_dashboard: Option<&PlanDashboardModel>,
     synced_issue_ids: &BTreeMap<String, String>,
     attachments_by_scope: &BTreeMap<String, BTreeMap<String, PaperclipAttachment>>,
 ) -> Result<usize> {
@@ -4091,7 +4812,65 @@ async fn sync_coordination_work_products(
         .await?;
     }
 
+    if let Some(dashboard) = plan_dashboard {
+        for plan in &dashboard.plans {
+            if !plan.is_syncable() {
+                continue;
+            }
+            let plan_key = plan_root_sync_key(&dashboard.program, &plan.plan_id);
+            let Some(issue_id) = synced_issue_ids.get(&plan_key) else {
+                continue;
+            };
+            synced += sync_issue_work_products(
+                api_base,
+                issue_id,
+                &desired_plan_root_work_products(&dashboard.program, plan),
+            )
+            .await?;
+        }
+    }
+
     Ok(synced)
+}
+
+fn desired_plan_root_work_products(
+    program_id: &str,
+    plan: &PlanDashboardEntry,
+) -> Vec<DesiredWorkProduct> {
+    let plan_key = plan_root_sync_key(program_id, &plan.plan_id);
+    let status = if plan.status.contains("complete") || plan.status == "reviewed" {
+        "ready_for_review"
+    } else if plan.status.contains("running") {
+        "active"
+    } else if plan.status.contains("failed") {
+        "failed"
+    } else {
+        "draft"
+    };
+    let health = if plan.status.contains("failed") {
+        "unhealthy"
+    } else {
+        "healthy"
+    };
+
+    vec![DesiredWorkProduct {
+        external_id: format!("{plan_key}::plan_file"),
+        title: format!("{} (plan file)", plan.title),
+        status: status.to_string(),
+        health_status: health.to_string(),
+        is_primary: true,
+        url: None,
+        summary: Some(format!(
+            "Status: {} | Next: {}",
+            plan.status, plan.next_move
+        )),
+        metadata: json!({
+            "source": "fabro.paperclip.plan",
+            "planId": plan.plan_id,
+            "path": plan.path,
+            "category": plan.category,
+        }),
+    }]
 }
 
 async fn sync_coordination_attachments(
@@ -4326,16 +5105,143 @@ fn desired_archived_issue(sync_key: String, issue: &PaperclipIssue) -> DesiredIs
     }
 }
 
-fn render_root_issue_plan_document(frontier: &FrontierSyncModel) -> String {
-    format!(
-        "# Raspberry Frontier\n\n## Summary\n\n{}\n\n## Lane Sets\n\n{}\n\n## Operator Loop\n\n1. Check current state with `{}`.\n2. Wake the orchestrator with `{}`.\n3. Use `{}` only as the direct repo-local fallback.\n4. Refresh Paperclip with `{}` after the frontier moves.\n",
+fn desired_plan_root_issue(
+    program_id: &str,
+    plan: &PlanDashboardEntry,
+    root_issue_id: &str,
+    assignee_agent_id: Option<String>,
+    project_workspace_id: &str,
+) -> DesiredIssue {
+    let status = plan_status_to_issue_status(&plan.status);
+    let priority = plan_status_to_priority(&plan.status);
+    let sync_key = plan_root_sync_key(program_id, &plan.plan_id);
+
+    let children_summary = render_plan_children_summary(&plan.children);
+
+    DesiredIssue {
+        title: format!("Plan: {}", plan.title),
+        description: with_sync_marker(
+            format!(
+                "Plan `{plan_id}` ({category})\n\n- Status: {status}\n- Risk: {risk}\n- Next: {next}\n- Mapping: {mapping}\n- Path: `{path}`\n\n## Children\n\n{children}\n",
+                plan_id = plan.plan_id,
+                category = plan.category,
+                status = plan.status,
+                risk = plan.risk,
+                next = plan.next_move,
+                mapping = plan.mapping_source,
+                path = plan.path,
+                children = children_summary,
+            ),
+            &sync_key,
+        ),
+        status: normalize_issue_status(status, assignee_agent_id.as_ref()),
+        priority: priority.to_string(),
+        parent_id: Some(root_issue_id.to_string()),
+        assignee_agent_id,
+        project_workspace_id: Some(project_workspace_id.to_string()),
+        assignee_adapter_overrides: Some(json!({
+            "useProjectWorkspace": true,
+        })),
+        execution_workspace_preference: Some("reuse_existing".to_string()),
+    }
+}
+
+fn desired_plan_child_issue(
+    plan: &PlanDashboardEntry,
+    child: &PlanDashboardChild,
+    plan_issue_id: &str,
+    fallback_assignee_id: Option<String>,
+    project_workspace_id: &str,
+) -> DesiredIssue {
+    let surfaces = if child.owned_surfaces.is_empty() {
+        "none".to_string()
+    } else {
+        child.owned_surfaces.join(", ")
+    };
+
+    DesiredIssue {
+        title: format!("Plan: {} / {}", plan.title, child.title),
+        description: with_sync_marker(
+            format!(
+                "Child `{child_id}` of plan `{plan_id}`\n\n- Archetype: {archetype}\n- Review profile: {profile}\n- Surfaces: {surfaces}\n",
+                child_id = child.child_id,
+                plan_id = plan.plan_id,
+                archetype = child.archetype.as_deref().unwrap_or("implement"),
+                profile = child.review_profile.as_deref().unwrap_or("standard"),
+                surfaces = surfaces,
+            ),
+            &child.sync_key,
+        ),
+        status: "todo".to_string(),
+        priority: "medium".to_string(),
+        parent_id: Some(plan_issue_id.to_string()),
+        assignee_agent_id: fallback_assignee_id,
+        project_workspace_id: Some(project_workspace_id.to_string()),
+        assignee_adapter_overrides: Some(json!({
+            "useProjectWorkspace": true,
+        })),
+        execution_workspace_preference: Some("reuse_existing".to_string()),
+    }
+}
+
+fn plan_status_to_issue_status(status: &str) -> &'static str {
+    if status.contains("failed") || status.contains("blocked") {
+        "blocked"
+    } else if status.contains("running") {
+        "in_progress"
+    } else if status.contains("complete") || status == "reviewed" {
+        "done"
+    } else {
+        "todo"
+    }
+}
+
+fn plan_status_to_priority(status: &str) -> &'static str {
+    if status.contains("failed") {
+        "urgent"
+    } else if status.contains("blocked") || status == "unmodeled" {
+        "high"
+    } else if status.contains("running") {
+        "medium"
+    } else {
+        "medium"
+    }
+}
+
+fn render_root_issue_plan_document(
+    frontier: &FrontierSyncModel,
+    plan_matrix: Option<&PlanMatrix>,
+) -> String {
+    let mut body = String::from("# Raspberry Plans\n");
+    if let Some(plan_matrix) = plan_matrix {
+        body.push_str(&format!(
+            "\n## Plan Status Summary\n\n{}\n",
+            render_plan_matrix_summary(plan_matrix)
+        ));
+        if let Some(section) =
+            render_plan_attention_section(plan_matrix, "Plans Needing Attention", |row| {
+                row.current_status.contains("failed")
+                    || row.current_status.contains("blocked")
+                    || row.current_status == "unmodeled"
+            })
+        {
+            body.push_str(&format!("\n{}\n", section));
+        }
+        body.push_str(&format!(
+            "\n## Plan Matrix\n\n```\n{}\n```\n",
+            raspberry_supervisor::render_plan_matrix(plan_matrix)
+        ));
+    }
+    body.push_str(&format!(
+        "\n## Frontier Summary\n\n{}\n\n## Lane Sets\n\n{}\n\n## Operator Loop\n\n1. Check current state with `{}`.\n2. Wake the orchestrator with `{}`.\n3. Use `{}` only as the direct repo-local fallback.\n4. Refresh Paperclip with `{}` after the frontier moves.\n",
         render_frontier_summary(frontier),
         render_frontier_lane_sets(frontier),
         frontier.status_command,
         frontier.wake_command,
         frontier.route_command,
         frontier.refresh_command,
-    )
+    ));
+    body
 }
 
 fn render_lane_issue_plan_document(entry: &FrontierSyncEntry) -> String {
@@ -5403,6 +6309,7 @@ mod tests {
             metadata_type: None,
             unit: Some("command-center-client".to_string()),
             lane_key: Some("command-center-client:program".to_string()),
+            plan_id: None,
         };
         let managed = PaperclipManagedAgent {
             id: "agent-1".to_string(),
@@ -5443,7 +6350,8 @@ mod tests {
         let command = paperclip_server_command(Some("paperclipai"), Path::new("/tmp/demo"))
             .expect("server command");
 
-        assert!(command.starts_with("exec paperclipai run --data-dir "));
+        assert!(command.contains("exec env TMPDIR="));
+        assert!(command.contains("paperclipai run --data-dir "));
     }
 
     #[test]
@@ -5528,7 +6436,7 @@ mod tests {
         };
         let frontier = FrontierSyncModel {
             program: "zend".to_string(),
-            manifest_path: temp.path().join("fabro/programs/zend.yaml"),
+            manifest_path: temp.path().join("malinka/programs/zend.yaml"),
             state_path: temp.path().join(".raspberry/zend-state.json"),
             wake_command: "fabro paperclip wake --target-repo /tmp/zend --program zend --agent raspberry-orchestrator".to_string(),
             route_command: "bash fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"
@@ -5619,8 +6527,10 @@ mod tests {
             &mission,
             &temp
                 .path()
-                .join("fabro/paperclip/zend/scripts/raspberry-orchestrator.sh"),
+                .join("malinka/paperclip/zend/scripts/raspberry-orchestrator.sh"),
             &frontier,
+            None,
+            None,
         )
         .expect("build company bundle");
 
@@ -5679,7 +6589,7 @@ mod tests {
         let lane = &unit.lanes[0];
         let frontier = FrontierSyncModel {
             program: "demo".to_string(),
-            manifest_path: temp.path().join("fabro/programs/demo.yaml"),
+            manifest_path: temp.path().join("malinka/programs/demo.yaml"),
             state_path: temp.path().join(".raspberry/demo-state.json"),
             wake_command: "wake".to_string(),
             route_command: "route".to_string(),
@@ -5745,7 +6655,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let frontier = FrontierSyncModel {
             program: "demo".to_string(),
-            manifest_path: temp.path().join("fabro/programs/demo.yaml"),
+            manifest_path: temp.path().join("malinka/programs/demo.yaml"),
             state_path: temp.path().join(".raspberry/demo-state.json"),
             wake_command: "wake".to_string(),
             route_command: "route".to_string(),
@@ -5774,13 +6684,10 @@ mod tests {
         };
         let script_path = temp
             .path()
-            .join("fabro/paperclip/demo/scripts/raspberry-orchestrator.sh");
+            .join("malinka/paperclip/demo/scripts/raspberry-orchestrator.sh");
 
         let draft = orchestrator_draft(&blueprint, temp.path(), &script_path, &frontier);
-        let adapter_config = draft
-            .manifest
-            .get("adapterConfig")
-            .expect("adapter config");
+        let adapter_config = draft.manifest.get("adapterConfig").expect("adapter config");
         let expected_arg = script_path.display().to_string();
 
         assert_eq!(
@@ -6066,6 +6973,45 @@ mod tests {
                 },
             ],
         };
+        let plan_matrix = PlanMatrix {
+            program: "zend".to_string(),
+            rows: vec![
+                PlanStatusRow {
+                    plan_id: "craps".to_string(),
+                    plan_file: "plans/005-craps-game.md".to_string(),
+                    title: "Craps".to_string(),
+                    category: "game".to_string(),
+                    composite: true,
+                    mapping_status: "mapped".to_string(),
+                    child_count: 6,
+                    represented_in_blueprint: true,
+                    has_bootstrap_lane: true,
+                    has_implementation_lane: false,
+                    has_real_verify_gate: false,
+                    current_status: "unmodeled".to_string(),
+                    current_risk:
+                        "mapped from plan structure, but synthesis has not rendered this composite plan yet"
+                            .to_string(),
+                    next_operator_move: "extend synthesis coverage for this plan".to_string(),
+                },
+                PlanStatusRow {
+                    plan_id: "poker".to_string(),
+                    plan_file: "plans/003-poker-game.md".to_string(),
+                    title: "Poker".to_string(),
+                    category: "game".to_string(),
+                    composite: false,
+                    mapping_status: "mapped".to_string(),
+                    child_count: 1,
+                    represented_in_blueprint: true,
+                    has_bootstrap_lane: true,
+                    has_implementation_lane: true,
+                    has_real_verify_gate: true,
+                    current_status: "implementation_running".to_string(),
+                    current_risk: "implementing".to_string(),
+                    next_operator_move: "wait".to_string(),
+                },
+            ],
+        };
         let agents = vec![BundleAgent {
             slug: "client".to_string(),
             name: "Client".to_string(),
@@ -6073,14 +7019,70 @@ mod tests {
             metadata_type: None,
             unit: Some("client".to_string()),
             lane_key: Some("client:implement".to_string()),
+            plan_id: None,
         }];
 
-        let markdown = build_company_markdown("Zend", "desc", &frontier, &agents);
+        let markdown =
+            build_company_markdown("Zend", "desc", &frontier, Some(&plan_matrix), None, &agents);
 
+        assert!(markdown.contains("## Plan Status Summary"));
+        assert!(markdown.contains("## Plans Needing Attention"));
+        assert!(markdown.contains("## Plans In Motion"));
+        assert!(markdown.contains("## Plan Matrix"));
         assert!(markdown.contains("## Lane Sets"));
         assert!(markdown.contains("## Live Details"));
         assert!(markdown.contains("## Running"));
         assert!(markdown.contains("## Failed"));
+    }
+
+    #[test]
+    fn render_root_issue_plan_document_prefers_plan_sections_when_matrix_present() {
+        let frontier = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: PathBuf::from("/tmp/zend/fabro/programs/zend.yaml"),
+            state_path: PathBuf::from("/tmp/zend/.raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 1,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: Vec::new(),
+        };
+        let plan_matrix = PlanMatrix {
+            program: "zend".to_string(),
+            rows: vec![PlanStatusRow {
+                plan_id: "craps".to_string(),
+                plan_file: "plans/005-craps-game.md".to_string(),
+                title: "Craps".to_string(),
+                category: "game".to_string(),
+                composite: true,
+                mapping_status: "mapped".to_string(),
+                child_count: 6,
+                represented_in_blueprint: true,
+                has_bootstrap_lane: true,
+                has_implementation_lane: false,
+                has_real_verify_gate: false,
+                current_status: "unmodeled".to_string(),
+                current_risk:
+                    "mapped from plan structure, but synthesis has not rendered this composite plan yet"
+                        .to_string(),
+                next_operator_move: "extend synthesis coverage for this plan".to_string(),
+            }],
+        };
+
+        let rendered = render_root_issue_plan_document(&frontier, Some(&plan_matrix));
+
+        assert!(rendered.contains("# Raspberry Plans"));
+        assert!(rendered.contains("## Plan Status Summary"));
+        assert!(rendered.contains("## Plan Matrix"));
+        assert!(rendered.contains("## Frontier Summary"));
+        assert!(rendered.contains("extend synthesis coverage for this plan"));
     }
 
     #[test]
@@ -6191,7 +7193,7 @@ mod tests {
         assert!(body.contains("node_modules/"));
         assert!(body.contains(".raspberry/"));
         assert!(body.contains(".paperclip/"));
-        assert!(body.contains("fabro/paperclip/*/bootstrap-state.json"));
+        assert!(body.contains("malinka/paperclip/*/bootstrap-state.json"));
     }
 
     #[test]
@@ -6201,12 +7203,12 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         std::fs::create_dir_all(temp.path().join(".raspberry")).expect("raspberry dir");
         std::fs::create_dir_all(temp.path().join(".paperclip")).expect("paperclip dir");
-        std::fs::create_dir_all(temp.path().join("fabro/paperclip/demo")).expect("bundle dir");
+        std::fs::create_dir_all(temp.path().join("malinka/paperclip/demo")).expect("bundle dir");
         std::fs::write(temp.path().join(".raspberry/state.json"), "{}").expect("state");
         std::fs::write(temp.path().join(".paperclip/.gitignore"), "*\n").expect("pc gitignore");
         std::fs::write(
             temp.path()
-                .join("fabro/paperclip/demo/bootstrap-state.json"),
+                .join("malinka/paperclip/demo/bootstrap-state.json"),
             "{}",
         )
         .expect("bootstrap state");
@@ -6249,7 +7251,7 @@ mod tests {
         assert!(cleanup.removed_paths >= 2);
         assert!(!tracked.contains(".raspberry/state.json"));
         assert!(!tracked.contains(".paperclip/.gitignore"));
-        assert!(!tracked.contains("fabro/paperclip/demo/bootstrap-state.json"));
+        assert!(!tracked.contains("malinka/paperclip/demo/bootstrap-state.json"));
         let _repo = Repository::open(temp.path()).expect("repo opens");
     }
 
@@ -6280,7 +7282,7 @@ mod tests {
         let paths = resolve_paperclip_paths(&args);
         ensure_paperclip_blueprint(&paths).expect("initial render");
         let run_config_path =
-            walkdir::WalkDir::new(temp.path().join("fabro/run-configs/bootstrap"))
+            walkdir::WalkDir::new(temp.path().join("malinka/run-configs/bootstrap"))
                 .into_iter()
                 .filter_map(Result::ok)
                 .map(|entry| entry.path().to_path_buf())
@@ -6415,6 +7417,162 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn write_orchestrator_script_prefers_runtime_overrides_with_built_binary_fallbacks() {
+        let temp = tempdir().expect("tempdir");
+        let script_path = temp.path().join("raspberry-orchestrator.sh");
+        let target_repo = temp.path().join("repo");
+        let manifest_path = target_repo.join("malinka/programs/demo.yaml");
+        let fabro_binary = PathBuf::from("/opt/fabro/bin/fabro");
+        let raspberry_binary = PathBuf::from("/opt/fabro/bin/raspberry");
+
+        write_orchestrator_script(
+            &script_path,
+            &target_repo,
+            &manifest_path,
+            &fabro_binary,
+            Some(&raspberry_binary),
+        )
+        .expect("write script");
+        let body = std::fs::read_to_string(&script_path).expect("read script");
+
+        assert!(body.contains("FABRO_BIN"));
+        assert!(body.contains("RASPBERRY_BIN"));
+        assert!(body.contains("/opt/fabro/bin/fabro"));
+        assert!(body.contains("/opt/fabro/bin/raspberry"));
+        assert!(body.contains("command -v fabro"));
+        assert!(body.contains("command -v raspberry"));
+    }
+
+    #[test]
+    fn write_paperclip_cli_script_uses_repo_scoped_wrapper() {
+        let temp = tempdir().expect("tempdir");
+        let script_path = temp.path().join("fabro-paperclip.sh");
+        let fabro_binary = PathBuf::from("/opt/fabro/bin/fabro");
+        let target_repo = temp.path().join("repo");
+
+        write_paperclip_cli_script(&script_path, &fabro_binary, &target_repo, "demo")
+            .expect("write wrapper");
+        let body = std::fs::read_to_string(&script_path).expect("read wrapper");
+
+        assert!(body.contains("FABRO_BIN"));
+        assert!(body.contains("paperclip \"$@\""));
+        assert!(body.contains(&target_repo.display().to_string()));
+        assert!(body.contains("--program demo"));
+    }
+
+    #[test]
+    fn write_run_script_prefers_env_and_path_before_repo_fallback() {
+        let temp = tempdir().expect("tempdir");
+        let script_path = temp.path().join("run-paperclip.sh");
+        let data_dir = temp.path().join(".paperclip");
+        let paperclip_repo = PathBuf::from("/home/r/coding/paperclip");
+
+        write_run_script(&script_path, Some(paperclip_repo.clone()), &data_dir)
+            .expect("write run script");
+        let body = std::fs::read_to_string(&script_path).expect("read script");
+
+        assert!(body.contains("PAPERCLIP_CMD"));
+        assert!(body.contains("command -v paperclipai"));
+        assert!(body.contains("PAPERCLIP_REPO"));
+        assert!(body.contains(&paperclip_repo.display().to_string()));
+    }
+
+    #[test]
+    fn generated_agent_markdown_avoids_stale_frontier_snapshots() {
+        let temp = tempdir().expect("tempdir");
+        let blueprint = sample_blueprint();
+        let mission = BootstrapMission {
+            company_description: "Zend company".to_string(),
+            goal_title: "Advance Zend".to_string(),
+            goal_description: "Advance Zend honestly.".to_string(),
+            project_name: "Zend Workspace".to_string(),
+            project_description: "Repo workspace".to_string(),
+            workspace_name: "Zend repo".to_string(),
+        };
+        let frontier = FrontierSyncModel {
+            program: "zend".to_string(),
+            manifest_path: temp.path().join("malinka/programs/zend.yaml"),
+            state_path: temp.path().join(".raspberry/zend-state.json"),
+            wake_command: "wake".to_string(),
+            route_command: "route".to_string(),
+            refresh_command: "refresh".to_string(),
+            status_command: "status".to_string(),
+            summary: FrontierSummary {
+                ready: 2,
+                running: 1,
+                blocked: 0,
+                failed: 3,
+                complete: 4,
+            },
+            entries: vec![FrontierSyncEntry {
+                sync_key: "frontier/zend/lane/command-center-client:command-center-client"
+                    .to_string(),
+                lane_key: "command-center-client:command-center-client".to_string(),
+                unit_id: "command-center-client".to_string(),
+                unit_title: "Command Center Client".to_string(),
+                lane_id: "command-center-client".to_string(),
+                lane_title: "Command Center Client".to_string(),
+                lane_kind: "artifact".to_string(),
+                status: LaneExecutionStatus::Running,
+                detail: "run active at stage `Specify`".to_string(),
+                current_run_id: Some("01KMTEST".to_string()),
+                last_run_id: Some("01KMTEST".to_string()),
+                current_stage: Some("Specify".to_string()),
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: None,
+                last_usage_summary: None,
+                last_completed_stage: None,
+                last_stage_duration_ms: None,
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                failure_kind: None,
+                blocker_reason: None,
+                wake_command: "wake".to_string(),
+                route_command: "route".to_string(),
+                refresh_command: "refresh".to_string(),
+                artifact_paths: vec!["command-center-client/plan.md".to_string()],
+                artifact_statuses: vec!["missing: command-center-client/plan.md".to_string()],
+                dependency_keys: Vec::new(),
+                next_operator_move: "refresh".to_string(),
+            }],
+        };
+
+        let bundle = build_company_bundle(
+            &blueprint,
+            temp.path(),
+            "Zend",
+            &mission,
+            &temp
+                .path()
+                .join("malinka/paperclip/zend/scripts/raspberry-orchestrator.sh"),
+            &frontier,
+            None,
+            None,
+        )
+        .expect("build bundle");
+        let orchestrator_markdown = bundle
+            .agent_markdowns
+            .iter()
+            .find(|(path, _)| path.ends_with("raspberry-orchestrator/AGENTS.md"))
+            .map(|(_, markdown)| markdown)
+            .expect("orchestrator markdown");
+        let lane_markdown = bundle
+            .agent_markdowns
+            .iter()
+            .find(|(path, _)| path.ends_with("command-center-client/AGENTS.md"))
+            .map(|(_, markdown)| markdown)
+            .expect("lane markdown");
+
+        assert!(!orchestrator_markdown.contains("- ready:"));
+        assert!(orchestrator_markdown.contains("Live frontier inspection:"));
+        assert!(orchestrator_markdown.contains("Treat live state as volatile"));
+        assert!(!lane_markdown.contains("Current frontier state:"));
+        assert!(lane_markdown.contains("sync key:"));
+        assert!(lane_markdown.contains("inspect current status with"));
+    }
+
     fn sample_blueprint() -> ProgramBlueprint {
         ProgramBlueprint {
             version: 1,
@@ -6460,5 +7618,341 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    fn sample_plan_dashboard() -> PlanDashboardModel {
+        PlanDashboardModel {
+            program: "rxmragent".to_string(),
+            plans: vec![
+                PlanDashboardEntry {
+                    plan_id: "casino-core".to_string(),
+                    title: "Casino Core Trait".to_string(),
+                    category: "foundation".to_string(),
+                    composite: true,
+                    path: "plans/016-casino-core-trait.md".to_string(),
+                    status: "bootstrap_ready".to_string(),
+                    risk: "foundation plan".to_string(),
+                    next_move: "dispatch bootstrap lane".to_string(),
+                    mapping_source: "contract".to_string(),
+                    children: vec![PlanDashboardChild {
+                        child_id: "trait-def".to_string(),
+                        title: "Trait Definition".to_string(),
+                        archetype: Some("implement".to_string()),
+                        review_profile: Some("foundation".to_string()),
+                        owned_surfaces: vec!["crates/casino-core/src/lib.rs".to_string()],
+                        sync_key: "plan/rxmragent/casino-core/trait-def".to_string(),
+                    }],
+                },
+                PlanDashboardEntry {
+                    plan_id: "craps".to_string(),
+                    title: "Craps Game".to_string(),
+                    category: "game".to_string(),
+                    composite: true,
+                    path: "plans/005-craps-game.md".to_string(),
+                    status: "unmodeled".to_string(),
+                    risk: "evidence only".to_string(),
+                    next_move: "extend synthesis coverage".to_string(),
+                    mapping_source: "inferred".to_string(),
+                    children: vec![
+                        PlanDashboardChild {
+                            child_id: "craps-engine".to_string(),
+                            title: "Craps Engine".to_string(),
+                            archetype: Some("implement".to_string()),
+                            review_profile: Some("hardened".to_string()),
+                            owned_surfaces: vec!["crates/casino-core/src/craps/".to_string()],
+                            sync_key: "plan/rxmragent/craps/craps-engine".to_string(),
+                        },
+                        PlanDashboardChild {
+                            child_id: "craps-pf".to_string(),
+                            title: "Craps Provably Fair".to_string(),
+                            archetype: Some("implement".to_string()),
+                            review_profile: Some("hardened".to_string()),
+                            owned_surfaces: vec!["crates/provably-fair/src/craps.rs".to_string()],
+                            sync_key: "plan/rxmragent/craps/craps-pf".to_string(),
+                        },
+                    ],
+                },
+                PlanDashboardEntry {
+                    plan_id: "master".to_string(),
+                    title: "Master Plan".to_string(),
+                    category: "meta".to_string(),
+                    composite: false,
+                    path: "plans/001-master-plan.md".to_string(),
+                    status: "meta_plan".to_string(),
+                    risk: "coordination plan".to_string(),
+                    next_move: "inspect downstream".to_string(),
+                    mapping_source: "inferred".to_string(),
+                    children: vec![],
+                },
+            ],
+            summary: PlanDashboardSummary {
+                total: 3,
+                represented: 1,
+                in_motion: 1,
+                needs_attention: 1,
+                complete: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn plan_sync_key_format() {
+        assert_eq!(
+            plan_root_sync_key("rxmragent", "craps"),
+            "plan/rxmragent/craps"
+        );
+        assert_eq!(
+            plan_child_sync_key("rxmragent", "craps", "craps-engine"),
+            "plan/rxmragent/craps/craps-engine"
+        );
+    }
+
+    #[test]
+    fn build_plan_dashboard_model_aggregates_registry_and_matrix() {
+        use raspberry_supervisor::plan_registry::*;
+        use std::path::PathBuf;
+
+        let registry = PlanRegistry {
+            plans: vec![PlanRecord {
+                plan_id: "craps".to_string(),
+                path: PathBuf::from("plans/005-craps-game.md"),
+                title: "Craps Game".to_string(),
+                category: PlanCategory::Game,
+                composite: true,
+                dependency_plan_ids: vec!["casino-core".to_string()],
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: true,
+                implementation_required: true,
+                declared_child_ids: vec!["craps-engine".to_string(), "craps-pf".to_string()],
+                children: vec![PlanChildRecord {
+                    child_id: "craps-engine".to_string(),
+                    title: Some("Craps Engine".to_string()),
+                    archetype: Some(WorkflowArchetype::Implement),
+                    lane_kind: None,
+                    review_profile: Some(ReviewProfile::Hardened),
+                    proof_commands: vec![],
+                    owned_surfaces: vec!["crates/casino-core/src/craps/".to_string()],
+                    where_surfaces: None,
+                    how_description: None,
+                    state_artifacts: None,
+                    required_tests: None,
+                    verification_plan: None,
+                    rollback_condition: None,
+                }],
+            }],
+        };
+        let matrix = PlanMatrix {
+            program: "rxmragent".to_string(),
+            rows: vec![PlanStatusRow {
+                plan_id: "craps".to_string(),
+                plan_file: "plans/005-craps-game.md".to_string(),
+                title: "Craps Game".to_string(),
+                category: "game".to_string(),
+                composite: true,
+                mapping_status: "mapped".to_string(),
+                child_count: 2,
+                represented_in_blueprint: false,
+                has_bootstrap_lane: false,
+                has_implementation_lane: false,
+                has_real_verify_gate: false,
+                current_status: "unmodeled".to_string(),
+                current_risk: "evidence only".to_string(),
+                next_operator_move: "extend synthesis".to_string(),
+            }],
+        };
+
+        let dashboard = build_plan_dashboard_model("rxmragent", &registry, Some(&matrix));
+
+        assert_eq!(dashboard.summary.total, 1);
+        assert_eq!(dashboard.summary.needs_attention, 1);
+        assert_eq!(dashboard.plans.len(), 1);
+        assert_eq!(dashboard.plans[0].plan_id, "craps");
+        assert_eq!(dashboard.plans[0].status, "unmodeled");
+        assert_eq!(dashboard.plans[0].children.len(), 1);
+        assert_eq!(dashboard.plans[0].children[0].child_id, "craps-engine");
+        assert_eq!(
+            dashboard.plans[0].children[0].sync_key,
+            "plan/rxmragent/craps/craps-engine"
+        );
+    }
+
+    #[test]
+    fn build_company_markdown_plans_primary_when_dashboard_present() {
+        let frontier = FrontierSyncModel {
+            program: "rxmragent".to_string(),
+            manifest_path: PathBuf::from("malinka/programs/rxmragent.yaml"),
+            state_path: PathBuf::from(".raspberry/rxmragent-state.json"),
+            route_command: "bash route.sh".to_string(),
+            wake_command: "fabro paperclip wake".to_string(),
+            refresh_command: "fabro paperclip refresh".to_string(),
+            status_command: "fabro paperclip status".to_string(),
+            summary: FrontierSummary {
+                ready: 1,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: vec![],
+        };
+        let dashboard = sample_plan_dashboard();
+
+        let md = build_company_markdown(
+            "rXMRbro",
+            "Monero casino",
+            &frontier,
+            None,
+            Some(&dashboard),
+            &[],
+        );
+
+        // Plans section appears before frontier
+        let plans_pos = md.find("## Foundation Plans").expect("foundation section");
+        let frontier_pos = md
+            .find("# Frontier (Lane Detail)")
+            .expect("frontier section");
+        assert!(
+            plans_pos < frontier_pos,
+            "plans must appear before frontier"
+        );
+        assert!(md.contains("`casino-core`:"));
+        assert!(md.contains("## Game Plans"));
+        assert!(md.contains("`craps`:"));
+        // Meta plans should not appear in category sections
+        assert!(!md.contains("## Meta Plans"));
+    }
+
+    #[test]
+    fn desired_plan_root_issue_uses_plan_sync_key() {
+        let dashboard = sample_plan_dashboard();
+        let plan = &dashboard.plans[0]; // casino-core
+
+        let issue =
+            desired_plan_root_issue("rxmragent", plan, "root-issue-id", None, "workspace-id");
+
+        assert_eq!(issue.title, "Plan: Casino Core Trait");
+        assert!(issue.description.contains("plan/rxmragent/casino-core"));
+        assert!(issue
+            .description
+            .contains("fabro.paperclip.sync-key:plan/rxmragent/casino-core"));
+        assert_eq!(issue.parent_id, Some("root-issue-id".to_string()));
+    }
+
+    #[test]
+    fn plan_snapshots_detect_status_transition() {
+        let mut dashboard = sample_plan_dashboard();
+        let snap1 = plan_snapshots(&dashboard);
+
+        // Mutate status to simulate transition
+        dashboard.plans[0].status = "bootstrap_running".to_string();
+        let snap2 = plan_snapshots(&dashboard);
+
+        let key = plan_root_sync_key("rxmragent", "casino-core");
+        let prev = snap1.get(&key);
+        let curr = snap2.get(&key).expect("current snapshot");
+        assert!(snapshot_changed(prev, curr));
+
+        // Meta plans should not produce snapshots
+        let meta_key = plan_root_sync_key("rxmragent", "master");
+        assert!(snap1.get(&meta_key).is_none());
+    }
+
+    #[test]
+    fn build_company_bundle_includes_plan_root_agents() {
+        let blueprint = sample_blueprint();
+        let frontier = FrontierSyncModel {
+            program: "rxmragent".to_string(),
+            manifest_path: PathBuf::from("malinka/programs/rxmragent.yaml"),
+            state_path: PathBuf::from(".raspberry/rxmragent-state.json"),
+            route_command: "bash route.sh".to_string(),
+            wake_command: "fabro paperclip wake".to_string(),
+            refresh_command: "fabro paperclip refresh".to_string(),
+            status_command: "fabro paperclip status".to_string(),
+            summary: FrontierSummary {
+                ready: 0,
+                running: 0,
+                blocked: 0,
+                failed: 0,
+                complete: 0,
+            },
+            entries: vec![],
+        };
+        let dashboard = sample_plan_dashboard();
+        let temp = tempdir().expect("tempdir");
+
+        let bundle = build_company_bundle(
+            &blueprint,
+            temp.path(),
+            "Test Co",
+            &BootstrapMission {
+                goal_title: "Test".to_string(),
+                goal_description: "Test goal".to_string(),
+                project_name: "Test Project".to_string(),
+                project_description: "Test desc".to_string(),
+                workspace_name: "test-ws".to_string(),
+                company_description: "Test company".to_string(),
+            },
+            &temp.path().join("orchestrator.sh"),
+            &frontier,
+            None,
+            Some(&dashboard),
+        )
+        .expect("bundle");
+
+        let plan_agents: Vec<&BundleAgent> = bundle
+            .agents
+            .iter()
+            .filter(|a| a.plan_id.is_some())
+            .collect();
+        // casino-core + craps (meta is excluded)
+        assert_eq!(plan_agents.len(), 2);
+        assert!(plan_agents.iter().any(|a| a.slug == "plan-casino-core"));
+        assert!(plan_agents.iter().any(|a| a.slug == "plan-craps"));
+        // Meta plan should not generate agent
+        assert!(!plan_agents.iter().any(|a| a.slug == "plan-master"));
+    }
+
+    #[test]
+    fn plan_status_to_issue_status_maps_correctly() {
+        assert_eq!(plan_status_to_issue_status("bootstrap_ready"), "todo");
+        assert_eq!(
+            plan_status_to_issue_status("implementation_running"),
+            "in_progress"
+        );
+        assert_eq!(plan_status_to_issue_status("bootstrap_failed"), "blocked");
+        assert_eq!(plan_status_to_issue_status("bootstrap_blocked"), "blocked");
+        assert_eq!(plan_status_to_issue_status("reviewed"), "done");
+        assert_eq!(
+            plan_status_to_issue_status("implementation_complete"),
+            "done"
+        );
+        assert_eq!(plan_status_to_issue_status("unmodeled"), "todo");
+        assert_eq!(plan_status_to_issue_status("meta_plan"), "todo");
+    }
+
+    #[test]
+    fn desired_plan_child_issue_includes_sync_key_and_surfaces() {
+        let dashboard = sample_plan_dashboard();
+        let plan = &dashboard.plans[1]; // craps
+        let child = &plan.children[0]; // craps-engine
+
+        let issue = desired_plan_child_issue(plan, child, "plan-issue-id", None, "workspace-id");
+
+        assert_eq!(issue.title, "Plan: Craps Game / Craps Engine");
+        assert!(issue
+            .description
+            .contains("plan/rxmragent/craps/craps-engine"));
+        assert!(issue.description.contains("hardened"));
+        assert!(issue.description.contains("crates/casino-core/src/craps/"));
+        assert_eq!(issue.parent_id, Some("plan-issue-id".to_string()));
+    }
+
+    #[test]
+    fn is_syncable_excludes_meta_plans() {
+        let dashboard = sample_plan_dashboard();
+        assert!(dashboard.plans[0].is_syncable()); // casino-core (foundation)
+        assert!(dashboard.plans[1].is_syncable()); // craps (game)
+        assert!(!dashboard.plans[2].is_syncable()); // master (meta)
     }
 }

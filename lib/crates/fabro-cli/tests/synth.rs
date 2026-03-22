@@ -72,9 +72,9 @@ fn synth_render_writes_package() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Mode: create"))
-        .stdout(predicate::str::contains("fabro/programs/craps.yaml"));
+        .stdout(predicate::str::contains("malinka/programs/craps.yaml"));
 
-    assert!(target.join("fabro/programs/craps.yaml").exists());
+    assert!(target.join("malinka/programs/craps.yaml").exists());
 }
 
 #[test]
@@ -112,13 +112,142 @@ fn synth_create_authors_blueprint_from_repo_docs() {
         .stdout(predicate::str::contains(
             "selected lane `home-command-center` -> `bootstrap`",
         ))
-        .stdout(predicate::str::contains("fabro/programs/zend.yaml"));
+        .stdout(predicate::str::contains("malinka/programs/zend.yaml"));
 
     let blueprint =
-        fs::read_to_string(target.join("fabro/blueprints/zend.yaml")).expect("blueprint exists");
+        fs::read_to_string(target.join("malinka/blueprints/zend.yaml")).expect("blueprint exists");
     assert!(blueprint.contains("id: zend"));
     assert!(blueprint.contains("template: bootstrap"));
-    assert!(target.join("fabro/programs/zend.yaml").exists());
+    assert!(target.join("malinka/programs/zend.yaml").exists());
+}
+
+#[test]
+fn synth_create_writes_plan_mapping_snapshots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("rxmragent");
+    fs::create_dir_all(target.join("plans")).expect("plans dir");
+    fs::write(target.join("README.md"), "# rXMRagent\n").expect("readme");
+    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
+    fs::write(
+        target.join("plans/005-craps-game.md"),
+        concat!(
+            "# Craps Game\n\n",
+            "- [ ] Milestone 1: casino-core\n",
+            "- [ ] Milestone 2: provably-fair\n",
+            "- [ ] Milestone 3: house\n",
+        ),
+    )
+    .expect("craps plan");
+
+    fabro()
+        .args([
+            "synth",
+            "create",
+            "--no-decompose",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--program",
+            "rxmragent",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "malinka/plan-mappings/005-craps-game.yaml",
+        ));
+
+    let mapping = fs::read_to_string(target.join("malinka/plan-mappings/005-craps-game.yaml"))
+        .expect("mapping exists");
+    assert!(mapping.contains("title: Craps Game"));
+    assert!(mapping.contains("category: game"));
+    assert!(mapping.contains("mapping_source: heuristic"));
+    assert!(mapping.contains("composite: true"));
+    assert!(mapping.contains("children:"));
+    assert!(mapping.contains("id: casino-core"));
+    assert!(mapping.contains("lane_kind: platform"));
+    assert!(mapping.contains("id: provably-fair"));
+    assert!(mapping.contains("id: house"));
+    assert!(mapping.contains("lane_kind: service"));
+}
+
+#[test]
+fn synth_create_refreshes_heuristic_mappings_when_plan_changes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("rxmragent");
+    fs::create_dir_all(target.join("plans")).expect("plans dir");
+    fs::write(target.join("README.md"), "# rXMRagent\n").expect("readme");
+    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
+    fs::write(
+        target.join("plans/005-craps-game.md"),
+        "# Craps Game\n\n- [ ] Milestone 1: casino-core\n- [ ] Milestone 2: house\n",
+    )
+    .expect("initial plan");
+
+    fabro()
+        .args([
+            "synth",
+            "create",
+            "--no-decompose",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--program",
+            "rxmragent",
+        ])
+        .assert()
+        .success();
+
+    fs::write(
+        target.join("plans/005-craps-game.md"),
+        "# Craps Game\n\n- [ ] Milestone 1: casino-core\n- [ ] Milestone 2: dealer\n",
+    )
+    .expect("updated plan");
+
+    fabro()
+        .args([
+            "synth",
+            "create",
+            "--no-decompose",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--program",
+            "rxmragent",
+        ])
+        .assert()
+        .success();
+
+    let mapping = fs::read_to_string(target.join("malinka/plan-mappings/005-craps-game.yaml"))
+        .expect("mapping exists");
+    assert!(mapping.contains("id: dealer"));
+    assert!(!mapping.contains("id: house"));
+}
+
+#[test]
+fn synth_create_wipes_existing_fabro_directory_before_regenerating() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("repo");
+    fs::create_dir_all(target.join("plans")).expect("plans dir");
+    fs::create_dir_all(target.join("malinka/stale")).expect("stale dir");
+    fs::write(target.join("README.md"), "# Demo\n").expect("readme");
+    fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
+    fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
+    fs::write(target.join("malinka/stale/old.txt"), "stale\n").expect("stale file");
+
+    fabro()
+        .args([
+            "synth",
+            "create",
+            "--target-repo",
+            target.to_str().expect("utf-8 target path"),
+            "--program",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    assert!(!target.join("malinka/stale/old.txt").exists());
+    assert!(target.join("malinka/blueprints/demo.yaml").exists());
+    assert!(target.join("malinka/programs/demo.yaml").exists());
 }
 
 #[test]
@@ -205,27 +334,27 @@ fn synth_evolve_updates_existing_package() {
             "plus an implementation-family package for `games:poker`",
         ))
         .stdout(predicate::str::contains(
-            "fabro/run-configs/implement/poker.toml",
+            "malinka/run-configs/implement/poker.toml",
         ));
 
-    let manifest = fs::read_to_string(target.join("fabro/programs/myosu-update.yaml"))
+    let manifest = fs::read_to_string(target.join("malinka/programs/myosu-update.yaml"))
         .expect("manifest exists");
     assert!(!manifest.contains("id: tutorial"));
 
-    let preview_manifest = fs::read_to_string(preview.join("fabro/programs/myosu-update.yaml"))
+    let preview_manifest = fs::read_to_string(preview.join("malinka/programs/myosu-update.yaml"))
         .expect("preview manifest exists");
     assert!(preview_manifest.contains("id: tutorial"));
 
     let preview_implementation_manifest =
-        fs::read_to_string(preview.join("fabro/programs/myosu-games-poker-implementation.yaml"))
+        fs::read_to_string(preview.join("malinka/programs/myosu-games-poker-implementation.yaml"))
             .expect("preview implementation manifest exists");
     assert!(preview_implementation_manifest.contains("program: myosu-games-poker-implementation"));
 
     assert!(preview
-        .join("fabro/run-configs/implement/poker.toml")
+        .join("malinka/run-configs/implement/poker.toml")
         .exists());
     assert!(preview
-        .join("fabro/workflows/implement/poker.fabro")
+        .join("malinka/workflows/implement/poker.fabro")
         .exists());
 
     let original_workflow = fs::read_to_string(fixture(
@@ -233,7 +362,7 @@ fn synth_evolve_updates_existing_package() {
     ))
     .expect("original workflow exists");
     let preview_workflow =
-        fs::read_to_string(preview.join("fabro/workflows/bootstrap/poker.fabro"))
+        fs::read_to_string(preview.join("malinka/workflows/bootstrap/poker.fabro"))
             .expect("preview workflow exists");
     assert_eq!(preview_workflow, original_workflow);
     let original_polish = fs::read_to_string(fixture(
@@ -241,7 +370,7 @@ fn synth_evolve_updates_existing_package() {
     ))
     .expect("original polish prompt exists");
     let preview_polish =
-        fs::read_to_string(preview.join("fabro/prompts/bootstrap/poker/polish.md"))
+        fs::read_to_string(preview.join("malinka/prompts/bootstrap/poker/polish.md"))
             .expect("preview polish prompt exists");
     assert_eq!(preview_polish, original_polish);
 }
@@ -280,8 +409,8 @@ fn synth_evolve_can_import_current_package_without_blueprint_flag() {
             "imported existing package for `myosu-update` without additional planning inputs",
         ));
 
-    assert!(target.join("fabro/blueprints/myosu-update.yaml").exists());
-    assert!(preview.join("fabro/programs/myosu-update.yaml").exists());
+    assert!(target.join("malinka/blueprints/myosu-update.yaml").exists());
+    assert!(preview.join("malinka/programs/myosu-update.yaml").exists());
 }
 
 #[test]
@@ -316,16 +445,16 @@ fn synth_evolve_emits_service_follow_on_with_health_gate() {
         ));
 
     assert!(preview
-        .join("fabro/programs/myosu-miner-service-implementation.yaml")
+        .join("malinka/programs/myosu-miner-service-implementation.yaml")
         .exists());
     let workflow =
-        fs::read_to_string(preview.join("fabro/workflows/implement/miner-service.fabro"))
+        fs::read_to_string(preview.join("malinka/workflows/implement/miner-service.fabro"))
             .expect("service workflow exists");
     assert!(workflow.contains("label=\"Health\""));
     assert!(workflow.contains("curl http://{ip}:{port}/health"));
 
     let review_prompt =
-        fs::read_to_string(preview.join("fabro/prompts/implement/miner-service/review.md"))
+        fs::read_to_string(preview.join("malinka/prompts/implement/miner-service/review.md"))
             .expect("service review prompt exists");
     assert!(review_prompt.contains("First health gate"));
     assert!(review_prompt.contains("Health surfaces to preserve"));

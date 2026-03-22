@@ -4,7 +4,12 @@ pub mod dispatch;
 pub mod evaluate;
 pub mod failure;
 mod integration;
+pub mod maintenance;
 pub mod manifest;
+pub mod plan_cutover;
+pub mod plan_registry;
+pub mod plan_status;
+pub mod portfolio_scheduler;
 pub mod program_state;
 mod resource_lease;
 
@@ -19,8 +24,22 @@ pub use evaluate::{
     EvaluatedLane, EvaluatedProgram, LaneExecutionStatus,
 };
 pub use failure::{classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction};
+pub use maintenance::{
+    load_active_maintenance, maintenance_path, MaintenanceError, MaintenanceMode,
+};
 pub use manifest::{
     ArtifactKey, LaneDependency, LaneManifest, MilestoneManifest, ProgramManifest,
     ResolvedArtifact, UnitManifest,
+};
+pub use plan_cutover::{
+    compare_legacy_and_plan_truth, render_parity_report, CutoverPhase, PlanCutoverParity,
+};
+pub use plan_registry::{
+    load_plan_registry, load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord,
+    PlanMappingSource, PlanRecord, PlanRegistry, PlanRegistryError, ReviewProfile,
+    WorkflowArchetype,
+};
+pub use plan_status::{
+    load_plan_matrix, render_plan_matrix, PlanMatrix, PlanStatusError, PlanStatusRow,
 };
 pub use program_state::{refresh_program_state, LaneRuntimeRecord, ProgramRuntimeState};

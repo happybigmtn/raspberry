@@ -3,6 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use raspberry_supervisor::manifest::{LaneDependency, LaneKind, MilestoneManifest};
+use raspberry_supervisor::{
+    load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord, PlanRecord,
+    WorkflowArchetype,
+};
 
 use crate::blueprint::{
     BlueprintArtifact, BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram,
@@ -31,6 +35,7 @@ pub struct AuthoredBlueprint {
 #[derive(Debug, Clone)]
 struct PlanningCorpus {
     repo_name: String,
+    planning_root: PathBuf,
     doctrine_files: Vec<PathBuf>,
     evidence_paths: Vec<PathBuf>,
     plan_docs: Vec<PlanningDocument>,
@@ -58,6 +63,7 @@ struct LaneIntent {
     produces: Vec<String>,
     health_command: Option<String>,
     verify_command: Option<String>,
+    proof_profile: Option<String>,
     milestones: Vec<MilestoneManifest>,
     artifacts: Vec<BlueprintArtifact>,
 }
@@ -89,7 +95,15 @@ pub fn author_blueprint_for_create(
     target_repo: &Path,
     program_override: Option<&str>,
 ) -> Result<AuthoredBlueprint, PlanningError> {
-    let corpus = load_planning_corpus(target_repo)?;
+    author_blueprint_for_create_with_planning_root(target_repo, program_override, None)
+}
+
+pub fn author_blueprint_for_create_with_planning_root(
+    target_repo: &Path,
+    program_override: Option<&str>,
+    planning_root: Option<&Path>,
+) -> Result<AuthoredBlueprint, PlanningError> {
+    let corpus = load_planning_corpus(target_repo, planning_root)?;
     let program_id = program_override
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| sanitize_identifier(&corpus.repo_name));
@@ -123,7 +137,7 @@ pub fn author_blueprint_for_evolve(
     target_repo: &Path,
     program_override: Option<&str>,
 ) -> Result<AuthoredBlueprint, PlanningError> {
-    let corpus = match load_planning_corpus(target_repo) {
+    let corpus = match load_planning_corpus(target_repo, None) {
         Ok(corpus) => Some(corpus),
         Err(PlanningError::MissingPlanningCorpus { .. }) => None,
         Err(error) => return Err(error),
@@ -213,23 +227,37 @@ fn merge_missing_doctrine_units(
     added_units
 }
 
-fn load_planning_corpus(target_repo: &Path) -> Result<PlanningCorpus, PlanningError> {
+fn normalize_planning_root(target_repo: &Path, planning_root: Option<&Path>) -> PathBuf {
+    let Some(root) = planning_root else {
+        return PathBuf::new();
+    };
+    if root.is_absolute() {
+        return root.strip_prefix(target_repo).unwrap_or(root).to_path_buf();
+    }
+    root.to_path_buf()
+}
+
+fn load_planning_corpus(
+    target_repo: &Path,
+    planning_root: Option<&Path>,
+) -> Result<PlanningCorpus, PlanningError> {
     let repo_name = target_repo
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repo")
         .to_string();
+    let planning_root = normalize_planning_root(target_repo, planning_root);
     let doctrine_files = ROOT_DOCTRINE_FILES
         .iter()
         .map(PathBuf::from)
         .filter(|path| target_repo.join(path).is_file())
         .collect::<Vec<_>>();
-    let plan_docs = load_markdown_dir(target_repo, "plans")?;
-    let spec_docs = load_markdown_dir(target_repo, "specs")?;
-    let root_spec = load_optional_document(target_repo, Path::new("SPEC.md"))?;
-    let root_specs = load_optional_document(target_repo, Path::new("SPECS.md"))?;
+    let plan_docs = load_markdown_dir(target_repo, &planning_root, "plans")?;
+    let spec_docs = load_markdown_dir(target_repo, &planning_root, "specs")?;
+    let root_spec = load_optional_document(target_repo, planning_root.join("SPEC.md").as_path())?;
+    let root_specs = load_optional_document(target_repo, planning_root.join("SPECS.md").as_path())?;
 
-    let active_plan = select_primary_plan(&plan_docs);
+    let active_plan = select_primary_plan(&plan_docs, &planning_root);
     let active_spec = spec_docs
         .last()
         .cloned()
@@ -257,6 +285,7 @@ fn load_planning_corpus(target_repo: &Path) -> Result<PlanningCorpus, PlanningEr
 
     Ok(PlanningCorpus {
         repo_name,
+        planning_root,
         doctrine_files,
         evidence_paths,
         plan_docs,
@@ -265,14 +294,17 @@ fn load_planning_corpus(target_repo: &Path) -> Result<PlanningCorpus, PlanningEr
     })
 }
 
-fn select_primary_plan(plan_docs: &[PlanningDocument]) -> Option<PlanningDocument> {
+fn select_primary_plan(
+    plan_docs: &[PlanningDocument],
+    planning_root: &Path,
+) -> Option<PlanningDocument> {
     if plan_docs.is_empty() {
         return None;
     }
 
     let reference_counts = plan_docs
         .iter()
-        .flat_map(|doc| markdown_path_references(&doc.body, "plans"))
+        .flat_map(|doc| markdown_path_references(&doc.body, "plans", planning_root))
         .fold(BTreeMap::<PathBuf, usize>::new(), |mut counts, path| {
             *counts.entry(path).or_insert(0) += 1;
             counts
@@ -314,23 +346,43 @@ fn select_primary_plan(plan_docs: &[PlanningDocument]) -> Option<PlanningDocumen
     best.map(|(doc, _, _)| doc.clone())
 }
 
-fn markdown_path_references(body: &str, root: &str) -> Vec<PathBuf> {
+fn markdown_path_references(body: &str, root: &str, planning_root: &Path) -> Vec<PathBuf> {
     body.split('`')
-        .filter_map(|chunk| {
-            let trimmed = chunk.trim();
-            if !trimmed.starts_with(&format!("{root}/")) || !trimmed.ends_with(".md") {
-                return None;
-            }
-            Some(PathBuf::from(trimmed))
-        })
+        .filter_map(|chunk| resolve_markdown_reference(chunk.trim(), root, planning_root))
         .collect()
+}
+
+fn resolve_markdown_reference(trimmed: &str, root: &str, planning_root: &Path) -> Option<PathBuf> {
+    if !trimmed.ends_with(".md") {
+        return None;
+    }
+    if trimmed.starts_with(&format!("{root}/")) {
+        return Some(if planning_root.as_os_str().is_empty() {
+            PathBuf::from(trimmed)
+        } else {
+            planning_root.join(trimmed)
+        });
+    }
+    if !planning_root.as_os_str().is_empty() {
+        let prefixed = format!("{}/", planning_root.display());
+        if trimmed.starts_with(&prefixed) {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    None
 }
 
 fn load_markdown_dir(
     target_repo: &Path,
+    planning_root: &Path,
     directory: &str,
 ) -> Result<Vec<PlanningDocument>, PlanningError> {
-    let path = target_repo.join(directory);
+    let relative_dir = if planning_root.as_os_str().is_empty() {
+        PathBuf::from(directory)
+    } else {
+        planning_root.join(directory)
+    };
+    let path = target_repo.join(&relative_dir);
     if !path.is_dir() {
         return Ok(Vec::new());
     }
@@ -445,6 +497,7 @@ fn derive_primary_intent(
         produces,
         health_command,
         verify_command,
+        proof_profile: None,
         milestones,
         artifacts,
     }
@@ -462,6 +515,9 @@ fn derive_lane_intents(
         .unwrap_or_default();
     if !explicit_units.is_empty() {
         return derive_explicit_unit_intents(target_repo, corpus, &explicit_units);
+    }
+    if let Some(intents) = derive_registry_plan_intents(target_repo, corpus) {
+        return intents;
     }
     if let Some(intents) = derive_master_plan_intents(target_repo, corpus) {
         return intents;
@@ -543,12 +599,837 @@ fn derive_lane_intents(
             produces,
             health_command,
             verify_command,
+            proof_profile: None,
             milestones,
             artifacts,
         });
     }
 
     intents
+}
+
+fn derive_registry_plan_intents(
+    target_repo: &Path,
+    corpus: &PlanningCorpus,
+) -> Option<Vec<LaneIntent>> {
+    let registry =
+        load_plan_registry_from_planning_root(target_repo, &corpus.planning_root).ok()?;
+    if registry.plans.is_empty() {
+        return None;
+    }
+
+    let workspace_tasks = corpus
+        .active_plan
+        .as_ref()
+        .map(workspace_setup_tasks)
+        .unwrap_or_default();
+    let workspace_dependency = if workspace_tasks.is_empty() {
+        None
+    } else {
+        let id = "workspace-foundation".to_string();
+        let output_root = PathBuf::from("outputs").join(&id);
+        let family = WorkflowTemplate::Bootstrap;
+        let (kind, artifacts, milestones, produces, health_command, verify_command) =
+            category_contract(TaskCategory::Foundations, family, &output_root, target_repo);
+        let goal = build_goal(
+            "Workspace Foundation",
+            &family,
+            &output_root,
+            corpus,
+            &workspace_tasks,
+            &artifacts,
+        );
+        let prompt_context = Some(
+            [
+                corpus
+                    .active_plan
+                    .as_ref()
+                    .map(|plan| format!("Program plan:\n- `{}`", plan.path.display()))
+                    .unwrap_or_default(),
+                format!(
+                    "Workspace setup tasks:\n{}",
+                    workspace_tasks
+                        .iter()
+                        .map(|task| format!("- {task}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                format!(
+                    "Artifacts to write:\n{}",
+                    artifacts
+                        .iter()
+                        .map(|artifact| format!("- `{}`", artifact.path.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            ]
+            .into_iter()
+            .filter(|section| !section.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        );
+        Some((
+            LaneDependency {
+                unit: id.clone(),
+                lane: None,
+                milestone: Some("reviewed".to_string()),
+            },
+            LaneIntent {
+                id,
+                title: "Workspace Foundation".to_string(),
+                output_root,
+                family,
+                kind,
+                goal,
+                prompt_context,
+                dependencies: Vec::new(),
+                produces,
+                health_command,
+                verify_command,
+                proof_profile: None,
+                milestones,
+                artifacts,
+            },
+        ))
+    };
+
+    let mut intents = Vec::new();
+    if let Some((_, intent)) = &workspace_dependency {
+        intents.push(intent.clone());
+    }
+
+    for plan in registry.plans {
+        let family = registry_plan_family(&plan);
+        let output_root = PathBuf::from("outputs").join(&plan.plan_id);
+        let (kind, artifacts, milestones, produces, health_command, verify_command) =
+            registry_plan_contract(&plan, family, &output_root, target_repo);
+        let tasks = corpus
+            .plan_docs
+            .iter()
+            .find(|doc| doc.path == plan.path)
+            .map(|doc| open_tasks(&doc.body))
+            .unwrap_or_default();
+        let goal = build_goal(
+            &plan.title,
+            &family,
+            &output_root,
+            corpus,
+            &tasks,
+            &artifacts,
+        );
+        let prompt_context = build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
+        let mut dependencies = registry_plan_dependencies(&plan);
+        if let Some((workspace_dependency, _)) = &workspace_dependency {
+            let needs_workspace = plan.category != PlanCategory::Meta
+                && !dependencies
+                    .iter()
+                    .any(|dependency| dependency.unit == workspace_dependency.unit);
+            if needs_workspace {
+                dependencies.insert(0, workspace_dependency.clone());
+            }
+        }
+
+        let parent_id = plan.plan_id.clone();
+        intents.push(LaneIntent {
+            id: parent_id.clone(),
+            title: plan.title.clone(),
+            output_root,
+            family,
+            kind,
+            goal,
+            prompt_context,
+            dependencies,
+            produces,
+            health_command,
+            verify_command,
+            proof_profile: None,
+            milestones,
+            artifacts,
+        });
+
+        if plan.composite
+            && plan.declared_child_ids.len() > 1
+            && plan.category != PlanCategory::Meta
+        {
+            let effective_children = if plan.children.is_empty() {
+                infer_child_records_from_ids(target_repo, &plan)
+            } else {
+                plan.children.clone()
+            };
+            let enriched_plan = PlanRecord {
+                children: effective_children,
+                ..plan
+            };
+            let child_intents = derive_child_intents(
+                target_repo,
+                &parent_id,
+                &enriched_plan,
+                corpus,
+                &workspace_dependency,
+            );
+            intents.extend(child_intents);
+        }
+    }
+
+    Some(intents)
+}
+
+fn infer_child_records_from_ids(target_repo: &Path, plan: &PlanRecord) -> Vec<PlanChildRecord> {
+    let plan_body = fs::read_to_string(target_repo.join(&plan.path)).unwrap_or_default();
+    let plan_lower = plan_body.to_ascii_lowercase();
+
+    plan.declared_child_ids
+        .iter()
+        .map(|child_id| {
+            let archetype = infer_archetype_from_child_id(child_id, &plan_lower);
+            let review_profile = infer_review_profile_from_child_id(child_id, &plan_lower);
+            let proof_commands = infer_proof_commands_from_plan(child_id, &plan_body);
+            let owned_surfaces = infer_owned_surfaces_from_plan(child_id, &plan_body);
+
+            PlanChildRecord {
+                child_id: child_id.clone(),
+                title: None,
+                archetype: Some(archetype),
+                lane_kind: Some(infer_lane_kind_from_child_id(child_id)),
+                review_profile: Some(review_profile),
+                proof_commands,
+                owned_surfaces: owned_surfaces.iter().map(|s| s.to_string()).collect(),
+                where_surfaces: if owned_surfaces.is_empty() {
+                    None
+                } else {
+                    Some(owned_surfaces.join(", "))
+                },
+                how_description: None,
+                state_artifacts: None,
+                required_tests: None,
+                verification_plan: None,
+                rollback_condition: None,
+            }
+        })
+        .collect()
+}
+
+fn infer_archetype_from_child_id(child_id: &str, plan_lower: &str) -> WorkflowArchetype {
+    let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("e2e")
+        || id_lower.contains("end-to-end")
+        || id_lower.contains("integration")
+    {
+        return WorkflowArchetype::Integration;
+    }
+    if id_lower.contains("acceptance")
+        || id_lower.contains("balance")
+        || id_lower.contains("edge-case")
+        || id_lower.contains("monte-carlo")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("verification")
+        || id_lower.contains("verify")
+        || id_lower.contains("provably-fair")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("house")
+        || id_lower.contains("agent")
+        || id_lower.contains("server")
+        || id_lower.contains("session-handler")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("tui")
+        || id_lower.contains("screen")
+        || id_lower.contains("client")
+        || id_lower.contains("terminal")
+        || id_lower.contains("frontend")
+        || id_lower.contains("web-ui")
+        || id_lower.contains("mobile")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("api")
+        || id_lower.contains("endpoint")
+        || id_lower.contains("rest")
+        || id_lower.contains("grpc")
+        || id_lower.contains("graphql")
+        || id_lower.contains("route")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("migration")
+        || id_lower.contains("pipeline")
+        || id_lower.contains("etl")
+        || id_lower.contains("ingest")
+        || id_lower.contains("transform")
+        || id_lower.contains("indexer")
+    {
+        return WorkflowArchetype::Implement;
+    }
+    if id_lower.contains("orchestrat") {
+        return WorkflowArchetype::Orchestration;
+    }
+    if id_lower.contains("report") || id_lower.contains("review-only") {
+        return WorkflowArchetype::Report;
+    }
+    if plan_lower.contains("cross-surface") || plan_lower.contains("cross surface") {
+        return WorkflowArchetype::Implement;
+    }
+    WorkflowArchetype::Implement
+}
+
+fn infer_review_profile_from_child_id(
+    child_id: &str,
+    _plan_lower: &str,
+) -> raspberry_supervisor::ReviewProfile {
+    let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("provably-fair")
+        || id_lower.contains("verification")
+        || id_lower.contains("verify")
+        || id_lower.contains("auth")
+        || id_lower.contains("crypto")
+        || id_lower.contains("signing")
+        || id_lower.contains("secret")
+        || id_lower.contains("key-management")
+    {
+        return raspberry_supervisor::ReviewProfile::Hardened;
+    }
+    if id_lower.contains("casino-core")
+        || id_lower.contains("settlement")
+        || id_lower.contains("payout")
+        || id_lower.contains("balance")
+        || id_lower.contains("acceptance")
+        || id_lower.contains("game-engine")
+        || id_lower.contains("accounting")
+        || id_lower.contains("ledger")
+        || id_lower.contains("pricing")
+        || id_lower.contains("invariant")
+    {
+        return raspberry_supervisor::ReviewProfile::Hardened;
+    }
+    if id_lower.contains("tui")
+        || id_lower.contains("screen")
+        || id_lower.contains("client")
+        || id_lower.contains("frontend")
+        || id_lower.contains("web-ui")
+        || id_lower.contains("mobile")
+        || id_lower.contains("widget")
+    {
+        return raspberry_supervisor::ReviewProfile::Ux;
+    }
+    if id_lower.contains("house")
+        || id_lower.contains("agent")
+        || id_lower.contains("server")
+        || id_lower.contains("service")
+        || id_lower.contains("daemon")
+        || id_lower.contains("worker")
+    {
+        return raspberry_supervisor::ReviewProfile::Standard;
+    }
+    if id_lower.contains("migration")
+        || id_lower.contains("rollback")
+        || id_lower.contains("schema")
+        || id_lower.contains("backfill")
+        || id_lower.contains("data-integrity")
+        || id_lower.contains("pipeline")
+        || id_lower.contains("etl")
+    {
+        return raspberry_supervisor::ReviewProfile::Standard;
+    }
+    if id_lower.contains("foundation")
+        || id_lower.contains("core")
+        || id_lower.contains("trait")
+        || id_lower.contains("shared")
+        || id_lower.contains("sdk")
+        || id_lower.contains("framework")
+    {
+        return raspberry_supervisor::ReviewProfile::Foundation;
+    }
+    raspberry_supervisor::ReviewProfile::Standard
+}
+
+fn infer_lane_kind_from_child_id(child_id: &str) -> LaneKind {
+    let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("integration")
+        || id_lower.contains("e2e")
+        || id_lower.contains("end-to-end")
+    {
+        return LaneKind::Integration;
+    }
+    if id_lower.contains("orchestrat") {
+        return LaneKind::Orchestration;
+    }
+    if id_lower.contains("report") || id_lower.contains("review-only") {
+        return LaneKind::Artifact;
+    }
+    if id_lower.contains("house")
+        || id_lower.contains("agent")
+        || id_lower.contains("server")
+        || id_lower.contains("service")
+        || id_lower.contains("daemon")
+        || id_lower.contains("worker")
+        || id_lower.contains("handler")
+        || id_lower.contains("session")
+        || id_lower.contains("rpc")
+        || id_lower.contains("api")
+        || id_lower.contains("websocket")
+    {
+        return LaneKind::Service;
+    }
+    if id_lower.contains("tui")
+        || id_lower.contains("screen")
+        || id_lower.contains("client")
+        || id_lower.contains("terminal")
+        || id_lower.contains("frontend")
+        || id_lower.contains("web-ui")
+        || id_lower.contains("mobile")
+        || id_lower.contains("shell")
+        || id_lower.contains("cli")
+        || id_lower.contains("dashboard")
+        || id_lower.contains("widget")
+    {
+        return LaneKind::Interface;
+    }
+    LaneKind::Platform
+}
+
+fn infer_proof_commands_from_plan(child_id: &str, plan_body: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let child_parts: Vec<&str> = child_id.split('-').filter(|part| part.len() >= 3).collect();
+
+    for line in plan_body.lines() {
+        let trimmed = line.trim().trim_start_matches("- ");
+        let trimmed = trimmed.trim_start_matches('`').trim_end_matches('`');
+        if !trimmed.starts_with("cargo ") {
+            continue;
+        }
+        let line_lower = trimmed.to_ascii_lowercase();
+        let is_relevant = child_parts.iter().any(|part| line_lower.contains(part));
+        if is_relevant {
+            commands.push(trimmed.to_string());
+        }
+    }
+    commands.sort();
+    commands.dedup();
+    commands
+}
+
+fn infer_owned_surfaces_from_plan(child_id: &str, plan_body: &str) -> Vec<String> {
+    let mut surfaces = Vec::new();
+    let child_parts: Vec<&str> = child_id.split('-').filter(|part| part.len() >= 3).collect();
+
+    for line in plan_body.lines() {
+        let trimmed = line.trim();
+        for segment in trimmed.split('`') {
+            let seg = segment.trim();
+            if !seg.starts_with("crates/") && !seg.starts_with("bin/") && !seg.starts_with("src/") {
+                continue;
+            }
+            let seg_lower = seg.to_ascii_lowercase();
+            let is_relevant = child_parts.iter().any(|part| seg_lower.contains(part));
+            if is_relevant {
+                surfaces.push(seg.to_string());
+            }
+        }
+    }
+    surfaces.sort();
+    surfaces.dedup();
+    surfaces
+}
+
+fn registry_plan_family(plan: &PlanRecord) -> WorkflowTemplate {
+    match plan.category {
+        PlanCategory::Meta => WorkflowTemplate::RecurringReport,
+        PlanCategory::Service | PlanCategory::Infrastructure => WorkflowTemplate::ServiceBootstrap,
+        PlanCategory::Foundation
+        | PlanCategory::Game
+        | PlanCategory::Interface
+        | PlanCategory::Verification
+        | PlanCategory::Economic
+        | PlanCategory::Unknown => WorkflowTemplate::Bootstrap,
+    }
+}
+
+fn registry_plan_contract(
+    plan: &PlanRecord,
+    family: WorkflowTemplate,
+    output_root: &Path,
+    target_repo: &Path,
+) -> (
+    LaneKind,
+    Vec<BlueprintArtifact>,
+    Vec<MilestoneManifest>,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+) {
+    match plan.category {
+        PlanCategory::Meta => family_contract(&family, output_root, target_repo),
+        PlanCategory::Service => reviewed_contract(
+            LaneKind::Service,
+            "spec",
+            "spec.md",
+            family,
+            output_root,
+            target_repo,
+        ),
+        PlanCategory::Infrastructure
+        | PlanCategory::Foundation
+        | PlanCategory::Verification
+        | PlanCategory::Economic => reviewed_contract(
+            LaneKind::Platform,
+            "spec",
+            "spec.md",
+            family,
+            output_root,
+            target_repo,
+        ),
+        PlanCategory::Interface | PlanCategory::Game => reviewed_contract(
+            LaneKind::Interface,
+            "spec",
+            "spec.md",
+            family,
+            output_root,
+            target_repo,
+        ),
+        PlanCategory::Unknown => reviewed_contract(
+            LaneKind::Artifact,
+            "spec",
+            "spec.md",
+            family,
+            output_root,
+            target_repo,
+        ),
+    }
+}
+
+fn registry_plan_dependencies(plan: &PlanRecord) -> Vec<LaneDependency> {
+    plan.dependency_plan_ids
+        .iter()
+        .map(|dependency| LaneDependency {
+            unit: dependency.clone(),
+            lane: None,
+            milestone: Some("reviewed".to_string()),
+        })
+        .collect()
+}
+
+fn derive_child_intents(
+    target_repo: &Path,
+    parent_id: &str,
+    plan: &PlanRecord,
+    corpus: &PlanningCorpus,
+    workspace_dependency: &Option<(LaneDependency, LaneIntent)>,
+) -> Vec<LaneIntent> {
+    let parent_dependency = LaneDependency {
+        unit: parent_id.to_string(),
+        lane: None,
+        milestone: Some("reviewed".to_string()),
+    };
+
+    plan.children
+        .iter()
+        .map(|child| {
+            let child_unit_id = if child.child_id.starts_with(parent_id) {
+                child.child_id.clone()
+            } else {
+                format!("{parent_id}-{}", child.child_id)
+            };
+            let child_title = child
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_slug(&child.child_id));
+            let family = archetype_to_template(child.archetype);
+            let output_root = PathBuf::from("outputs").join(&child_unit_id);
+            let kind = child
+                .lane_kind
+                .unwrap_or_else(|| infer_lane_kind_from_child_id(&child.child_id));
+            let verify_command = if !child.proof_commands.is_empty() {
+                Some(child.proof_commands.join(" && "))
+            } else {
+                None
+            };
+            let health_command = if matches!(child.archetype, Some(WorkflowArchetype::Implement)) {
+                if kind == LaneKind::Service {
+                    explicit_health_command(target_repo).or_else(|| Some("true".to_string()))
+                } else {
+                    Some("true".to_string())
+                }
+            } else {
+                None
+            };
+            let (artifacts, milestones, produces) = child_artifacts_and_milestones(&family);
+            let goal = build_child_goal(&child_title, &plan.title, child, &artifacts);
+            let prompt_context =
+                build_child_prompt_context(corpus, plan, child, &child_unit_id, &artifacts);
+
+            let mut dependencies = vec![parent_dependency.clone()];
+            if let Some((ws_dep, _)) = workspace_dependency {
+                if !dependencies.iter().any(|d| d.unit == ws_dep.unit) {
+                    dependencies.insert(0, ws_dep.clone());
+                }
+            }
+
+            LaneIntent {
+                id: child_unit_id,
+                title: child_title,
+                output_root,
+                family,
+                kind,
+                goal,
+                prompt_context,
+                dependencies,
+                produces,
+                health_command,
+                verify_command,
+                proof_profile: child.review_profile.map(|p| p.as_str().to_string()),
+                milestones,
+                artifacts,
+            }
+        })
+        .collect()
+}
+
+fn archetype_to_template(archetype: Option<WorkflowArchetype>) -> WorkflowTemplate {
+    match archetype {
+        Some(WorkflowArchetype::Implement) | None => WorkflowTemplate::Implementation,
+        Some(WorkflowArchetype::Integration) => WorkflowTemplate::Integration,
+        Some(WorkflowArchetype::Orchestration) => WorkflowTemplate::Orchestration,
+        Some(WorkflowArchetype::Report) => WorkflowTemplate::RecurringReport,
+    }
+}
+
+fn child_artifacts_and_milestones(
+    family: &WorkflowTemplate,
+) -> (Vec<BlueprintArtifact>, Vec<MilestoneManifest>, Vec<String>) {
+    match family {
+        WorkflowTemplate::Implementation => {
+            let artifacts = vec![
+                BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+            ];
+            let produces = artifacts.iter().map(|a| a.id.clone()).collect();
+            let milestones = vec![MilestoneManifest {
+                id: "implemented".to_string(),
+                requires: vec!["spec".to_string(), "review".to_string()],
+            }];
+            (artifacts, milestones, produces)
+        }
+        _ => {
+            let artifacts = vec![
+                BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+            ];
+            let produces = artifacts.iter().map(|a| a.id.clone()).collect();
+            let milestones = vec![MilestoneManifest {
+                id: "reviewed".to_string(),
+                requires: vec!["spec".to_string(), "review".to_string()],
+            }];
+            (artifacts, milestones, produces)
+        }
+    }
+}
+
+fn build_child_goal(
+    child_title: &str,
+    plan_title: &str,
+    child: &PlanChildRecord,
+    artifacts: &[BlueprintArtifact],
+) -> String {
+    let mut sections = vec![format!(
+        "{child_title}\n\nChild work item of plan: {plan_title}"
+    )];
+
+    if let Some(how) = &child.how_description {
+        sections.push(format!("Objective:\n{how}"));
+    }
+    if !child.owned_surfaces.is_empty() {
+        sections.push(format!(
+            "Owned surfaces:\n{}",
+            child
+                .owned_surfaces
+                .iter()
+                .map(|s| format!("- `{s}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if !child.proof_commands.is_empty() {
+        sections.push(format!(
+            "Proof commands:\n{}",
+            child
+                .proof_commands
+                .iter()
+                .map(|c| format!("- `{c}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if !artifacts.is_empty() {
+        sections.push(format!(
+            "Required durable artifacts:\n{}",
+            artifacts
+                .iter()
+                .map(|a| format!("- `{}`", a.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    sections.join("\n\n")
+}
+
+fn build_child_prompt_context(
+    corpus: &PlanningCorpus,
+    plan: &PlanRecord,
+    child: &PlanChildRecord,
+    child_unit_id: &str,
+    artifacts: &[BlueprintArtifact],
+) -> Option<String> {
+    let mut sections = vec![
+        format!("Plan file:\n- `{}`", plan.path.display()),
+        format!("Child work item: `{child_unit_id}`"),
+    ];
+
+    // Inject the full plan content so workers have domain context
+    if let Some(plan_doc) = corpus.plan_docs.iter().find(|doc| doc.path == plan.path) {
+        sections.push(format!(
+            "Full plan context (read this for domain knowledge, design decisions, and specifications):\n\n{}",
+            plan_doc.body
+        ));
+    }
+
+    if let Some(archetype) = child.archetype {
+        sections.push(format!("Workflow archetype: {}", archetype.as_str()));
+    }
+    if let Some(profile) = child.review_profile {
+        sections.push(format!("Review profile: {}", profile.as_str()));
+    }
+
+    if let Some(active_plan) = &corpus.active_plan {
+        sections.push(format!("Active plan:\n- `{}`", active_plan.path.display()));
+    }
+    if let Some(active_spec) = &corpus.active_spec {
+        sections.push(format!("Active spec:\n- `{}`", active_spec.path.display()));
+    }
+
+    // AC contract fields
+    let mut ac_lines = Vec::new();
+    if let Some(where_surfaces) = &child.where_surfaces {
+        ac_lines.push(format!("Where: {where_surfaces}"));
+    }
+    if let Some(how) = &child.how_description {
+        ac_lines.push(format!("How: {how}"));
+    }
+    if let Some(state) = &child.state_artifacts {
+        ac_lines.push(format!("State: {state}"));
+    }
+    if let Some(tests) = &child.required_tests {
+        ac_lines.push(format!("Required tests: {tests}"));
+    }
+    if let Some(vp) = &child.verification_plan {
+        ac_lines.push(format!("Verification plan: {vp}"));
+    }
+    if let Some(rollback) = &child.rollback_condition {
+        ac_lines.push(format!("Rollback condition: {rollback}"));
+    }
+    if !ac_lines.is_empty() {
+        sections.push(format!(
+            "AC contract:\n{}",
+            ac_lines
+                .iter()
+                .map(|l| format!("- {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    if !child.proof_commands.is_empty() {
+        sections.push(format!(
+            "Proof commands:\n{}",
+            child
+                .proof_commands
+                .iter()
+                .map(|c| format!("- `{c}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    if !artifacts.is_empty() {
+        sections.push(format!(
+            "Artifacts to write:\n{}",
+            artifacts
+                .iter()
+                .map(|a| format!("- `{}`", a.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    Some(sections.join("\n\n"))
+}
+
+fn build_registry_plan_prompt_context(
+    corpus: &PlanningCorpus,
+    plan: &PlanRecord,
+    tasks: &[String],
+    artifacts: &[BlueprintArtifact],
+) -> Option<String> {
+    let mut sections = vec![format!("Plan file:\n- `{}`", plan.path.display())];
+
+    // Inject full plan content so bootstrap workers have domain context
+    if let Some(plan_doc) = corpus.plan_docs.iter().find(|doc| doc.path == plan.path) {
+        sections.push(format!(
+            "Full plan context (read this for domain knowledge, design decisions, and specifications):\n\n{}",
+            plan_doc.body
+        ));
+    }
+
+    if let Some(active_plan) = &corpus.active_plan {
+        sections.push(format!("Active plan:\n- `{}`", active_plan.path.display()));
+    }
+    if let Some(active_spec) = &corpus.active_spec {
+        sections.push(format!("Active spec:\n- `{}`", active_spec.path.display()));
+    }
+    if plan.composite && plan.mapping_contract_path.is_none() {
+        sections.push(
+            "Mapping notes:\n- composite plan mapped from plan structure; humans may refine the checked-in contract later"
+                .to_string(),
+        );
+    }
+    if !tasks.is_empty() {
+        sections.push(format!(
+            "Open tasks:\n{}",
+            tasks
+                .iter()
+                .take(8)
+                .map(|task| format!("- {task}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if !artifacts.is_empty() {
+        sections.push(format!(
+            "Artifacts to write:\n{}",
+            artifacts
+                .iter()
+                .map(|artifact| format!("- `{}`", artifact.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    Some(sections.join("\n\n"))
 }
 
 fn derive_master_plan_intents(
@@ -621,6 +1502,7 @@ fn derive_master_plan_intents(
             produces,
             health_command,
             verify_command,
+            proof_profile: None,
             milestones,
             artifacts,
         });
@@ -647,7 +1529,7 @@ fn derive_master_plan_intents(
         let output_root = PathBuf::from("outputs").join(&id);
         let (kind, artifacts, milestones, produces, health_command, verify_command) =
             category_contract(category, family, &output_root, target_repo);
-        let dependencies = explicit_plan_dependency_paths(&doc.body)
+        let dependencies = explicit_plan_dependency_paths(&doc.body, &corpus.planning_root)
             .into_iter()
             .filter_map(|path| selected.get(&path))
             .fold(
@@ -710,6 +1592,7 @@ fn derive_master_plan_intents(
             produces,
             health_command,
             verify_command,
+            proof_profile: None,
             milestones,
             artifacts,
         });
@@ -797,7 +1680,7 @@ fn referenced_bootstrap_plan_docs(
     resolved
 }
 
-fn explicit_plan_dependency_paths(body: &str) -> Vec<PathBuf> {
+fn explicit_plan_dependency_paths(body: &str, planning_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for paragraph in planning_markdown_paragraphs(body) {
         let lower = paragraph.to_ascii_lowercase();
@@ -814,7 +1697,7 @@ fn explicit_plan_dependency_paths(body: &str) -> Vec<PathBuf> {
         if let Some(next_sentence_index) = segment.find(". This ") {
             segment.truncate(next_sentence_index);
         }
-        paths.extend(markdown_path_references(&segment, "plans"));
+        paths.extend(markdown_path_references(&segment, "plans", planning_root));
     }
     paths.sort();
     paths.dedup();
@@ -846,7 +1729,7 @@ fn parse_phase_heading(trimmed: &str) -> Option<usize> {
 
 fn referenced_plan_docs_for_task(corpus: &PlanningCorpus, task: &str) -> Vec<PlanningDocument> {
     let lower = task.to_ascii_lowercase();
-    let mut docs = markdown_path_references(task, "plans")
+    let mut docs = markdown_path_references(task, "plans", &corpus.planning_root)
         .into_iter()
         .filter_map(|path| {
             corpus
@@ -986,6 +1869,7 @@ fn derive_explicit_unit_intents(
             produces,
             health_command,
             verify_command,
+            proof_profile: None,
             milestones,
             artifacts,
         });
@@ -1797,7 +2681,7 @@ fn materialize_unit(intent: &LaneIntent) -> BlueprintUnit {
                 .unwrap_or_else(|| "reviewed".to_string()),
             dependencies: intent.dependencies.clone(),
             produces: intent.produces.clone(),
-            proof_profile: None,
+            proof_profile: intent.proof_profile.clone(),
             proof_state_path: None,
             program_manifest: None,
             service_state_path: None,
@@ -2043,13 +2927,20 @@ fn has_service_health_cues(text: &str) -> bool {
 }
 
 fn has_existing_child_programs(target_repo: &Path) -> bool {
-    target_repo.join("fabro").join("programs").is_dir()
-        && fs::read_dir(target_repo.join("fabro").join("programs"))
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("yaml"))
+    target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs")
+        .is_dir()
+        && fs::read_dir(
+            target_repo
+                .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+                .join("programs"),
+        )
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("yaml"))
 }
 
 fn repo_has_reviewed_slice(target_repo: &Path) -> bool {
@@ -2086,7 +2977,9 @@ fn resolve_existing_program_id(
     if let Some(program) = program_override {
         return Ok(program.to_string());
     }
-    let programs_dir = target_repo.join("fabro").join("programs");
+    let programs_dir = target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs");
     if !programs_dir.is_dir() {
         return Err(PlanningError::MissingExistingProgram {
             target_repo: target_repo.to_path_buf(),
@@ -2294,11 +3187,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
-        fs::create_dir_all(temp.path().join("fabro/run-configs/bootstrap"))
+        fs::create_dir_all(temp.path().join("malinka/run-configs/bootstrap"))
             .expect("run-config dir");
         fs::write(
             temp.path()
-                .join("fabro/run-configs/bootstrap/foundations.toml"),
+                .join("malinka/run-configs/bootstrap/foundations.toml"),
             "version = 1\n",
         )
         .expect("run config");
@@ -2307,9 +3200,9 @@ mod tests {
             "# Expand Zend\n\n- [ ] Add the encrypted operations inbox\n- [ ] Implement a local home-miner control service\n",
         )
         .expect("plan");
-        fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
+        fs::create_dir_all(temp.path().join("malinka/programs")).expect("program dir");
         fs::write(
-            temp.path().join("fabro/programs/zend.yaml"),
+            temp.path().join("malinka/programs/zend.yaml"),
             r#"
 version: 1
 program: zend
@@ -2358,19 +3251,19 @@ units:
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
         fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
-        fs::create_dir_all(temp.path().join("fabro/run-configs/implementation"))
+        fs::create_dir_all(temp.path().join("malinka/run-configs/implementation"))
             .expect("implement run-config dir");
-        fs::create_dir_all(temp.path().join("fabro/run-configs/integration"))
+        fs::create_dir_all(temp.path().join("malinka/run-configs/integration"))
             .expect("integrate run-config dir");
         fs::write(
             temp.path()
-                .join("fabro/run-configs/implementation/private-control-plane.toml"),
+                .join("malinka/run-configs/implementation/private-control-plane.toml"),
             "version = 1\n",
         )
         .expect("implement run config");
         fs::write(
             temp.path()
-                .join("fabro/run-configs/integration/private-control-plane.toml"),
+                .join("malinka/run-configs/integration/private-control-plane.toml"),
             "version = 1\n",
         )
         .expect("integrate run config");
@@ -2379,10 +3272,10 @@ units:
             "# Expand Zend\n\n- [ ] Add the encrypted operations inbox\n- [ ] Implement a local home-miner control service\n",
         )
         .expect("plan");
-        fs::create_dir_all(temp.path().join("fabro/programs")).expect("program dir");
+        fs::create_dir_all(temp.path().join("malinka/programs")).expect("program dir");
         fs::write(
             temp.path()
-                .join("fabro/programs/zend-private-control-plane-implementation.yaml"),
+                .join("malinka/programs/zend-private-control-plane-implementation.yaml"),
             r#"
 version: 1
 program: zend-private-control-plane-implementation
@@ -2636,6 +3529,7 @@ units:
             authored.active_plan,
             Some(PathBuf::from("plans/001-master-plan.md"))
         );
+        assert!(unit_ids.contains(&"master".to_string()));
         assert!(unit_ids.contains(&"provably-fair".to_string()));
         assert!(unit_ids.contains(&"casino-core".to_string()));
         assert!(unit_ids.contains(&"house-agent".to_string()));
@@ -2643,7 +3537,7 @@ units:
         assert!(unit_ids.contains(&"monero-infrastructure".to_string()));
         assert!(unit_ids.contains(&"poker".to_string()));
         assert!(unit_ids.contains(&"blackjack".to_string()));
-        assert!(!unit_ids.contains(&"faucet".to_string()));
+        assert!(unit_ids.contains(&"faucet".to_string()));
         assert!(!unit_ids.contains(&"foundations".to_string()));
     }
 
@@ -2703,13 +3597,159 @@ units:
             .expect("provably-fair unit");
 
         assert!(unit_ids.contains(&"workspace-foundation".to_string()));
-        assert!(
-            provably_fair
-                .lanes[0]
-                .dependencies
-                .iter()
-                .any(|dependency| dependency.unit == "workspace-foundation")
+        assert!(provably_fair.lanes[0]
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.unit == "workspace-foundation"));
+    }
+
+    #[test]
+    fn create_authoring_uses_shared_plan_registry_for_meta_and_composite_units() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("plans/005-craps-game.md"),
+            concat!(
+                "# Craps Game\n\n",
+                "- [ ] Milestone 1: casino-core\n",
+                "- [ ] Milestone 2: provably-fair\n",
+                "- [ ] Milestone 3: house\n",
+            ),
+        )
+        .expect("craps plan");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.clone())
+            .collect::<Vec<_>>();
+        let craps = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps")
+            .expect("craps unit");
+
+        assert!(unit_ids.contains(&"master".to_string()));
+        assert!(unit_ids.contains(&"craps".to_string()));
+        assert_eq!(craps.lanes[0].template, WorkflowTemplate::Bootstrap);
+        assert!(craps.lanes[0]
+            .prompt_context
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mapped from plan structure"));
+    }
+
+    #[test]
+    fn create_authoring_preserves_child_lane_kinds_from_mapping_contracts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .expect("cargo");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/005-craps-game.md"),
+            "# Craps Game\n\n- [ ] Milestone 1: casino-core\n- [ ] Milestone 2: house-handler\n- [ ] Milestone 3: command-center\n",
+        )
+        .expect("craps plan");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/005-craps-game.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "composite: true\n",
+                "children:\n",
+                "  - id: casino-core\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "  - id: house-handler\n",
+                "    archetype: implement\n",
+                "    lane_kind: service\n",
+                "  - id: command-center\n",
+                "    archetype: implement\n",
+                "    lane_kind: interface\n",
+                "    review_profile: ux\n",
+            ),
+        )
+        .expect("mapping contract");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let house = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-house-handler")
+            .expect("house child");
+        let client = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-command-center")
+            .expect("client child");
+
+        assert_eq!(house.lanes[0].kind, LaneKind::Service);
+        assert_eq!(
+            house.lanes[0].health_command.as_deref(),
+            Some("cargo test -- --nocapture health")
         );
+        assert_eq!(client.lanes[0].kind, LaneKind::Interface);
+        assert_eq!(client.lanes[0].proof_profile.as_deref(), Some("ux"));
+    }
+
+    #[test]
+    fn create_authoring_can_source_plans_from_genesis_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::create_dir_all(temp.path().join("genesis/plans")).expect("plans dir");
+        fs::write(temp.path().join("genesis/SPEC.md"), "# Genesis Spec\n").expect("spec");
+        fs::write(
+            temp.path().join("genesis/plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("genesis/plans/005-craps-game.md"),
+            "# Craps Game\n\n- [ ] Milestone 1: casino-core\n- [ ] Milestone 2: house\n",
+        )
+        .expect("craps plan");
+
+        let authored = author_blueprint_for_create_with_planning_root(
+            temp.path(),
+            Some("rxmragent"),
+            Some(Path::new("genesis")),
+        )
+        .expect("author blueprint");
+
+        assert_eq!(
+            authored.active_plan,
+            Some(PathBuf::from("genesis/plans/001-master-plan.md"))
+        );
+        assert!(authored
+            .blueprint
+            .units
+            .iter()
+            .any(|unit| unit.id == "craps"));
     }
 
     #[test]
