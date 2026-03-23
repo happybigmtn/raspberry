@@ -236,14 +236,17 @@ pub fn find_run_by_prefix(base: &Path, prefix: &str) -> Result<PathBuf> {
     let runs = scan_runs(base).context("Failed to scan runs")?;
     let matches: Vec<_> = runs
         .iter()
-        .filter(|run| run.run_id.starts_with(prefix))
+        .filter(|run| run_matches_prefix(run, prefix))
         .collect();
 
     match matches.len() {
         0 => bail!("No run found matching prefix '{prefix}'"),
         1 => Ok(matches[0].path.clone()),
         count => {
-            let ids: Vec<&str> = matches.iter().map(|run| run.run_id.as_str()).collect();
+            let ids: Vec<String> = matches
+                .iter()
+                .map(|run| describe_run_identity(run))
+                .collect();
             bail!(
                 "Ambiguous prefix '{prefix}': {count} runs match: {}",
                 ids.join(", ")
@@ -257,13 +260,16 @@ pub fn resolve_run(base: &Path, identifier: &str) -> Result<RunInfo> {
 
     let id_matches: Vec<_> = runs
         .iter()
-        .filter(|run| run.run_id.starts_with(identifier))
+        .filter(|run| run_matches_prefix(run, identifier))
         .collect();
 
     match id_matches.len() {
         1 => return Ok(id_matches[0].clone()),
         count if count > 1 => {
-            let ids: Vec<&str> = id_matches.iter().map(|run| run.run_id.as_str()).collect();
+            let ids: Vec<String> = id_matches
+                .iter()
+                .map(|run| describe_run_identity(run))
+                .collect();
             bail!(
                 "Ambiguous prefix '{identifier}': {count} runs match: {}",
                 ids.join(", ")
@@ -294,4 +300,79 @@ pub fn resolve_run(base: &Path, identifier: &str) -> Result<RunInfo> {
 
 fn collapse_separators(s: &str) -> String {
     s.chars().filter(|c| *c != '-' && *c != '_').collect()
+}
+
+fn run_matches_prefix(run: &RunInfo, prefix: &str) -> bool {
+    run.run_id.starts_with(prefix) || run.dir_name.starts_with(prefix)
+}
+
+fn describe_run_identity(run: &RunInfo) -> String {
+    if run.dir_name == run.run_id {
+        run.run_id.clone()
+    } else {
+        format!("{} ({})", run.dir_name, run.run_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::manifest::Manifest;
+
+    fn write_manifest_run(base: &Path, dir_name: &str, run_id: &str) -> PathBuf {
+        let run_dir = base.join(dir_name);
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        Manifest {
+            run_id: run_id.to_string(),
+            workflow_name: "cash-court".to_string(),
+            goal: "prove a lane".to_string(),
+            start_time: Utc::now(),
+            node_count: 1,
+            edge_count: 0,
+            run_branch: None,
+            base_sha: None,
+            labels: HashMap::new(),
+            base_branch: None,
+            workflow_slug: Some("cash-court".to_string()),
+            host_repo_path: None,
+        }
+        .save(&run_dir.join("manifest.json"))
+        .expect("save manifest");
+        run_dir
+    }
+
+    #[test]
+    fn find_run_by_prefix_matches_directory_prefix_when_manifest_run_id_is_unprefixed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_dir = write_manifest_run(
+            temp.path(),
+            "20260322-01KMC50SPP97BFFJKFNMNYW07G",
+            "01KMC50SPP97BFFJKFNMNYW07G",
+        );
+
+        let resolved = find_run_by_prefix(temp.path(), "20260322-01KMC50SPP97")
+            .expect("resolve by directory prefix");
+
+        assert_eq!(resolved, run_dir);
+    }
+
+    #[test]
+    fn resolve_run_matches_prefixed_directory_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_manifest_run(
+            temp.path(),
+            "20260322-01KMC50SPP97BFFJKFNMNYW07G",
+            "01KMC50SPP97BFFJKFNMNYW07G",
+        );
+
+        let run = resolve_run(temp.path(), "20260322-01KMC50SPP97BFFJKFNMNYW07G")
+            .expect("resolve by full directory name");
+
+        assert_eq!(run.run_id, "01KMC50SPP97BFFJKFNMNYW07G");
+        assert_eq!(run.dir_name, "20260322-01KMC50SPP97BFFJKFNMNYW07G");
+    }
 }
