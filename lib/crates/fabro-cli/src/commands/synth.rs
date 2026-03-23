@@ -1901,7 +1901,8 @@ children:
     owned_surfaces: [repo-relative paths from plan]
     where_surfaces: one-line summary
     how_description: one-line behavior change description
-    required_tests: concrete test commands
+    acceptance_criteria: see acceptance criteria rules below
+    required_tests: concrete test commands derived from acceptance criteria
     verification_plan: what proves this child is done
     rollback_condition: what reopens this child
 ```
@@ -1950,6 +1951,23 @@ dependency_plan_ids must NEVER be empty for plans that clearly depend on other p
 2. If the plan doesn't contain a verbatim command but describes what should be tested, construct a reasonable proof command from the crate/module names mentioned. E.g., if the plan says "ensure myosu-miner builds" → `cargo build -p myosu-miner`.
 3. Every child MUST have at least one proof_command. Never leave this empty. At minimum use `cargo check -p <crate>` for Rust or the equivalent build command for the project.
 4. Prefer specific test targets (`cargo test -p crate -- test_name`) over broad ones (`cargo test`).
+
+## Acceptance criteria rules
+
+Each child MUST have 2-5 acceptance criteria that describe **behavioral outcomes**, not implementation approach. The verify gate will enforce these, so they must be testable.
+
+**Good AC** (behavioral, observable, testable):
+- "Given a Player bet of 100 units, settlement on Player win pays 200 units"
+- "cargo test -p casino-core -- baccarat::settlement passes with ≥3 test cases covering Player/Banker/Tie"
+- "MmapBlueprint::strategy() returns non-empty probability distributions that sum to 1.0 for all street/position combinations"
+- "The CI workflow runs cargo check, cargo test, and cargo clippy on push to main"
+
+**Bad AC** (structural, vague, untestable):
+- "Add BaccaratVariant struct" (structural — says WHAT to add, not WHAT it must do)
+- "Implement settlement logic" (vague — no observable outcome)
+- "Write tests" (circular — the tests ARE the verification)
+
+For each AC, derive a corresponding entry in `required_tests` that would verify the behavioral outcome. The required_tests should be concrete shell commands or test function names.
 
 ## Critical rules
 
