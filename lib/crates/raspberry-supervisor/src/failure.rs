@@ -16,6 +16,7 @@ pub enum FailureKind {
     StallWatchdog,
     ProviderPolicyMismatch,
     ProofScriptFailure,
+    PromptTooLarge,
     EnvironmentCollision,
     Unknown,
 }
@@ -35,6 +36,7 @@ impl fmt::Display for FailureKind {
             Self::StallWatchdog => "stall_watchdog",
             Self::ProviderPolicyMismatch => "provider_policy_mismatch",
             Self::ProofScriptFailure => "proof_script_failure",
+            Self::PromptTooLarge => "prompt_too_large",
             Self::EnvironmentCollision => "environment_collision",
             Self::Unknown => "unknown",
         };
@@ -170,6 +172,12 @@ pub fn classify_failure(
     {
         return Some(FailureKind::ProviderPolicyMismatch);
     }
+    if combined.contains("input exceeds the maximum length")
+        || combined.contains("turn/start failed: input exceeds")
+        || combined.contains("prompt exceeds the maximum length")
+    {
+        return Some(FailureKind::PromptTooLarge);
+    }
     if combined.contains("proof script")
         || combined.contains("verify command")
         || combined.contains("verification command")
@@ -204,7 +212,8 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
         FailureKind::IntegrationConflict => FailureRecoveryAction::RefreshFromTrunk,
         FailureKind::EnvironmentCollision
         | FailureKind::StallWatchdog
-        | FailureKind::TransientLaunchFailure => FailureRecoveryAction::BackoffRetry,
+        | FailureKind::TransientLaunchFailure
+        | FailureKind::PromptTooLarge => FailureRecoveryAction::BackoffRetry,
         FailureKind::ProviderAccessLimited => FailureRecoveryAction::SurfaceBlocked,
         FailureKind::DeterministicVerifyCycle
         | FailureKind::CapabilityContractMismatch
@@ -394,6 +403,10 @@ mod tests {
             FailureRecoveryAction::BackoffRetry
         );
         assert_eq!(
+            default_recovery_action(FailureKind::PromptTooLarge),
+            FailureRecoveryAction::BackoffRetry
+        );
+        assert_eq!(
             default_recovery_action(FailureKind::ProviderAccessLimited),
             FailureRecoveryAction::SurfaceBlocked
         );
@@ -432,6 +445,20 @@ mod tests {
     }
 
     #[test]
+    fn classify_failure_detects_prompt_too_large() {
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "Handler error: CLI command exited with code 1: Reading prompt from stdin...\nError: turn/start: turn/start failed: Input exceeds the maximum length of 1048576 characters."
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::PromptTooLarge)
+        );
+    }
+
+    #[test]
     fn classify_failure_detects_zero_usage_cli_exits_as_transient_launch_failures() {
         assert_eq!(
             classify_failure(
@@ -449,7 +476,9 @@ mod tests {
     fn classify_failure_detects_supervisor_only_lane_failures() {
         assert_eq!(
             classify_failure(
-                Some("repo-level orchestration lanes are executed directly by raspberry supervisor"),
+                Some(
+                    "repo-level orchestration lanes are executed directly by raspberry supervisor"
+                ),
                 None,
                 None,
             ),

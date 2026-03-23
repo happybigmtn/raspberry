@@ -51,6 +51,8 @@ pub struct AutodevReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutodevCurrentSnapshot {
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<usize>,
     pub ready: usize,
     pub running: usize,
     pub blocked: usize,
@@ -1223,6 +1225,7 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
 
     AutodevCurrentSnapshot {
         updated_at: Utc::now(),
+        max_parallel: program.runtime_max_parallel.or(Some(program.max_parallel)),
         ready,
         running,
         blocked,
@@ -1688,6 +1691,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![
                 failed_lane(
                     "impl:lane",
@@ -1761,6 +1765,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -1826,6 +1831,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -2016,6 +2022,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -2322,6 +2329,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2348,6 +2356,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2375,6 +2384,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
