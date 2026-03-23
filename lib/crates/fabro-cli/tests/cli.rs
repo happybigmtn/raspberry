@@ -666,7 +666,7 @@ digraph G {
 // Bug 3: attach loop must delete interview_request.json after handling it
 // to prevent re-prompting the user on the next poll iteration.
 #[test]
-fn bug3_attach_cleans_up_interview_request_after_handling() {
+fn bug3_attach_leaves_interview_request_until_engine_consumes_response() {
     let home = tempfile::tempdir().unwrap();
 
     let run_dir = setup_run_dir(
@@ -714,11 +714,88 @@ fn bug3_attach_cleans_up_interview_request_after_handling() {
         .timeout(std::time::Duration::from_secs(5))
         .output();
 
-    // Bug: interview_request.json is never deleted by the attach loop.
-    // After the fix it should be removed immediately after handling.
+    // The attach loop should leave the request durable until the engine consumes
+    // the response, so a crashed attach can be retried safely.
     assert!(
-        !run_dir.join("interview_request.json").exists(),
-        "bug3: interview_request.json should be deleted after being handled by attach"
+        run_dir.join("interview_request.json").exists(),
+        "bug3: interview_request.json should stay present until the engine consumes the answer"
+    );
+    assert!(
+        run_dir.join("interview_response.json").exists(),
+        "bug3: attach should write interview_response.json after handling the prompt"
+    );
+    let response = std::fs::read_to_string(run_dir.join("interview_response.json")).unwrap();
+    assert!(response.contains("\"value\": \"Yes\""));
+}
+
+#[test]
+fn attach_closed_stdin_keeps_interview_pending() {
+    let home = tempfile::tempdir().unwrap();
+
+    let run_dir = setup_run_dir(
+        home.path(),
+        "attach-closed-stdin",
+        serde_json::json!({}),
+        &[
+            r#"{"ts":"2026-01-01T00:00:01Z","run_id":"attach-closed-stdin","event":"StageStarted","node_id":"gate","name":"Gate","index":0,"attempt":1,"max_attempts":1}"#,
+        ],
+    );
+
+    std::fs::write(
+        run_dir.join("status.json"),
+        serde_json::json!({"status": "running", "updated_at": "2026-01-01T00:00:00Z"}).to_string(),
+    )
+    .unwrap();
+
+    let question = serde_json::json!({
+        "text": "Approve?",
+        "question_type": "YesNo",
+        "options": [],
+        "allow_freeform": false,
+        "default": null,
+        "timeout_seconds": null,
+        "stage": "gate",
+        "metadata": {}
+    });
+    std::fs::write(
+        run_dir.join("interview_request.json"),
+        serde_json::to_string(&question).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(run_dir.join("run.pid"), "99999999").unwrap();
+
+    let assert = arc()
+        .env("HOME", home.path())
+        .env("NO_COLOR", "1")
+        .args(["attach", "attach-closed-stdin"])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("still waiting for input"),
+        "attach should explain that the run is still waiting for a human answer.\nstderr: {stderr}"
+    );
+    assert!(
+        run_dir.join("interview_request.json").exists(),
+        "attach with closed stdin must leave the request pending"
+    );
+    assert!(
+        !run_dir.join("interview_response.json").exists(),
+        "attach with closed stdin must not fabricate a response"
+    );
+    assert!(
+        !run_dir.join("interview_request.claim").exists(),
+        "attach with closed stdin must release the claim so a later attach can answer"
+    );
+
+    let progress = std::fs::read_to_string(run_dir.join("progress.jsonl")).unwrap();
+    assert!(
+        progress.contains("\"event\":\"RunNotice\"")
+            && progress.contains("\"code\":\"interview_unanswered\""),
+        "attach should emit a structured warning when the interview ends without an answer.\nprogress: {progress}"
     );
 }
 
