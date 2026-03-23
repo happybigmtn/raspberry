@@ -688,6 +688,7 @@ fn render_workflow_graph(
 fn profile_max_visits(profile: &str) -> u32 {
     match profile {
         "hardened" => 5,
+        "unblock" => 5,
         "foundation" => 4,
         _ => 3,
     }
@@ -719,6 +720,18 @@ fn profile_extra_graph_elements(
         "ux" => {
             let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f acceptance-evidence.md && grep -q 'accepted: yes' acceptance-evidence.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
             let edges = "    review -> acceptance_gate [condition=\"outcome=success\"]\n    acceptance_gate -> audit [condition=\"outcome=success\"]\n    acceptance_gate -> fixup\n".to_string();
+            (nodes, edges)
+        }
+        "unblock" => {
+            // Extended retry budget for lanes known to hit pre-existing
+            // blockers.  The fixup prompt already has authority to fix issues
+            // outside the lane's surfaces.  This profile gives it more
+            // attempts and adds a dedicated deep-review pass.
+            let nodes = format!(
+                "    deep_review [label=\"Deep Review\", prompt=\"The verify gate has failed repeatedly. Analyze the failure output, identify whether the root cause is inside or outside this lane's owned surfaces, and write a concrete fix plan to deep-review-findings.md. If the issue is pre-existing external code (linter warnings, dependency issues), explicitly instruct the fixup stage to fix it.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
+                verify = escape_graph_attr(verify_command),
+            );
+            let edges = "    challenge -> deep_review [condition=\"outcome=success\"]\n    deep_review -> recheck [condition=\"outcome=success\"]\n    deep_review -> fixup\n    recheck -> review [condition=\"outcome=success\"]\n    recheck -> fixup\n".to_string();
             (nodes, edges)
         }
         _ => (String::new(), String::new()),
@@ -1403,7 +1416,7 @@ fn render_implementation_fixup_prompt(
         false,
     );
     output.push_str(
-        "\n\nPriorities:\n- unblock the active slice's first proof gate\n- stay within the named slice and touched surfaces\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
+        "\n\nPriorities:\n- unblock the active slice's first proof gate — this is the #1 priority\n- prefer staying within the named slice and touched surfaces\n- if the proof gate fails on pre-existing issues OUTSIDE your surfaces (e.g., linter warnings in unrelated files, missing imports in dependencies), you MUST fix those issues minimally to unblock the gate — do not leave the lane stuck on problems you can solve\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
     );
     output
 }
@@ -5319,7 +5332,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(review.contains("Current slice"));
         assert!(polish.contains("# Gameplay TUI Implementation Lane — Fixup"));
         assert!(polish.contains("do not hand-author `quality.md`"));
-        assert!(polish.contains("stay within the named slice and touched surfaces"));
+        assert!(polish.contains("prefer staying within the named slice and touched surfaces"));
     }
 
     #[test]
