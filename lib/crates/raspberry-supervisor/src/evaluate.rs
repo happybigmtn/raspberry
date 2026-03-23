@@ -81,6 +81,12 @@ pub struct EvaluatedLane {
     pub current_run_id: Option<String>,
     pub current_fabro_run_id: Option<String>,
     pub current_stage: Option<String>,
+    pub current_stage_provider: Option<String>,
+    pub current_stage_cli_name: Option<String>,
+    pub current_stage_started_at: Option<DateTime<Utc>>,
+    pub current_stage_updated_at: Option<DateTime<Utc>>,
+    pub time_in_current_stage_secs: Option<i64>,
+    pub current_stage_idle_secs: Option<i64>,
     pub last_run_id: Option<String>,
     pub last_started_at: Option<DateTime<Utc>>,
     pub last_finished_at: Option<DateTime<Utc>>,
@@ -444,6 +450,18 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         if let Some(stage) = &lane.current_stage {
             line.push_str(&format!(" | stage={stage}"));
         }
+        if let Some(provider) = &lane.current_stage_provider {
+            line.push_str(&format!(" | provider={provider}"));
+        }
+        if let Some(cli_name) = &lane.current_stage_cli_name {
+            line.push_str(&format!(" | cli={cli_name}"));
+        }
+        if let Some(seconds) = lane.time_in_current_stage_secs {
+            line.push_str(&format!(" | stage_secs={seconds}"));
+        }
+        if let Some(seconds) = lane.current_stage_idle_secs {
+            line.push_str(&format!(" | idle_secs={seconds}"));
+        }
         if let Some(run_id) = &lane.current_run_id {
             if lane.current_fabro_run_id.as_deref() != Some(run_id.as_str()) {
                 line.push_str(&format!(" | current_run_id={run_id}"));
@@ -612,6 +630,18 @@ fn evaluate_lane(
         current_stage: runtime_record
             .and_then(|record| record.current_stage_label.clone())
             .or(run_snapshot.current_stage),
+        current_stage_provider: runtime_record
+            .and_then(|record| record.current_stage_provider.clone()),
+        current_stage_cli_name: runtime_record
+            .and_then(|record| record.current_stage_cli_name.clone()),
+        current_stage_started_at: runtime_record
+            .and_then(|record| record.current_stage_started_at),
+        current_stage_updated_at: runtime_record
+            .and_then(|record| record.current_stage_updated_at),
+        time_in_current_stage_secs: runtime_record
+            .and_then(|record| record.time_in_current_stage_secs),
+        current_stage_idle_secs: runtime_record
+            .and_then(|record| record.current_stage_idle_secs),
         last_run_id: runtime_record.and_then(|record| record.last_run_id.clone()),
         last_started_at: runtime_record.and_then(|record| record.last_started_at),
         last_finished_at: runtime_record.and_then(|record| record.last_finished_at),
@@ -1840,7 +1870,14 @@ units:
             run_config: Some(PathBuf::from("malinka/programs/complete-program.yaml")),
             current_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
             current_fabro_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
+            current_stage_id: None,
             current_stage_label: Some("Promote".to_string()),
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
             last_started_at: None,
             last_finished_at: None,
@@ -1884,7 +1921,14 @@ units:
             run_config: Some(PathBuf::from("malinka/programs/complete-program.yaml")),
             current_run_id: None,
             current_fabro_run_id: None,
+            current_stage_id: None,
             current_stage_label: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: Some("01KMTESTFAILED0000000000000".to_string()),
             last_started_at: None,
             last_finished_at: None,
@@ -1963,7 +2007,14 @@ units:
             run_config: Some(PathBuf::from("malinka/run-configs/bootstrap/docs.toml")),
             current_run_id: None,
             current_fabro_run_id: None,
+            current_stage_id: None,
             current_stage_label: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: Some("01KMTESTCOMPLETE000000000000".to_string()),
             last_started_at: None,
             last_finished_at: None,

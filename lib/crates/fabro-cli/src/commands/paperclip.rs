@@ -1219,6 +1219,10 @@ struct FrontierSyncEntry {
     current_run_id: Option<String>,
     last_run_id: Option<String>,
     current_stage: Option<String>,
+    current_stage_provider: Option<String>,
+    current_stage_cli_name: Option<String>,
+    time_in_current_stage_secs: Option<i64>,
+    current_stage_idle_secs: Option<i64>,
     last_started_at: Option<String>,
     last_finished_at: Option<String>,
     last_exit_status: Option<i32>,
@@ -2711,6 +2715,10 @@ fn build_frontier_entry(
         current_run_id: lane.current_run_id.clone(),
         last_run_id: lane.last_run_id.clone(),
         current_stage: lane.current_stage.clone(),
+        current_stage_provider: lane.current_stage_provider.clone(),
+        current_stage_cli_name: lane.current_stage_cli_name.clone(),
+        time_in_current_stage_secs: lane.time_in_current_stage_secs,
+        current_stage_idle_secs: lane.current_stage_idle_secs,
         last_started_at: format_timestamp(lane.last_started_at),
         last_finished_at: format_timestamp(lane.last_finished_at),
         last_exit_status: lane.last_exit_status,
@@ -6257,6 +6265,18 @@ fn render_lane_issue_description(entry: &FrontierSyncEntry) -> String {
     if let Some(stage) = entry.current_stage.as_ref() {
         body.push_str(&format!("- current stage: {}\n", stage));
     }
+    if let Some(provider) = entry.current_stage_provider.as_ref() {
+        body.push_str(&format!("- current provider: {}\n", provider));
+    }
+    if let Some(cli_name) = entry.current_stage_cli_name.as_ref() {
+        body.push_str(&format!("- current cli: {}\n", cli_name));
+    }
+    if let Some(value) = entry.time_in_current_stage_secs {
+        body.push_str(&format!("- time in current stage secs: {}\n", value));
+    }
+    if let Some(value) = entry.current_stage_idle_secs {
+        body.push_str(&format!("- current stage idle secs: {}\n", value));
+    }
     if let Some(value) = entry.last_started_at.as_ref() {
         body.push_str(&format!("- last started at: {}\n", value));
     }
@@ -7216,6 +7236,10 @@ mod tests {
                     current_run_id: None,
                     last_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -7248,6 +7272,10 @@ mod tests {
                     current_run_id: None,
                     last_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -7539,6 +7567,10 @@ mod tests {
             current_run_id: None,
             last_run_id: Some("01KMTEST".to_string()),
             current_stage: Some("Verify".to_string()),
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_started_at: Some("2026-03-20T12:00:00Z".to_string()),
             last_finished_at: Some("2026-03-20T12:04:00Z".to_string()),
             last_exit_status: Some(1),
@@ -7598,6 +7630,10 @@ mod tests {
                     current_run_id: Some("01RUN".to_string()),
                     last_run_id: Some("01RUN".to_string()),
                     current_stage: Some("Implement".to_string()),
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -7629,6 +7665,10 @@ mod tests {
                     current_run_id: None,
                     last_run_id: Some("01FAIL".to_string()),
                     current_stage: Some("Review".to_string()),
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: Some(1),
@@ -7673,6 +7713,10 @@ mod tests {
             current_run_id: None,
             last_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -7740,6 +7784,10 @@ mod tests {
                     current_run_id: Some("01RUN".to_string()),
                     last_run_id: Some("01RUN".to_string()),
                     current_stage: Some("Implement".to_string()),
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -7771,6 +7819,10 @@ mod tests {
                     current_run_id: None,
                     last_run_id: Some("01FAIL".to_string()),
                     current_stage: Some("Review".to_string()),
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: Some(1),
@@ -8148,6 +8200,10 @@ mod tests {
                 current_run_id: None,
                 last_run_id: None,
                 current_stage: None,
+                current_stage_provider: None,
+                current_stage_cli_name: None,
+                time_in_current_stage_secs: None,
+                current_stage_idle_secs: None,
                 last_started_at: None,
                 last_finished_at: None,
                 last_exit_status: None,
@@ -8337,6 +8393,10 @@ mod tests {
                 current_run_id: Some("01KMTEST".to_string()),
                 last_run_id: Some("01KMTEST".to_string()),
                 current_stage: Some("Specify".to_string()),
+                current_stage_provider: None,
+                current_stage_cli_name: None,
+                time_in_current_stage_secs: None,
+                current_stage_idle_secs: None,
                 last_started_at: None,
                 last_finished_at: None,
                 last_exit_status: None,
@@ -8618,6 +8678,10 @@ mod tests {
                 current_run_id: Some("01CRAPSRUN".to_string()),
                 last_run_id: Some("01CRAPSRUN".to_string()),
                 current_stage: Some("Review".to_string()),
+                current_stage_provider: None,
+                current_stage_cli_name: None,
+                time_in_current_stage_secs: None,
+                current_stage_idle_secs: None,
                 last_started_at: None,
                 last_finished_at: None,
                 last_exit_status: None,

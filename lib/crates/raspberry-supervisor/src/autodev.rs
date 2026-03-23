@@ -62,6 +62,10 @@ pub struct AutodevCurrentSnapshot {
     pub running_lanes: Vec<String>,
     #[serde(default)]
     pub failed_lanes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running_lane_details: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_lane_details: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +84,7 @@ pub struct AutodevCycleReport {
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
+const STALL_WATCHDOG_RETRY_MIN_SECS: i64 = 30;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
@@ -1191,6 +1196,8 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
     let mut ready_lanes = Vec::new();
     let mut running_lanes = Vec::new();
     let mut failed_lanes = Vec::new();
+    let mut running_lane_details = Vec::new();
+    let mut failed_lane_details = Vec::new();
 
     for lane in &program.lanes {
         match lane.status {
@@ -1201,11 +1208,13 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
             LaneExecutionStatus::Running => {
                 running += 1;
                 running_lanes.push(lane.lane_key.clone());
+                running_lane_details.push(format_lane_snapshot(lane));
             }
             LaneExecutionStatus::Blocked => blocked += 1,
             LaneExecutionStatus::Failed => {
                 failed += 1;
                 failed_lanes.push(lane.lane_key.clone());
+                failed_lane_details.push(format_lane_snapshot(lane));
             }
             LaneExecutionStatus::Complete => complete += 1,
         }
@@ -1221,7 +1230,35 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
         ready_lanes,
         running_lanes,
         failed_lanes,
+        running_lane_details,
+        failed_lane_details,
     }
+}
+
+fn format_lane_snapshot(lane: &crate::evaluate::EvaluatedLane) -> String {
+    let mut parts = vec![lane.lane_key.clone()];
+    if let Some(stage) = lane.current_stage.as_ref() {
+        parts.push(format!("stage={stage}"));
+    }
+    if let Some(provider) = lane.current_stage_provider.as_ref() {
+        parts.push(format!("provider={provider}"));
+    }
+    if let Some(cli_name) = lane.current_stage_cli_name.as_ref() {
+        parts.push(format!("cli={cli_name}"));
+    }
+    if let Some(seconds) = lane.time_in_current_stage_secs {
+        parts.push(format!("stage_secs={seconds}"));
+    }
+    if let Some(seconds) = lane.current_stage_idle_secs {
+        parts.push(format!("idle_secs={seconds}"));
+    }
+    if let Some(kind) = lane.failure_kind {
+        parts.push(format!("failure={kind}"));
+    }
+    if let Some(action) = lane.recovery_action {
+        parts.push(format!("recovery={action}"));
+    }
+    parts.join(" | ")
 }
 
 fn dispatchable_failed_lanes(
@@ -1288,6 +1325,8 @@ fn replay_target_lane(
         FailureRecoveryAction::BackoffRetry => {
             let cooldown = if kind == FailureKind::TransientLaunchFailure {
                 TRANSIENT_LAUNCH_RETRY_MIN_SECS
+            } else if kind == FailureKind::StallWatchdog {
+                STALL_WATCHDOG_RETRY_MIN_SECS
             } else {
                 BACKOFF_RETRY_MIN_SECS
             };
@@ -1606,6 +1645,12 @@ mod tests {
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -1753,6 +1798,12 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    current_stage_started_at: None,
+                    current_stage_updated_at: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -1792,6 +1843,12 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    current_stage_started_at: None,
+                    current_stage_updated_at: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -1831,6 +1888,12 @@ units:
                     current_run_id: Some("01RUNNING".to_string()),
                     current_fabro_run_id: Some("01RUNNING".to_string()),
                     current_stage: Some("Implement".to_string()),
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    current_stage_started_at: None,
+                    current_stage_updated_at: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_run_id: Some("01RUNNING".to_string()),
                     last_started_at: None,
                     last_finished_at: None,
@@ -1925,6 +1988,12 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    current_stage_started_at: None,
+                    current_stage_updated_at: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -1964,6 +2033,12 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
+                    current_stage_provider: None,
+                    current_stage_cli_name: None,
+                    current_stage_started_at: None,
+                    current_stage_updated_at: None,
+                    time_in_current_stage_secs: None,
+                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -2058,6 +2133,12 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -2275,6 +2356,12 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -2334,6 +2421,12 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: Some("01KMTEST".to_string()),
             last_started_at: Some(Utc::now() - chrono::Duration::minutes(20)),
             last_finished_at: Some(Utc::now() - chrono::Duration::minutes(10)),
@@ -2389,6 +2482,12 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
+            current_stage_provider: None,
+            current_stage_cli_name: None,
+            current_stage_started_at: None,
+            current_stage_updated_at: None,
+            time_in_current_stage_secs: None,
+            current_stage_idle_secs: None,
             last_run_id: Some("01KMTEST".to_string()),
             last_started_at: Some(Utc::now() - chrono::Duration::minutes(1)),
             last_finished_at: Some(Utc::now() - chrono::Duration::seconds(30)),

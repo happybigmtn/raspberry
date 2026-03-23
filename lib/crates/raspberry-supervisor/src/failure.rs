@@ -156,7 +156,7 @@ pub fn classify_failure(
     {
         return Some(FailureKind::CapabilityContractMismatch);
     }
-    if combined.contains("stall watchdog") || combined.contains("had no activity for 1800s") {
+    if combined.contains("stall watchdog") || combined.contains("had no activity for 900s") {
         return Some(FailureKind::StallWatchdog);
     }
     if combined.contains("provider policy")
