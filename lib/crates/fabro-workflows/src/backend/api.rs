@@ -102,6 +102,7 @@ fn spawn_event_forwarder(
                 &event.event,
                 AgentEvent::SessionStarted
                     | AgentEvent::SessionEnded
+                    | AgentEvent::ProcessingEnd
                     | AgentEvent::AssistantTextStart
                     | AgentEvent::AssistantOutputReplace { .. }
                     | AgentEvent::TextDelta { .. }

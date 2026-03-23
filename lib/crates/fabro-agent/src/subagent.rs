@@ -86,6 +86,7 @@ impl SubAgentManager {
                             | AgentEvent::AssistantTextStart
                             | AgentEvent::SessionStarted
                             | AgentEvent::SessionEnded
+                            | AgentEvent::ProcessingEnd
                             | AgentEvent::SkillExpanded { .. }
                     ) {
                         continue;
