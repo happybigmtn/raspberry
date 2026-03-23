@@ -98,6 +98,7 @@ pub struct EvaluatedLane {
     pub ready_checks_failing: Vec<String>,
     pub running_checks_passing: Vec<String>,
     pub running_checks_failing: Vec<String>,
+    pub consecutive_failures: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,12 +222,15 @@ pub(crate) fn evaluate_program_internal(
         program_state.save(&state_path)?;
     }
     let _ = sync_autodev_report_with_program(&manifest_path, &manifest, &program);
+    // Expose the autodev controller's runtime max_parallel for display purposes
+    // only (e.g. `raspberry status`).  Do NOT override program.max_parallel — the
+    // manifest is the source of truth for scheduling, not a stale report from a
+    // previous controller session.
     if let Ok(Some(report)) =
         crate::autodev::load_optional_autodev_report(&manifest_path, &manifest)
     {
         if let Some(runtime_parallel) = report.current.and_then(|current| current.max_parallel) {
             program.runtime_max_parallel = Some(runtime_parallel);
-            program.max_parallel = runtime_parallel;
         }
     }
     if propagate_parents {
@@ -623,10 +627,21 @@ fn evaluate_lane(
     let unit = &manifest.units[unit_id];
     let lane = &unit.lanes[lane_id];
     let key = lane_key(unit_id, lane_id);
-    let run_snapshot = manifest
-        .resolve_lane_run_dir(manifest_path, unit_id, lane_id)
-        .map(|run_dir| load_run_snapshot(&run_dir))
-        .unwrap_or_default();
+    let should_load_run_snapshot = runtime_record
+        .map(|record| {
+            record.current_run_id.is_some()
+                || record.current_fabro_run_id.is_some()
+                || record.status == LaneExecutionStatus::Running
+        })
+        .unwrap_or(false);
+    let run_snapshot = if should_load_run_snapshot {
+        manifest
+            .resolve_lane_run_dir(manifest_path, unit_id, lane_id)
+            .map(|run_dir| load_run_snapshot(&run_dir))
+            .unwrap_or_default()
+    } else {
+        RunSnapshot::default()
+    };
     let check_result = evaluate_lane_checks(manifest_path, manifest, lane);
     let orchestration_state = lane_orchestration_state(manifest_path, lane);
     let child_program = summarize_child_program(manifest_path, lane);
@@ -711,6 +726,9 @@ fn evaluate_lane(
         ready_checks_failing: check_result.ready_failing,
         running_checks_passing: check_result.running_passing,
         running_checks_failing: check_result.running_failing,
+        consecutive_failures: runtime_record
+            .map(|record| record.consecutive_failures)
+            .unwrap_or(0),
     }
 }
 
@@ -894,7 +912,7 @@ fn classify_lane(
     if is_active(run_snapshot, runtime_record) {
         return LaneExecutionStatus::Running;
     }
-    if lane.kind == LaneKind::Orchestration && child_program.is_none() {
+    if lane_requires_child_program_manifest(lane) && child_program.is_none() {
         return LaneExecutionStatus::Blocked;
     }
     if is_failed(run_snapshot, runtime_record) {
@@ -1150,7 +1168,7 @@ fn blocked_detail(
     check_result: &LaneCheckResult,
     orchestration_state: Option<LaneOrchestrationState>,
 ) -> String {
-    if lane.kind == LaneKind::Orchestration && lane.program_manifest.is_none() {
+    if lane_requires_child_program_manifest(lane) && lane.program_manifest.is_none() {
         return "orchestration lane missing child program manifest".to_string();
     }
     if let Some(orchestration_state) = orchestration_state {
@@ -1187,6 +1205,17 @@ fn blocked_detail(
         .find(|dependency| !satisfied.contains(&dependency_key(dependency)))
         .map(dependency_display_key)
         .unwrap_or_else(|| format!("lane `{lane_key}` is blocked"))
+}
+
+fn lane_requires_child_program_manifest(lane: &crate::manifest::LaneManifest) -> bool {
+    if lane.kind == LaneKind::Orchestration {
+        return true;
+    }
+    lane.program_manifest.is_none()
+        && lane
+            .run_config
+            .components()
+            .any(|component| component.as_os_str() == "orchestration")
 }
 
 fn summarize_child_program(
@@ -1957,6 +1986,7 @@ units:
             last_files_written: Vec::new(),
             last_stdout_snippet: None,
             last_stderr_snippet: None,
+            consecutive_failures: 0,
         };
         let unit_status = evaluate_unit_status(
             &manifest_path,
@@ -2037,6 +2067,88 @@ units:
     }
 
     #[test]
+    fn service_lane_with_orchestration_run_config_stays_blocked() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+units:
+  - id: ops
+    title: Ops
+    milestones:
+      - id: reviewed
+        requires: []
+    lanes:
+      - id: deploy
+        title: Deploy
+        kind: service
+        run_config: malinka/run-configs/orchestration/deploy.toml
+        managed_milestone: reviewed
+"#,
+        )
+        .expect("manifest");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let unit = &manifest.units["ops"];
+        let lane = &unit.lanes["deploy"];
+        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let status = classify_lane(
+            "ops:deploy",
+            lane,
+            &BTreeSet::new(),
+            &UnitStatus {
+                lifecycle: "not_started".to_string(),
+                present_artifacts: Vec::new(),
+            },
+            Some(&LaneRuntimeRecord {
+                lane_key: "ops:deploy".to_string(),
+                status: LaneExecutionStatus::Failed,
+                run_config: Some(PathBuf::from(
+                    "malinka/run-configs/orchestration/deploy.toml",
+                )),
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage_label: None,
+                last_run_id: Some("01KMOLD".to_string()),
+                last_started_at: None,
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some("old supervisor-only failure".to_string()),
+                failure_kind: Some(FailureKind::SupervisorOnlyLane),
+                recovery_action: Some(FailureRecoveryAction::RegenerateLane),
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                consecutive_failures: 0,
+            }),
+            &RunSnapshot::default(),
+            &check_result,
+            lane_orchestration_state(&manifest_path, lane),
+            None,
+        );
+
+        assert_eq!(status, LaneExecutionStatus::Blocked);
+        assert_eq!(
+            blocked_detail(
+                "ops:deploy",
+                lane,
+                &BTreeSet::new(),
+                &check_result,
+                lane_orchestration_state(&manifest_path, lane),
+            ),
+            "orchestration lane missing child program manifest"
+        );
+    }
+
+    #[test]
     fn stale_runtime_complete_does_not_satisfy_managed_milestone_without_artifacts() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest_path = temp.path().join("program.yaml");
@@ -2093,6 +2205,7 @@ units:
             last_files_written: Vec::new(),
             last_stdout_snippet: None,
             last_stderr_snippet: None,
+            consecutive_failures: 0,
         };
 
         let unit_status = evaluate_unit_status(

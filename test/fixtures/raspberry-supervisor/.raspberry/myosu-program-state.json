@@ -1,7 +1,7 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "myosu-bootstrap",
-  "updated_at": "2026-03-22T18:32:05.519972914Z",
+  "updated_at": "2026-03-23T15:13:17.030474619Z",
   "lanes": {
     "chain:runtime": {
       "lane_key": "chain:runtime",
@@ -17,7 +17,6 @@
       "lane_key": "miner:service",
       "status": "failed",
       "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/miner-service.toml",
-      "current_stage_label": "Service Bringup",
       "last_run_id": "01MYOSUMINERRUN0000000000000",
       "last_started_at": "2026-03-18T23:20:00Z",
       "last_finished_at": "2026-03-18T23:20:00Z",

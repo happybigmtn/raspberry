@@ -132,6 +132,9 @@ pub fn execute_selected_lanes(
                             | LaneExecutionStatus::Complete
                     ));
             if !allowed {
+                if explicitly_selected && lane.status == LaneExecutionStatus::Running {
+                    continue;
+                }
                 return Err(DispatchError::LaneNotReady {
                     lane: lane.lane_key.clone(),
                 });

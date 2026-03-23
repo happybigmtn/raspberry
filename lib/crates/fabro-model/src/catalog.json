@@ -322,7 +322,7 @@
       "cache_input_cost_per_mtok": null
     },
     "estimated_output_tps": 45,
-    "aliases": ["minimax"],
+    "aliases": ["minimax", "MiniMax-M2.7-highspeed"],
     "default": true
   },
   {

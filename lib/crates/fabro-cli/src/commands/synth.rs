@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
 use clap::{Args, Subcommand};
+use fabro_model::{automation_chain, AutomationProfile, Provider};
 use fabro_synthesis::{
     author_blueprint_for_create_with_planning_root, import_existing_package, load_blueprint,
     render_blueprint, save_blueprint, ImportRequest, RenderRequest,
 };
+use fabro_workflows::backend::{parse_cli_response, select_automation_codex_home};
 use raspberry_supervisor::{
     load_plan_registry, load_plan_registry_from_planning_root,
     load_plan_registry_relaxed_from_planning_root, PlanRecord, ProgramRuntimeState,
@@ -26,6 +27,119 @@ pub enum SynthCommand {
     Review(SynthReviewArgs),
     /// Generate SPEC.md, PLANS.md, and numbered plans for an unfamiliar codebase, then run synth create
     Genesis(SynthGenesisArgs),
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn automation_cli_command(
+    provider: Provider,
+    model: &str,
+    prompt_file: &Path,
+    max_turns: usize,
+    anthropic_text: bool,
+) -> String {
+    let prompt_file = shell_quote(&prompt_file.display().to_string());
+    match provider {
+        Provider::Anthropic => {
+            let output_format = if anthropic_text { "text" } else { "stream-json" };
+            format!(
+                "cat {prompt_file} | CLAUDECODE= claude -p --output-format {output_format} --dangerously-skip-permissions --model {model} --max-turns {max_turns}"
+            )
+        }
+        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => format!(
+            "cat {prompt_file} | codex exec --json --yolo -m {model}"
+        ),
+        Provider::Minimax => format!(
+            "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,edit,write,grep,find,ls --model {model} --thinking high \"$prompt\""
+        ),
+        Provider::Gemini => format!("cat {prompt_file} | gemini -o json --yolo -m {model}"),
+    }
+}
+
+fn run_automation_chain(
+    profile: AutomationProfile,
+    prompt_file: &Path,
+    cwd: &Path,
+    max_turns: usize,
+    anthropic_text: bool,
+) -> anyhow::Result<String> {
+    let mut failures = Vec::new();
+    for target in automation_chain(profile) {
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(automation_cli_command(
+            target.provider,
+            target.model,
+            prompt_file,
+            max_turns,
+            anthropic_text,
+        ));
+        command.current_dir(cwd);
+        if target.provider == Provider::OpenAi {
+            if let Some(codex_home) = select_automation_codex_home() {
+                command.env("CODEX_HOME", codex_home);
+            }
+        }
+        let output = command.output()?;
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let text = if target.provider == Provider::Anthropic && anthropic_text {
+                stdout.trim().to_string()
+            } else {
+                parse_cli_response(target.provider, &stdout)
+                    .map(|response| response.text)
+                    .unwrap_or_else(|| stdout.to_string())
+                    .trim()
+                    .to_string()
+            };
+            if !text.is_empty() {
+                return Ok(text);
+            }
+            failures.push(format!(
+                "{}:{} returned success with empty output",
+                target.provider.as_str(),
+                target.model
+            ));
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let parsed = if target.provider == Provider::Anthropic {
+            None
+        } else {
+            parse_cli_response(target.provider, &stdout)
+                .map(|response| response.text.trim().to_string())
+                .filter(|text| !text.is_empty())
+        };
+        let detail = parsed
+            .or_else(|| {
+                let stderr = stderr.trim();
+                (!stderr.is_empty()).then(|| stderr.to_string())
+            })
+            .or_else(|| {
+                let stdout = stdout.trim();
+                (!stdout.is_empty()).then(|| stdout.to_string())
+            })
+            .unwrap_or_else(|| "no stderr/stdout".to_string());
+        failures.push(format!(
+            "{}:{} failed: {}",
+            target.provider.as_str(),
+            target.model,
+            detail
+        ));
+    }
+
+    anyhow::bail!("all automation providers failed:\n{}", failures.join("\n"))
+}
+
+fn automation_profile_name(profile: AutomationProfile) -> &'static str {
+    match profile {
+        AutomationProfile::Write => "write",
+        AutomationProfile::Review => "review",
+        AutomationProfile::Synth => "synth",
+    }
 }
 
 #[derive(Debug, Args)]
@@ -108,13 +222,6 @@ pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!("claude CLI not found; required for synth review");
-    }
-
     // Build a manifest of all mapping contracts for Opus to review
     let mut contracts = Vec::new();
     for plan in &composite_plans {
@@ -167,34 +274,25 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     std::fs::write(prompt_file.path(), &review_prompt)?;
 
     println!(
-        "Eng-reviewing {} mapping contracts with {} ...",
+        "Eng-reviewing {} mapping contracts with {} profile ...",
         composite_plans.len(),
-        DECOMPOSE_MODEL
+        automation_profile_name(AutomationProfile::Review)
     );
-
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 50",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(&args.target_repo)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Opus review failed: {}", stderr.trim());
-    }
+    let review_output = run_automation_chain(
+        AutomationProfile::Review,
+        prompt_file.path(),
+        &args.target_repo,
+        50,
+        true,
+    )?;
 
     let report_path = mappings_dir.join("review-report.md");
     if report_path.exists() {
         println!("Review report written to: {}", report_path.display());
     } else {
         println!("Review completed (report may be in stdout)");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.trim().is_empty() {
-            println!("{}", stdout);
+        if !review_output.trim().is_empty() {
+            println!("{}", review_output);
         }
     }
 
@@ -222,14 +320,6 @@ fn run_decomposition_review(target_repo: &std::path::Path) -> anyhow::Result<()>
         .collect();
 
     if composite_plans.is_empty() {
-        return Ok(());
-    }
-
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        eprintln!("  [review] claude CLI not found; skipping decomposition review");
         return Ok(());
     }
 
@@ -311,85 +401,18 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     std::fs::write(prompt_file.path(), &review_prompt)?;
 
     println!(
-        "Eng-reviewing {} decomposition contracts ...",
-        composite_plans.len()
+        "Eng-reviewing {} decomposition contracts with {} profile ...",
+        composite_plans.len(),
+        automation_profile_name(AutomationProfile::Review)
     );
-
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 50",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(target_repo)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Stream stderr
-    let stderr_handle = {
-        let stderr = child.stderr.take().expect("stderr piped");
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                eprintln!("  [review] {line}");
-            }
-        })
-    };
-
-    // Stream stdout JSON for live output
-    let stdout_handle = {
-        let stdout = child.stdout.take().expect("stdout piped");
-        std::thread::spawn(move || {
-            use std::io::{BufRead, Write};
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if event_type == "assistant" {
-                    if let Some(content) = event
-                        .get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_array())
-                    {
-                        for block in content {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                    eprint!("{text}");
-                                    let _ = std::io::stderr().flush();
-                                }
-                            }
-                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                                    let hint = block
-                                        .get("input")
-                                        .and_then(|i| {
-                                            i.get("file_path").or_else(|| i.get("command"))
-                                        })
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let short = if hint.len() > 60 { &hint[..60] } else { hint };
-                                    eprintln!("\n  [review-tool] {name}: {short}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
-
-    let status = child.wait()?;
-    let _ = stderr_handle.join();
-    let _ = stdout_handle.join();
-    eprintln!();
-
-    if !status.success() {
-        eprintln!("  [review] review process exited with non-zero status; continuing with current mappings");
+    if let Err(err) = run_automation_chain(
+        AutomationProfile::Review,
+        prompt_file.path(),
+        target_repo,
+        50,
+        false,
+    ) {
+        eprintln!("  [review] review process failed; continuing with current mappings: {err}");
     }
 
     let report_path = mappings_dir.join("review-report.md");
@@ -412,13 +435,6 @@ pub struct SynthGenesisArgs {
 }
 
 pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!("claude CLI not found; required for synth genesis");
-    }
-
     let genesis_dir = args.target_repo.join("genesis");
     if genesis_dir.exists() {
         let has_contents = std::fs::read_dir(&genesis_dir)?
@@ -442,155 +458,18 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         "Running genesis analysis on {} ...",
         args.target_repo.display()
     );
-    println!("Opus is exploring the codebase and drafting a 180-day turnaround plan.");
+    println!(
+        "{} profile is exploring the codebase and drafting a 180-day turnaround plan.",
+        automation_profile_name(AutomationProfile::Synth)
+    );
     println!();
-
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 200",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(&args.target_repo)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let success_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Stream stderr for CLI-level messages
-    let stderr_handle = {
-        let stderr = child.stderr.take().expect("stderr piped");
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
-            let mut collected = Vec::new();
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                eprintln!("  [genesis] {line}");
-                collected.push(line);
-            }
-            collected
-        })
-    };
-
-    // Stream stdout JSON lines for real-time Claude output
-    let stdout_handle = {
-        let stdout = child.stdout.take().expect("stdout piped");
-        let success_seen = success_seen.clone();
-        std::thread::spawn(move || {
-            use std::io::{BufRead, Write};
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                match event_type {
-                    "assistant" => {
-                        // Text content from Claude
-                        if let Some(message) = event.get("message") {
-                            if let Some(content) = message.get("content").and_then(|c| c.as_array())
-                            {
-                                for block in content {
-                                    if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                        if let Some(text) =
-                                            block.get("text").and_then(|v| v.as_str())
-                                        {
-                                            eprint!("{text}");
-                                            let _ = std::io::stderr().flush();
-                                        }
-                                    }
-                                    if block.get("type").and_then(|v| v.as_str())
-                                        == Some("tool_use")
-                                    {
-                                        if let Some(name) =
-                                            block.get("name").and_then(|v| v.as_str())
-                                        {
-                                            let path_hint = block
-                                                .get("input")
-                                                .and_then(|i| {
-                                                    i.get("file_path").or_else(|| i.get("command"))
-                                                })
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            let short = if path_hint.len() > 60 {
-                                                &path_hint[..60]
-                                            } else {
-                                                path_hint
-                                            };
-                                            eprintln!("\n  [tool] {name}: {short}");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "result" => {
-                        // Final result
-                        if let Some(sub) = event.get("subtype").and_then(|v| v.as_str()) {
-                            eprintln!("\n  [genesis] result: {sub}");
-                            if sub == "success" {
-                                success_seen.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            success_seen.load(std::sync::atomic::Ordering::Relaxed)
-        })
-    };
-
-    let outputs_ready = |genesis_dir: &Path| -> bool {
-        let plans_dir = genesis_dir.join("plans");
-        let plan_count = std::fs::read_dir(&plans_dir)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| {
-                        entry.path().extension().and_then(|ext| ext.to_str()) == Some("md")
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
-        plan_count > 0
-            && genesis_dir.join("SPEC.md").is_file()
-            && genesis_dir.join("PLANS.md").is_file()
-            && genesis_dir.join("ASSESSMENT.md").is_file()
-            && genesis_dir.join("GENESIS-REPORT.md").is_file()
-    };
-    let wait_started = std::time::Instant::now();
-    let mut success_seen_at = None;
-    let status = loop {
-        if let Some(exit_status) = child.try_wait()? {
-            break exit_status;
-        }
-        if success_seen.load(std::sync::atomic::Ordering::Relaxed) && outputs_ready(&genesis_dir) {
-            success_seen_at.get_or_insert_with(std::time::Instant::now);
-            if success_seen_at
-                .as_ref()
-                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
-            {
-                let _ = child.kill();
-                break child.wait()?;
-            }
-        }
-        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("Genesis timed out after 20 minutes waiting for Claude to exit");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    };
-    let genesis_success = stdout_handle.join().unwrap_or(false);
-    let stderr_lines = stderr_handle.join().unwrap_or_default();
-
-    if !status.success() && !genesis_success {
-        let stderr = stderr_lines.join("\n");
-        anyhow::bail!("Genesis failed: {}", stderr.trim());
-    }
+    run_automation_chain(
+        AutomationProfile::Synth,
+        prompt_file.path(),
+        &args.target_repo,
+        200,
+        false,
+    )?;
 
     // Verify outputs were written
     let spec_path = genesis_dir.join("SPEC.md");
@@ -1000,16 +879,14 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let autodev_summary = summarize_autodev_report(&args.target_repo, &program)?;
 
     if args.no_review {
-        let body = deterministic_steering_report(
+        write_deterministic_steering_report(
             &program,
             &manifest_path,
             &report_path,
             &recent_output_lines,
             &runtime_summary,
             &autodev_summary,
-        );
-        fabro_workflows::write_text_atomic(&report_path, &body, "steering report")
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        )?;
         println!("Program: {program}");
         println!("Mode: evolve (deterministic steering report)");
         if args.preview_root.is_some() {
@@ -1032,31 +909,20 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let prompt_file = tempfile::NamedTempFile::new()?;
     std::fs::write(prompt_file.path(), &prompt)?;
 
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!("claude CLI not found; required for synth evolve steering");
-    }
-
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 80",
-            prompt_file.path().display(),
-            STEERING_MODEL,
-        ))
-        .current_dir(&args.target_repo)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Opus steering failed: {}", stderr.trim());
-    }
+    run_automation_chain(
+        AutomationProfile::Synth,
+        prompt_file.path(),
+        &args.target_repo,
+        80,
+        true,
+    )?;
 
     let written_files = collect_malinka_written_files(output_repo)?;
     println!("Program: {program}");
-    println!("Mode: evolve (Opus steering)");
+    println!(
+        "Mode: evolve ({} steering)",
+        automation_profile_name(AutomationProfile::Synth)
+    );
     println!("Report: {}", report_path.display());
     if args.preview_root.is_some() {
         println!("Preview root: {}", output_repo.display());
@@ -1080,7 +946,6 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-const STEERING_MODEL: &str = "claude-opus-4-6";
 const DEFAULT_STEERING_LOOKBACK_HOURS: u64 = 6;
 
 fn seed_preview_root_from_current_package(
@@ -1294,6 +1159,26 @@ fn deterministic_steering_report(
     body.push_str("\n## Next Risks\n\n");
     body.push_str("- This report may be stale unless followed by a reviewed steering pass.\n");
     body
+}
+
+fn write_deterministic_steering_report(
+    program: &str,
+    manifest_path: &std::path::Path,
+    report_path: &std::path::Path,
+    recent_outputs: &[String],
+    runtime_summary: &str,
+    autodev_summary: &str,
+) -> anyhow::Result<()> {
+    let body = deterministic_steering_report(
+        program,
+        manifest_path,
+        report_path,
+        recent_outputs,
+        runtime_summary,
+        autodev_summary,
+    );
+    fabro_workflows::write_text_atomic(report_path, &body, "steering report")
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1876,8 +1761,6 @@ fn infer_owned_surfaces(child_id: &str, plan_body: &str) -> Vec<String> {
     surfaces
 }
 
-const DECOMPOSE_MODEL: &str = "claude-opus-4-6";
-
 fn run_opus_decomposition(
     target_repo: &std::path::Path,
     planning_root: &std::path::Path,
@@ -1891,17 +1774,6 @@ fn run_opus_decomposition(
 
     if composite_plans.is_empty() {
         return Ok(OpusDecompositionReport::default());
-    }
-
-    let claude_check = std::process::Command::new("claude")
-        .arg("--version")
-        .output();
-    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
-        anyhow::bail!(
-            "claude CLI not found; required for decomposition. \
-             Use --no-decompose for heuristic-only mode, or install: \
-             npm install -g @anthropic-ai/claude-code"
-        );
     }
 
     let mappings_dir = target_repo
@@ -1942,71 +1814,18 @@ fn run_opus_decomposition(
         .map(|plan| mapping_snapshot_path(plan))
         .collect::<BTreeSet<_>>();
     println!(
-        "Decomposing {count} composite plans with {} (parallel agent team) ...",
-        DECOMPOSE_MODEL
+        "Decomposing {count} composite plans with {} profile (parallel agent team) ...",
+        automation_profile_name(AutomationProfile::Synth)
     );
-
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
-            prompt_file.path().display(),
-            DECOMPOSE_MODEL,
-        ))
-        .current_dir(target_repo)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let stderr_handle = {
-        let stderr = child.stderr.take().expect("stderr piped");
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
-            let mut collected = Vec::new();
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                eprintln!("  [decompose] {line}");
-                collected.push(line);
-            }
-            collected
-        })
-    };
-
-    // Count only mappings refreshed by this invocation.
-    let wait_started = std::time::Instant::now();
-    let mut refreshed_seen_at = None;
-    let (status, refreshed_paths) = loop {
-        let refreshed_paths =
-            refreshed_opus_paths_for_run(target_repo, &composite_plans, run_id.as_str());
-        if refreshed_paths.len() == expected_paths.len() {
-            refreshed_seen_at.get_or_insert_with(std::time::Instant::now);
-            if refreshed_seen_at
-                .as_ref()
-                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
-            {
-                let _ = child.kill();
-                break (child.wait()?, refreshed_paths);
-            }
-        }
-        if let Some(status) = child.try_wait()? {
-            break (status, refreshed_paths);
-        }
-        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("Opus decomposition timed out after 20 minutes");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    };
-    let stderr_lines = stderr_handle.join().unwrap_or_default();
-
-    if !status.success() && refreshed_paths.is_empty() {
-        anyhow::bail!(
-            "Opus decomposition failed: {}",
-            stderr_lines.join("\n").trim()
-        );
-    }
+    run_automation_chain(
+        AutomationProfile::Synth,
+        prompt_file.path(),
+        target_repo,
+        200,
+        true,
+    )?;
+    let refreshed_paths =
+        refreshed_opus_paths_for_run(target_repo, &composite_plans, run_id.as_str());
 
     println!(
         "  Decomposed {}/{count} composite plans",

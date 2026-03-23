@@ -89,9 +89,26 @@ const STATUS_FIELDS: &[&str] = &[
     "context_updates",
 ];
 
-const PROMPT_BUDGET_BYTES: usize = 900_000;
+const DEFAULT_PROMPT_BUDGET_BYTES: usize = 900_000;
 const PROMPT_TRUNCATION_BANNER: &str =
     "\n\n[Earlier workflow context truncated to fit runtime prompt budget]\n\n";
+// ~4 bytes per token is a conservative estimate for mixed-language prompts.
+const BYTES_PER_TOKEN: usize = 4;
+
+/// Compute the prompt budget for a model by reserving space for output tokens.
+/// Falls back to `DEFAULT_PROMPT_BUDGET_BYTES` when the model is not in the catalog.
+pub(crate) fn prompt_budget_for_model(model: Option<&str>) -> usize {
+    let Some(model_id) = model else {
+        return DEFAULT_PROMPT_BUDGET_BYTES;
+    };
+    let Some(info) = fabro_model::get_model_info(model_id) else {
+        return DEFAULT_PROMPT_BUDGET_BYTES;
+    };
+    let context_tokens = info.limits.context_window as usize;
+    let output_tokens = info.limits.max_output.unwrap_or(0).max(0) as usize;
+    let input_tokens = context_tokens.saturating_sub(output_tokens);
+    (input_tokens * BYTES_PER_TOKEN).max(100_000)
+}
 
 /// Find all balanced `{...}` JSON object substrings in the text.
 fn find_json_objects(text: &str) -> Vec<&str> {
@@ -233,14 +250,18 @@ pub(crate) struct PreparedPrompt {
     pub full_prompt: Option<String>,
 }
 
-pub(crate) fn prepare_prompt(preamble: &str, expanded_prompt: &str) -> PreparedPrompt {
+pub(crate) fn prepare_prompt(
+    preamble: &str,
+    expanded_prompt: &str,
+    budget: usize,
+) -> PreparedPrompt {
     let full_prompt = if preamble.is_empty() {
         expanded_prompt.to_string()
     } else {
         format!("{preamble}\n\n{expanded_prompt}")
     };
 
-    if full_prompt.len() <= PROMPT_BUDGET_BYTES {
+    if full_prompt.len() <= budget {
         return PreparedPrompt {
             prompt: full_prompt,
             full_prompt: None,
@@ -248,13 +269,13 @@ pub(crate) fn prepare_prompt(preamble: &str, expanded_prompt: &str) -> PreparedP
     }
 
     let prompt = if preamble.is_empty() {
-        truncate_middle_by_bytes(expanded_prompt, PROMPT_BUDGET_BYTES)
+        truncate_middle_by_bytes(expanded_prompt, budget)
     } else {
         let fixed_overhead = expanded_prompt.len() + PROMPT_TRUNCATION_BANNER.len();
-        if fixed_overhead >= PROMPT_BUDGET_BYTES {
-            truncate_middle_by_bytes(expanded_prompt, PROMPT_BUDGET_BYTES)
+        if fixed_overhead >= budget {
+            truncate_middle_by_bytes(expanded_prompt, budget)
         } else {
-            let preamble_budget = PROMPT_BUDGET_BYTES - fixed_overhead;
+            let preamble_budget = budget - fixed_overhead;
             let truncated_preamble = truncate_middle_by_bytes(preamble, preamble_budget);
             format!("{truncated_preamble}{PROMPT_TRUNCATION_BANNER}{expanded_prompt}")
         }
@@ -313,7 +334,8 @@ impl Handler for AgentHandler {
             .unwrap_or_else(|| node.label());
         let expanded = expand_variables(raw_prompt, graph)?;
         let preamble = context.preamble();
-        let prepared_prompt = prepare_prompt(&preamble, &expanded);
+        let budget = prompt_budget_for_model(node.model());
+        let prepared_prompt = prepare_prompt(&preamble, &expanded, budget);
         let prompt = prepared_prompt.prompt;
 
         // 2. Write prompt to logs
@@ -1228,10 +1250,10 @@ Some text in between.
         let preamble = "history\n".repeat(200_000);
         let current = "Current instructions must remain intact.";
 
-        let prepared = prepare_prompt(&preamble, current);
+        let prepared = prepare_prompt(&preamble, current, DEFAULT_PROMPT_BUDGET_BYTES);
 
         assert!(prepared.full_prompt.is_some());
-        assert!(prepared.prompt.len() <= PROMPT_BUDGET_BYTES);
+        assert!(prepared.prompt.len() <= DEFAULT_PROMPT_BUDGET_BYTES);
         assert!(prepared.prompt.contains(current));
         assert!(
             prepared

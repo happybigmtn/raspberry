@@ -14,7 +14,7 @@ use fabro_agent::{
 use fabro_config::run::{RunDefaults, WorkflowRunConfig};
 use fabro_config::{project as project_config, run as run_config, sandbox as sandbox_config};
 use fabro_interview::{AutoApproveInterviewer, ConsoleInterviewer, FileInterviewer, Interviewer};
-use fabro_model::Provider;
+use fabro_model::{automation_primary_target, AutomationProfile, Provider};
 use fabro_util::terminal::Styles;
 use fabro_validate::Severity;
 use fabro_workflows::backend::{AgentApiBackend, AgentCliBackend, BackendRouter};
@@ -40,12 +40,10 @@ use crate::commands::shared::{
     format_tokens_human, print_diagnostics, read_workflow_file, relative_path, tilde_path,
 };
 
-const DEFAULT_WRITE_PROVIDER: Provider = Provider::Minimax;
-const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-
 fn default_write_model_for_provider(provider: Provider) -> String {
-    if provider == Provider::Minimax {
-        return DEFAULT_WRITE_MODEL.to_string();
+    let write_target = automation_primary_target(AutomationProfile::Write);
+    if provider == write_target.provider {
+        return write_target.model.to_string();
     }
     fabro_model::default_model_for_provider(provider.as_str())
         .map(|model| model.id)
@@ -240,7 +238,7 @@ pub(crate) fn resolve_model_provider(
             let provider_enum = provider
                 .as_deref()
                 .and_then(|s| s.parse::<Provider>().ok())
-                .unwrap_or(DEFAULT_WRITE_PROVIDER);
+                .unwrap_or(automation_primary_target(AutomationProfile::Write).provider);
             default_write_model_for_provider(provider_enum)
         });
 
@@ -248,8 +246,9 @@ pub(crate) fn resolve_model_provider(
     match fabro_model::get_model_info(&model) {
         Some(info) => (info.id, Some(info.provider)),
         None => {
-            let provider = if provider.is_none() && model == DEFAULT_WRITE_MODEL {
-                Some(DEFAULT_WRITE_PROVIDER.as_str().to_string())
+            let write_target = automation_primary_target(AutomationProfile::Write);
+            let provider = if provider.is_none() && model == write_target.model {
+                Some(write_target.provider.as_str().to_string())
             } else {
                 provider
             };
@@ -1513,7 +1512,7 @@ pub async fn run_command(
         .map(|s| s.parse::<Provider>())
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .unwrap_or(DEFAULT_WRITE_PROVIDER);
+        .unwrap_or(automation_primary_target(AutomationProfile::Write).provider);
 
     // Resolve fallback chain from config
     let fallback_chain = resolve_fallback_chain(provider_enum, &model, run_cfg.as_ref());
@@ -2377,16 +2376,18 @@ async fn run_from_branch(
             .map(|c| c.provider_names().is_empty())
             .unwrap_or(true);
 
-    let model = args
-        .model
-        .unwrap_or_else(|| DEFAULT_WRITE_MODEL.to_string());
+    let model = args.model.unwrap_or_else(|| {
+        automation_primary_target(AutomationProfile::Write)
+            .model
+            .to_string()
+    });
     let provider_enum = args
         .provider
         .as_deref()
         .map(|s| s.parse::<fabro_model::Provider>())
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .unwrap_or(DEFAULT_WRITE_PROVIDER);
+        .unwrap_or(automation_primary_target(AutomationProfile::Write).provider);
 
     // No fallback config available for branch resume; use empty chain.
     let fallback_chain = Vec::new();

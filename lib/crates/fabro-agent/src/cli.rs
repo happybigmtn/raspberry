@@ -6,7 +6,7 @@ use crate::{
 };
 use clap::{Args, Parser};
 use fabro_llm::client::Client;
-use fabro_model::{ModelId, Provider};
+use fabro_model::{automation_primary_target, AutomationProfile, ModelId, Provider};
 use fabro_util::terminal::Styles;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -60,9 +60,6 @@ struct Cli {
 
 pub use fabro_config::cli::{OutputFormat, PermissionLevel};
 
-const DEFAULT_WRITE_PROVIDER: &str = "minimax";
-const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-
 impl AgentArgs {
     /// Fill `None` fields from cli.toml values, then hardcoded defaults.
     pub fn apply_cli_defaults(
@@ -76,7 +73,14 @@ impl AgentArgs {
             .provider
             .take()
             .or_else(|| provider.map(String::from))
-            .or_else(|| Some(DEFAULT_WRITE_PROVIDER.to_string()));
+            .or_else(|| {
+                Some(
+                    automation_primary_target(AutomationProfile::Write)
+                        .provider
+                        .as_str()
+                        .to_string(),
+                )
+            });
         self.model = self.model.take().or_else(|| model.map(String::from));
         self.permissions = self
             .permissions
@@ -389,8 +393,9 @@ pub async fn run_with_args_and_client(
 
     // Resolve model and build profile
     let model = args.model.unwrap_or_else(|| {
-        if provider == Provider::Minimax {
-            DEFAULT_WRITE_MODEL.to_string()
+        let write_target = automation_primary_target(AutomationProfile::Write);
+        if provider == write_target.provider {
+            write_target.model.to_string()
         } else {
             fabro_model::default_model_for_provider(provider.as_str())
                 .map(|m| m.id)

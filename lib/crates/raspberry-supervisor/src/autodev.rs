@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,6 +82,14 @@ pub struct AutodevCurrentSnapshot {
     pub running_lanes: Vec<String>,
     #[serde(default)]
     pub failed_lanes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub critical_blockers: Vec<CriticalBlocker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriticalBlocker {
+    pub lane_key: String,
+    pub blocked_downstream: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,8 +112,10 @@ const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
+const MAX_SURFACE_BLOCKED_RETRIES: u32 = 10;
 const REGENERATE_SPARE_CAPACITY_RETRY_SECS: u64 = 15;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
+const SYNTH_EVOLVE_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -115,6 +125,16 @@ const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
 ];
+
+fn autodev_debug_steps_enabled() -> bool {
+    std::env::var_os("FABRO_AUTODEV_DEBUG_STEPS").is_some()
+}
+
+fn autodev_debug_step(program: &str, cycle: usize, message: &str) {
+    if autodev_debug_steps_enabled() {
+        eprintln!("[autodev-step] program={program} cycle={cycle} {message}");
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutodevStopReason {
@@ -230,6 +250,15 @@ pub enum AutodevError {
     ProgramState(#[from] ProgramStateError),
 }
 
+fn is_synth_evolve_timeout(error: &AutodevError) -> bool {
+    match error {
+        AutodevError::FabroFailed {
+            step, exit_status, ..
+        } => step == "synth evolve" && matches!(*exit_status, 124 | 137 | 143),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FrontierSignature {
     ready: usize,
@@ -332,8 +361,11 @@ pub fn orchestrate_program(
         }
 
         cycle_number += 1;
+        autodev_debug_step(&initial_manifest.program, cycle_number, "cycle-start");
         let manifest = ProgramManifest::load(&manifest_path)?;
+        autodev_debug_step(&manifest.program, cycle_number, "manifest-loaded");
         let program_before = evaluate_program(&manifest_path)?;
+        autodev_debug_step(&manifest.program, cycle_number, "program-before-evaluated");
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);
         let complete_before =
@@ -360,6 +392,15 @@ pub fn orchestrate_program(
             failed_recovery_keys: failed_recovery_keys(&program_before),
         };
         let doctrine_changed = doctrine_inputs_changed(&manifest_path, &manifest, settings)?;
+        autodev_debug_step(
+            &manifest.program,
+            cycle_number,
+            &format!(
+                "frontier ready={ready_before} running={running_before} replayable={} regenerable={} doctrine_changed={doctrine_changed}",
+                replayable_failures_before.len(),
+                regenerable_failures.len()
+            ),
+        );
 
         let mut evolved = false;
         let mut evolve_target = None;
@@ -374,23 +415,50 @@ pub fn orchestrate_program(
             !regenerable_failures.is_empty(),
             last_evolve_frontier.as_ref(),
         ) {
-            run_synth_evolve(&manifest_path, &manifest, settings)?;
-            last_evolve_at = Some(Instant::now());
-            last_evolve_frontier = Some(frontier_before);
-            evolved = true;
-            evolve_target = Some(
-                settings
-                    .preview_evolve_root
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| {
-                        manifest
-                            .resolved_target_repo(&manifest_path)
-                            .display()
-                            .to_string()
-                    }),
-            );
+            autodev_debug_step(&manifest.program, cycle_number, "running-synth-evolve");
+            match run_synth_evolve(&manifest_path, &manifest, settings) {
+                Ok(()) => {
+                    last_evolve_at = Some(Instant::now());
+                    last_evolve_frontier = Some(frontier_before);
+                    evolved = true;
+                    evolve_target = Some(
+                        settings
+                            .preview_evolve_root
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| {
+                                manifest
+                                    .resolved_target_repo(&manifest_path)
+                                    .display()
+                                    .to_string()
+                            }),
+                    );
+                }
+                Err(error) if is_synth_evolve_timeout(&error) => {
+                    autodev_debug_step(
+                        &manifest.program,
+                        cycle_number,
+                        "synth-evolve-timeout-skipping-cycle-evolve",
+                    );
+                    eprintln!(
+                        "[autodev] synth evolve timed out for program `{}`; skipping evolve this cycle",
+                        manifest.program
+                    );
+                    last_evolve_at = Some(Instant::now());
+                    last_evolve_frontier = Some(frontier_before);
+                }
+                Err(error) => return Err(error),
+            }
         }
+        autodev_debug_step(
+            &manifest.program,
+            cycle_number,
+            if evolved {
+                "evolve-complete"
+            } else {
+                "evolve-skipped"
+            },
+        );
 
         let manifest = if evolved {
             ProgramManifest::load(&manifest_path)?
@@ -402,6 +470,11 @@ pub fn orchestrate_program(
         } else {
             program_before
         };
+        autodev_debug_step(
+            &manifest.program,
+            cycle_number,
+            "program-after-evolve-evaluated",
+        );
         let regenerate_noop_lanes = if evolved {
             let noop_lanes = detect_regenerate_noop_lanes(
                 &regenerable_failures,
@@ -443,6 +516,16 @@ pub fn orchestrate_program(
         let remaining_slots = available_slots.saturating_sub(replayed_lanes.len());
         let mut lanes_to_dispatch = replayed_lanes.clone();
         lanes_to_dispatch.extend(ready_lanes.iter().take(remaining_slots).cloned());
+        autodev_debug_step(
+            &manifest.program,
+            cycle_number,
+            &format!(
+                "dispatch-plan available_slots={available_slots} replayed={} ready={} dispatching={}",
+                replayed_lanes.len(),
+                ready_lanes.len(),
+                lanes_to_dispatch.len()
+            ),
+        );
 
         let dispatched = if lanes_to_dispatch.is_empty() {
             Vec::new()
@@ -465,8 +548,31 @@ pub fn orchestrate_program(
                 },
             )?
         };
+        autodev_debug_step(
+            &manifest.program,
+            cycle_number,
+            &format!("dispatch-complete outcomes={}", dispatched.len()),
+        );
 
-        let program_after = evaluate_program(&manifest_path)?;
+        // Skip redundant evaluation when nothing changed (no dispatch, no evolve).
+        // Between program_before and here only ms elapsed; re-evaluating 221 lanes
+        // with check probes and progress file reads is wasted work.
+        let program_after = if dispatched.is_empty() && !evolved {
+            autodev_debug_step(
+                &manifest.program,
+                cycle_number,
+                "program-after-dispatch-skipped-no-changes",
+            );
+            program
+        } else {
+            let p = evaluate_program(&manifest_path)?;
+            autodev_debug_step(
+                &manifest.program,
+                cycle_number,
+                "program-after-dispatch-evaluated",
+            );
+            p
+        };
         let running_after = program_after
             .lanes
             .iter()
@@ -492,6 +598,7 @@ pub fn orchestrate_program(
         report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
         report.updated_at = Utc::now();
         save_autodev_report(&manifest_path, &manifest, &report)?;
+        autodev_debug_step(&manifest.program, cycle_number, "report-saved");
         maybe_refresh_paperclip_dashboard(
             &manifest_path,
             &manifest,
@@ -518,6 +625,7 @@ pub fn orchestrate_program(
             )?
             && has_more_cycles(max_cycles, cycle_number)
         {
+            autodev_debug_step(&manifest.program, cycle_number, "advanced-child-programs");
             thread::sleep(poll_interval);
             continue;
         }
@@ -710,13 +818,15 @@ fn should_evolve(last_evolve_at: Option<Instant>, evolve_every: Duration) -> boo
 
 fn should_fast_track_regenerate_evolve(
     last_evolve_at: Option<Instant>,
-    frontier: &FrontierSignature,
-    max_parallel: usize,
+    _frontier: &FrontierSignature,
+    _max_parallel: usize,
     frontier_progressed: bool,
     recovery_needs_evolve: bool,
 ) -> bool {
-    let spare_capacity = frontier.running < max_parallel;
-    if !recovery_needs_evolve || !spare_capacity {
+    // Evolve re-synthesises run configs without consuming a parallel slot, so
+    // it must not be gated on spare dispatch capacity.  Otherwise regenerable
+    // lanes deadlock when all slots are occupied by running/replaying work.
+    if !recovery_needs_evolve {
         return false;
     }
     let Some(last_evolve_at) = last_evolve_at else {
@@ -1182,7 +1292,43 @@ fn current_snapshot(
             }
             LaneExecutionStatus::Complete => complete += 1,
         }
+
+        if lane.status != LaneExecutionStatus::Running {
+            let (nested_running, nested_running_lanes) =
+                nested_child_running_from_detail(&lane.detail);
+            running += nested_running;
+            running_lanes.extend(nested_running_lanes);
+        }
     }
+
+    // Compute critical blockers: failed lanes ranked by how many downstream
+    // lanes they transitively block.  The detail field for blocked lanes contains
+    // the unsatisfied dependency, letting us attribute blocked lanes to their
+    // blocking root.
+    let failed_set: BTreeSet<&str> = failed_lanes.iter().map(|s| s.as_str()).collect();
+    let mut blocker_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for lane in &program.lanes {
+        if lane.status != LaneExecutionStatus::Blocked {
+            continue;
+        }
+        // The detail field lists unsatisfied dependencies.  Check which failed
+        // lanes appear in the dependency chain.
+        for failed_key in &failed_set {
+            if lane.detail.contains(failed_key) {
+                *blocker_counts.entry(failed_key.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut critical_blockers: Vec<CriticalBlocker> = blocker_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(lane_key, blocked_downstream)| CriticalBlocker {
+            lane_key,
+            blocked_downstream,
+        })
+        .collect();
+    critical_blockers.sort_by(|a, b| b.blocked_downstream.cmp(&a.blocked_downstream));
+    critical_blockers.truncate(10);
 
     AutodevCurrentSnapshot {
         updated_at: Utc::now(),
@@ -1195,7 +1341,42 @@ fn current_snapshot(
         ready_lanes,
         running_lanes,
         failed_lanes,
+        critical_blockers,
     }
+}
+
+fn nested_child_running_from_detail(detail: &str) -> (usize, Vec<String>) {
+    if !detail.starts_with("child program `") {
+        return (0, Vec::new());
+    }
+    let Some(running_index) = detail.find(" running=") else {
+        return (0, Vec::new());
+    };
+    let running_text = &detail[running_index + " running=".len()..];
+    let digits = running_text
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    let nested_running = digits.parse::<usize>().unwrap_or(0);
+    if nested_running == 0 {
+        return (0, Vec::new());
+    }
+    let nested_lanes = detail
+        .split(" | running_lanes=")
+        .nth(1)
+        .map(|value| {
+            value
+                .split(" | ")
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (nested_running, nested_lanes)
 }
 
 fn lane_render_fingerprints(
@@ -1371,12 +1552,17 @@ fn replay_target_lane(
                 None
             }
         }
-        FailureRecoveryAction::SurfaceBlocked => retry_after_cooldown(
-            lane,
-            now,
-            SURFACE_BLOCKED_RETRY_MIN_SECS,
-            lane.lane_key.clone(),
-        ),
+        FailureRecoveryAction::SurfaceBlocked => {
+            if lane.consecutive_failures >= MAX_SURFACE_BLOCKED_RETRIES {
+                return None;
+            }
+            retry_after_cooldown(
+                lane,
+                now,
+                SURFACE_BLOCKED_RETRY_MIN_SECS,
+                lane.lane_key.clone(),
+            )
+        }
     }
 }
 
@@ -1494,13 +1680,22 @@ fn run_synth_evolve(
         &settings.evidence_paths,
     )?;
 
-    let mut evolve = Command::new(&settings.fabro_bin);
+    // Use --no-review for deterministic reconciliation.  The LLM steering path
+    // exceeds the SYNTH_EVOLVE_TIMEOUT_SECS budget and always times out, which
+    // prevents regenerable lanes from ever getting fresh run configs.  The
+    // deterministic path re-renders the package from the current blueprint,
+    // which is exactly what regenerate_lane recovery requires.
+    let mut evolve = Command::new("timeout");
     evolve
+        .arg("--signal=TERM")
+        .arg(SYNTH_EVOLVE_TIMEOUT_SECS.to_string())
+        .arg(&settings.fabro_bin)
         .current_dir(&target_repo)
         .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
         .arg("--no-upgrade-check")
         .arg("synth")
         .arg("evolve")
+        .arg("--no-review")
         .arg("--blueprint")
         .arg(&blueprint_path)
         .arg("--target-repo")
@@ -1712,6 +1907,7 @@ mod tests {
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
         }
     }
 
@@ -1905,6 +2101,7 @@ units:
                     ready_checks_failing: Vec::new(),
                     running_checks_passing: Vec::new(),
                     running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
                 },
                 EvaluatedLane {
                     lane_key: "beta:program".to_string(),
@@ -1944,6 +2141,7 @@ units:
                     ready_checks_failing: Vec::new(),
                     running_checks_passing: Vec::new(),
                     running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
                 },
                 EvaluatedLane {
                     lane_key: "gamma:program".to_string(),
@@ -1983,6 +2181,7 @@ units:
                     ready_checks_failing: Vec::new(),
                     running_checks_passing: Vec::new(),
                     running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
                 },
             ],
         };
@@ -2078,6 +2277,7 @@ units:
                     ready_checks_failing: Vec::new(),
                     running_checks_passing: Vec::new(),
                     running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
                 },
                 EvaluatedLane {
                     lane_key: "beta:program".to_string(),
@@ -2117,6 +2317,7 @@ units:
                     ready_checks_failing: Vec::new(),
                     running_checks_passing: Vec::new(),
                     running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
                 },
             ],
         };
@@ -2214,6 +2415,7 @@ units:
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
         };
 
         let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
@@ -2431,6 +2633,7 @@ units:
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
         };
         let replayed_lanes = vec!["failed:lane".to_string()];
         let ready_lanes = vec![ready_lane.lane_key.clone()];
@@ -2493,6 +2696,7 @@ units:
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
         };
 
         let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
@@ -2545,6 +2749,7 @@ units:
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
         };
 
         let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
@@ -2684,10 +2889,10 @@ units:
     }
 
     #[test]
-    fn regenerate_lane_evolve_ignores_frontier_budget_with_idle_slot() {
+    fn regenerate_lane_evolve_fires_even_at_full_capacity() {
         let frontier = FrontierSignature {
             ready: 14,
-            running: 4,
+            running: 5,
             replayable_failed: 0,
             regenerable_failed: 1,
             complete: 5,
@@ -2696,6 +2901,8 @@ units:
             ],
         };
 
+        // Evolve re-synthesises configs without consuming a slot, so it must
+        // fire even when all parallel slots are occupied.
         assert!(should_trigger_evolve(
             None,
             Duration::from_secs(3600),
@@ -2756,6 +2963,7 @@ units:
                 ready_checks_failing: Vec::new(),
                 running_checks_passing: Vec::new(),
                 running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
             }],
         };
 
@@ -2881,12 +3089,71 @@ units:
                 ready_checks_failing: Vec::new(),
                 running_checks_passing: Vec::new(),
                 running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
             }],
         };
 
         let noop = detect_regenerate_noop_lanes(&["demo:lane".to_string()], &before, &program);
 
         assert_eq!(noop, vec!["demo:lane".to_string()]);
+    }
+
+    #[test]
+    fn current_snapshot_counts_nested_child_running_work() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "demo:program".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "program".to_string(),
+                lane_title: "Program".to_string(),
+                lane_kind: crate::manifest::LaneKind::Orchestration,
+                status: LaneExecutionStatus::Blocked,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "child program `child`: complete=0 ready=0 running=1 blocked=0 failed=0 | running_lanes=child:lane@Review".to_string(),
+                managed_milestone: "coordinated".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("child.toml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                failure_kind: None,
+                recovery_action: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
+            }],
+        };
+
+        let snapshot = current_snapshot(&program, Some(5));
+
+        assert_eq!(snapshot.running, 1);
+        assert_eq!(
+            snapshot.running_lanes,
+            vec!["child:lane@Review".to_string()]
+        );
+        assert_eq!(snapshot.blocked, 1);
     }
 
     #[test]

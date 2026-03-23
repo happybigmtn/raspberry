@@ -152,9 +152,15 @@ pub fn build_fallback_chain(
 
     fallback_providers
         .iter()
-        .filter_map(|provider| {
-            closest_model(provider, &reference).map(|m| FallbackTarget {
-                provider: provider.clone(),
+        .filter_map(|provider_or_model| {
+            if let Some(model) = get_model_info(provider_or_model) {
+                return Some(FallbackTarget {
+                    provider: model.provider,
+                    model: model.id,
+                });
+            }
+            closest_model(provider_or_model, &reference).map(|m| FallbackTarget {
+                provider: provider_or_model.clone(),
                 model: m.id,
             })
         })
@@ -768,6 +774,23 @@ mod tests {
         let fallbacks = HashMap::from([("anthropic".to_string(), vec!["gemini".to_string()])]);
         let chain = build_fallback_chain("anthropic", "unknown-model-xyz", &fallbacks);
         assert!(chain.is_empty());
+    }
+
+    #[test]
+    fn build_fallback_chain_accepts_explicit_model_ids() {
+        let fallbacks = HashMap::from([(
+            "openai".to_string(),
+            vec![
+                "claude-opus-4-6".to_string(),
+                "MiniMax-M2.7-highspeed".to_string(),
+            ],
+        )]);
+        let chain = build_fallback_chain("openai", "gpt-5.4", &fallbacks);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].provider, "anthropic");
+        assert_eq!(chain[0].model, "claude-opus-4-6");
+        assert_eq!(chain[1].provider, "minimax");
+        assert_eq!(chain[1].model, "minimax-m2.5");
     }
 
     #[test]

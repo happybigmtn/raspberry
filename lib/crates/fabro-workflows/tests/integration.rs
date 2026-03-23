@@ -9435,6 +9435,16 @@ impl fabro_agent::Sandbox for CliTestEnv {
             });
         }
 
+        if command.contains("mktemp -d \"$base/run.XXXXXX\"") {
+            return Ok(fabro_agent::ExecResult {
+                stdout: "/tmp/.fabro/cli/run.test123\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+                duration_ms: 1,
+            });
+        }
+
         // Poll for completion: return exit code 0 immediately
         if command.contains("exit_code") && command.contains("echo running") {
             return Ok(fabro_agent::ExecResult {
@@ -9469,7 +9479,7 @@ impl fabro_agent::Sandbox for CliTestEnv {
         }
 
         // Cleanup temp files
-        if command.starts_with("rm -f") {
+        if command.starts_with("rm -rf") {
             return Ok(fabro_agent::ExecResult {
                 stdout: String::new(),
                 stderr: String::new(),
@@ -9564,10 +9574,10 @@ async fn cli_backend_run_writes_prompt_and_calls_exec() {
     let written = test_env.recorded_written_files();
     let prompt_file = written
         .iter()
-        .find(|(path, _)| path.contains(".fabro_cli/") && path.ends_with("/prompt.txt"))
+        .find(|(path, _)| path.contains(".fabro/cli/") && path.ends_with("/prompt.txt"))
         .expect("should write a prompt file");
     assert!(
-        prompt_file.0.contains(".fabro_cli/") && prompt_file.0.ends_with("/prompt.txt"),
+        prompt_file.0.contains(".fabro/cli/") && prompt_file.0.ends_with("/prompt.txt"),
         "prompt path should use scratch directory layout: {}",
         prompt_file.0
     );
@@ -9735,6 +9745,15 @@ async fn cli_backend_run_fails_on_nonzero_exit() {
             if command.starts_with("git") {
                 return Ok(fabro_agent::ExecResult {
                     stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                    duration_ms: 0,
+                });
+            }
+            if command.contains("mktemp -d \"$base/run.XXXXXX\"") {
+                return Ok(fabro_agent::ExecResult {
+                    stdout: "/tmp/.fabro/cli/run.fail123\n".into(),
                     stderr: String::new(),
                     exit_code: 0,
                     timed_out: false,

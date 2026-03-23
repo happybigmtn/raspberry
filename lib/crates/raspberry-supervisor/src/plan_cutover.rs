@@ -281,6 +281,7 @@ mod tests {
             ready_checks_failing: vec![],
             running_checks_passing: vec![],
             running_checks_failing: vec![],
+            consecutive_failures: 0,
         }
     }
 

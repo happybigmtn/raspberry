@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
-use fabro_model::Provider;
+use fabro_model::{automation_fallback_targets, automation_profile_for_target, Provider};
 use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
@@ -165,12 +165,28 @@ pub fn is_cli_only_model(model: &str) -> bool {
     CLI_ONLY_MODELS.contains(&model)
 }
 
+const PI_TOOLS_FULL: &str = "read,bash,edit,write,grep,find,ls";
+const PI_TOOLS_READONLY: &str = "read,bash,grep,find,ls";
+
+fn is_readonly_stage(node_id: &str) -> bool {
+    matches!(
+        node_id,
+        "challenge" | "review" | "deep_review" | "escalation"
+    )
+}
+
 /// Build the CLI command string for a given provider.
 ///
 /// The `prompt_file` is the path to a file containing the prompt text, which
 /// is piped into the command's stdin via `cat`.
 #[must_use]
-pub fn cli_command_for_provider(provider: Provider, model: &str, prompt_file: &str) -> String {
+pub fn cli_command_for_provider(
+    provider: Provider,
+    model: &str,
+    prompt_file: &str,
+    reasoning_effort: Option<&str>,
+    readonly: bool,
+) -> String {
     // Use `cat | command` instead of `command < file` because the background
     // launch wrapper (`setsid sh -c '...' </dev/null`) can clobber stdin
     // redirects in nested shells. A pipe creates an explicit new stdin.
@@ -190,8 +206,17 @@ pub fn cli_command_for_provider(provider: Provider, model: &str, prompt_file: &s
             } else {
                 format!(" --model {model}")
             };
+            let thinking_flag = match reasoning_effort {
+                Some(effort) if effort != "high" => format!(" --thinking {effort}"),
+                _ => " --thinking high".to_string(),
+            };
+            let tools = if readonly {
+                PI_TOOLS_READONLY
+            } else {
+                PI_TOOLS_FULL
+            };
             format!(
-                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls{model_flag} \"$prompt\""
+                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools {tools}{model_flag}{thinking_flag} \"$prompt\""
             )
         }
         // --yolo: auto-approve all tool calls
@@ -569,34 +594,129 @@ struct CodexSlotSelection {
 fn resolve_cli_target(
     requested_provider: Provider,
     requested_model: &str,
-    default_model: &str,
-    launch_env: &HashMap<String, String>,
-    codex_slots_available: bool,
+    _default_model: &str,
+    _launch_env: &HashMap<String, String>,
+    _codex_slots_available: bool,
 ) -> (Provider, String, Option<String>) {
-    let strict_provider = launch_env
-        .get("FABRO_STRICT_PROVIDER")
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-    if requested_provider == Provider::OpenAi
-        && !strict_provider
-        && !codex_slots_available
-        && (launch_env.contains_key("ANTHROPIC_API_KEY")
-            || launch_env.contains_key("ANTHROPIC_AUTH_TOKEN"))
-    {
-        let fallback_model = launch_env
-            .get("ANTHROPIC_MODEL")
-            .cloned()
-            .unwrap_or_else(|| default_model.to_string());
-        return (
-            Provider::Anthropic,
-            fallback_model,
-            Some(
-                "requested provider=openai but no dedicated OAuth-backed Codex slot is available; using Anthropic/MiniMax CLI auth instead"
-                    .to_string(),
-            ),
-        );
-    }
-
     (requested_provider, requested_model.to_string(), None)
+}
+
+#[derive(Debug, Clone)]
+struct CliAttemptTarget {
+    provider: Provider,
+    model: String,
+    fallback_reason: Option<String>,
+}
+
+fn build_cli_attempt_targets(
+    requested_provider: Provider,
+    requested_model: &str,
+    default_model: &str,
+) -> Vec<CliAttemptTarget> {
+    let initial = resolve_cli_target(
+        requested_provider,
+        requested_model,
+        default_model,
+        &HashMap::new(),
+        load_codex_rotator().is_some() || fallback_codex_slot_selection().is_some(),
+    );
+    let mut targets = vec![CliAttemptTarget {
+        provider: initial.0,
+        model: initial.1.clone(),
+        fallback_reason: initial.2,
+    }];
+    for (provider, model) in central_policy_fallback_targets(initial.0, &initial.1) {
+        targets.push(CliAttemptTarget {
+            provider,
+            model,
+            fallback_reason: Some(format!(
+                "fallback from {}:{} via central automation policy",
+                initial.0.as_str(),
+                initial.1
+            )),
+        });
+    }
+    targets
+}
+
+fn central_policy_fallback_targets(provider: Provider, model: &str) -> Vec<(Provider, String)> {
+    let Some(profile) = automation_profile_for_target(provider, model) else {
+        return Vec::new();
+    };
+    automation_fallback_targets(profile)
+        .iter()
+        .map(|target| (target.provider, target.model.to_string()))
+        .collect()
+}
+
+fn cli_failure_is_retryable_for_fallback(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("not logged in")
+        || lower.contains("/login")
+        || lower.contains("selected model")
+        || lower.contains("may not exist or you may not have access to it")
+        || lower.contains("you've hit your limit")
+        || lower.contains("usage limit has been reached")
+        || lower.contains("rate_limit")
+        || lower.contains("401 unauthorized")
+}
+
+fn build_launch_env_for_provider(
+    provider: Provider,
+    explicit_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut launch_env = HashMap::new();
+    let cli = AgentCli::for_provider(provider);
+    if inherit_host_provider_credentials(cli) {
+        for name in provider.api_key_env_vars() {
+            if let Ok(val) = std::env::var(name) {
+                launch_env.insert((*name).to_string(), val);
+            }
+        }
+    }
+    for (name, val) in explicit_env {
+        launch_env.insert(name.clone(), val.clone());
+    }
+    if provider == Provider::OpenAi {
+        launch_env.remove("OPENAI_API_KEY");
+    }
+    launch_env
+}
+
+fn tail_chars(value: &str, limit: usize) -> String {
+    value
+        .chars()
+        .rev()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn format_cli_failure_detail(
+    provider: Provider,
+    stdout: &str,
+    stderr: &str,
+    command: &str,
+) -> String {
+    let stderr_tail = tail_chars(stderr, 500);
+    let stdout_tail = tail_chars(stdout, 500);
+    let parsed_error = parse_cli_response(provider, stdout)
+        .map(|response| response.text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    match (stderr_tail.is_empty(), stdout_tail.is_empty(), parsed_error) {
+        (false, false, Some(parsed_error)) => {
+            format!("{parsed_error}\n{stderr_tail}\nstdout: {stdout_tail}")
+        }
+        (false, true, Some(parsed_error)) => format!("{parsed_error}\n{stderr_tail}"),
+        (true, false, Some(parsed_error)) => format!("{parsed_error}\nstdout: {stdout_tail}"),
+        (true, true, Some(parsed_error)) => parsed_error,
+        (false, false, None) => format!("{stderr_tail}\nstdout: {stdout_tail}"),
+        (false, true, None) => stderr_tail,
+        (true, false, None) => format!("stdout: {stdout_tail}"),
+        (true, true, None) => format!("command: {command}"),
+    }
 }
 
 fn now_ms() -> u64 {
@@ -800,6 +920,14 @@ fn fallback_codex_slot_selection_with_home(home: &Path) -> Option<CodexSlotSelec
 fn fallback_codex_slot_selection() -> Option<CodexSlotSelection> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     fallback_codex_slot_selection_with_home(&home)
+}
+
+pub fn select_automation_codex_home() -> Option<PathBuf> {
+    let selection = load_codex_rotator()
+        .and_then(|rotator| choose_codex_slot(&rotator))
+        .or_else(fallback_codex_slot_selection)?;
+    mark_codex_slot_selected(&selection);
+    Some(selection.codex_home)
 }
 
 fn save_codex_rotator_state(path: &Path, state: &CodexRotatorState) {
@@ -1009,208 +1137,275 @@ impl CodergenBackend for AgentCliBackend {
             .and_then(|s| s.parse::<Provider>().ok())
             .unwrap_or(self.provider);
 
-        // Forward custom env vars to the CLI tool. For local Codex and Claude
-        // runs, preserve each tool's own local-login/subscription auth by
-        // default; explicit API-key use still works when the key is provided
-        // through self.env.
-        //
-        // Build a HashMap to pass via exec_command's env_vars parameter — this
-        // prepends `export` statements directly into the base64-encoded command,
-        // avoiding filesystem-to-process race conditions that can occur when
-        // writing an env file via the fs API and sourcing it via the process API.
-        let mut launch_env: HashMap<String, String> = HashMap::new();
-        let requested_cli = AgentCli::for_provider(requested_provider);
-        if inherit_host_provider_credentials(requested_cli) {
-            for name in requested_provider.api_key_env_vars() {
-                if let Ok(val) = std::env::var(name) {
-                    launch_env.insert((*name).to_string(), val);
-                }
-            }
-        }
-        for (name, val) in &self.env {
-            launch_env.insert(name.clone(), val.clone());
-        }
-
-        if requested_provider == Provider::OpenAi {
-            launch_env.remove("OPENAI_API_KEY");
-        }
-
-        let codex_slot = if requested_provider == Provider::OpenAi {
-            load_codex_rotator()
-                .and_then(|rotator| choose_codex_slot(&rotator))
-                .or_else(fallback_codex_slot_selection)
-        } else {
-            None
-        };
-
-        let (provider, model, fallback_reason) = resolve_cli_target(
-            requested_provider,
-            &requested_model,
-            &self.model,
-            &launch_env,
-            codex_slot.is_some(),
-        );
-
-        if let Some(selection) = codex_slot.as_ref() {
-            launch_env.insert(
-                "CODEX_HOME".to_string(),
-                selection.codex_home.display().to_string(),
-            );
-            mark_codex_slot_selected(selection);
-        }
-
-        if requested_provider == Provider::OpenAi
-            && provider == Provider::OpenAi
-            && codex_slot.is_none()
-        {
-            return Err(FabroError::handler(
-                "requested provider=openai but no dedicated OAuth-backed Codex slot is available; Fabro will not use API-key auth or the shared ~/.codex home".to_string(),
-            ));
-        }
-
-        // Ensure the CLI tool is installed in the sandbox
-        let cli = AgentCli::for_provider(provider);
-        ensure_cli(cli, provider, sandbox, emitter).await?;
-
-        let command = cli_command_for_provider(provider, &model, &shell_quote(&prompt_path));
-
         let _ = tokio::fs::create_dir_all(stage_dir).await;
-        write_provider_used_json(
-            stage_dir,
-            ProviderUsedJson {
-                requested_provider,
-                requested_model: &requested_model,
-                provider,
-                model: &model,
-                served_model: None,
-                fallback_reason: fallback_reason.as_deref(),
-                codex_slot: codex_slot.as_ref(),
-                command: &command,
-            },
-        )
-        .await;
-        if let Some(reason) = &fallback_reason {
-            tracing::warn!(
-                requested_provider = requested_provider.as_str(),
-                actual_provider = provider.as_str(),
-                requested_model = requested_model,
-                actual_model = model,
-                "{reason}"
-            );
-        }
-
         // 3a. Disable auto-stop so the sandbox stays alive during long CLI runs
         if let Err(e) = sandbox.set_autostop_interval(0).await {
             tracing::warn!("Failed to disable sandbox auto-stop: {e}");
         }
-
-        // 3b. Launch CLI command in the background without persisting secrets to disk.
-        let inner_command = format!("export PATH=\"$HOME/.local/bin:$PATH\" && {command}");
+        let attempt_targets =
+            build_cli_attempt_targets(requested_provider, &requested_model, &self.model);
         let stdout_path_quoted = shell_quote(&stdout_path);
         let stderr_path_quoted = shell_quote(&stderr_path);
         let exit_code_path_quoted = shell_quote(&exit_code_path);
-        // Use setsid (if available) to create a new session so the child process is
-        // fully detached from the shell. Without this, Daytona's POST /process/execute
-        // blocks until ALL descendant processes exit, causing a 60s HTTP timeout.
-        // $SID is empty on macOS (where setsid doesn't exist but isn't needed since
-        // the local exec implementation doesn't wait for grandchildren).
-        let bg_command = format!(
-            "SID=$(command -v setsid || true)\n$SID sh -c '{inner_command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}' </dev/null >/dev/null 2>&1 &\necho $!"
-        );
-        let launch_start = std::time::Instant::now();
-        let launch_env_ref = if launch_env.is_empty() {
-            None
-        } else {
-            Some(&launch_env)
-        };
-        let launch_result = sandbox
-            .exec_command(&bg_command, 30_000, None, launch_env_ref, None)
-            .await
-            .map_err(|e| FabroError::handler(format!("Failed to launch CLI command: {e}")))?;
-        let pid = launch_result.stdout.trim();
-        tracing::info!(pid, "CLI process launched in background");
-
-        // 3c. Poll for completion
         let poll_command = format!(
             "[ -f {exit_code_path_quoted} ] && cat {exit_code_path_quoted} || echo running"
         );
         let poll_interval = self.poll_interval;
-        let exit_code: i32 = loop {
-            tokio::time::sleep(poll_interval).await;
-            emitter.touch(); // keep the stall watchdog alive while polling
-            let poll_result = sandbox
-                .exec_command(&poll_command, 30_000, None, None, None)
-                .await
-                .map_err(|e| FabroError::handler(format!("Failed to poll CLI command: {e}")))?;
-            let status = poll_result.stdout.trim();
+        let mut attempt_failures = Vec::new();
+        let mut chosen_model = requested_model.clone();
+        let mut parsed = None;
 
-            // Sync CLI output to stage_dir for visibility (best-effort)
-            for (remote, local) in [
-                (&stdout_path, "cli_stdout.log"),
-                (&stderr_path, "cli_stderr.log"),
-            ] {
-                if let Ok(r) = sandbox
+        for (index, attempt) in attempt_targets.iter().enumerate() {
+            let provider = attempt.provider;
+            let model = attempt.model.clone();
+            let fallback_reason = attempt.fallback_reason.clone();
+            let mut launch_env = build_launch_env_for_provider(provider, &self.env);
+            let codex_slot = if provider == Provider::OpenAi {
+                load_codex_rotator()
+                    .and_then(|rotator| choose_codex_slot(&rotator))
+                    .or_else(fallback_codex_slot_selection)
+            } else {
+                None
+            };
+
+            if provider == Provider::OpenAi && codex_slot.is_none() {
+                let detail = "no dedicated OAuth-backed Codex slot is available";
+                if index + 1 < attempt_targets.len() {
+                    attempt_failures.push(format!(
+                        "{}:{} failed: {detail}",
+                        provider.as_str(),
+                        model
+                    ));
+                    continue;
+                }
+                return Err(FabroError::handler(format!(
+                    "requested provider=openai but {detail}; Fabro will not use API-key auth or the shared ~/.codex home"
+                )));
+            }
+
+            if let Some(selection) = codex_slot.as_ref() {
+                launch_env.insert(
+                    "CODEX_HOME".to_string(),
+                    selection.codex_home.display().to_string(),
+                );
+                mark_codex_slot_selected(selection);
+            }
+
+            let cli = AgentCli::for_provider(provider);
+            ensure_cli(cli, provider, sandbox, emitter).await?;
+            let reasoning = node.reasoning_effort();
+            let readonly = is_readonly_stage(&node.id);
+            let command = cli_command_for_provider(
+                provider,
+                &model,
+                &shell_quote(&prompt_path),
+                Some(reasoning),
+                readonly,
+            );
+
+            write_provider_used_json(
+                stage_dir,
+                ProviderUsedJson {
+                    requested_provider,
+                    requested_model: &requested_model,
+                    provider,
+                    model: &model,
+                    served_model: None,
+                    fallback_reason: fallback_reason.as_deref(),
+                    codex_slot: codex_slot.as_ref(),
+                    command: &command,
+                },
+            )
+            .await;
+            if let Some(reason) = &fallback_reason {
+                tracing::warn!(
+                    requested_provider = requested_provider.as_str(),
+                    actual_provider = provider.as_str(),
+                    requested_model = requested_model,
+                    actual_model = model,
+                    "{reason}"
+                );
+            }
+
+            let inner_command = format!("export PATH=\"$HOME/.local/bin:$PATH\" && {command}");
+            let bg_command = format!(
+                "SID=$(command -v setsid || true)\n$SID sh -c '{inner_command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}' </dev/null >/dev/null 2>&1 &\necho $!"
+            );
+            let launch_start = std::time::Instant::now();
+            let launch_env_ref = if launch_env.is_empty() {
+                None
+            } else {
+                Some(&launch_env)
+            };
+            let launch_result = sandbox
+                .exec_command(&bg_command, 30_000, None, launch_env_ref, None)
+                .await
+                .map_err(|e| FabroError::handler(format!("Failed to launch CLI command: {e}")))?;
+            let pid = launch_result.stdout.trim();
+            tracing::info!(
+                pid,
+                provider = provider.as_str(),
+                model,
+                "CLI process launched in background"
+            );
+
+            let exit_code: i32 = loop {
+                tokio::time::sleep(poll_interval).await;
+                emitter.touch();
+                let poll_result = sandbox
+                    .exec_command(&poll_command, 30_000, None, None, None)
+                    .await
+                    .map_err(|e| FabroError::handler(format!("Failed to poll CLI command: {e}")))?;
+                let status = poll_result.stdout.trim();
+                for (remote, local) in [
+                    (&stdout_path, "cli_stdout.log"),
+                    (&stderr_path, "cli_stderr.log"),
+                ] {
+                    if let Ok(result) = sandbox
+                        .exec_command(
+                            &format!("cat {}", shell_quote(remote)),
+                            30_000,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        if !result.stdout.is_empty() {
+                            let _ = tokio::fs::write(stage_dir.join(local), &result.stdout).await;
+                        }
+                    }
+                }
+                if status != "running" {
+                    break status.parse::<i32>().unwrap_or(-1);
+                }
+            };
+
+            let duration_ms = u64::try_from(launch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let stdout_result = sandbox
+                .exec_command(
+                    &format!("cat {}", shell_quote(&stdout_path)),
+                    60_000,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|e| FabroError::handler(format!("Failed to read stdout: {e}")))?;
+            let stderr_result = sandbox
+                .exec_command(
+                    &format!("cat {}", shell_quote(&stderr_path)),
+                    60_000,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|e| FabroError::handler(format!("Failed to read stderr: {e}")))?;
+            let result = ExecResult {
+                stdout: stdout_result.stdout,
+                stderr: stderr_result.stdout,
+                exit_code,
+                timed_out: false,
+                duration_ms,
+            };
+
+            if let Some(selection) = codex_slot.as_ref() {
+                if result.exit_code == 0 {
+                    mark_codex_slot_succeeded(selection);
+                } else if let Some(reason) =
+                    classify_codex_slot_failure(&result.stderr, &result.stdout)
+                {
+                    mark_codex_slot_failed(selection, &reason);
+                }
+            }
+
+            if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
+                "exit_code": result.exit_code,
+                "stdout_len": result.stdout.len(),
+                "stderr_len": result.stderr.len(),
+                "duration_ms": result.duration_ms,
+            })) {
+                let _ = tokio::fs::write(stage_dir.join("cli_result_meta.json"), json).await;
+            }
+
+            if result.exit_code != 0 {
+                let _ = tokio::fs::write(stage_dir.join("cli_stdout.log"), &result.stdout).await;
+                let _ = tokio::fs::write(stage_dir.join("cli_stderr.log"), &result.stderr).await;
+                let detail =
+                    format_cli_failure_detail(provider, &result.stdout, &result.stderr, &command);
+                let can_fallback = index + 1 < attempt_targets.len()
+                    && cli_failure_is_retryable_for_fallback(&detail);
+                if can_fallback {
+                    let next = &attempt_targets[index + 1];
+                    tracing::info!(
+                        from_provider = provider.as_str(),
+                        from_model = model.as_str(),
+                        to_provider = next.provider.as_str(),
+                        to_model = next.model.as_str(),
+                        reason = detail.as_str(),
+                        "provider fallback activated"
+                    );
+                    attempt_failures.push(format!(
+                        "{}:{} failed: {}",
+                        provider.as_str(),
+                        model,
+                        detail
+                    ));
+                    continue;
+                }
+                let _ = sandbox
                     .exec_command(
-                        &format!("cat {}", shell_quote(remote)),
+                        &format!("rm -rf {}", shell_quote(&scratch_dir)),
                         30_000,
                         None,
                         None,
                         None,
                     )
-                    .await
-                {
-                    if !r.stdout.is_empty() {
-                        let _ = tokio::fs::write(stage_dir.join(local), &r.stdout).await;
-                    }
+                    .await;
+                if !attempt_failures.is_empty() {
+                    return Err(FabroError::handler(format!(
+                        "CLI command exited with code {}: {}\nPrevious attempts:\n{}",
+                        result.exit_code,
+                        detail,
+                        attempt_failures.join("\n")
+                    )));
                 }
+                return Err(FabroError::handler(format!(
+                    "CLI command exited with code {}: {}",
+                    result.exit_code, detail,
+                )));
             }
 
-            if status != "running" {
-                break status.parse::<i32>().unwrap_or(-1);
-            }
-        };
-
-        // 3d. Read results
-        let duration_ms = u64::try_from(launch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stdout_result = sandbox
-            .exec_command(
-                &format!("cat {}", shell_quote(&stdout_path)),
-                60_000,
-                None,
-                None,
-                None,
+            let parsed_response = parse_cli_response(provider, &result.stdout)
+                .ok_or_else(|| FabroError::handler("Failed to parse CLI output".to_string()))?;
+            write_provider_used_json(
+                stage_dir,
+                ProviderUsedJson {
+                    requested_provider,
+                    requested_model: &requested_model,
+                    provider,
+                    model: &model,
+                    served_model: parsed_response.served_model.as_deref(),
+                    fallback_reason: fallback_reason.as_deref(),
+                    codex_slot: codex_slot.as_ref(),
+                    command: &command,
+                },
             )
-            .await
-            .map_err(|e| FabroError::handler(format!("Failed to read stdout: {e}")))?;
-        let stderr_result = sandbox
-            .exec_command(
-                &format!("cat {}", shell_quote(&stderr_path)),
-                60_000,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| FabroError::handler(format!("Failed to read stderr: {e}")))?;
-
-        let result = ExecResult {
-            stdout: stdout_result.stdout,
-            stderr: stderr_result.stdout,
-            exit_code,
-            timed_out: false,
-            duration_ms,
-        };
-
-        if let Some(selection) = codex_slot.as_ref() {
-            if result.exit_code == 0 {
-                mark_codex_slot_succeeded(selection);
-            } else if let Some(reason) = classify_codex_slot_failure(&result.stderr, &result.stdout)
-            {
-                mark_codex_slot_failed(selection, &reason);
+            .await;
+            if index > 0 {
+                tracing::info!(
+                    provider = provider.as_str(),
+                    model = model.as_str(),
+                    attempt = index + 1,
+                    "provider fallback succeeded"
+                );
             }
+            chosen_model = model;
+            parsed = Some(parsed_response);
+            break;
         }
 
-        // 3e. Cleanup temp files
         let _ = sandbox
             .exec_command(
                 &format!("rm -rf {}", shell_quote(&scratch_dir)),
@@ -1221,70 +1416,12 @@ impl CodergenBackend for AgentCliBackend {
             )
             .await;
 
-        if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
-            "exit_code": result.exit_code,
-            "stdout_len": result.stdout.len(),
-            "stderr_len": result.stderr.len(),
-            "duration_ms": result.duration_ms,
-        })) {
-            let _ = tokio::fs::write(stage_dir.join("cli_result_meta.json"), json).await;
-        }
-
-        if result.exit_code != 0 {
-            let _ = tokio::fs::write(stage_dir.join("cli_stdout.log"), &result.stdout).await;
-            let _ = tokio::fs::write(stage_dir.join("cli_stderr.log"), &result.stderr).await;
-
-            let tail = |s: &str, n: usize| -> String {
-                s.chars()
-                    .rev()
-                    .take(n)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect()
-            };
-            let stderr_tail = tail(&result.stderr, 500);
-            let stdout_tail = tail(&result.stdout, 500);
-            let parsed_error = parse_cli_response(provider, &result.stdout)
-                .map(|response| response.text.trim().to_string())
-                .filter(|text| !text.is_empty());
-            let detail = match (stderr_tail.is_empty(), stdout_tail.is_empty(), parsed_error) {
-                (false, false, Some(parsed_error)) => {
-                    format!("{parsed_error}\n{stderr_tail}\nstdout: {stdout_tail}")
-                }
-                (false, true, Some(parsed_error)) => format!("{parsed_error}\n{stderr_tail}"),
-                (true, false, Some(parsed_error)) => {
-                    format!("{parsed_error}\nstdout: {stdout_tail}")
-                }
-                (true, true, Some(parsed_error)) => parsed_error,
-                (false, false, None) => format!("{stderr_tail}\nstdout: {stdout_tail}"),
-                (false, true, None) => stderr_tail,
-                (true, false, None) => format!("stdout: {stdout_tail}"),
-                (true, true, None) => format!("command: {command}"),
-            };
+        let Some(parsed) = parsed else {
             return Err(FabroError::handler(format!(
-                "CLI command exited with code {}: {detail}",
-                result.exit_code,
+                "all CLI attempts failed:\n{}",
+                attempt_failures.join("\n")
             )));
-        }
-
-        // 4. Parse the CLI output
-        let parsed = parse_cli_response(provider, &result.stdout)
-            .ok_or_else(|| FabroError::handler("Failed to parse CLI output".to_string()))?;
-        write_provider_used_json(
-            stage_dir,
-            ProviderUsedJson {
-                requested_provider,
-                requested_model: &requested_model,
-                provider,
-                model: &model,
-                served_model: parsed.served_model.as_deref(),
-                fallback_reason: fallback_reason.as_deref(),
-                codex_slot: codex_slot.as_ref(),
-                command: &command,
-            },
-        )
-        .await;
+        };
 
         // 5. Detect changed files
         let files_after = self.detect_changed_files(sandbox).await;
@@ -1318,7 +1455,7 @@ impl CodergenBackend for AgentCliBackend {
             model: parsed
                 .served_model
                 .clone()
-                .unwrap_or_else(|| model.to_string()),
+                .unwrap_or_else(|| chosen_model.clone()),
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             cache_read_tokens: None,
@@ -2084,15 +2221,26 @@ mod tests {
 
     #[test]
     fn cli_command_for_codex() {
-        let cmd = cli_command_for_provider(Provider::OpenAi, "gpt-5.3-codex", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(
+            Provider::OpenAi,
+            "gpt-5.3-codex",
+            "/tmp/prompt.txt",
+            None,
+            false,
+        );
         assert!(cmd.starts_with("cat /tmp/prompt.txt | codex exec --json --yolo"));
         assert!(cmd.contains("-m gpt-5.3-codex"));
     }
 
     #[test]
     fn cli_command_for_claude() {
-        let cmd =
-            cli_command_for_provider(Provider::Anthropic, "claude-opus-4-6", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(
+            Provider::Anthropic,
+            "claude-opus-4-6",
+            "/tmp/prompt.txt",
+            None,
+            false,
+        );
         assert!(cmd.starts_with("cat /tmp/prompt.txt |"));
         assert!(cmd.contains("claude -p"));
         assert!(cmd.contains("--dangerously-skip-permissions"));
@@ -2102,7 +2250,13 @@ mod tests {
 
     #[test]
     fn cli_command_for_gemini() {
-        let cmd = cli_command_for_provider(Provider::Gemini, "gemini-3.1-pro", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(
+            Provider::Gemini,
+            "gemini-3.1-pro",
+            "/tmp/prompt.txt",
+            None,
+            false,
+        );
         assert!(cmd.starts_with("cat /tmp/prompt.txt | gemini -o json --yolo"));
         assert!(cmd.contains("-m gemini-3.1-pro"));
     }
@@ -2113,25 +2267,74 @@ mod tests {
             Provider::Minimax,
             "MiniMax-M2.7-highspeed",
             "/tmp/prompt.txt",
+            Some("high"),
+            false,
         );
         assert!(cmd.starts_with("prompt=\"$(cat /tmp/prompt.txt)\" && pi --provider minimax"));
         assert!(cmd.contains("--mode json -p --no-session"));
         assert!(cmd.contains("--tools read,bash,edit,write,grep,find,ls"));
         assert!(cmd.contains("--model MiniMax-M2.7-highspeed"));
+        assert!(cmd.contains("--thinking high"));
+    }
+
+    #[test]
+    fn cli_command_pi_passes_reasoning_effort() {
+        let cmd = cli_command_for_provider(
+            Provider::Minimax,
+            "MiniMax-M2.7-highspeed",
+            "/tmp/prompt.txt",
+            Some("medium"),
+            false,
+        );
+        assert!(cmd.contains("--thinking medium"));
+
+        let cmd = cli_command_for_provider(
+            Provider::Minimax,
+            "MiniMax-M2.7-highspeed",
+            "/tmp/prompt.txt",
+            None,
+            false,
+        );
+        assert!(cmd.contains("--thinking high"));
+    }
+
+    #[test]
+    fn cli_command_pi_readonly_restricts_tools() {
+        let cmd = cli_command_for_provider(
+            Provider::Minimax,
+            "MiniMax-M2.7-highspeed",
+            "/tmp/prompt.txt",
+            Some("high"),
+            true,
+        );
+        assert!(cmd.contains("--tools read,bash,grep,find,ls"));
+        assert!(!cmd.contains("edit"));
+        assert!(!cmd.contains("write"));
+    }
+
+    #[test]
+    fn is_readonly_stage_identifies_review_nodes() {
+        assert!(is_readonly_stage("challenge"));
+        assert!(is_readonly_stage("review"));
+        assert!(is_readonly_stage("deep_review"));
+        assert!(is_readonly_stage("escalation"));
+        assert!(!is_readonly_stage("implement"));
+        assert!(!is_readonly_stage("fixup"));
+        assert!(!is_readonly_stage("polish"));
     }
 
     #[test]
     fn cli_command_omits_model_when_empty() {
-        let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt", None, false);
         assert!(cmd.contains("codex exec --json --yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt", None, false);
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(!cmd.contains("--model "));
-        let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt", None, false);
         assert!(cmd.contains("--yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt");
+        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt", None, false);
         assert!(cmd.contains("pi --provider minimax"));
         assert!(!cmd.contains("--model "));
     }

@@ -11,8 +11,8 @@ use crate::outcome::Outcome;
 use fabro_graphviz::graph::{Graph, Node};
 
 use super::agent::{
-    expand_variables, extract_status_fields, prepare_prompt, truncate, CodergenBackend,
-    CodergenResult,
+    expand_variables, extract_status_fields, prepare_prompt, prompt_budget_for_model, truncate,
+    CodergenBackend, CodergenResult,
 };
 use super::{EngineServices, Handler};
 
@@ -56,7 +56,8 @@ impl Handler for PromptHandler {
             .unwrap_or_else(|| node.label());
         let expanded = expand_variables(raw_prompt, graph)?;
         let preamble = context.preamble();
-        let prepared_prompt = prepare_prompt(&preamble, &expanded);
+        let budget = prompt_budget_for_model(node.model());
+        let prepared_prompt = prepare_prompt(&preamble, &expanded, budget);
         let prompt = prepared_prompt.prompt;
 
         // 1b. Discover project docs for system prompt when project_memory is enabled

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use fabro_config::run::{load_run_config, resolve_graph_path};
 use fabro_workflows::conclusion::Conclusion;
 use fabro_workflows::live_state::RunLiveState;
 use fabro_workflows::run_inspect::{finished_at, inspect_run, summarize_usage, RunInspection};
@@ -20,6 +21,8 @@ use crate::resource_lease;
 const PROGRAM_STATE_SCHEMA_VERSION: &str = "raspberry.program.v2";
 const STALE_RUNNING_GRACE_SECS: i64 = 30;
 const ACTIVE_STALL_TIMEOUT_SECS: i64 = 1800;
+// After this many consecutive replay failures, escalate to SurfaceBlocked.
+const MAX_CONSECUTIVE_REPLAY_FAILURES: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramRuntimeState {
@@ -70,6 +73,12 @@ pub struct LaneRuntimeRecord {
     pub last_stdout_snippet: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_stderr_snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub consecutive_failures: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -158,6 +167,14 @@ impl ProgramRuntimeState {
     }
 }
 
+fn escalate_if_replay_exhausted(record: &mut LaneRuntimeRecord) {
+    if record.consecutive_failures >= MAX_CONSECUTIVE_REPLAY_FAILURES
+        && record.recovery_action == Some(FailureRecoveryAction::ReplayLane)
+    {
+        record.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+    }
+}
+
 pub fn ensure_lane_record<'a>(
     state: &'a mut ProgramRuntimeState,
     lane_key: &str,
@@ -188,6 +205,7 @@ pub fn ensure_lane_record<'a>(
             last_files_written: Vec::new(),
             last_stdout_snippet: None,
             last_stderr_snippet: None,
+            consecutive_failures: 0,
         });
     if record.run_config.as_ref() != Some(&normalized_run_config) {
         record.run_config = Some(normalized_run_config);
@@ -271,6 +289,8 @@ pub fn mark_lane_dispatch_failed(
         Some(&outcome.stdout),
     );
     record.recovery_action = record.failure_kind.map(default_recovery_action);
+    record.consecutive_failures = record.consecutive_failures.saturating_add(1);
+    escalate_if_replay_exhausted(record);
     record.last_usage_summary = Some(operator_summary(outcome));
     record.last_files_read = Vec::new();
     record.last_files_written = Vec::new();
@@ -320,6 +340,12 @@ pub fn mark_lane_finished(
         )
     };
     record.recovery_action = record.failure_kind.map(default_recovery_action);
+    if outcome.exit_status == 0 {
+        record.consecutive_failures = 0;
+    } else {
+        record.consecutive_failures = record.consecutive_failures.saturating_add(1);
+        escalate_if_replay_exhausted(record);
+    }
     record.last_usage_summary = Some(operator_summary(outcome));
     record.last_files_read = Vec::new();
     record.last_files_written = Vec::new();
@@ -367,9 +393,73 @@ pub fn refresh_program_state(
                 &mut record.run_config,
                 Some(normalize_path_lexically(&run_config)),
             );
-            if let Some(child_manifest) =
-                manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id)
-            {
+            let child_manifest =
+                manifest.resolve_lane_program_manifest(manifest_path, unit_id, lane_id);
+            if child_manifest.is_none() && is_orchestration_stub_run_config(&run_config) {
+                if record.status != LaneExecutionStatus::Blocked {
+                    record.status = LaneExecutionStatus::Blocked;
+                    lane_changed = true;
+                }
+                if record.current_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_fabro_run_id.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.current_stage_label.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_error.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.failure_kind.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.recovery_action.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_exit_status.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_stdout_snippet.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_stderr_snippet.take().is_some() {
+                    lane_changed = true;
+                }
+                if lane_changed {
+                    changed = true;
+                }
+                continue;
+            }
+            if stale_failure_superseded_by_render(record, &run_config) {
+                if record.status != LaneExecutionStatus::Blocked {
+                    record.status = LaneExecutionStatus::Blocked;
+                    lane_changed = true;
+                }
+                if record.last_error.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.failure_kind.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.recovery_action.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_exit_status.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_stdout_snippet.take().is_some() {
+                    lane_changed = true;
+                }
+                if record.last_stderr_snippet.take().is_some() {
+                    lane_changed = true;
+                }
+                if lane_changed {
+                    changed = true;
+                }
+            }
+            if let Some(child_manifest) = child_manifest {
                 if sync_child_program_runtime_record(record, &child_manifest) {
                     changed = true;
                 }
@@ -1002,6 +1092,55 @@ fn tracked_run_id(record: &LaneRuntimeRecord) -> Option<&str> {
         .or(record.current_run_id.as_deref())
 }
 
+fn is_orchestration_stub_run_config(run_config: &Path) -> bool {
+    run_config
+        .components()
+        .any(|component| component.as_os_str() == "orchestration")
+}
+
+fn render_inputs_updated_after(run_config: &Path, timestamp: DateTime<Utc>) -> bool {
+    let run_config_updated = std::fs::metadata(run_config)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .is_some_and(|updated_at| updated_at > timestamp);
+    if run_config_updated {
+        return true;
+    }
+    load_run_config(run_config)
+        .ok()
+        .map(|config| resolve_graph_path(run_config, &config.graph))
+        .and_then(|graph_path| std::fs::metadata(graph_path).ok())
+        .and_then(|metadata| metadata.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .is_some_and(|updated_at| updated_at > timestamp)
+}
+
+fn stale_failure_superseded_by_render(record: &LaneRuntimeRecord, run_config: &Path) -> bool {
+    if record.status != LaneExecutionStatus::Failed {
+        return false;
+    }
+    if record.current_run_id.is_some() || record.current_fabro_run_id.is_some() {
+        return false;
+    }
+    let Some(finished_at) = record.last_finished_at else {
+        return false;
+    };
+    if !render_inputs_updated_after(run_config, finished_at) {
+        return false;
+    }
+    matches!(
+        record.failure_kind,
+        Some(
+            FailureKind::DeterministicVerifyCycle
+                | FailureKind::ProviderPolicyMismatch
+                | FailureKind::RegenerateNoop
+        )
+    ) || record.last_error.as_deref().is_some_and(|error| {
+        error.contains("goal gate unsatisfied for node verify") && error.contains("no retry target")
+    })
+}
+
 fn read_live_lane_progress_for_run_id(
     run_id: &str,
 ) -> Result<Option<LiveLaneProgress>, ProgramStateError> {
@@ -1507,6 +1646,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
         state.save(&path).expect("save should succeed");
@@ -1545,6 +1685,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
         state.lanes.insert(
@@ -1570,6 +1711,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
 
@@ -1651,6 +1793,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
 
@@ -1696,6 +1839,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
 
@@ -1772,6 +1916,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
         let changed =
@@ -1878,6 +2023,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: Some("stdout".to_string()),
                 last_stderr_snippet: Some("stderr".to_string()),
+                consecutive_failures: 0,
             },
         );
 
@@ -1980,6 +2126,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
 
@@ -2034,6 +2181,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: Some("stdout".to_string()),
                 last_stderr_snippet: Some("stderr".to_string()),
+                consecutive_failures: 0,
             },
         );
 
@@ -2079,6 +2227,7 @@ mod tests {
                 ready_checks_failing: Vec::new(),
                 running_checks_passing: Vec::new(),
                 running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
             }],
         };
 
@@ -2123,6 +2272,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: Some("stdout".to_string()),
                 last_stderr_snippet: Some("stderr".to_string()),
+                consecutive_failures: 0,
             },
         );
 
@@ -2168,6 +2318,7 @@ mod tests {
                 ready_checks_failing: Vec::new(),
                 running_checks_passing: Vec::new(),
                 running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
             }],
         };
 
@@ -2212,6 +2363,7 @@ mod tests {
                 last_files_written: Vec::new(),
                 last_stdout_snippet: None,
                 last_stderr_snippet: None,
+                consecutive_failures: 0,
             },
         );
 

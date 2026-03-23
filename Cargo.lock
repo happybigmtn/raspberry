@@ -1708,6 +1708,7 @@ version = "0.176.2"
 dependencies = [
  "anyhow",
  "fabro-config",
+ "fabro-model",
  "fabro-workflows",
  "git2",
  "raspberry-supervisor",

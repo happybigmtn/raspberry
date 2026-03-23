@@ -1,7 +1,7 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "raspberry-demo",
-  "updated_at": "2026-03-22T18:32:05.420897815Z",
+  "updated_at": "2026-03-23T15:13:17.055319351Z",
   "lanes": {
     "consensus:chapter": {
       "lane_key": "consensus:chapter",
@@ -31,7 +31,6 @@
       "lane_key": "p2p:chapter",
       "status": "failed",
       "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/p2p-chapter.toml",
-      "current_stage_label": "Review",
       "last_run_id": "01P2PRUNNING00000000000000000",
       "last_started_at": "2026-03-18T22:10:00Z",
       "last_finished_at": "2026-03-18T22:10:00Z",

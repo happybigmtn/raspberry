@@ -8,6 +8,7 @@ description = "Blueprint schema, rendering, and reconciliation for Fabro workflo
 [dependencies]
 anyhow.workspace = true
 fabro-config = { path = "../fabro-config" }
+fabro-model = { path = "../fabro-model" }
 fabro-workflows = { path = "../fabro-workflows" }
 raspberry-supervisor = { path = "../raspberry-supervisor" }
 git2.workspace = true

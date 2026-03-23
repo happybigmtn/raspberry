@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use fabro_model::{automation_fallback_map, automation_primary_target, AutomationProfile};
 use git2::Repository;
 use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
 use serde::Serialize;
@@ -10,13 +11,6 @@ use crate::blueprint::{
     validate_blueprint, BlueprintLane, BlueprintUnit, ProgramBlueprint, WorkflowTemplate,
 };
 use crate::error::RenderError;
-
-const DEFAULT_WRITE_PROVIDER: &str = "minimax";
-const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
-const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
-const REVIEW_FALLBACK_SECTION: &str =
-    "\n[llm.fallbacks]\nanthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]\n";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -585,6 +579,8 @@ fn render_workflow_graph(
     audit_command: &str,
     quality_command: &str,
 ) -> String {
+    let write_target = automation_primary_target(AutomationProfile::Write);
+    let review_target = automation_primary_target(AutomationProfile::Review);
     let prompt_path = |name: &str| -> String {
         format!(
             "@../../prompts/{}/{}/{}.md",
@@ -600,10 +596,10 @@ fn render_workflow_graph(
             "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> specify -> review -> polish -> verify\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
             graph_name(lane),
             goal,
-            DEFAULT_REVIEW_MODEL,
-            DEFAULT_REVIEW_PROVIDER,
-            DEFAULT_WRITE_MODEL,
-            DEFAULT_WRITE_PROVIDER,
+            review_target.model,
+            review_target.provider.as_str(),
+            write_target.model,
+            write_target.provider.as_str(),
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
@@ -613,10 +609,10 @@ fn render_workflow_graph(
             "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
             graph_name(lane),
             goal,
-            DEFAULT_REVIEW_MODEL,
-            DEFAULT_REVIEW_PROVIDER,
-            DEFAULT_WRITE_MODEL,
-            DEFAULT_WRITE_PROVIDER,
+            review_target.model,
+            review_target.provider.as_str(),
+            write_target.model,
+            write_target.provider.as_str(),
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
@@ -653,14 +649,14 @@ fn render_workflow_graph(
             "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
-                DEFAULT_REVIEW_MODEL,
-                DEFAULT_REVIEW_PROVIDER,
-                DEFAULT_REVIEW_MODEL,
-                DEFAULT_REVIEW_PROVIDER,
-                DEFAULT_REVIEW_MODEL,
-                DEFAULT_REVIEW_PROVIDER,
-                DEFAULT_REVIEW_MODEL,
-                DEFAULT_REVIEW_PROVIDER,
+                review_target.model,
+                review_target.provider.as_str(),
+                review_target.model,
+                review_target.provider.as_str(),
+                review_target.model,
+                review_target.provider.as_str(),
+                review_target.model,
+                review_target.provider.as_str(),
                 escape_graph_attr(&preflight_command(verify_command)),
                 prompt_path("plan"),
                 escape_graph_attr(verify_command),
@@ -900,9 +896,13 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
+        let write_target = automation_primary_target(AutomationProfile::Write);
+        let fallback_section = render_fallback_section(AutomationProfile::Write);
         format!(
             "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n{}\n",
-            DEFAULT_WRITE_PROVIDER, DEFAULT_WRITE_MODEL, REVIEW_FALLBACK_SECTION
+            write_target.provider.as_str(),
+            write_target.model,
+            fallback_section
         )
     } else {
         String::new()
@@ -942,6 +942,23 @@ fn render_run_config(
         }
     }
     config
+}
+
+fn render_fallback_section(profile: AutomationProfile) -> String {
+    let fallback_map = automation_fallback_map(profile);
+    if fallback_map.is_empty() {
+        return String::new();
+    }
+    let mut section = String::from("[llm.fallbacks]\n");
+    for (provider, values) in fallback_map {
+        let rendered = values
+            .into_iter()
+            .map(|value| format!("\"{value}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        section.push_str(&format!("{provider} = [{rendered}]\n"));
+    }
+    section
 }
 
 fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
@@ -1293,20 +1310,24 @@ Only set `merge_ready: yes` when:\n\
 #[allow(clippy::too_many_arguments)]
 fn render_implementation_challenge_prompt(
     lane: &BlueprintLane,
-    context: &str,
+    _context: &str,
     implement_now: &[String],
     touch_first: &[String],
     build_slice: &[String],
-    setup_first: &[String],
+    _setup_first: &[String],
     first_proof_gate: &[String],
-    first_health_gate: &[String],
-    execution_guidance: &[String],
-    manual_notes: &[String],
-    health_surfaces: &[String],
-    observability_surfaces: &[String],
+    _first_health_gate: &[String],
+    _execution_guidance: &[String],
+    _manual_notes: &[String],
+    _health_surfaces: &[String],
+    _observability_surfaces: &[String],
     implementation_artifact_expectations: &[String],
     verification_artifact_expectations: &[String],
 ) -> String {
+    // Challenge is a cheap adversarial pre-review.  Only include the sections
+    // relevant to scope-checking and proof verification — omit health, observability,
+    // and the raw context dump (which duplicates the structured sections already
+    // extracted from it).
     let mut output = format!(
         "# {} — Challenge\n\nPerform a cheap adversarial review of the current slice for `{}` before the expensive final review runs.\n",
         lane.title, lane.id
@@ -1317,28 +1338,7 @@ fn render_implementation_challenge_prompt(
     append_prompt_section(&mut output, "Current slice", implement_now, false);
     append_prompt_section(&mut output, "Touched surfaces", touch_first, true);
     append_prompt_section(&mut output, "Slice work", build_slice, false);
-    append_prompt_section(&mut output, "Setup checks", setup_first, false);
     append_prompt_section(&mut output, "First proof gate", first_proof_gate, true);
-    append_prompt_section(&mut output, "First health gate", first_health_gate, true);
-    append_prompt_section(&mut output, "Execution guidance", execution_guidance, false);
-    append_prompt_section(
-        &mut output,
-        "Manual proof still required",
-        manual_notes,
-        false,
-    );
-    append_prompt_section(
-        &mut output,
-        "Health surfaces to preserve",
-        health_surfaces,
-        false,
-    );
-    append_prompt_section(
-        &mut output,
-        "Observability surfaces to preserve",
-        observability_surfaces,
-        false,
-    );
     append_prompt_section(
         &mut output,
         "Implementation artifact must cover",
@@ -1351,7 +1351,6 @@ fn render_implementation_challenge_prompt(
         verification_artifact_expectations,
         false,
     );
-    output.push_str(&format!("\n\nCurrent Slice Contract:\n{}\n", context));
     output.push_str(
         "\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
     );
@@ -1364,60 +1363,33 @@ fn render_implementation_challenge_prompt(
 #[allow(clippy::too_many_arguments)]
 fn render_implementation_fixup_prompt(
     lane: &BlueprintLane,
-    context: &str,
+    _context: &str,
     implement_now: &[String],
     touch_first: &[String],
     build_slice: &[String],
     setup_first: &[String],
     first_proof_gate: &[String],
-    first_health_gate: &[String],
+    _first_health_gate: &[String],
     execution_guidance: &[String],
-    manual_notes: &[String],
-    health_surfaces: &[String],
-    observability_surfaces: &[String],
+    _manual_notes: &[String],
+    _health_surfaces: &[String],
+    _observability_surfaces: &[String],
     implementation_artifact_expectations: &[String],
     verification_artifact_expectations: &[String],
 ) -> String {
-    let has_structured_sections = !implement_now.is_empty()
-        || !touch_first.is_empty()
-        || !build_slice.is_empty()
-        || !setup_first.is_empty()
-        || !first_proof_gate.is_empty()
-        || !first_health_gate.is_empty()
-        || !execution_guidance.is_empty()
-        || !manual_notes.is_empty();
+    // Fixup runs AFTER implement and verify, so the model already has conversation
+    // context via the preamble.  Include only the sections needed to unblock the
+    // proof gate — omit doctrine, health, observability, and manual notes.
     let mut output = format!(
         "# {} — Fixup\n\nFix only the current slice for `{}`.\n",
         lane.title, lane.id
     );
-    if !has_structured_sections {
-        output.push_str(&format!("\nCurrent Slice Contract:\n{}\n", context));
-    }
     append_prompt_section(&mut output, "Current slice", implement_now, false);
     append_prompt_section(&mut output, "Touched surfaces", touch_first, true);
     append_prompt_section(&mut output, "Slice work", build_slice, false);
     append_prompt_section(&mut output, "Setup checks", setup_first, false);
     append_prompt_section(&mut output, "First proof gate", first_proof_gate, true);
-    append_prompt_section(&mut output, "First health gate", first_health_gate, true);
     append_prompt_section(&mut output, "Execution guidance", execution_guidance, false);
-    append_prompt_section(
-        &mut output,
-        "Manual proof still required",
-        manual_notes,
-        false,
-    );
-    append_prompt_section(
-        &mut output,
-        "Health surfaces to preserve",
-        health_surfaces,
-        false,
-    );
-    append_prompt_section(
-        &mut output,
-        "Observability surfaces to preserve",
-        observability_surfaces,
-        false,
-    );
     append_prompt_section(
         &mut output,
         "Implementation artifact must cover",
@@ -5470,10 +5442,10 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
         assert!(graph.contains(
-            "#challenge   { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+            "#challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
         ));
         assert!(graph.contains(
-            "#review      { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+            "#review      { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
         ));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
@@ -5610,7 +5582,6 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5656,7 +5627,6 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
         assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
@@ -5703,7 +5673,6 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
