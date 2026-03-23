@@ -103,7 +103,8 @@ impl SdkError {
             | Self::NoObjectGenerated { .. }
             | Self::Abort { .. }
             | Self::Configuration { .. }
-            | Self::UnsupportedToolChoice { .. } => false,
+            | Self::UnsupportedToolChoice { .. }
+            | Self::RequestTimeout { .. } => false,
             _ => true,
         }
     }
@@ -155,7 +156,7 @@ impl SdkError {
             Self::Provider {
                 kind: ProviderErrorKind::QuotaExceeded,
                 ..
-            }
+            } | Self::RequestTimeout { .. }
         )
     }
 
@@ -333,7 +334,7 @@ mod tests {
         let timeout = SdkError::RequestTimeout {
             message: "timed out".into(),
         };
-        assert!(timeout.retryable());
+        assert!(!timeout.retryable());
 
         let network = SdkError::Network {
             message: "connection refused".into(),
