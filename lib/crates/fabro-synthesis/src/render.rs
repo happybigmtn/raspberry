@@ -936,7 +936,7 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\n".to_string()
+        "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\nKIMI_API_KEY = \"${env.KIMI_API_KEY}\"\n".to_string()
     } else {
         String::new()
     };
@@ -5515,12 +5515,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Quality Gate\""));
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
-        assert!(graph.contains(
-            "#challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
-        ));
-        assert!(graph.contains(
-            "#review      { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
-        ));
+        assert!(graph.contains("#challenge   { backend: cli; model: kimi-k2.5; provider: kimi; }"));
+        assert!(graph.contains("#review      { backend: cli; model: kimi-k2.5; provider: kimi; }"));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
         assert!(graph.contains("quality -> challenge [condition=\"outcome=success\"]"));

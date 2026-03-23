@@ -703,6 +703,17 @@ fn build_launch_env_for_provider(
     if provider == Provider::OpenAi {
         launch_env.remove("OPENAI_API_KEY");
     }
+    // Kimi routes through Codex CLI (OpenAI-compatible).  Set the base URL
+    // and API key so codex talks to Kimi's endpoint instead of OpenAI.
+    if provider == Provider::Kimi {
+        launch_env.insert(
+            "OPENAI_BASE_URL".to_string(),
+            "https://api.kimi.com/coding/v1".to_string(),
+        );
+        if let Ok(key) = std::env::var("KIMI_API_KEY") {
+            launch_env.insert("OPENAI_API_KEY".to_string(), key);
+        }
+    }
     launch_env
 }
 
@@ -2389,24 +2400,26 @@ mod tests {
 
     #[test]
     fn cli_command_omits_model_when_empty() {
-        let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt", None, false,
-            None,
-        );
+        let cmd =
+            cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt", None, false, None);
         assert!(cmd.contains("codex exec --json --yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt", None, false,
+        let cmd = cli_command_for_provider(
+            Provider::Anthropic,
+            "",
+            "/tmp/prompt.txt",
+            None,
+            false,
             None,
         );
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(!cmd.contains("--model "));
-        let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt", None, false,
-            None,
-        );
+        let cmd =
+            cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt", None, false, None);
         assert!(cmd.contains("--yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt", None, false,
-            None,
-        );
+        let cmd =
+            cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt", None, false, None);
         assert!(cmd.contains("pi --provider minimax"));
         assert!(!cmd.contains("--model "));
     }
