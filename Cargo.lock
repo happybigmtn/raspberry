@@ -4135,6 +4135,7 @@ version = "0.176.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "chrono",
  "clap",
  "predicates",
  "raspberry-supervisor",
@@ -4153,6 +4154,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
 ]

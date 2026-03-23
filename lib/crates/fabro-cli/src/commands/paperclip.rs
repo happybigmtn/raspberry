@@ -16,8 +16,8 @@ use fabro_synthesis::{
 };
 use raspberry_supervisor::{
     evaluate::evaluate_with_state, load_plan_registry, load_plan_registry_from_planning_root,
-    refresh_program_state, EvaluatedLane, FailureKind, LaneExecutionStatus, MaintenanceMode,
-    PlanMappingSource, PlanMatrix, PlanRegistry, PlanStatusRow, ProgramManifest,
+    refresh_program_state, AutodevProvenance, EvaluatedLane, FailureKind, LaneExecutionStatus,
+    MaintenanceMode, PlanMappingSource, PlanMatrix, PlanRegistry, PlanStatusRow, ProgramManifest,
     ProgramRuntimeState,
 };
 use serde::de::DeserializeOwned;
@@ -172,6 +172,8 @@ struct PaperclipServerStatus {
     controller_pid: Option<u32>,
     controller_pid_live: bool,
     controller_acquired_at: Option<String>,
+    controller_provenance: Option<String>,
+    fabro_provenance: Option<String>,
     bootstrap_state: Option<serde_json::Value>,
     frontier: Option<FrontierSyncModel>,
     plan_matrix: Option<PlanMatrix>,
@@ -642,6 +644,7 @@ async fn apply_paperclip_context(
         "refreshCommand": context.frontier.refresh_command.clone(),
         "statusCommand": context.frontier.status_command.clone(),
         "summary": context.frontier.summary.clone(),
+        "provenance": load_frontier_provenance(&context.paths.manifest_path),
         "issueIds": synced_issue_ids,
         "snapshots": frontier_snapshots_json(&context.frontier),
         "documentsSynced": synced_document_count,
@@ -885,6 +888,8 @@ async fn collect_paperclip_server_status(paths: &PaperclipPaths) -> Result<Paper
         controller_pid: controller.pid,
         controller_pid_live: controller.pid_live,
         controller_acquired_at: controller.acquired_at,
+        controller_provenance: controller.controller_provenance,
+        fabro_provenance: controller.fabro_provenance,
         bootstrap_state,
         frontier,
         plan_matrix,
@@ -920,6 +925,12 @@ fn print_paperclip_server_status(paths: &PaperclipPaths, status: &PaperclipServe
     );
     if let Some(acquired_at) = status.controller_acquired_at.as_ref() {
         println!("Controller acquired at: {acquired_at}");
+    }
+    if let Some(provenance) = status.controller_provenance.as_ref() {
+        println!("Controller provenance: {provenance}");
+    }
+    if let Some(provenance) = status.fabro_provenance.as_ref() {
+        println!("Fabro provenance: {provenance}");
     }
     println!(
         "OPENAI_API_KEY present: {}",
@@ -1347,6 +1358,8 @@ struct ControllerStatus {
     pid: Option<u32>,
     pid_live: bool,
     acquired_at: Option<String>,
+    controller_provenance: Option<String>,
+    fabro_provenance: Option<String>,
 }
 
 const ORCHESTRATOR_WAKE_WAIT_MS: u64 = 3_000;
@@ -2575,10 +2588,34 @@ fn load_controller_status(paths: &PaperclipPaths) -> ControllerStatus {
         .get("acquired_at")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
+    let provenance = load_frontier_provenance(&paths.manifest_path)
+        .and_then(|value| serde_json::from_value::<AutodevProvenance>(value).ok());
     ControllerStatus {
         pid,
         pid_live: pid.map(process_is_running).unwrap_or(false),
         acquired_at,
+        controller_provenance: provenance
+            .as_ref()
+            .map(|value| format_binary_provenance(&value.controller)),
+        fabro_provenance: provenance
+            .as_ref()
+            .map(|value| format_binary_provenance(&value.fabro_bin)),
+    }
+}
+
+fn load_frontier_provenance(manifest_path: &Path) -> Option<serde_json::Value> {
+    let manifest = ProgramManifest::load(manifest_path).ok()?;
+    raspberry_supervisor::load_optional_autodev_report(manifest_path, &manifest)
+        .ok()
+        .flatten()
+        .and_then(|report| serde_json::to_value(report.provenance).ok())
+        .filter(|value| !value.is_null())
+}
+
+fn format_binary_provenance(binary: &raspberry_supervisor::BinaryProvenance) -> String {
+    match binary.version.as_deref() {
+        Some(version) => format!("{version} @ {}", binary.path),
+        None => binary.path.clone(),
     }
 }
 
@@ -2880,8 +2917,84 @@ fn render_frontier_entry(entry: Option<&FrontierSyncEntry>) -> String {
     if let Some(reason) = entry.blocker_reason.as_ref() {
         lines.push(format!("- blocker: {}", reason));
     }
+    if let Some((landing_state, landing_detail)) = trunk_delivery_state_for_run(
+        entry
+            .last_run_id
+            .as_deref()
+            .or(entry.current_run_id.as_deref()),
+    ) {
+        lines.push(format!("- trunk landing: {}", landing_state));
+        lines.push(format!("- trunk landing detail: {}", landing_detail));
+    }
     lines.push(format!("- next move: {}", entry.next_operator_move));
     lines.join("\n")
+}
+
+fn trunk_delivery_state_for_run(run_id: Option<&str>) -> Option<(String, String)> {
+    let run_id = run_id?;
+    let base = fabro_workflows::run_lookup::default_runs_base();
+    let run_dir = fabro_workflows::run_lookup::find_run_by_prefix(&base, run_id).ok()?;
+    let run_config = fabro_config::run::load_run_config(&run_dir.join("run.toml")).ok()?;
+    if !run_config
+        .integration
+        .as_ref()
+        .is_some_and(|config| config.enabled)
+    {
+        return None;
+    }
+
+    if let Ok(raw) = std::fs::read_to_string(run_dir.join("direct_integration.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let target_branch = value
+                .get("target_branch")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let pushed = value
+                .get("pushed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if pushed {
+                return Some((
+                    "landed".to_string(),
+                    format!("integrated to {target_branch}"),
+                ));
+            }
+            return Some((
+                "not_landed".to_string(),
+                format!("integration recorded locally for {target_branch}"),
+            ));
+        }
+    }
+
+    if let Ok(raw) = std::fs::read_to_string(run_dir.join("progress.jsonl")) {
+        let mut failed_pushes = Vec::new();
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if value.get("event").and_then(|value| value.as_str()) != Some("GitPush") {
+                continue;
+            }
+            if value.get("success").and_then(|value| value.as_bool()) == Some(false) {
+                let branch = value
+                    .get("branch")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                failed_pushes.push(branch.to_string());
+            }
+        }
+        if !failed_pushes.is_empty() {
+            return Some((
+                "push_failed".to_string(),
+                format!("push failed for {}", failed_pushes.join(", ")),
+            ));
+        }
+    }
+
+    Some((
+        "not_landed".to_string(),
+        "integration enabled but no landed record was found".to_string(),
+    ))
 }
 
 fn repo_relative_display(path: &Path, root: &Path) -> String {

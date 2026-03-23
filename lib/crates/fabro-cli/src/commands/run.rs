@@ -244,9 +244,9 @@ pub(crate) fn resolve_model_provider(
             default_write_model_for_provider(provider_enum)
         });
 
-    // Resolve model alias through catalog
+    // Resolve model alias through catalog and enforce provider compatibility.
     match fabro_model::get_model_info(&model) {
-        Some(info) => (info.id, provider.or(Some(info.provider))),
+        Some(info) => (info.id, Some(info.provider)),
         None => {
             let provider = if provider.is_none() && model == DEFAULT_WRITE_MODEL {
                 Some(DEFAULT_WRITE_PROVIDER.as_str().to_string())
@@ -256,6 +256,24 @@ pub(crate) fn resolve_model_provider(
             (model, provider)
         }
     }
+}
+
+async fn verify_integration_delivery_ready(
+    run_cfg: Option<&WorkflowRunConfig>,
+    repo_path: &Path,
+    _github_app: Option<&fabro_github::GitHubAppCredentials>,
+    _origin_url: Option<&str>,
+) -> anyhow::Result<()> {
+    if resolve_integration_config(run_cfg).is_none() {
+        return Ok(());
+    }
+
+    let push_url = fabro_workflows::git::resolve_ssh_push_url(repo_path, "origin")
+        .map_err(|error| anyhow::anyhow!("failed to resolve SSH push URL: {error}"))?;
+    let dry_run_refspec = format!("HEAD:refs/heads/fabro/preflight/{}", ulid::Ulid::new());
+    fabro_workflows::git::push_ref_dry_run(repo_path, &push_url, &dry_run_refspec)
+        .map_err(|error| anyhow::anyhow!("direct integration push preflight failed: {error}"))?;
+    Ok(())
 }
 
 /// Parse sandbox provider from an optional `SandboxConfig`.
@@ -827,6 +845,16 @@ pub async fn run_command(
             .unwrap_or((None, None));
     let git_status =
         fabro_workflows::git::sync_status(&original_cwd, "origin", detected_base_branch.as_deref());
+
+    if !args.dry_run {
+        verify_integration_delivery_ready(
+            run_cfg.as_ref(),
+            &original_cwd,
+            github_app.as_ref(),
+            origin_url.as_deref(),
+        )
+        .await?;
+    }
 
     if args.preflight {
         return run_preflight(
@@ -2812,6 +2840,45 @@ async fn run_preflight(
         }
     };
 
+    let integration_ok = if !args.dry_run && resolve_integration_config(run_cfg.as_ref()).is_some()
+    {
+        match verify_integration_delivery_ready(
+            run_cfg.as_ref(),
+            &std::env::current_dir()?,
+            github_app.as_ref(),
+            origin_url,
+        )
+        .await
+        {
+            Ok(()) => {
+                checks.push(CheckResult {
+                    name: "Trunk Delivery".into(),
+                    status: CheckStatus::Pass,
+                    summary: "pushable".into(),
+                    details: vec![CheckDetail::new(
+                        "Direct integration can authenticate and dry-run push to origin".into(),
+                    )],
+                    remediation: None,
+                });
+                true
+            }
+            Err(error) => {
+                checks.push(CheckResult {
+                    name: "Trunk Delivery".into(),
+                    status: CheckStatus::Error,
+                    summary: "blocked".into(),
+                    details: vec![CheckDetail::new(
+                        "Direct integration is enabled for this run".into(),
+                    )],
+                    remediation: Some(error.to_string()),
+                });
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     // 5. GitHub token preflight
     let github_permissions = run_cfg
         .as_ref()
@@ -2876,7 +2943,7 @@ async fn run_preflight(
     let term_width = console::Term::stderr().size().1;
     print!("{}", report.render(styles, true, None, Some(term_width)));
 
-    if sandbox_ok && llm_ok {
+    if sandbox_ok && llm_ok && integration_ok {
         Ok(())
     } else {
         std::process::exit(1);

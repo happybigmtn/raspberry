@@ -7,8 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use fabro_config::run::{load_run_config, resolve_graph_path};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::controller_lease::{acquire_autodev_lease, ControllerLeaseError};
@@ -19,6 +21,7 @@ use crate::failure::{
 };
 use crate::maintenance::{load_active_maintenance, MaintenanceError};
 use crate::manifest::{ManifestError, ProgramManifest};
+use crate::program_state::{mark_lane_regenerate_noop, ProgramRuntimeState, ProgramStateError};
 
 thread_local! {
     static ORCHESTRATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
@@ -44,8 +47,23 @@ pub struct AutodevReport {
     pub stop_reason: AutodevStopReason,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<AutodevProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<AutodevCurrentSnapshot>,
     pub cycles: Vec<AutodevCycleReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutodevProvenance {
+    pub controller: BinaryProvenance,
+    pub fabro_bin: BinaryProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryProvenance {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +92,8 @@ pub struct AutodevCycleReport {
     pub ready_lanes: Vec<String>,
     #[serde(default)]
     pub replayed_lanes: Vec<String>,
+    #[serde(default)]
+    pub regenerate_noop_lanes: Vec<String>,
     pub dispatched: Vec<DispatchOutcome>,
     pub running_after: usize,
     pub complete_after: usize,
@@ -84,6 +104,7 @@ const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
+const REGENERATE_SPARE_CAPACITY_RETRY_SECS: u64 = 15;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
@@ -205,6 +226,8 @@ pub enum AutodevError {
     ControllerLease(#[from] ControllerLeaseError),
     #[error(transparent)]
     Maintenance(#[from] MaintenanceError),
+    #[error(transparent)]
+    ProgramState(#[from] ProgramStateError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +262,12 @@ struct DoctrineFileFingerprint {
     modified_unix_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaneRenderFingerprint {
+    run_config_sha256: Option<String>,
+    graph_sha256: Option<String>,
+}
+
 pub fn orchestrate_program(
     manifest_path: &Path,
     settings: &AutodevSettings,
@@ -261,6 +290,7 @@ pub fn orchestrate_program(
     }
     let guard = enter_orchestration_scope(&manifest_path)?;
     let initial_manifest = ProgramManifest::load(&manifest_path)?;
+    let provenance = Some(capture_autodev_provenance(settings));
     if let Some(_maintenance) = load_active_maintenance(&manifest_path, &initial_manifest)? {
         let current = evaluate_program(&manifest_path)
             .ok()
@@ -269,6 +299,7 @@ pub fn orchestrate_program(
             program: initial_manifest.program.clone(),
             stop_reason: AutodevStopReason::Maintenance,
             updated_at: Utc::now(),
+            provenance,
             current,
             cycles: Vec::new(),
         };
@@ -287,6 +318,7 @@ pub fn orchestrate_program(
         program: initial_manifest.program.clone(),
         stop_reason: AutodevStopReason::CycleLimit,
         updated_at: Utc::now(),
+        provenance,
         current: None,
         cycles: Vec::new(),
     };
@@ -312,6 +344,8 @@ pub fn orchestrate_program(
         let replayable_failures_before =
             dispatchable_failed_lanes(&manifest, &program_before, false);
         let regenerable_failures = regenerable_failed_lanes(&program_before);
+        let regenerate_fingerprints_before =
+            lane_render_fingerprints(&program_before, &regenerable_failures);
         let max_parallel = settings
             .max_parallel_override
             .unwrap_or(manifest.max_parallel)
@@ -363,10 +397,30 @@ pub fn orchestrate_program(
         } else {
             manifest
         };
-        let program = if evolved {
+        let mut program = if evolved {
             evaluate_program(&manifest_path)?
         } else {
             program_before
+        };
+        let regenerate_noop_lanes = if evolved {
+            let noop_lanes = detect_regenerate_noop_lanes(
+                &regenerable_failures,
+                &regenerate_fingerprints_before,
+                &program,
+            );
+            if !noop_lanes.is_empty() {
+                mark_regenerate_noop_lanes(
+                    &manifest_path,
+                    &manifest,
+                    &program,
+                    &noop_lanes,
+                    &regenerate_fingerprints_before,
+                )?;
+                program = evaluate_program(&manifest_path)?;
+            }
+            noop_lanes
+        } else {
+            Vec::new()
         };
         let replayable_failures = dispatchable_failed_lanes(&manifest, &program, evolved);
         let ready_lanes = program
@@ -430,6 +484,7 @@ pub fn orchestrate_program(
             evolve_target,
             ready_lanes: ready_lanes.clone(),
             replayed_lanes,
+            regenerate_noop_lanes,
             dispatched,
             running_after,
             complete_after,
@@ -653,6 +708,24 @@ fn should_evolve(last_evolve_at: Option<Instant>, evolve_every: Duration) -> boo
     evolve_every.is_zero() || last_evolve_at.elapsed() >= evolve_every
 }
 
+fn should_fast_track_regenerate_evolve(
+    last_evolve_at: Option<Instant>,
+    frontier: &FrontierSignature,
+    max_parallel: usize,
+    frontier_progressed: bool,
+    recovery_needs_evolve: bool,
+) -> bool {
+    let spare_capacity = frontier.running < max_parallel;
+    if !recovery_needs_evolve || !spare_capacity {
+        return false;
+    }
+    let Some(last_evolve_at) = last_evolve_at else {
+        return true;
+    };
+    frontier_progressed
+        || last_evolve_at.elapsed() >= Duration::from_secs(REGENERATE_SPARE_CAPACITY_RETRY_SECS)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn should_trigger_evolve(
     last_evolve_at: Option<Instant>,
@@ -665,11 +738,20 @@ fn should_trigger_evolve(
     recovery_needs_evolve: bool,
     last_evolve_frontier: Option<&FrontierSignature>,
 ) -> bool {
+    let frontier_progressed = last_evolve_frontier != Some(frontier);
+    if should_fast_track_regenerate_evolve(
+        last_evolve_at,
+        frontier,
+        max_parallel,
+        frontier_progressed,
+        recovery_needs_evolve,
+    ) {
+        return true;
+    }
     if frontier.total_work() >= frontier_budget {
         return false;
     }
     let spare_capacity = frontier.running < max_parallel;
-    let frontier_progressed = last_evolve_frontier != Some(frontier);
     let no_active_work = frontier.running == 0;
     let spare_capacity_trigger =
         spare_capacity && no_active_work && frontier.ready == 0 && frontier_progressed;
@@ -707,6 +789,35 @@ fn resolve_frontier_budget(settings: &AutodevSettings, max_parallel: usize) -> u
         .frontier_budget
         .unwrap_or_else(|| max_parallel.saturating_add(2))
         .max(max_parallel)
+}
+
+fn capture_autodev_provenance(settings: &AutodevSettings) -> AutodevProvenance {
+    let controller_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("raspberry"));
+    AutodevProvenance {
+        controller: capture_binary_provenance(&controller_path),
+        fabro_bin: capture_binary_provenance(&settings.fabro_bin),
+    }
+}
+
+fn capture_binary_provenance(path: &Path) -> BinaryProvenance {
+    let version = Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if !output.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8(output.stdout).ok()?;
+            stdout
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string())
+        });
+    BinaryProvenance {
+        path: path.display().to_string(),
+        version,
+    }
 }
 
 pub fn autodev_report_path(manifest_path: &Path, manifest: &ProgramManifest) -> PathBuf {
@@ -1034,6 +1145,7 @@ fn deserialize_autodev_report(
             program: manifest.program.clone(),
             stop_reason: AutodevStopReason::CycleLimit,
             updated_at: Utc::now(),
+            provenance: None,
             current: None,
             cycles: Vec::new(),
         })
@@ -1086,6 +1198,100 @@ fn current_snapshot(
     }
 }
 
+fn lane_render_fingerprints(
+    program: &crate::evaluate::EvaluatedProgram,
+    lane_keys: &[String],
+) -> Vec<(String, LaneRenderFingerprint)> {
+    lane_keys
+        .iter()
+        .filter_map(|lane_key| {
+            let lane = program
+                .lanes
+                .iter()
+                .find(|lane| lane.lane_key == *lane_key)?;
+            Some((lane_key.clone(), lane_render_fingerprint(&lane.run_config)))
+        })
+        .collect()
+}
+
+fn detect_regenerate_noop_lanes(
+    regenerable_lanes: &[String],
+    before: &[(String, LaneRenderFingerprint)],
+    program: &crate::evaluate::EvaluatedProgram,
+) -> Vec<String> {
+    let mut noop_lanes = Vec::new();
+    for lane_key in regenerable_lanes {
+        let Some((_, before_fingerprint)) = before
+            .iter()
+            .find(|(candidate_lane, _)| candidate_lane == lane_key)
+        else {
+            continue;
+        };
+        let Some(lane) = program.lanes.iter().find(|lane| lane.lane_key == *lane_key) else {
+            continue;
+        };
+        let after_fingerprint = lane_render_fingerprint(&lane.run_config);
+        if *before_fingerprint == after_fingerprint {
+            noop_lanes.push(lane_key.clone());
+        }
+    }
+    noop_lanes
+}
+
+fn mark_regenerate_noop_lanes(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    program: &crate::evaluate::EvaluatedProgram,
+    lane_keys: &[String],
+    before: &[(String, LaneRenderFingerprint)],
+) -> Result<(), AutodevError> {
+    if lane_keys.is_empty() {
+        return Ok(());
+    }
+    let state_path = manifest.resolved_state_path(manifest_path);
+    let mut state = ProgramRuntimeState::load_optional(&state_path)?
+        .unwrap_or_else(|| ProgramRuntimeState::new(&manifest.program));
+    for lane_key in lane_keys {
+        let Some(lane) = program.lanes.iter().find(|lane| lane.lane_key == *lane_key) else {
+            continue;
+        };
+        let before_fingerprint = before
+            .iter()
+            .find(|(candidate_lane, _)| candidate_lane == lane_key)
+            .map(|(_, fingerprint)| fingerprint.clone())
+            .unwrap_or_else(|| lane_render_fingerprint(&lane.run_config));
+        let detail = format!(
+            "synth evolve did not materially change run config or graph (run_config_sha256={}, graph_sha256={})",
+            before_fingerprint
+                .run_config_sha256
+                .as_deref()
+                .unwrap_or("missing"),
+            before_fingerprint.graph_sha256.as_deref().unwrap_or("missing"),
+        );
+        mark_lane_regenerate_noop(&mut state, lane_key, &lane.run_config, &detail);
+    }
+    state.save(&state_path)?;
+    Ok(())
+}
+
+fn lane_render_fingerprint(run_config_path: &Path) -> LaneRenderFingerprint {
+    let run_config_sha256 = file_sha256(run_config_path);
+    let graph_sha256 = load_run_config(run_config_path)
+        .ok()
+        .map(|config| resolve_graph_path(run_config_path, &config.graph))
+        .and_then(|graph_path| file_sha256(&graph_path));
+    LaneRenderFingerprint {
+        run_config_sha256,
+        graph_sha256,
+    }
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let digest = Sha256::digest(bytes);
+    Some(format!("{digest:x}"))
+}
+
 fn dispatchable_failed_lanes(
     manifest: &ProgramManifest,
     program: &crate::evaluate::EvaluatedProgram,
@@ -1136,13 +1342,8 @@ fn replay_target_lane(
     allow_regenerate: bool,
 ) -> Option<String> {
     let kind = failure_kind_for_lane(lane)?;
-    if is_retryable_verify_gate_miss(lane) {
-        return retry_after_cooldown(
-            lane,
-            now,
-            TRANSIENT_LAUNCH_RETRY_MIN_SECS,
-            lane.lane_key.clone(),
-        );
+    if is_verify_gate_miss_without_retry(lane) {
+        return allow_regenerate.then(|| lane.lane_key.clone());
     }
     match default_recovery_action(kind) {
         FailureRecoveryAction::ReplaySourceLane => {
@@ -1179,7 +1380,7 @@ fn replay_target_lane(
     }
 }
 
-fn is_retryable_verify_gate_miss(lane: &crate::evaluate::EvaluatedLane) -> bool {
+fn is_verify_gate_miss_without_retry(lane: &crate::evaluate::EvaluatedLane) -> bool {
     let error = lane
         .last_error
         .as_deref()
@@ -1199,6 +1400,9 @@ fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<
             )
         })
         .filter_map(|lane| {
+            if is_verify_gate_miss_without_retry(lane) {
+                return Some(lane.lane_key.clone());
+            }
             let kind = failure_kind_for_lane(lane)?;
             (default_recovery_action(kind) == FailureRecoveryAction::RegenerateLane)
                 .then(|| lane.lane_key.clone())
@@ -2480,6 +2684,86 @@ units:
     }
 
     #[test]
+    fn regenerate_lane_evolve_ignores_frontier_budget_with_idle_slot() {
+        let frontier = FrontierSignature {
+            ready: 14,
+            running: 4,
+            replayable_failed: 0,
+            regenerable_failed: 1,
+            complete: 5,
+            failed_recovery_keys: vec![
+                "failed:lane:supervisor_only_lane:regenerate_lane".to_string()
+            ],
+        };
+
+        assert!(should_trigger_evolve(
+            None,
+            Duration::from_secs(3600),
+            &frontier,
+            5,
+            1,
+            false,
+            false,
+            true,
+            Some(&frontier),
+        ));
+    }
+
+    #[test]
+    fn verify_gate_without_retry_target_is_regenerable() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "demo:lane".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "lane".to_string(),
+                lane_title: "Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Service,
+                status: LaneExecutionStatus::Failed,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "failed".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("run.toml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                last_started_at: None,
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some(
+                    "Engine error: goal gate unsatisfied for node verify and no retry target"
+                        .to_string(),
+                ),
+                failure_kind: Some(FailureKind::ProofScriptFailure),
+                recovery_action: Some(FailureRecoveryAction::ReplayLane),
+                last_completed_stage_label: Some("Start".to_string()),
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
+        };
+
+        let regenerable = regenerable_failed_lanes(&program);
+        assert_eq!(regenerable, vec!["demo:lane".to_string()]);
+    }
+
+    #[test]
     fn cycle_limit_treats_zero_as_unbounded() {
         assert_eq!(cycle_limit(0), None);
         assert_eq!(cycle_limit(3), Some(3));
@@ -2537,6 +2821,72 @@ units:
             true,
             Some(&frontier),
         ));
+    }
+
+    #[test]
+    fn detect_regenerate_noop_lanes_flags_unchanged_render() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workflow = temp.path().join("workflow.fabro");
+        let run_config = temp.path().join("run.toml");
+        std::fs::write(&workflow, "digraph demo { start -> exit }\n").expect("workflow");
+        std::fs::write(
+            &run_config,
+            "version = 1\ngraph = \"workflow.fabro\"\ngoal = \"demo\"\ndirectory = \".\"\n",
+        )
+        .expect("run config");
+
+        let before = vec![(
+            "demo:lane".to_string(),
+            lane_render_fingerprint(&run_config),
+        )];
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "demo:lane".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "lane".to_string(),
+                lane_title: "Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Artifact,
+                status: LaneExecutionStatus::Failed,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "failed".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: run_config.clone(),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: Some(1),
+                last_error: Some("failed".to_string()),
+                failure_kind: Some(FailureKind::SupervisorOnlyLane),
+                recovery_action: Some(FailureRecoveryAction::RegenerateLane),
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
+        };
+
+        let noop = detect_regenerate_noop_lanes(&["demo:lane".to_string()], &before, &program);
+
+        assert_eq!(noop, vec!["demo:lane".to_string()]);
     }
 
     #[test]

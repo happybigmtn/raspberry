@@ -754,32 +754,17 @@ pub async fn git_checkpoint(
 ///
 /// Authenticates via a GitHub App installation token so we don't depend
 /// on the host's ambient git credentials.
-pub async fn git_push_host(
+async fn git_push_host_result(
     repo_path: &Path,
     refspec: &str,
-    github_app: &Option<fabro_github::GitHubAppCredentials>,
+    _github_app: &Option<fabro_github::GitHubAppCredentials>,
     label: &str,
-) -> bool {
-    let (origin_url, _) = match fabro_sandbox::daytona::detect_repo_info(repo_path) {
-        Ok(info) => info,
-        Err(e) => {
-            tracing::warn!(error = %e, label, "Cannot detect origin for push");
-            return false;
-        }
-    };
-
-    let https_url = fabro_github::ssh_url_to_https(&origin_url);
-    let push_url = match github_app {
-        Some(creds) => match fabro_github::resolve_authenticated_url(creds, &https_url).await {
-            Ok(url) => url,
-            Err(e) => {
-                tracing::warn!(error = %e, label, "Failed to get token for push");
-                return false;
-            }
-        },
-        None => {
-            tracing::warn!(label, "No GitHub App credentials for push");
-            return false;
+) -> std::result::Result<(), String> {
+    let push_url = match crate::git::resolve_ssh_push_url(repo_path, "origin") {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!(error = %error, label, "Failed to resolve SSH push URL");
+            return Err(error.to_string());
         }
     };
 
@@ -792,13 +777,24 @@ pub async fn git_push_host(
     match result {
         Ok(()) => {
             tracing::info!(label, "Pushed to origin");
-            true
+            Ok(())
         }
         Err(e) => {
             tracing::warn!(error = %e, label, "Failed to push");
-            false
+            Err(e.to_string())
         }
     }
+}
+
+pub async fn git_push_host(
+    repo_path: &Path,
+    refspec: &str,
+    github_app: &Option<fabro_github::GitHubAppCredentials>,
+    label: &str,
+) -> bool {
+    git_push_host_result(repo_path, refspec, github_app, label)
+        .await
+        .is_ok()
 }
 
 /// Run a git diff via the sandbox.
@@ -2229,32 +2225,38 @@ impl WorkflowRunEngine {
                         // Push run branch (skip in dry-run mode)
                         if !config.dry_run {
                             if let Some(ref branch) = config.run_branch {
-                                let push_ok = if self.services.sandbox.git_push_branch(branch).await
-                                {
-                                    true
-                                } else if let Some(ref repo_path) = config.host_repo_path {
-                                    let refspec = format!("refs/heads/{branch}");
-                                    git_push_host(
-                                        repo_path,
-                                        &refspec,
-                                        &config.github_app,
-                                        "run branch",
-                                    )
-                                    .await
-                                } else {
-                                    false
-                                };
+                                let push_result =
+                                    if self.services.sandbox.git_push_branch(branch).await {
+                                        Ok(())
+                                    } else if let Some(ref repo_path) = config.host_repo_path {
+                                        let refspec = format!("refs/heads/{branch}");
+                                        git_push_host_result(
+                                            repo_path,
+                                            &refspec,
+                                            &config.github_app,
+                                            "run branch",
+                                        )
+                                        .await
+                                    } else {
+                                        Err("no host repo path available for run branch push"
+                                            .to_string())
+                                    };
                                 self.services.emitter.emit(&WorkflowRunEvent::GitPush {
                                     branch: branch.clone(),
-                                    success: push_ok,
+                                    success: push_result.is_ok(),
                                 });
+                                if let Err(error) = push_result {
+                                    return Err(FabroError::engine(format!(
+                                        "git push failed for run branch `{branch}`: {error}"
+                                    )));
+                                }
                             }
                             // Push metadata branch (always from host)
                             if let (Some(ref meta_branch), Some(ref repo_path)) =
                                 (&config.meta_branch, &config.host_repo_path)
                             {
                                 let refspec = format!("refs/heads/{meta_branch}");
-                                let meta_push_ok = git_push_host(
+                                let meta_push_result = git_push_host_result(
                                     repo_path,
                                     &refspec,
                                     &config.github_app,
@@ -2263,8 +2265,13 @@ impl WorkflowRunEngine {
                                 .await;
                                 self.services.emitter.emit(&WorkflowRunEvent::GitPush {
                                     branch: meta_branch.clone(),
-                                    success: meta_push_ok,
+                                    success: meta_push_result.is_ok(),
                                 });
+                                if let Err(error) = meta_push_result {
+                                    return Err(FabroError::engine(format!(
+                                        "git push failed for metadata branch `{meta_branch}`: {error}"
+                                    )));
+                                }
                             }
                         }
 

@@ -1212,6 +1212,7 @@ mod tests {
             program: EvaluatedProgram {
                 program: "demo".to_string(),
                 max_parallel: 2,
+                runtime_max_parallel: None,
                 lanes,
             },
             child_programs: BTreeMap::new(),

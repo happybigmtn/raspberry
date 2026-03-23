@@ -168,10 +168,18 @@ fn run_integration_worktree(
 
     let (mode, pushed) = if base_ref.starts_with(&format!("{REMOTE_NAME}/")) {
         let push_refspec = format!("HEAD:refs/heads/{target_branch}");
+        let push_url =
+            crate::git::resolve_ssh_push_url(worktree_path, REMOTE_NAME).map_err(|error| {
+                DirectIntegrationError::Git {
+                    step: "resolve ssh push url".to_string(),
+                    repo: worktree_path.to_path_buf(),
+                    message: error.to_string(),
+                }
+            })?;
         run_git(
             worktree_path,
             "push",
-            ["push", REMOTE_NAME, push_refspec.as_str()],
+            ["push", push_url.as_str(), push_refspec.as_str()],
         )?;
         ("direct_trunk_squash".to_string(), true)
     } else {

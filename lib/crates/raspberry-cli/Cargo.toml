@@ -15,6 +15,9 @@ clap.workspace = true
 raspberry-supervisor = { path = "../raspberry-supervisor" }
 raspberry-tui = { path = "../raspberry-tui" }
 
+[build-dependencies]
+chrono = { workspace = true }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

@@ -104,6 +104,7 @@ fn detail_text_surfaces_autodev_summary_when_present() -> Result<()> {
         program: manifest.program.clone(),
         stop_reason: AutodevStopReason::CycleLimit,
         updated_at: chrono::Utc::now(),
+        provenance: None,
         current: None,
         cycles: vec![AutodevCycleReport {
             cycle: 1,
@@ -111,6 +112,7 @@ fn detail_text_surfaces_autodev_summary_when_present() -> Result<()> {
             evolve_target: Some("/tmp/preview".to_string()),
             ready_lanes: vec!["chain:runtime".to_string()],
             replayed_lanes: vec![],
+            regenerate_noop_lanes: vec![],
             dispatched: vec![DispatchOutcome {
                 lane_key: "chain:runtime".to_string(),
                 exit_status: 0,
