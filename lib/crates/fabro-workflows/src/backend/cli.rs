@@ -1245,11 +1245,22 @@ impl CodergenBackend for AgentCliBackend {
             };
             let stderr_tail = tail(&result.stderr, 500);
             let stdout_tail = tail(&result.stdout, 500);
-            let detail = match (stderr_tail.is_empty(), stdout_tail.is_empty()) {
-                (false, false) => format!("{stderr_tail}\nstdout: {stdout_tail}"),
-                (false, true) => stderr_tail,
-                (true, false) => format!("stdout: {stdout_tail}"),
-                (true, true) => format!("command: {command}"),
+            let parsed_error = parse_cli_response(provider, &result.stdout)
+                .map(|response| response.text.trim().to_string())
+                .filter(|text| !text.is_empty());
+            let detail = match (stderr_tail.is_empty(), stdout_tail.is_empty(), parsed_error) {
+                (false, false, Some(parsed_error)) => {
+                    format!("{parsed_error}\n{stderr_tail}\nstdout: {stdout_tail}")
+                }
+                (false, true, Some(parsed_error)) => format!("{parsed_error}\n{stderr_tail}"),
+                (true, false, Some(parsed_error)) => {
+                    format!("{parsed_error}\nstdout: {stdout_tail}")
+                }
+                (true, true, Some(parsed_error)) => parsed_error,
+                (false, false, None) => format!("{stderr_tail}\nstdout: {stdout_tail}"),
+                (false, true, None) => stderr_tail,
+                (true, false, None) => format!("stdout: {stdout_tail}"),
+                (true, true, None) => format!("command: {command}"),
             };
             return Err(FabroError::handler(format!(
                 "CLI command exited with code {}: {detail}",

@@ -16,7 +16,7 @@ mod resource_lease;
 pub use autodev::{
     autodev_report_path, load_optional_autodev_report, orchestrate_program,
     sync_autodev_report_with_program, AutodevCurrentSnapshot, AutodevCycleReport, AutodevError,
-    AutodevReport, AutodevSettings, AutodevStopReason,
+    AutodevProvenance, AutodevReport, AutodevSettings, AutodevStopReason, BinaryProvenance,
 };
 pub use dispatch::{execute_selected_lanes, DispatchOutcome, DispatchSettings};
 pub use evaluate::{

@@ -388,6 +388,9 @@ pub fn render_grouped_summary(program: &EvaluatedProgram) -> String {
             if let Some(recovery_action) = lane.recovery_action {
                 line.push_str(&format!(" | recovery={recovery_action}"));
             }
+            if let Some((landing_state, _)) = trunk_delivery_state_for_lane(lane) {
+                line.push_str(&format!(" | landing={landing_state}"));
+            }
             lines.push(line);
         }
     }
@@ -449,6 +452,9 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         if let Some(recovery_action) = lane.recovery_action {
             line.push_str(&format!(" | recovery={recovery_action}"));
         }
+        if let Some((landing_state, _)) = trunk_delivery_state_for_lane(lane) {
+            line.push_str(&format!(" | landing={landing_state}"));
+        }
         if let Some(stage) = &lane.current_stage {
             line.push_str(&format!(" | stage={stage}"));
         }
@@ -484,6 +490,9 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         lines.push(line);
         if let Some(summary) = &lane.last_usage_summary {
             lines.push(format!("  usage: {summary}"));
+        }
+        if let Some((_, landing_detail)) = trunk_delivery_state_for_lane(lane) {
+            lines.push(format!("  trunk_landing: {landing_detail}"));
         }
         if !lane.ready_checks_passing.is_empty() {
             lines.push(format!(
@@ -529,6 +538,77 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn trunk_delivery_state_for_lane(lane: &EvaluatedLane) -> Option<(String, String)> {
+    let run_id = lane
+        .last_run_id
+        .as_deref()
+        .or(lane.current_run_id.as_deref())
+        .or(lane.current_fabro_run_id.as_deref())?;
+    let base = fabro_workflows::run_lookup::default_runs_base();
+    let run_dir = fabro_workflows::run_lookup::find_run_by_prefix(&base, run_id).ok()?;
+    let run_config = fabro_config::run::load_run_config(&run_dir.join("run.toml")).ok()?;
+    if !run_config
+        .integration
+        .as_ref()
+        .is_some_and(|config| config.enabled)
+    {
+        return None;
+    }
+
+    if let Ok(raw) = std::fs::read_to_string(run_dir.join("direct_integration.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let target_branch = value
+                .get("target_branch")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let pushed = value
+                .get("pushed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if pushed {
+                return Some((
+                    "landed".to_string(),
+                    format!("integrated to {target_branch}"),
+                ));
+            }
+            return Some((
+                "not_landed".to_string(),
+                format!("integration recorded locally for {target_branch}"),
+            ));
+        }
+    }
+
+    if let Ok(raw) = std::fs::read_to_string(run_dir.join("progress.jsonl")) {
+        let mut failed_pushes = Vec::new();
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if value.get("event").and_then(|value| value.as_str()) != Some("GitPush") {
+                continue;
+            }
+            if value.get("success").and_then(|value| value.as_bool()) == Some(false) {
+                let branch = value
+                    .get("branch")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                failed_pushes.push(branch.to_string());
+            }
+        }
+        if !failed_pushes.is_empty() {
+            return Some((
+                "push_failed".to_string(),
+                format!("push failed for {}", failed_pushes.join(", ")),
+            ));
+        }
+    }
+
+    Some((
+        "not_landed".to_string(),
+        "integration enabled but no landed record was found".to_string(),
+    ))
 }
 
 fn evaluate_lane(

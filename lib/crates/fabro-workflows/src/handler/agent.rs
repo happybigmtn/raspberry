@@ -89,6 +89,10 @@ const STATUS_FIELDS: &[&str] = &[
     "context_updates",
 ];
 
+const PROMPT_BUDGET_BYTES: usize = 900_000;
+const PROMPT_TRUNCATION_BANNER: &str =
+    "\n\n[Earlier workflow context truncated to fit runtime prompt budget]\n\n";
+
 /// Find all balanced `{...}` JSON object substrings in the text.
 fn find_json_objects(text: &str) -> Vec<&str> {
     let mut results = Vec::new();
@@ -197,6 +201,71 @@ pub(crate) fn truncate(s: &str, max_chars: usize) -> &str {
     }
 }
 
+fn truncate_by_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        &s[..fabro_agent::floor_char_boundary(s, max_bytes)]
+    }
+}
+
+fn truncate_middle_by_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    let omission = "\n... [truncated] ...\n";
+    if max_bytes <= omission.len() {
+        return truncate_by_bytes(s, max_bytes).to_string();
+    }
+
+    let remaining = max_bytes - omission.len();
+    let head_bytes = remaining * 2 / 3;
+    let tail_bytes = remaining - head_bytes;
+    let head = truncate_by_bytes(s, head_bytes);
+    let tail_start = s.len().saturating_sub(tail_bytes);
+    let tail = &s[fabro_agent::floor_char_boundary(s, tail_start)..];
+    format!("{head}{omission}{tail}")
+}
+
+pub(crate) struct PreparedPrompt {
+    pub prompt: String,
+    pub full_prompt: Option<String>,
+}
+
+pub(crate) fn prepare_prompt(preamble: &str, expanded_prompt: &str) -> PreparedPrompt {
+    let full_prompt = if preamble.is_empty() {
+        expanded_prompt.to_string()
+    } else {
+        format!("{preamble}\n\n{expanded_prompt}")
+    };
+
+    if full_prompt.len() <= PROMPT_BUDGET_BYTES {
+        return PreparedPrompt {
+            prompt: full_prompt,
+            full_prompt: None,
+        };
+    }
+
+    let prompt = if preamble.is_empty() {
+        truncate_middle_by_bytes(expanded_prompt, PROMPT_BUDGET_BYTES)
+    } else {
+        let fixed_overhead = expanded_prompt.len() + PROMPT_TRUNCATION_BANNER.len();
+        if fixed_overhead >= PROMPT_BUDGET_BYTES {
+            truncate_middle_by_bytes(expanded_prompt, PROMPT_BUDGET_BYTES)
+        } else {
+            let preamble_budget = PROMPT_BUDGET_BYTES - fixed_overhead;
+            let truncated_preamble = truncate_middle_by_bytes(preamble, preamble_budget);
+            format!("{truncated_preamble}{PROMPT_TRUNCATION_BANNER}{expanded_prompt}")
+        }
+    };
+
+    PreparedPrompt {
+        prompt,
+        full_prompt: Some(full_prompt),
+    }
+}
+
 /// Shared simulate implementation for LLM-backed handlers (agent & prompt).
 /// Produces a simulated outcome with standard context updates.
 pub(crate) fn simulate_llm_handler(node: &Node) -> Outcome {
@@ -244,17 +313,17 @@ impl Handler for AgentHandler {
             .unwrap_or_else(|| node.label());
         let expanded = expand_variables(raw_prompt, graph)?;
         let preamble = context.preamble();
-        let prompt = if preamble.is_empty() {
-            expanded
-        } else {
-            format!("{preamble}\n\n{expanded}")
-        };
+        let prepared_prompt = prepare_prompt(&preamble, &expanded);
+        let prompt = prepared_prompt.prompt;
 
         // 2. Write prompt to logs
         let visit = crate::engine::visit_from_context(context);
         let stage_dir = crate::engine::node_dir(run_dir, &node.id, visit);
         tokio::fs::create_dir_all(&stage_dir).await?;
         tokio::fs::write(stage_dir.join("prompt.md"), &prompt).await?;
+        if let Some(full_prompt) = prepared_prompt.full_prompt {
+            tokio::fs::write(stage_dir.join("prompt.full.md"), &full_prompt).await?;
+        }
 
         // 3. Call LLM backend (agent loop)
         let thread_id = context.thread_id();
@@ -1151,6 +1220,24 @@ Some text in between.
         assert!(
             prompt_content.contains("Summarize"),
             "prompt.md should contain original prompt"
+        );
+    }
+
+    #[test]
+    fn prepare_prompt_truncates_oversized_preamble_before_current_prompt() {
+        let preamble = "history\n".repeat(200_000);
+        let current = "Current instructions must remain intact.";
+
+        let prepared = prepare_prompt(&preamble, current);
+
+        assert!(prepared.full_prompt.is_some());
+        assert!(prepared.prompt.len() <= PROMPT_BUDGET_BYTES);
+        assert!(prepared.prompt.contains(current));
+        assert!(
+            prepared
+                .prompt
+                .contains("Earlier workflow context truncated"),
+            "truncated prompt should disclose the omitted context"
         );
     }
 }

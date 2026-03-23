@@ -7,8 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use fabro_config::run::{load_run_config, resolve_graph_path};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::controller_lease::{acquire_autodev_lease, ControllerLeaseError};
@@ -19,6 +21,7 @@ use crate::failure::{
 };
 use crate::maintenance::{load_active_maintenance, MaintenanceError};
 use crate::manifest::{ManifestError, ProgramManifest};
+use crate::program_state::{mark_lane_regenerate_noop, ProgramRuntimeState, ProgramStateError};
 
 thread_local! {
     static ORCHESTRATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
@@ -44,13 +47,30 @@ pub struct AutodevReport {
     pub stop_reason: AutodevStopReason,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<AutodevProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<AutodevCurrentSnapshot>,
     pub cycles: Vec<AutodevCycleReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutodevProvenance {
+    pub controller: BinaryProvenance,
+    pub fabro_bin: BinaryProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryProvenance {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutodevCurrentSnapshot {
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<usize>,
     pub ready: usize,
     pub running: usize,
     pub blocked: usize,
@@ -62,10 +82,6 @@ pub struct AutodevCurrentSnapshot {
     pub running_lanes: Vec<String>,
     #[serde(default)]
     pub failed_lanes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub running_lane_details: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failed_lane_details: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +92,8 @@ pub struct AutodevCycleReport {
     pub ready_lanes: Vec<String>,
     #[serde(default)]
     pub replayed_lanes: Vec<String>,
+    #[serde(default)]
+    pub regenerate_noop_lanes: Vec<String>,
     pub dispatched: Vec<DispatchOutcome>,
     pub running_after: usize,
     pub complete_after: usize,
@@ -84,11 +102,10 @@ pub struct AutodevCycleReport {
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
-const STALL_WATCHDOG_RETRY_MIN_SECS: i64 = 30;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
+const REGENERATE_SPARE_CAPACITY_RETRY_SECS: u64 = 15;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
-const SETTLED_WATCHDOG_MIN_SECS: u64 = 900;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -209,6 +226,8 @@ pub enum AutodevError {
     ControllerLease(#[from] ControllerLeaseError),
     #[error(transparent)]
     Maintenance(#[from] MaintenanceError),
+    #[error(transparent)]
+    ProgramState(#[from] ProgramStateError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +262,12 @@ struct DoctrineFileFingerprint {
     modified_unix_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaneRenderFingerprint {
+    run_config_sha256: Option<String>,
+    graph_sha256: Option<String>,
+}
+
 pub fn orchestrate_program(
     manifest_path: &Path,
     settings: &AutodevSettings,
@@ -265,14 +290,16 @@ pub fn orchestrate_program(
     }
     let guard = enter_orchestration_scope(&manifest_path)?;
     let initial_manifest = ProgramManifest::load(&manifest_path)?;
+    let provenance = Some(capture_autodev_provenance(settings));
     if let Some(_maintenance) = load_active_maintenance(&manifest_path, &initial_manifest)? {
         let current = evaluate_program(&manifest_path)
             .ok()
-            .map(|program| current_snapshot(&program));
+            .map(|program| current_snapshot(&program, None));
         let report = AutodevReport {
             program: initial_manifest.program.clone(),
             stop_reason: AutodevStopReason::Maintenance,
             updated_at: Utc::now(),
+            provenance,
             current,
             cycles: Vec::new(),
         };
@@ -291,6 +318,7 @@ pub fn orchestrate_program(
         program: initial_manifest.program.clone(),
         stop_reason: AutodevStopReason::CycleLimit,
         updated_at: Utc::now(),
+        provenance,
         current: None,
         cycles: Vec::new(),
     };
@@ -305,7 +333,6 @@ pub fn orchestrate_program(
 
         cycle_number += 1;
         let manifest = ProgramManifest::load(&manifest_path)?;
-        reap_orphaned_program_workers(&manifest_path, &manifest)?;
         let program_before = evaluate_program(&manifest_path)?;
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);
@@ -317,6 +344,8 @@ pub fn orchestrate_program(
         let replayable_failures_before =
             dispatchable_failed_lanes(&manifest, &program_before, false);
         let regenerable_failures = regenerable_failed_lanes(&program_before);
+        let regenerate_fingerprints_before =
+            lane_render_fingerprints(&program_before, &regenerable_failures);
         let max_parallel = settings
             .max_parallel_override
             .unwrap_or(manifest.max_parallel)
@@ -368,10 +397,30 @@ pub fn orchestrate_program(
         } else {
             manifest
         };
-        let program = if evolved {
+        let mut program = if evolved {
             evaluate_program(&manifest_path)?
         } else {
             program_before
+        };
+        let regenerate_noop_lanes = if evolved {
+            let noop_lanes = detect_regenerate_noop_lanes(
+                &regenerable_failures,
+                &regenerate_fingerprints_before,
+                &program,
+            );
+            if !noop_lanes.is_empty() {
+                mark_regenerate_noop_lanes(
+                    &manifest_path,
+                    &manifest,
+                    &program,
+                    &noop_lanes,
+                    &regenerate_fingerprints_before,
+                )?;
+                program = evaluate_program(&manifest_path)?;
+            }
+            noop_lanes
+        } else {
+            Vec::new()
         };
         let replayable_failures = dispatchable_failed_lanes(&manifest, &program, evolved);
         let ready_lanes = program
@@ -428,16 +477,6 @@ pub fn orchestrate_program(
             .iter()
             .filter(|lane| lane.status == LaneExecutionStatus::Complete)
             .count();
-        let failed_after = program_after
-            .lanes
-            .iter()
-            .filter(|lane| lane.status == LaneExecutionStatus::Failed)
-            .count();
-        let blocked_after = program_after
-            .lanes
-            .iter()
-            .filter(|lane| lane.status == LaneExecutionStatus::Blocked)
-            .count();
 
         report.cycles.push(AutodevCycleReport {
             cycle: cycle_number,
@@ -445,11 +484,12 @@ pub fn orchestrate_program(
             evolve_target,
             ready_lanes: ready_lanes.clone(),
             replayed_lanes,
+            regenerate_noop_lanes,
             dispatched,
             running_after,
             complete_after,
         });
-        report.current = Some(current_snapshot(&program_after));
+        report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
         report.updated_at = Utc::now();
         save_autodev_report(&manifest_path, &manifest, &report)?;
         maybe_refresh_paperclip_dashboard(
@@ -467,20 +507,6 @@ pub fn orchestrate_program(
             .lanes
             .iter()
             .any(|lane| lane.status == LaneExecutionStatus::Running);
-        let replayable_failures_after = dispatchable_failed_lanes(&manifest, &program_after, false);
-        let regenerable_failures_after = regenerable_failed_lanes(&program_after);
-        let frontier_after = FrontierSignature {
-            ready: program_after
-                .lanes
-                .iter()
-                .filter(|lane| lane.status == LaneExecutionStatus::Ready)
-                .count(),
-            running: running_after,
-            replayable_failed: replayable_failures_after.len(),
-            regenerable_failed: regenerable_failures_after.len(),
-            complete: complete_after,
-            failed_recovery_keys: failed_recovery_keys(&program_after),
-        };
         let spare_child_slots = max_parallel.saturating_sub(running_after);
         if spare_child_slots > 0
             && advance_child_programs(
@@ -496,44 +522,8 @@ pub fn orchestrate_program(
             continue;
         }
         if !has_ready && !has_running {
-            if should_trigger_evolve(
-                last_evolve_at,
-                evolve_every,
-                &frontier_after,
-                max_parallel,
-                frontier_budget,
-                true,
-                doctrine_inputs_changed(&manifest_path, &manifest, settings)?,
-                !regenerable_failures_after.is_empty(),
-                last_evolve_frontier.as_ref(),
-            ) {
-                run_synth_evolve(&manifest_path, &manifest, settings)?;
-                last_evolve_at = Some(Instant::now());
-                last_evolve_frontier = Some(frontier_after);
-                thread::sleep(poll_interval);
-                continue;
-            }
-            if let Some(interval) = settled_watchdog_interval(
-                max_cycles,
-                blocked_after,
-                failed_after,
-                complete_after,
-                program_after.lanes.len(),
-            ) {
-                report.current = Some(current_snapshot(&program_after));
-                report.updated_at = Utc::now();
-                save_autodev_report(&manifest_path, &manifest, &report)?;
-                maybe_refresh_paperclip_dashboard(
-                    &manifest_path,
-                    &manifest,
-                    settings,
-                    &mut last_paperclip_refresh_at,
-                );
-                thread::sleep(interval);
-                continue;
-            }
             report.stop_reason = AutodevStopReason::Settled;
-            report.current = Some(current_snapshot(&program_after));
+            report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
             report.updated_at = Utc::now();
             save_autodev_report(&manifest_path, &manifest, &report)?;
             maybe_refresh_paperclip_dashboard(
@@ -554,7 +544,11 @@ pub fn orchestrate_program(
     report.updated_at = Utc::now();
     let final_manifest = ProgramManifest::load(&manifest_path)?;
     let final_program = evaluate_program(&manifest_path)?;
-    report.current = Some(current_snapshot(&final_program));
+    let final_max_parallel = settings
+        .max_parallel_override
+        .unwrap_or(final_manifest.max_parallel)
+        .max(1);
+    report.current = Some(current_snapshot(&final_program, Some(final_max_parallel)));
     save_autodev_report(&manifest_path, &final_manifest, &report)?;
     maybe_refresh_paperclip_dashboard(
         &manifest_path,
@@ -579,22 +573,6 @@ fn has_more_cycles(max_cycles: Option<usize>, cycle_number: usize) -> bool {
         Some(limit) => cycle_number < limit,
         None => true,
     }
-}
-
-fn settled_watchdog_interval(
-    max_cycles: Option<usize>,
-    blocked: usize,
-    failed: usize,
-    complete: usize,
-    total: usize,
-) -> Option<Duration> {
-    if max_cycles.is_some() {
-        return None;
-    }
-    if total > 0 && complete < total && (blocked > 0 || failed > 0) {
-        return Some(Duration::from_secs(SETTLED_WATCHDOG_MIN_SECS));
-    }
-    None
 }
 
 fn enter_orchestration_scope(
@@ -730,7 +708,25 @@ fn should_evolve(last_evolve_at: Option<Instant>, evolve_every: Duration) -> boo
     evolve_every.is_zero() || last_evolve_at.elapsed() >= evolve_every
 }
 
-#[allow(clippy::too_many_arguments)] // Encodes the evolve gate directly from supervisor state.
+fn should_fast_track_regenerate_evolve(
+    last_evolve_at: Option<Instant>,
+    frontier: &FrontierSignature,
+    max_parallel: usize,
+    frontier_progressed: bool,
+    recovery_needs_evolve: bool,
+) -> bool {
+    let spare_capacity = frontier.running < max_parallel;
+    if !recovery_needs_evolve || !spare_capacity {
+        return false;
+    }
+    let Some(last_evolve_at) = last_evolve_at else {
+        return true;
+    };
+    frontier_progressed
+        || last_evolve_at.elapsed() >= Duration::from_secs(REGENERATE_SPARE_CAPACITY_RETRY_SECS)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn should_trigger_evolve(
     last_evolve_at: Option<Instant>,
     evolve_every: Duration,
@@ -742,18 +738,21 @@ fn should_trigger_evolve(
     recovery_needs_evolve: bool,
     last_evolve_frontier: Option<&FrontierSignature>,
 ) -> bool {
-    let spare_capacity = frontier.running < max_parallel;
     let frontier_progressed = last_evolve_frontier != Some(frontier);
-    let no_active_work = frontier.running == 0;
-    let wedged_frontier = frontier.ready == 0
-        && spare_capacity
-        && (frontier.regenerable_failed > 0 || frontier.replayable_failed > 0);
-    if frontier.total_work() >= frontier_budget && !wedged_frontier {
-        return false;
-    }
-    if wedged_frontier && recovery_needs_evolve && frontier_progressed {
+    if should_fast_track_regenerate_evolve(
+        last_evolve_at,
+        frontier,
+        max_parallel,
+        frontier_progressed,
+        recovery_needs_evolve,
+    ) {
         return true;
     }
+    if frontier.total_work() >= frontier_budget {
+        return false;
+    }
+    let spare_capacity = frontier.running < max_parallel;
+    let no_active_work = frontier.running == 0;
     let spare_capacity_trigger =
         spare_capacity && no_active_work && frontier.ready == 0 && frontier_progressed;
     if doctrine_changed && (locally_settled || spare_capacity_trigger) {
@@ -774,79 +773,6 @@ fn should_trigger_evolve(
     spare_capacity_trigger
 }
 
-fn reap_orphaned_program_workers(
-    manifest_path: &Path,
-    manifest: &ProgramManifest,
-) -> Result<(), AutodevError> {
-    let state_path = manifest.resolved_state_path(manifest_path);
-    let tracked_state = crate::program_state::ProgramRuntimeState::load_optional(&state_path)
-        .map_err(|error| AutodevError::ReadReport {
-            path: state_path.clone(),
-            source: std::io::Error::other(error.to_string()),
-        })?;
-    let Some(tracked_state) = tracked_state else {
-        return Ok(());
-    };
-    let active_run_ids = tracked_state
-        .lanes
-        .values()
-        .filter(|record| record.status == LaneExecutionStatus::Running)
-        .filter_map(|record| {
-            record
-                .current_fabro_run_id
-                .clone()
-                .or(record.current_run_id.clone())
-        })
-        .collect::<BTreeSet<_>>();
-    let target_repo = manifest.resolved_target_repo(manifest_path);
-    for record in tracked_state.lanes.values() {
-        let Some(run_id) = record.last_run_id.as_deref() else {
-            continue;
-        };
-        if active_run_ids.contains(run_id) {
-            continue;
-        }
-        terminate_repo_run_if_active(run_id, &target_repo);
-    }
-    Ok(())
-}
-
-fn terminate_repo_run_if_active(run_id: &str, target_repo: &Path) {
-    let base = fabro_workflows::run_lookup::default_runs_base();
-    let Ok(inspection) = fabro_workflows::run_inspect::inspect_run(&base, run_id) else {
-        return;
-    };
-    if !inspection.status.is_active() {
-        return;
-    }
-    let Some(manifest) = inspection.manifest.as_ref() else {
-        return;
-    };
-    let Some(host_repo_path) = manifest.host_repo_path.as_deref() else {
-        return;
-    };
-    if normalize_path(Path::new(host_repo_path)) != normalize_path(target_repo) {
-        return;
-    }
-    terminate_run_pid(&inspection.run_dir);
-}
-
-fn terminate_run_pid(run_dir: &Path) {
-    let Ok(pid_raw) = fs::read_to_string(run_dir.join("run.pid")) else {
-        return;
-    };
-    let pid = pid_raw.trim();
-    if pid.is_empty() {
-        return;
-    }
-    let _ = Command::new("kill").arg("-TERM").arg(pid).status();
-    thread::sleep(Duration::from_millis(200));
-    #[cfg(target_os = "linux")]
-    if Path::new("/proc").join(pid).exists() {
-        let _ = Command::new("kill").arg("-KILL").arg(pid).status();
-    }
-}
-
 fn count_lanes_with_status(
     program: &crate::evaluate::EvaluatedProgram,
     status: LaneExecutionStatus,
@@ -863,6 +789,35 @@ fn resolve_frontier_budget(settings: &AutodevSettings, max_parallel: usize) -> u
         .frontier_budget
         .unwrap_or_else(|| max_parallel.saturating_add(2))
         .max(max_parallel)
+}
+
+fn capture_autodev_provenance(settings: &AutodevSettings) -> AutodevProvenance {
+    let controller_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("raspberry"));
+    AutodevProvenance {
+        controller: capture_binary_provenance(&controller_path),
+        fabro_bin: capture_binary_provenance(&settings.fabro_bin),
+    }
+}
+
+fn capture_binary_provenance(path: &Path) -> BinaryProvenance {
+    let version = Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if !output.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8(output.stdout).ok()?;
+            stdout
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string())
+        });
+    BinaryProvenance {
+        path: path.display().to_string(),
+        version,
+    }
 }
 
 pub fn autodev_report_path(manifest_path: &Path, manifest: &ProgramManifest) -> PathBuf {
@@ -1117,7 +1072,11 @@ pub fn load_optional_autodev_report(
     })?;
     let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
     let program = evaluate_program(manifest_path)?;
-    let next_snapshot = current_snapshot(&program);
+    let preserved_max_parallel = report
+        .current
+        .as_ref()
+        .and_then(|current| current.max_parallel);
+    let next_snapshot = current_snapshot(&program, preserved_max_parallel);
     if report.current.as_ref() != Some(&next_snapshot) {
         report.current = Some(next_snapshot);
         report.updated_at = Utc::now();
@@ -1140,7 +1099,11 @@ pub fn sync_autodev_report_with_program(
         source,
     })?;
     let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
-    let next_snapshot = current_snapshot(program);
+    let preserved_max_parallel = report
+        .current
+        .as_ref()
+        .and_then(|current| current.max_parallel);
+    let next_snapshot = current_snapshot(program, preserved_max_parallel);
     if report.current.as_ref() == Some(&next_snapshot) {
         return Ok(());
     }
@@ -1182,13 +1145,17 @@ fn deserialize_autodev_report(
             program: manifest.program.clone(),
             stop_reason: AutodevStopReason::CycleLimit,
             updated_at: Utc::now(),
+            provenance: None,
             current: None,
             cycles: Vec::new(),
         })
     })
 }
 
-fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurrentSnapshot {
+fn current_snapshot(
+    program: &crate::evaluate::EvaluatedProgram,
+    max_parallel: Option<usize>,
+) -> AutodevCurrentSnapshot {
     let mut ready = 0usize;
     let mut running = 0usize;
     let mut blocked = 0usize;
@@ -1197,8 +1164,6 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
     let mut ready_lanes = Vec::new();
     let mut running_lanes = Vec::new();
     let mut failed_lanes = Vec::new();
-    let mut running_lane_details = Vec::new();
-    let mut failed_lane_details = Vec::new();
 
     for lane in &program.lanes {
         match lane.status {
@@ -1209,13 +1174,11 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
             LaneExecutionStatus::Running => {
                 running += 1;
                 running_lanes.push(lane.lane_key.clone());
-                running_lane_details.push(format_lane_snapshot(lane));
             }
             LaneExecutionStatus::Blocked => blocked += 1,
             LaneExecutionStatus::Failed => {
                 failed += 1;
                 failed_lanes.push(lane.lane_key.clone());
-                failed_lane_details.push(format_lane_snapshot(lane));
             }
             LaneExecutionStatus::Complete => complete += 1,
         }
@@ -1223,6 +1186,7 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
 
     AutodevCurrentSnapshot {
         updated_at: Utc::now(),
+        max_parallel,
         ready,
         running,
         blocked,
@@ -1231,35 +1195,101 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
         ready_lanes,
         running_lanes,
         failed_lanes,
-        running_lane_details,
-        failed_lane_details,
     }
 }
 
-fn format_lane_snapshot(lane: &crate::evaluate::EvaluatedLane) -> String {
-    let mut parts = vec![lane.lane_key.clone()];
-    if let Some(stage) = lane.current_stage.as_ref() {
-        parts.push(format!("stage={stage}"));
+fn lane_render_fingerprints(
+    program: &crate::evaluate::EvaluatedProgram,
+    lane_keys: &[String],
+) -> Vec<(String, LaneRenderFingerprint)> {
+    lane_keys
+        .iter()
+        .filter_map(|lane_key| {
+            let lane = program
+                .lanes
+                .iter()
+                .find(|lane| lane.lane_key == *lane_key)?;
+            Some((lane_key.clone(), lane_render_fingerprint(&lane.run_config)))
+        })
+        .collect()
+}
+
+fn detect_regenerate_noop_lanes(
+    regenerable_lanes: &[String],
+    before: &[(String, LaneRenderFingerprint)],
+    program: &crate::evaluate::EvaluatedProgram,
+) -> Vec<String> {
+    let mut noop_lanes = Vec::new();
+    for lane_key in regenerable_lanes {
+        let Some((_, before_fingerprint)) = before
+            .iter()
+            .find(|(candidate_lane, _)| candidate_lane == lane_key)
+        else {
+            continue;
+        };
+        let Some(lane) = program.lanes.iter().find(|lane| lane.lane_key == *lane_key) else {
+            continue;
+        };
+        let after_fingerprint = lane_render_fingerprint(&lane.run_config);
+        if *before_fingerprint == after_fingerprint {
+            noop_lanes.push(lane_key.clone());
+        }
     }
-    if let Some(provider) = lane.current_stage_provider.as_ref() {
-        parts.push(format!("provider={provider}"));
+    noop_lanes
+}
+
+fn mark_regenerate_noop_lanes(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    program: &crate::evaluate::EvaluatedProgram,
+    lane_keys: &[String],
+    before: &[(String, LaneRenderFingerprint)],
+) -> Result<(), AutodevError> {
+    if lane_keys.is_empty() {
+        return Ok(());
     }
-    if let Some(cli_name) = lane.current_stage_cli_name.as_ref() {
-        parts.push(format!("cli={cli_name}"));
+    let state_path = manifest.resolved_state_path(manifest_path);
+    let mut state = ProgramRuntimeState::load_optional(&state_path)?
+        .unwrap_or_else(|| ProgramRuntimeState::new(&manifest.program));
+    for lane_key in lane_keys {
+        let Some(lane) = program.lanes.iter().find(|lane| lane.lane_key == *lane_key) else {
+            continue;
+        };
+        let before_fingerprint = before
+            .iter()
+            .find(|(candidate_lane, _)| candidate_lane == lane_key)
+            .map(|(_, fingerprint)| fingerprint.clone())
+            .unwrap_or_else(|| lane_render_fingerprint(&lane.run_config));
+        let detail = format!(
+            "synth evolve did not materially change run config or graph (run_config_sha256={}, graph_sha256={})",
+            before_fingerprint
+                .run_config_sha256
+                .as_deref()
+                .unwrap_or("missing"),
+            before_fingerprint.graph_sha256.as_deref().unwrap_or("missing"),
+        );
+        mark_lane_regenerate_noop(&mut state, lane_key, &lane.run_config, &detail);
     }
-    if let Some(seconds) = lane.time_in_current_stage_secs {
-        parts.push(format!("stage_secs={seconds}"));
+    state.save(&state_path)?;
+    Ok(())
+}
+
+fn lane_render_fingerprint(run_config_path: &Path) -> LaneRenderFingerprint {
+    let run_config_sha256 = file_sha256(run_config_path);
+    let graph_sha256 = load_run_config(run_config_path)
+        .ok()
+        .map(|config| resolve_graph_path(run_config_path, &config.graph))
+        .and_then(|graph_path| file_sha256(&graph_path));
+    LaneRenderFingerprint {
+        run_config_sha256,
+        graph_sha256,
     }
-    if let Some(seconds) = lane.current_stage_idle_secs {
-        parts.push(format!("idle_secs={seconds}"));
-    }
-    if let Some(kind) = lane.failure_kind {
-        parts.push(format!("failure={kind}"));
-    }
-    if let Some(action) = lane.recovery_action {
-        parts.push(format!("recovery={action}"));
-    }
-    parts.join(" | ")
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let digest = Sha256::digest(bytes);
+    Some(format!("{digest:x}"))
 }
 
 fn dispatchable_failed_lanes(
@@ -1312,6 +1342,9 @@ fn replay_target_lane(
     allow_regenerate: bool,
 ) -> Option<String> {
     let kind = failure_kind_for_lane(lane)?;
+    if is_verify_gate_miss_without_retry(lane) {
+        return allow_regenerate.then(|| lane.lane_key.clone());
+    }
     match default_recovery_action(kind) {
         FailureRecoveryAction::ReplaySourceLane => {
             integration_source_lane_key(manifest, lane).or_else(|| Some(lane.lane_key.clone()))
@@ -1326,8 +1359,6 @@ fn replay_target_lane(
         FailureRecoveryAction::BackoffRetry => {
             let cooldown = if kind == FailureKind::TransientLaunchFailure {
                 TRANSIENT_LAUNCH_RETRY_MIN_SECS
-            } else if kind == FailureKind::StallWatchdog {
-                STALL_WATCHDOG_RETRY_MIN_SECS
             } else {
                 BACKOFF_RETRY_MIN_SECS
             };
@@ -1349,6 +1380,15 @@ fn replay_target_lane(
     }
 }
 
+fn is_verify_gate_miss_without_retry(lane: &crate::evaluate::EvaluatedLane) -> bool {
+    let error = lane
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    error.contains("goal gate unsatisfied for node verify") && error.contains("no retry target")
+}
+
 fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<String> {
     let mut lanes = program
         .lanes
@@ -1360,6 +1400,9 @@ fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<
             )
         })
         .filter_map(|lane| {
+            if is_verify_gate_miss_without_retry(lane) {
+                return Some(lane.lane_key.clone());
+            }
             let kind = failure_kind_for_lane(lane)?;
             (default_recovery_action(kind) == FailureRecoveryAction::RegenerateLane)
                 .then(|| lane.lane_key.clone())
@@ -1651,12 +1694,6 @@ mod tests {
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -1688,6 +1725,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![
                 failed_lane(
                     "impl:lane",
@@ -1761,6 +1799,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -1826,6 +1865,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -1847,12 +1887,6 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
-                    current_stage_provider: None,
-                    current_stage_cli_name: None,
-                    current_stage_started_at: None,
-                    current_stage_updated_at: None,
-                    time_in_current_stage_secs: None,
-                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -1892,12 +1926,6 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
-                    current_stage_provider: None,
-                    current_stage_cli_name: None,
-                    current_stage_started_at: None,
-                    current_stage_updated_at: None,
-                    time_in_current_stage_secs: None,
-                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -1937,12 +1965,6 @@ units:
                     current_run_id: Some("01RUNNING".to_string()),
                     current_fabro_run_id: Some("01RUNNING".to_string()),
                     current_stage: Some("Implement".to_string()),
-                    current_stage_provider: None,
-                    current_stage_cli_name: None,
-                    current_stage_started_at: None,
-                    current_stage_updated_at: None,
-                    time_in_current_stage_secs: None,
-                    current_stage_idle_secs: None,
                     last_run_id: Some("01RUNNING".to_string()),
                     last_started_at: None,
                     last_finished_at: None,
@@ -2016,6 +2038,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -2037,12 +2060,6 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
-                    current_stage_provider: None,
-                    current_stage_cli_name: None,
-                    current_stage_started_at: None,
-                    current_stage_updated_at: None,
-                    time_in_current_stage_secs: None,
-                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -2082,12 +2099,6 @@ units:
                     current_run_id: None,
                     current_fabro_run_id: None,
                     current_stage: None,
-                    current_stage_provider: None,
-                    current_stage_cli_name: None,
-                    current_stage_started_at: None,
-                    current_stage_updated_at: None,
-                    time_in_current_stage_secs: None,
-                    current_stage_idle_secs: None,
                     last_run_id: None,
                     last_started_at: None,
                     last_finished_at: None,
@@ -2182,12 +2193,6 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -2322,6 +2327,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2348,6 +2354,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2375,6 +2382,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2405,12 +2413,6 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -2470,12 +2472,6 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: Some("01KMTEST".to_string()),
             last_started_at: Some(Utc::now() - chrono::Duration::minutes(20)),
             last_finished_at: Some(Utc::now() - chrono::Duration::minutes(10)),
@@ -2531,12 +2527,6 @@ units:
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: Some("01KMTEST".to_string()),
             last_started_at: Some(Utc::now() - chrono::Duration::minutes(1)),
             last_finished_at: Some(Utc::now() - chrono::Duration::seconds(30)),
@@ -2623,7 +2613,7 @@ units:
     }
 
     #[test]
-    fn spare_capacity_evolve_can_override_budget_for_wedged_frontier() {
+    fn spare_capacity_evolve_stays_bounded_by_frontier_budget() {
         let frontier = FrontierSignature {
             ready: 0,
             running: 0,
@@ -2655,7 +2645,7 @@ units:
                 ],
             }),
         ));
-        assert!(should_trigger_evolve(
+        assert!(!should_trigger_evolve(
             Some(Instant::now()),
             Duration::ZERO,
             &frontier,
@@ -2694,6 +2684,86 @@ units:
     }
 
     #[test]
+    fn regenerate_lane_evolve_ignores_frontier_budget_with_idle_slot() {
+        let frontier = FrontierSignature {
+            ready: 14,
+            running: 4,
+            replayable_failed: 0,
+            regenerable_failed: 1,
+            complete: 5,
+            failed_recovery_keys: vec![
+                "failed:lane:supervisor_only_lane:regenerate_lane".to_string()
+            ],
+        };
+
+        assert!(should_trigger_evolve(
+            None,
+            Duration::from_secs(3600),
+            &frontier,
+            5,
+            1,
+            false,
+            false,
+            true,
+            Some(&frontier),
+        ));
+    }
+
+    #[test]
+    fn verify_gate_without_retry_target_is_regenerable() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "demo:lane".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "lane".to_string(),
+                lane_title: "Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Service,
+                status: LaneExecutionStatus::Failed,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "failed".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("run.toml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                last_started_at: None,
+                last_finished_at: Some(Utc::now()),
+                last_exit_status: Some(1),
+                last_error: Some(
+                    "Engine error: goal gate unsatisfied for node verify and no retry target"
+                        .to_string(),
+                ),
+                failure_kind: Some(FailureKind::ProofScriptFailure),
+                recovery_action: Some(FailureRecoveryAction::ReplayLane),
+                last_completed_stage_label: Some("Start".to_string()),
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
+        };
+
+        let regenerable = regenerable_failed_lanes(&program);
+        assert_eq!(regenerable, vec!["demo:lane".to_string()]);
+    }
+
+    #[test]
     fn cycle_limit_treats_zero_as_unbounded() {
         assert_eq!(cycle_limit(0), None);
         assert_eq!(cycle_limit(3), Some(3));
@@ -2704,20 +2774,6 @@ units:
         assert!(has_more_cycles(None, 1));
         assert!(has_more_cycles(Some(3), 2));
         assert!(!has_more_cycles(Some(3), 3));
-    }
-
-    #[test]
-    fn settled_watchdog_interval_keeps_unbounded_unfinished_frontier_alive() {
-        assert_eq!(
-            settled_watchdog_interval(None, 3, 2, 4, 10),
-            Some(Duration::from_secs(SETTLED_WATCHDOG_MIN_SECS))
-        );
-    }
-
-    #[test]
-    fn settled_watchdog_interval_allows_true_settlement_and_bounded_exit() {
-        assert_eq!(settled_watchdog_interval(None, 0, 0, 10, 10), None);
-        assert_eq!(settled_watchdog_interval(Some(5), 3, 2, 4, 10), None);
     }
 
     #[test]
@@ -2768,27 +2824,69 @@ units:
     }
 
     #[test]
-    fn wedged_frontier_can_trigger_evolve_even_above_budget() {
-        let frontier = FrontierSignature {
-            ready: 0,
-            running: 1,
-            replayable_failed: 2,
-            regenerable_failed: 3,
-            complete: 4,
-            failed_recovery_keys: vec!["lane:proof_script_failure:regenerate_lane".to_string()],
+    fn detect_regenerate_noop_lanes_flags_unchanged_render() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workflow = temp.path().join("workflow.fabro");
+        let run_config = temp.path().join("run.toml");
+        std::fs::write(&workflow, "digraph demo { start -> exit }\n").expect("workflow");
+        std::fs::write(
+            &run_config,
+            "version = 1\ngraph = \"workflow.fabro\"\ngoal = \"demo\"\ndirectory = \".\"\n",
+        )
+        .expect("run config");
+
+        let before = vec![(
+            "demo:lane".to_string(),
+            lane_render_fingerprint(&run_config),
+        )];
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![crate::evaluate::EvaluatedLane {
+                lane_key: "demo:lane".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "lane".to_string(),
+                lane_title: "Lane".to_string(),
+                lane_kind: crate::manifest::LaneKind::Artifact,
+                status: LaneExecutionStatus::Failed,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: "failed".to_string(),
+                managed_milestone: "reviewed".to_string(),
+                proof_profile: None,
+                run_config: run_config.clone(),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: Some(1),
+                last_error: Some("failed".to_string()),
+                failure_kind: Some(FailureKind::SupervisorOnlyLane),
+                recovery_action: Some(FailureRecoveryAction::RegenerateLane),
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+            }],
         };
 
-        assert!(should_trigger_evolve(
-            None,
-            Duration::from_secs(300),
-            &frontier,
-            8,
-            2,
-            false,
-            false,
-            true,
-            None,
-        ));
+        let noop = detect_regenerate_noop_lanes(&["demo:lane".to_string()], &before, &program);
+
+        assert_eq!(noop, vec!["demo:lane".to_string()]);
     }
 
     #[test]

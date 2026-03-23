@@ -172,6 +172,42 @@ fn run_git_push(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
+fn is_ssh_remote(url: &str) -> bool {
+    url.starts_with("git@") || url.starts_with("ssh://")
+}
+
+fn github_https_to_ssh(url: &str) -> Option<String> {
+    let prefix = "https://github.com/";
+    let path = url.strip_prefix(prefix)?.trim_end_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    Some(format!("git@github.com:{path}"))
+}
+
+pub fn resolve_ssh_push_url(repo: &Path, remote: &str) -> Result<String> {
+    let output = git_cmd(repo)
+        .args(["remote", "get-url", remote])
+        .output()
+        .map_err(|e| git_error(format!("git remote get-url {remote} failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(git_error(format!(
+            "git remote get-url {remote} failed: {stderr}"
+        )));
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if is_ssh_remote(&url) {
+        return Ok(url);
+    }
+    if let Some(ssh_url) = github_https_to_ssh(&url) {
+        return Ok(ssh_url);
+    }
+    Err(git_error(format!(
+        "remote `{remote}` must use SSH or be convertible from GitHub HTTPS, got `{url}`"
+    )))
+}
+
 /// Push a local ref to an explicit remote URL.
 ///
 /// Uses a URL (not a named remote) so the host repo's remote config is untouched.
@@ -189,6 +225,18 @@ pub fn push_ref(repo: &Path, url: &str, refname: &str) -> Result<()> {
         "Pushing ref to remote"
     );
     run_git_push(git_cmd(repo).args(["-c", "credential.helper=", "push", url, refname]))
+}
+
+/// Validate that a ref can be pushed to the remote URL without mutating the remote.
+pub fn push_ref_dry_run(repo: &Path, url: &str, refname: &str) -> Result<()> {
+    run_git_push(git_cmd(repo).args([
+        "-c",
+        "credential.helper=",
+        "push",
+        "--dry-run",
+        url,
+        refname,
+    ]))
 }
 
 /// Push a local branch to the named remote using the user's configured credentials.

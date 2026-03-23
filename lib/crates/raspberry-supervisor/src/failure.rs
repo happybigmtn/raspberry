@@ -9,6 +9,7 @@ pub enum FailureKind {
     IntegrationConflict,
     IntegrationTargetUnavailable,
     SupervisorOnlyLane,
+    RegenerateNoop,
     DeterministicVerifyCycle,
     TransientLaunchFailure,
     ProviderAccessLimited,
@@ -28,6 +29,7 @@ impl fmt::Display for FailureKind {
             Self::IntegrationConflict => "integration_conflict",
             Self::IntegrationTargetUnavailable => "integration_target_unavailable",
             Self::SupervisorOnlyLane => "supervisor_only_lane",
+            Self::RegenerateNoop => "regenerate_noop",
             Self::DeterministicVerifyCycle => "deterministic_verify_cycle",
             Self::TransientLaunchFailure => "transient_launch_failure",
             Self::ProviderAccessLimited => "provider_access_limited",
@@ -115,6 +117,9 @@ pub fn classify_failure(
     if combined.contains("executed directly by raspberry supervisor") {
         return Some(FailureKind::SupervisorOnlyLane);
     }
+    if combined.contains("synth evolve did not materially change run config or graph") {
+        return Some(FailureKind::RegenerateNoop);
+    }
     if combined.contains("cycle detection")
         || combined.contains("deterministic failure cycle detected")
         || combined.contains("deterministic cycle")
@@ -144,9 +149,14 @@ pub fn classify_failure(
     if combined.contains("api.responses.write")
         || combined.contains("insufficient permissions for this operation")
         || combined.contains("401 unauthorized")
+        || combined.contains("not logged in")
+        || combined.contains("please run /login")
         || combined.contains("usage limit has been reached")
         || combined.contains("rate limited by openai")
         || combined.contains("you've hit your usage limit")
+        || combined.contains("you've hit your limit")
+        || combined.contains("\"error\":\"rate_limit\"")
+        || combined.contains("\"error\":\"rate limit\"")
         || combined.contains("try again at")
     {
         return Some(FailureKind::ProviderAccessLimited);
@@ -167,6 +177,9 @@ pub fn classify_failure(
         || combined.contains("provider rejected")
         || combined.contains("model policy")
         || combined.contains("unsupported provider")
+        || combined.contains("selected model")
+        || combined.contains("may not exist or you may not have access to it")
+        || combined.contains("run --model to pick a different model")
     {
         return Some(FailureKind::ProviderPolicyMismatch);
     }
@@ -205,13 +218,14 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
         FailureKind::EnvironmentCollision
         | FailureKind::StallWatchdog
         | FailureKind::TransientLaunchFailure => FailureRecoveryAction::BackoffRetry,
-        FailureKind::ProviderAccessLimited => FailureRecoveryAction::SurfaceBlocked,
+        FailureKind::ProviderAccessLimited | FailureKind::RegenerateNoop => {
+            FailureRecoveryAction::SurfaceBlocked
+        }
         FailureKind::DeterministicVerifyCycle
         | FailureKind::CapabilityContractMismatch
         | FailureKind::SupervisorOnlyLane => FailureRecoveryAction::RegenerateLane,
-        FailureKind::Unknown | FailureKind::ProviderPolicyMismatch => {
-            FailureRecoveryAction::SurfaceBlocked
-        }
+        FailureKind::ProviderPolicyMismatch => FailureRecoveryAction::RegenerateLane,
+        FailureKind::Unknown => FailureRecoveryAction::SurfaceBlocked,
     }
 }
 
@@ -260,6 +274,44 @@ mod tests {
                 None,
             ),
             Some(FailureKind::IntegrationConflict)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_regenerate_noop() {
+        assert_eq!(
+            classify_failure(
+                Some("synth evolve did not materially change run config or graph"),
+                None,
+                None,
+            ),
+            Some(FailureKind::RegenerateNoop)
+        );
+        assert_eq!(
+            default_recovery_action(FailureKind::RegenerateNoop),
+            FailureRecoveryAction::SurfaceBlocked
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_provider_limit_and_model_mismatch() {
+        assert_eq!(
+            classify_failure(Some("You've hit your limit · resets 9am"), None, None),
+            Some(FailureKind::ProviderAccessLimited)
+        );
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "There's an issue with the selected model (MiniMax-M2.7-highspeed). It may not exist or you may not have access to it. Run --model to pick a different model."
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::ProviderPolicyMismatch)
+        );
+        assert_eq!(
+            default_recovery_action(FailureKind::ProviderPolicyMismatch),
+            FailureRecoveryAction::RegenerateLane
         );
     }
 
@@ -449,7 +501,9 @@ mod tests {
     fn classify_failure_detects_supervisor_only_lane_failures() {
         assert_eq!(
             classify_failure(
-                Some("repo-level orchestration lanes are executed directly by raspberry supervisor"),
+                Some(
+                    "repo-level orchestration lanes are executed directly by raspberry supervisor"
+                ),
                 None,
                 None,
             ),

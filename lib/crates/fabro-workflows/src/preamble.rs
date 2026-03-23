@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::artifact::{artifact_path, format_artifact_reference};
 use crate::context::keys;
@@ -8,6 +8,8 @@ use fabro_graphviz::graph::{is_llm_handler_type, Graph, Node};
 
 const COMPACT_OUTPUT_MAX_LINES: usize = 25;
 const SUMMARY_HIGH_OUTPUT_MAX_LINES: usize = 50;
+const MAX_RENDERED_FILES: usize = 8;
+const MAX_RENDERED_FILE_SUMMARY_CHARS: usize = 400;
 
 /// Build a fidelity-appropriate preamble string for non-full context modes.
 ///
@@ -124,6 +126,66 @@ fn format_token_count(tokens: i64) -> String {
     }
 }
 
+fn file_touch_bucket(path: &str) -> Option<&'static str> {
+    if path.contains(".pnpm-store/") {
+        Some("pnpm-store artifact(s)")
+    } else if path == "node_modules"
+        || path.starts_with("node_modules/")
+        || path.contains("/node_modules/")
+    {
+        Some("node_modules artifact(s)")
+    } else if path == "target" || path.starts_with("target/") || path.contains("/target/") {
+        Some("build artifact(s)")
+    } else {
+        None
+    }
+}
+
+fn summarize_files_touched(files: &[String]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+
+    let mut seen = HashSet::new();
+    let mut repo_files = Vec::new();
+    let mut buckets: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+    for path in files {
+        if !seen.insert(path.as_str()) {
+            continue;
+        }
+        if let Some(bucket) = file_touch_bucket(path) {
+            *buckets.entry(bucket).or_default() += 1;
+        } else {
+            repo_files.push(path.clone());
+        }
+    }
+
+    let mut parts = Vec::new();
+    for path in repo_files.iter().take(MAX_RENDERED_FILES) {
+        parts.push(path.clone());
+    }
+    let omitted_repo_files = repo_files.len().saturating_sub(MAX_RENDERED_FILES);
+    if omitted_repo_files > 0 {
+        parts.push(format!("{omitted_repo_files} more repo file(s)"));
+    }
+    for (bucket, count) in buckets {
+        parts.push(format!("{count} {bucket}"));
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut rendered = parts.join(", ");
+    if rendered.len() > MAX_RENDERED_FILE_SUMMARY_CHARS {
+        let boundary = fabro_agent::floor_char_boundary(&rendered, MAX_RENDERED_FILE_SUMMARY_CHARS);
+        rendered.truncate(boundary);
+        rendered.push_str("...");
+    }
+    Some(rendered)
+}
+
 fn tail_lines(text: &str, max_lines: usize, indent: &str) -> String {
     use std::fmt::Write;
 
@@ -214,8 +276,8 @@ fn render_compact_stage_details(
                     usage.model, input, output
                 ));
             }
-            if !outcome.files_touched.is_empty() {
-                lines.push(format!("  - Files: {}", outcome.files_touched.join(", ")));
+            if let Some(summary) = summarize_files_touched(&outcome.files_touched) {
+                lines.push(format!("  - Files: {summary}"));
             }
             lines
         }
@@ -298,11 +360,8 @@ fn render_summary_high_stage_section(
                     format_token_count(usage.output_tokens)
                 ));
             }
-            if !outcome.files_touched.is_empty() {
-                lines.push(format!(
-                    "- Files touched: {}",
-                    outcome.files_touched.join(", ")
-                ));
+            if let Some(summary) = summarize_files_touched(&outcome.files_touched) {
+                lines.push(format!("- Files touched: {summary}"));
             }
             // Include full response from context_updates (or artifact pointer)
             if let Some(resp_val) = outcome.context_updates.get(&keys::response_key(node_id)) {
@@ -950,6 +1009,43 @@ mod tests {
             preamble.contains("src/lib.rs, src/main.rs"),
             "should show files touched"
         );
+    }
+
+    #[test]
+    fn compact_agent_loop_stage_summarizes_noisy_file_lists() {
+        let mut graph = Graph::new("test");
+        let mut report = Node::new("report");
+        report
+            .attrs
+            .insert("shape".to_string(), AttrValue::String("box".to_string()));
+        graph.nodes.insert("report".to_string(), report);
+
+        let context = Context::new();
+        let completed_nodes = vec!["report".to_string()];
+        let mut node_outcomes: HashMap<String, Outcome> = HashMap::new();
+        let mut outcome = Outcome::success();
+        outcome.files_touched = vec![
+            "game/src/cash_court.rs".to_string(),
+            "web/app/api/cash-court/withdrawal/route.ts".to_string(),
+            ".pnpm-store/v10/files/aa/big-hash".to_string(),
+            ".pnpm-store/v10/files/bb/big-hash".to_string(),
+            "target/debug/deps/some-artifact".to_string(),
+        ];
+        node_outcomes.insert("report".to_string(), outcome);
+
+        let preamble = build_preamble(
+            keys::Fidelity::Compact,
+            &context,
+            &graph,
+            &completed_nodes,
+            &node_outcomes,
+        );
+
+        assert!(preamble.contains("game/src/cash_court.rs"));
+        assert!(preamble.contains("web/app/api/cash-court/withdrawal/route.ts"));
+        assert!(preamble.contains("2 pnpm-store artifact(s)"));
+        assert!(preamble.contains("1 build artifact(s)"));
+        assert!(!preamble.contains(".pnpm-store/v10/files/aa/big-hash"));
     }
 
     #[test]

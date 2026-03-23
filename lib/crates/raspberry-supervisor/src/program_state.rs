@@ -328,6 +328,26 @@ pub fn mark_lane_finished(
     state.updated_at = now;
 }
 
+pub fn mark_lane_regenerate_noop(
+    state: &mut ProgramRuntimeState,
+    lane_key: &str,
+    run_config: &Path,
+    detail: &str,
+) {
+    let now = Utc::now();
+    let record = ensure_lane_record(state, lane_key, run_config);
+    record.status = LaneExecutionStatus::Failed;
+    record.current_run_id = None;
+    record.current_fabro_run_id = None;
+    record.current_stage_label = None;
+    record.last_finished_at = Some(now);
+    record.last_exit_status = Some(1);
+    record.last_error = Some(detail.to_string());
+    record.failure_kind = Some(FailureKind::RegenerateNoop);
+    record.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+    state.updated_at = now;
+}
+
 pub fn refresh_program_state(
     manifest_path: &Path,
     manifest: &ProgramManifest,

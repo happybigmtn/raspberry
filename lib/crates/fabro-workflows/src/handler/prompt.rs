@@ -11,7 +11,8 @@ use crate::outcome::Outcome;
 use fabro_graphviz::graph::{Graph, Node};
 
 use super::agent::{
-    expand_variables, extract_status_fields, truncate, CodergenBackend, CodergenResult,
+    expand_variables, extract_status_fields, prepare_prompt, truncate, CodergenBackend,
+    CodergenResult,
 };
 use super::{EngineServices, Handler};
 
@@ -55,11 +56,8 @@ impl Handler for PromptHandler {
             .unwrap_or_else(|| node.label());
         let expanded = expand_variables(raw_prompt, graph)?;
         let preamble = context.preamble();
-        let prompt = if preamble.is_empty() {
-            expanded
-        } else {
-            format!("{preamble}\n\n{expanded}")
-        };
+        let prepared_prompt = prepare_prompt(&preamble, &expanded);
+        let prompt = prepared_prompt.prompt;
 
         // 1b. Discover project docs for system prompt when project_memory is enabled
         let system_prompt = if node.project_memory() {
@@ -90,6 +88,9 @@ impl Handler for PromptHandler {
         let stage_dir = crate::engine::node_dir(run_dir, &node.id, visit);
         tokio::fs::create_dir_all(&stage_dir).await?;
         tokio::fs::write(stage_dir.join("prompt.md"), &prompt).await?;
+        if let Some(full_prompt) = prepared_prompt.full_prompt {
+            tokio::fs::write(stage_dir.join("prompt.full.md"), &full_prompt).await?;
+        }
 
         // 3. Call LLM backend (one_shot)
         let (

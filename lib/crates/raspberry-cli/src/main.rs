@@ -12,12 +12,26 @@ use raspberry_supervisor::{
     autodev_report_path, evaluate_program, evaluate_program_local, execute_selected_lanes,
     load_optional_autodev_report, load_plan_matrix, orchestrate_program, render_grouped_summary,
     render_plan_matrix, render_status_table, sync_autodev_report_with_program, AutodevCycleReport,
-    AutodevReport, AutodevSettings, AutodevStopReason, DispatchSettings, LaneExecutionStatus,
-    ProgramManifest,
+    AutodevProvenance, AutodevReport, AutodevSettings, AutodevStopReason, DispatchSettings,
+    LaneExecutionStatus, ProgramManifest,
 };
 
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("RASPBERRY_GIT_SHA"),
+    " ",
+    env!("RASPBERRY_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
-#[command(name = "raspberry", about = "Raspberry supervisory control-plane CLI")]
+#[command(
+    name = "raspberry",
+    version,
+    long_version = LONG_VERSION,
+    about = "Raspberry supervisory control-plane CLI"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -127,6 +141,9 @@ fn run_status(manifest_path: &Path) -> Result<()> {
     let manifest = ProgramManifest::load(manifest_path)?;
     let program = evaluate_program_local(manifest_path)?;
     sync_autodev_report_with_program(manifest_path, &manifest, &program)?;
+    if let Some(report) = read_autodev_report(manifest_path, &manifest) {
+        print_autodev_provenance(&report);
+    }
     println!("{}", render_status_table(&program));
     Ok(())
 }
@@ -350,9 +367,42 @@ fn format_autodev_cycle_heartbeat(cycle: &AutodevCycleReport) -> String {
     let dispatched = cycle.dispatched.len();
 
     format!(
-        "[autodev] cycle={} evolve={} ready={} replayed={} dispatched={} running={} complete={}",
-        cycle.cycle, evolve, ready, replayed, dispatched, cycle.running_after, cycle.complete_after
+        "[autodev] cycle={} evolve={} ready={} replayed={} regenerate_noop={} dispatched={} running={} complete={}",
+        cycle.cycle,
+        evolve,
+        ready,
+        replayed,
+        cycle.regenerate_noop_lanes.len(),
+        dispatched,
+        cycle.running_after,
+        cycle.complete_after
     )
+}
+
+fn print_autodev_provenance(report: &AutodevReport) {
+    let Some(provenance) = report.provenance.as_ref() else {
+        return;
+    };
+    println!(
+        "Controller provenance: {}",
+        format_binary_provenance(provenance, true)
+    );
+    println!(
+        "Fabro provenance: {}",
+        format_binary_provenance(provenance, false)
+    );
+}
+
+fn format_binary_provenance(provenance: &AutodevProvenance, controller: bool) -> String {
+    let binary = if controller {
+        &provenance.controller
+    } else {
+        &provenance.fabro_bin
+    };
+    match binary.version.as_deref() {
+        Some(version) => format!("{version} @ {}", binary.path),
+        None => binary.path.clone(),
+    }
 }
 
 fn run_tui(args: TuiArgs) -> Result<()> {
