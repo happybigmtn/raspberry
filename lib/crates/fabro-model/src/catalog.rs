@@ -162,10 +162,12 @@ pub fn build_fallback_chain(
             } else {
                 None
             };
-            preferred.or_else(|| closest_model(provider, &reference)).map(|m| FallbackTarget {
-                provider: provider.clone(),
-                model: m.id,
-            })
+            preferred
+                .or_else(|| closest_model(provider, &reference))
+                .map(|m| FallbackTarget {
+                    provider: provider.clone(),
+                    model: m.id,
+                })
         })
         .collect()
 }
@@ -748,7 +750,11 @@ mod tests {
     fn build_fallback_chain_minimax_highspeed() {
         let fallbacks = HashMap::from([(
             "minimax".to_string(),
-            vec!["openai".to_string(), "gemini".to_string(), "kimi".to_string()],
+            vec![
+                "openai".to_string(),
+                "gemini".to_string(),
+                "kimi".to_string(),
+            ],
         )]);
         let chain = build_fallback_chain("minimax", "MiniMax-M2.7-highspeed", &fallbacks);
         assert!(!chain.is_empty());

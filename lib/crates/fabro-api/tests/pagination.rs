@@ -58,52 +58,64 @@ fn assert_paginated_shape(json: &serde_json::Value, context: &str) {
 struct PaginatedEndpoint {
     path: &'static str,
     name: &'static str,
+    default_has_more: bool,
 }
 
 const ENDPOINTS: &[PaginatedEndpoint] = &[
     PaginatedEndpoint {
         path: "/workflows",
         name: "listWorkflows",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/workflows/implement/runs",
         name: "listWorkflowRuns",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/retros",
         name: "listRetros",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/sessions",
         name: "listSessions",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/insights/queries",
         name: "listSavedQueries",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/insights/history",
         name: "listQueryHistory",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/models",
         name: "listModels",
+        default_has_more: true,
     },
     PaginatedEndpoint {
         path: "/runs/run-1/stages/detect-drift/turns",
         name: "listStageTurns",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/runs/run-1/questions",
         name: "listRunQuestions",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/runs/run-1/stages",
         name: "listRunStages",
+        default_has_more: false,
     },
     PaginatedEndpoint {
         path: "/runs/run-1/verification",
         name: "retrieveRunVerification",
+        default_has_more: false,
     },
 ];
 
@@ -113,13 +125,13 @@ async fn paginated_endpoints_return_correct_shape() {
     let app = build_router(state, AuthMode::Disabled);
 
     for ep in ENDPOINTS {
-        // Default request: paginated shape, has_more = false (fixtures fit in default page)
+        // Default request: paginated shape, with endpoint-specific default has_more.
         let json = get_json(app.clone(), ep.path).await;
         assert_paginated_shape(&json, ep.name);
         assert_eq!(
-            json["meta"]["has_more"], false,
-            "{}: default request should have has_more=false",
-            ep.name
+            json["meta"]["has_more"], ep.default_has_more,
+            "{}: unexpected default has_more value",
+            ep.name,
         );
 
         // limit=1: at most 1 item, has_more = true (all fixtures have >1 item)

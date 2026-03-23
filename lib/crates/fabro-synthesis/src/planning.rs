@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use raspberry_supervisor::manifest::{LaneDependency, LaneKind, MilestoneManifest};
 use raspberry_supervisor::{
     load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord, PlanRecord,
-    WorkflowArchetype,
+    ReviewProfile, WorkflowArchetype,
 };
 
 use crate::blueprint::{
@@ -64,6 +64,21 @@ struct LaneIntent {
     proof_profile: Option<String>,
     milestones: Vec<MilestoneManifest>,
     artifacts: Vec<BlueprintArtifact>,
+}
+
+#[derive(Debug, Clone)]
+struct RegistryDependencyShape {
+    all_targets: Vec<LaneDependency>,
+    child_targets: Vec<RegistryDependencyChildTarget>,
+    emits_parent_intent: bool,
+    category: PlanCategory,
+}
+
+#[derive(Debug, Clone)]
+struct RegistryDependencyChildTarget {
+    dependency: LaneDependency,
+    owned_surfaces: Vec<String>,
+    review_profile: Option<ReviewProfile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -704,7 +719,7 @@ fn derive_registry_plan_intents(
             let child_count = plan_child_count(plan);
             let emit_parent_intent =
                 plan.bootstrap_required || !plan.implementation_required || child_count <= 1;
-            let targets = if emit_parent_intent {
+            let all_targets = if emit_parent_intent {
                 vec![LaneDependency {
                     unit: plan.plan_id.clone(),
                     lane: None,
@@ -724,7 +739,35 @@ fn derive_registry_plan_intents(
             } else {
                 Vec::new()
             };
-            (plan.plan_id.clone(), targets)
+            let child_targets = if emit_parent_intent {
+                Vec::new()
+            } else if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
+                effective_plan_children(target_repo, plan)
+                    .into_iter()
+                    .map(|child| RegistryDependencyChildTarget {
+                        dependency: LaneDependency {
+                            unit: child_unit_id(&plan.plan_id, &child.child_id),
+                            lane: None,
+                            milestone: Some(dependency_milestone_for_template(child_template(
+                                plan, &child,
+                            ))),
+                        },
+                        owned_surfaces: child.owned_surfaces,
+                        review_profile: child.review_profile,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (
+                plan.plan_id.clone(),
+                RegistryDependencyShape {
+                    all_targets,
+                    child_targets,
+                    emits_parent_intent: emit_parent_intent,
+                    category: plan.category,
+                },
+            )
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -1182,14 +1225,14 @@ fn registry_plan_contract(
 
 fn registry_plan_dependencies(
     plan: &PlanRecord,
-    dependency_targets: &BTreeMap<String, Vec<LaneDependency>>,
+    dependency_targets: &BTreeMap<String, RegistryDependencyShape>,
 ) -> Vec<LaneDependency> {
     plan.dependency_plan_ids
         .iter()
         .flat_map(|dependency| {
             dependency_targets
                 .get(dependency)
-                .cloned()
+                .map(|shape| shape.all_targets.clone())
                 .unwrap_or_else(|| {
                     vec![LaneDependency {
                         unit: dependency.clone(),
@@ -1201,12 +1244,129 @@ fn registry_plan_dependencies(
         .collect()
 }
 
+fn registry_child_dependencies(
+    plan: &PlanRecord,
+    child: &PlanChildRecord,
+    dependency_targets: &BTreeMap<String, RegistryDependencyShape>,
+) -> Vec<LaneDependency> {
+    let mut dependencies = Vec::new();
+    for dependency in &plan.dependency_plan_ids {
+        let Some(shape) = dependency_targets.get(dependency) else {
+            dependencies.push(LaneDependency {
+                unit: dependency.clone(),
+                lane: None,
+                milestone: Some("reviewed".to_string()),
+            });
+            continue;
+        };
+
+        if shape.emits_parent_intent || shape.child_targets.is_empty() {
+            dependencies.extend(shape.all_targets.clone());
+            continue;
+        }
+
+        let matched = select_blocking_dependency_children(child, shape);
+        if !matched.is_empty() {
+            dependencies.extend(matched);
+        }
+    }
+
+    dedupe_lane_dependencies(dependencies)
+}
+
+fn select_blocking_dependency_children(
+    child: &PlanChildRecord,
+    dependency_shape: &RegistryDependencyShape,
+) -> Vec<LaneDependency> {
+    let mut selected = dependency_shape
+        .child_targets
+        .iter()
+        .filter(|dependency| child_surfaces_overlap_dependency(child, dependency))
+        .map(|dependency| dependency.dependency.clone())
+        .collect::<Vec<_>>();
+
+    if selected.is_empty()
+        && child_prefers_implementation(child)
+        && dependency_shape.category == PlanCategory::Foundation
+    {
+        selected = dependency_shape
+            .child_targets
+            .iter()
+            .filter(|dependency| dependency_child_is_shared_foundation(dependency))
+            .map(|dependency| dependency.dependency.clone())
+            .collect();
+    }
+
+    dedupe_lane_dependencies(selected)
+}
+
+fn child_surfaces_overlap_dependency(
+    child: &PlanChildRecord,
+    dependency: &RegistryDependencyChildTarget,
+) -> bool {
+    child.owned_surfaces.iter().any(|child_surface| {
+        dependency
+            .owned_surfaces
+            .iter()
+            .any(|dependency_surface| surfaces_overlap(child_surface, dependency_surface))
+    })
+}
+
+fn dependency_child_is_shared_foundation(dependency: &RegistryDependencyChildTarget) -> bool {
+    matches!(dependency.review_profile, Some(ReviewProfile::Foundation))
+        || dependency
+            .owned_surfaces
+            .iter()
+            .any(|surface| surface_is_shared_foundation(surface))
+}
+
+fn surfaces_overlap(left: &str, right: &str) -> bool {
+    let left = normalize_surface(left);
+    let right = normalize_surface(right);
+    left == right
+        || left.strip_prefix(&(right.clone() + "/")).is_some()
+        || right.strip_prefix(&(left.clone() + "/")).is_some()
+}
+
+fn normalize_surface(surface: &str) -> String {
+    surface
+        .trim()
+        .trim_end_matches('/')
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn surface_is_shared_foundation(surface: &str) -> bool {
+    let lower = normalize_surface(surface);
+    lower.contains("/core/")
+        || lower.contains("/shared/")
+        || lower.contains("/common/")
+        || lower.contains("/foundation/")
+        || lower.contains("/sdk/")
+        || lower.ends_with("/lib.rs")
+}
+
+fn dedupe_lane_dependencies(dependencies: Vec<LaneDependency>) -> Vec<LaneDependency> {
+    let mut deduped = Vec::new();
+    for dependency in dependencies {
+        if deduped.iter().any(|existing: &LaneDependency| {
+            existing.unit == dependency.unit
+                && existing.lane == dependency.lane
+                && existing.milestone == dependency.milestone
+        }) {
+            continue;
+        }
+        deduped.push(dependency);
+    }
+    deduped
+}
+
 fn derive_child_intents(
     target_repo: &Path,
     parent_dependency: Option<&LaneDependency>,
     plan: &PlanRecord,
     corpus: &PlanningCorpus,
-    dependency_targets: &BTreeMap<String, Vec<LaneDependency>>,
+    dependency_targets: &BTreeMap<String, RegistryDependencyShape>,
     workspace_dependency: &Option<(LaneDependency, LaneIntent)>,
 ) -> Vec<LaneIntent> {
     plan.children
@@ -1249,7 +1409,7 @@ fn derive_child_intents(
             let prompt_context =
                 build_child_prompt_context(corpus, plan, child, &child_unit_id, &artifacts);
 
-            let mut dependencies = registry_plan_dependencies(plan, dependency_targets);
+            let mut dependencies = registry_child_dependencies(plan, child, dependency_targets);
             if let Some(parent_dependency) = parent_dependency {
                 dependencies.push(parent_dependency.clone());
             }
@@ -1258,6 +1418,7 @@ fn derive_child_intents(
                     dependencies.insert(0, ws_dep.clone());
                 }
             }
+            dependencies = dedupe_lane_dependencies(dependencies);
 
             LaneIntent {
                 id: child_unit_id,
@@ -3955,7 +4116,7 @@ units:
     }
 
     #[test]
-    fn create_authoring_expands_dependencies_for_skipped_parent_units() {
+    fn create_authoring_only_keeps_blocking_child_dependencies_for_skipped_parent_units() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
         fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
@@ -4058,12 +4219,129 @@ units:
         assert!(!dependency_units
             .iter()
             .any(|(unit, _)| unit == "build-fix-ci"));
-        assert!(dependency_units.iter().any(|(unit, milestone)| {
-            unit == "build-fix-ci-fix-street-import" && milestone.as_deref() == Some("merge_ready")
-        }));
-        assert!(dependency_units.iter().any(|(unit, milestone)| {
-            unit == "build-fix-ci-verify-ci-main" && milestone.as_deref() == Some("merge_ready")
-        }));
+        assert!(!dependency_units
+            .iter()
+            .any(|(unit, _)| unit.starts_with("build-fix-ci-")));
+    }
+
+    #[test]
+    fn create_authoring_keeps_overlapping_or_foundation_child_dependencies() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("GOAL.md"), "# Root Goal\n").expect("goal");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/002-casino-core.md"),
+            "# Casino Core\n",
+        )
+        .expect("casino core");
+        fs::write(
+            temp.path().join("plans/003-craps-runtime.md"),
+            "# Craps Runtime\n",
+        )
+        .expect("runtime");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/002-casino-core.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: casino-core\n",
+                "title: Casino Core\n",
+                "category: foundation\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "children:\n",
+                "  - id: shared-types\n",
+                "    title: Shared Types\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    review_profile: foundation\n",
+                "    proof_commands:\n",
+                "      - cargo check -p casino-core\n",
+                "    owned_surfaces:\n",
+                "      - crates/casino-core/src/lib.rs\n",
+                "  - id: payout-engine\n",
+                "    title: Payout Engine\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo test -p casino-core payout\n",
+                "    owned_surfaces:\n",
+                "      - crates/casino-core/src/payout.rs\n",
+            ),
+        )
+        .expect("casino core mapping");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/003-craps-runtime.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: craps-runtime\n",
+                "title: Craps Runtime\n",
+                "category: game\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "dependency_plan_ids:\n",
+                "  - casino-core\n",
+                "children:\n",
+                "  - id: runtime-core\n",
+                "    title: Runtime Core\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo test -p runtime core\n",
+                "    owned_surfaces:\n",
+                "      - crates/casino-core/src/payout.rs\n",
+                "  - id: runtime-ui\n",
+                "    title: Runtime UI\n",
+                "    archetype: implement\n",
+                "    lane_kind: interface\n",
+                "    proof_commands:\n",
+                "      - pnpm test runtime-ui\n",
+                "    owned_surfaces:\n",
+                "      - web/app/runtime/page.tsx\n",
+            ),
+        )
+        .expect("runtime mapping");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let runtime_core = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-runtime-runtime-core")
+            .expect("runtime core unit");
+        let runtime_ui = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-runtime-runtime-ui")
+            .expect("runtime ui unit");
+
+        let runtime_core_dependencies = runtime_core.lanes[0]
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.unit.as_str())
+            .collect::<Vec<_>>();
+        let runtime_ui_dependencies = runtime_ui.lanes[0]
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.unit.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(runtime_core_dependencies.contains(&"casino-core-payout-engine"));
+        assert!(!runtime_core_dependencies.contains(&"casino-core-shared-types"));
+        assert!(runtime_ui_dependencies.contains(&"casino-core-shared-types"));
+        assert!(!runtime_ui_dependencies.contains(&"casino-core-payout-engine"));
     }
 
     #[test]

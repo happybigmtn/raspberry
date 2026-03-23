@@ -1,12 +1,12 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "raspberry-demo",
-  "updated_at": "2026-03-22T18:54:18.898407843Z",
+  "updated_at": "2026-03-23T00:11:07.795292877Z",
   "lanes": {
     "consensus:chapter": {
       "lane_key": "consensus:chapter",
       "status": "failed",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/consensus-chapter.toml",
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/consensus-chapter.toml",
       "last_run_id": "01CONSENSUSFAIL000000000000000",
       "last_started_at": "2026-03-18T22:00:00Z",
       "last_error": "LLM error: builder error",
@@ -25,12 +25,12 @@
     "consensus:page": {
       "lane_key": "consensus:page",
       "status": "blocked",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/consensus-page.toml"
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/consensus-page.toml"
     },
     "p2p:chapter": {
       "lane_key": "p2p:chapter",
       "status": "failed",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/p2p-chapter.toml",
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/p2p-chapter.toml",
       "current_stage_label": "Review",
       "last_run_id": "01P2PRUNNING00000000000000000",
       "last_started_at": "2026-03-18T22:10:00Z",
@@ -52,17 +52,17 @@
     "runtime:chapter": {
       "lane_key": "runtime:chapter",
       "status": "complete",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/runtime-chapter.toml"
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/runtime-chapter.toml"
     },
     "runtime:page": {
       "lane_key": "runtime:page",
       "status": "ready",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/runtime-page.toml"
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/runtime-page.toml"
     },
     "runtime:proof": {
       "lane_key": "runtime:proof",
       "status": "ready",
-      "run_config": "/home/r/.config/superpowers/worktrees/fabro/sync/main-replay-2026-03-22/test/fixtures/raspberry-supervisor/run-configs/runtime-proof.toml"
+      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/runtime-proof.toml"
     }
   }
 }

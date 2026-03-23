@@ -773,12 +773,10 @@ fn reap_orphaned_program_workers(
     manifest: &ProgramManifest,
 ) -> Result<(), AutodevError> {
     let state_path = manifest.resolved_state_path(manifest_path);
-    let tracked_state =
-        crate::program_state::ProgramRuntimeState::load_optional(&state_path).map_err(|error| {
-            AutodevError::ReadReport {
-                path: state_path.clone(),
-                source: std::io::Error::other(error.to_string()),
-            }
+    let tracked_state = crate::program_state::ProgramRuntimeState::load_optional(&state_path)
+        .map_err(|error| AutodevError::ReadReport {
+            path: state_path.clone(),
+            source: std::io::Error::other(error.to_string()),
         })?;
     let Some(tracked_state) = tracked_state else {
         return Ok(());
@@ -2477,7 +2475,7 @@ units:
     }
 
     #[test]
-    fn spare_capacity_evolve_stays_bounded_by_frontier_budget() {
+    fn spare_capacity_evolve_can_override_budget_for_wedged_frontier() {
         let frontier = FrontierSignature {
             ready: 0,
             running: 0,
@@ -2509,7 +2507,7 @@ units:
                 ],
             }),
         ));
-        assert!(!should_trigger_evolve(
+        assert!(should_trigger_evolve(
             Some(Instant::now()),
             Duration::ZERO,
             &frontier,
