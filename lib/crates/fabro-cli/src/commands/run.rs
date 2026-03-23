@@ -485,14 +485,6 @@ fn resolve_fallback_chain(
     }
 }
 
-fn resolve_fallback_map(
-    run_cfg: Option<&WorkflowRunConfig>,
-) -> Option<HashMap<String, Vec<String>>> {
-    run_cfg
-        .and_then(|c| c.llm.as_ref())
-        .and_then(|l| l.fallbacks.clone())
-}
-
 /// Mint a GitHub App Installation Access Token with the given permissions.
 ///
 /// Signs a JWT, resolves `owner/repo` from `origin_url`, and requests a
@@ -1487,7 +1479,7 @@ pub async fn run_command(
         }
     };
 
-    // Parse provider string to enum (defaults to the Pi/MiniMax writing path)
+    // Parse provider string to enum (defaults to Anthropic/MiniMax writing path)
     let provider_enum: Provider = provider
         .as_deref()
         .map(|s| s.parse::<Provider>())
@@ -1497,7 +1489,6 @@ pub async fn run_command(
 
     // Resolve fallback chain from config
     let fallback_chain = resolve_fallback_chain(provider_enum, &model, run_cfg.as_ref());
-    let fallback_map = resolve_fallback_map(run_cfg.as_ref());
 
     // 7. Build engine
     // Devcontainer env is layered underneath TOML env (TOML wins on conflict)
@@ -1576,12 +1567,9 @@ pub async fn run_command(
             } else {
                 let api =
                     AgentApiBackend::new(model.clone(), provider_enum, fallback_chain.clone())
-                        .with_fallback_map(fallback_map.clone())
                         .with_env(sandbox_env.clone())
                         .with_mcp_servers(mcp_servers.clone());
                 let cli = AgentCliBackend::new(model.clone(), provider_enum)
-                    .with_fallback_chain(fallback_chain.clone())
-                    .with_fallback_map(fallback_map.clone())
                     .with_env(sandbox_env.clone());
                 Some(Box::new(BackendRouter::new(Box::new(api), cli)))
             }
@@ -2380,8 +2368,7 @@ async fn run_from_branch(
             None
         } else {
             let api = AgentApiBackend::new(model.clone(), provider_enum, fallback_chain.clone());
-            let cli = AgentCliBackend::new(model.clone(), provider_enum)
-                .with_fallback_chain(fallback_chain.clone());
+            let cli = AgentCliBackend::new(model.clone(), provider_enum);
             Some(Box::new(BackendRouter::new(Box::new(api), cli)))
         }
     });
@@ -2734,7 +2721,7 @@ async fn run_preflight(
     }
 
     // 4. Per-model LLM checks
-    let default_provider = provider.as_deref().unwrap_or("minimax");
+    let default_provider = provider.as_deref().unwrap_or("anthropic");
     let llm_ok = match fabro_llm::client::Client::from_env().await {
         Ok(c) => {
             let configured: Vec<String> =
@@ -3305,7 +3292,7 @@ mod tests {
         let defaults = RunDefaults::default();
         let (model, provider) = resolve_model_provider(None, None, None, &defaults, &graph);
         assert_eq!(model, "MiniMax-M2.7-highspeed");
-        assert_eq!(provider, Some("minimax".to_string()));
+        assert_eq!(provider, Some("anthropic".to_string()));
     }
 
     #[test]
@@ -3434,7 +3421,7 @@ mod tests {
         let defaults = RunDefaults {
             llm: Some(run_config::LlmConfig {
                 model: Some("default-model".to_string()),
-                provider: Some("minimax".to_string()),
+                provider: Some("anthropic".to_string()),
                 fallbacks: None,
             }),
             ..RunDefaults::default()

@@ -240,6 +240,12 @@ impl Transform for FileInliningTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn variable_expansion_replaces_goal() {
@@ -860,6 +866,7 @@ mod tests {
 
     #[test]
     fn resolve_file_ref_expands_tilde() {
+        let _guard = home_env_lock().lock().expect("home env lock");
         let home = dirs::home_dir().expect("home dir must exist");
         let test_file = home.join(".fabro_test_tilde_tmp");
         std::fs::write(&test_file, "tilde content").unwrap();

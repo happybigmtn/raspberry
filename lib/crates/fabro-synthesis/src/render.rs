@@ -13,10 +13,10 @@ use crate::error::RenderError;
 
 const DEFAULT_WRITE_PROVIDER: &str = "minimax";
 const DEFAULT_WRITE_MODEL: &str = "MiniMax-M2.7-highspeed";
-const DEFAULT_REVIEW_PROVIDER: &str = "openai";
-const DEFAULT_REVIEW_MODEL: &str = "gpt-5.4";
+const DEFAULT_REVIEW_PROVIDER: &str = "anthropic";
+const DEFAULT_REVIEW_MODEL: &str = "claude-opus-4-6";
 const REVIEW_FALLBACK_SECTION: &str =
-    "\n[llm.fallbacks]\nminimax = [\"openai\", \"kimi\", \"anthropic\"]\nopenai = [\"anthropic\", \"kimi\"]\nanthropic = [\"openai\", \"kimi\"]\n";
+    "\n[llm.fallbacks]\nanthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]\n";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest<'a> {
@@ -597,7 +597,7 @@ fn render_workflow_graph(
 
     match lane.template {
         WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> specify -> review -> polish -> verify -> exit\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> specify -> review -> polish -> verify\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
             graph_name(lane),
             goal,
             DEFAULT_REVIEW_MODEL,
@@ -610,7 +610,7 @@ fn render_workflow_graph(
             escape_graph_attr(verify_command),
         ),
         WorkflowTemplate::ServiceBootstrap => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs -> exit\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
             graph_name(lane),
             goal,
             DEFAULT_REVIEW_MODEL,
@@ -650,11 +650,9 @@ fn render_workflow_graph(
             );
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #fixup       {{ backend: cli; model: {}; provider: {}; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
-                DEFAULT_REVIEW_MODEL,
-                DEFAULT_REVIEW_PROVIDER,
                 DEFAULT_REVIEW_MODEL,
                 DEFAULT_REVIEW_PROVIDER,
                 DEFAULT_REVIEW_MODEL,
@@ -794,7 +792,16 @@ fn implementation_quality_command(
             .display()
             .to_string(),
     );
-    let touched_surfaces = implementation_touched_surfaces(lane);
+    let touch_first = lane
+        .prompt_context
+        .as_deref()
+        .map(|context| prompt_context_block(context, "Touch first:"))
+        .unwrap_or_default();
+    let touched_surfaces = touch_first
+        .iter()
+        .map(|line| normalize_prompt_path_item(line))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
     let touched_surface_section = if touched_surfaces.is_empty() {
         "- (none declared)\n".to_string()
     } else {
@@ -805,16 +812,14 @@ fn implementation_quality_command(
     };
     let mut surface_scan_lines = Vec::new();
     for surface in &touched_surfaces {
-        surface_scan_lines.push(format!("scan_surface {}", shell_single_quote(surface)));
+        surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
     }
     if surface_scan_lines.is_empty() {
-        surface_scan_lines.push(
-            "changed_paths=\"$(git diff --name-only $(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)..HEAD | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$' || true)\"".to_string(),
-        );
+        surface_scan_lines.push("true".to_string());
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nchanged_paths=\"\"\nQUALITY_BASE_REF=\"$(git rev-parse HEAD~6 2>/dev/null || git rev-list --max-parents=0 HEAD | tail -n1)\"\nappend_block() {{\n  current=\"$1\"\n  incoming=\"$2\"\n  if [ -z \"$incoming\" ]; then\n    printf '%s' \"$current\"\n    return 0\n  fi\n  if [ -z \"$current\" ]; then\n    printf '%s' \"$incoming\"\n    return 0\n  fi\n  printf '%s\\n%s' \"$current\" \"$incoming\"\n}}\nscan_surface() {{\n  surface=\"$1\"\n  scan_target=\"$surface\"\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.toml' -g '*.yaml' -g '*.yml' -g '*.json' -g '*.sh' -g '*.fabro' -g '*.md' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$scan_target\" 2>/dev/null || true)\"\n  placeholder_hits=\"$(append_block \"$placeholder_hits\" \"$hits\")\"\n  changed=\"$(git diff --name-only \"$QUALITY_BASE_REF\"..HEAD -- \"$surface\" | rg -N '\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$' || true)\"\n  changed_paths=\"$(append_block \"$changed_paths\" \"$changed\")\"\n}}\n{surface_scan}\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\ncode_change_present=yes\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -z \"$changed_paths\" ] && code_change_present=no\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\ncode_change_present: $code_change_present\nplaceholder_debt: $placeholder_debt\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Changed Files\n$changed_paths\n\n## Placeholder Hits\n$placeholder_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -844,53 +849,12 @@ fn normalize_prompt_path_item(line: &str) -> String {
         .to_string()
 }
 
-fn goal_block_lines(goal: &str, heading: &str) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut capture = false;
-    for line in goal.lines() {
-        let trimmed = line.trim();
-        if capture && !trimmed.starts_with("- ") {
-            break;
-        }
-        if trimmed == heading {
-            capture = true;
-            continue;
-        }
-        if !capture {
-            continue;
-        }
-        if trimmed.is_empty() {
-            break;
-        }
-        lines.push(trimmed.to_string());
-    }
-    lines
-}
-
-fn implementation_touched_surfaces(lane: &BlueprintLane) -> Vec<String> {
-    let mut touched_surfaces = lane
-        .prompt_context
-        .as_deref()
-        .map(|context| prompt_context_block(context, "Touch first:"))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|line| normalize_prompt_path_item(&line))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if touched_surfaces.is_empty() {
-        touched_surfaces = goal_block_lines(&lane.goal, "Owned surfaces:")
-            .into_iter()
-            .map(|line| normalize_prompt_path_item(&line))
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-    }
-    touched_surfaces.sort();
-    touched_surfaces.dedup();
-    touched_surfaces
-}
-
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+fn toml_multiline_literal(value: &str) -> String {
+    format!("'''\n{}\n'''", value.trim_end())
 }
 
 fn template_supports_direct_integration(template: WorkflowTemplate) -> bool {
@@ -950,14 +914,14 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        "\n[sandbox.env]\nFABRO_STRICT_PROVIDER = \"1\"\n".to_string()
+        "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\n".to_string()
     } else {
         String::new()
     };
     let mut config = format!(
-        "version = 1\ngraph = \"{}\"\ngoal = \"\"\"\n{}\n\"\"\"\ndirectory = \"../../..\"\n\n{}[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"{}\"\n{}",
+        "version = 1\ngraph = \"{}\"\ngoal = {}\ndirectory = \"../../..\"\n\n{}[sandbox]\nprovider = \"local\"\n\n[sandbox.local]\nworktree_mode = \"{}\"\n{}",
         graph_rel,
-        lane.goal.trim_end(),
+        toml_multiline_literal(&lane.goal),
         llm_config,
         worktree_mode,
         sandbox_env,
@@ -1098,7 +1062,7 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Prompt construction takes each evidence slice separately for clarity.
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_plan_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1217,7 +1181,7 @@ fn append_prompt_section(output: &mut String, title: &str, lines: &[String], cod
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Prompt construction takes each evidence slice separately for clarity.
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_review_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1305,7 +1269,7 @@ fn render_implementation_review_prompt(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
     output.push_str(
-        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about touched-surface code changes, placeholder debt, and manual follow-up\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
+        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
     );
     output.push_str(
         "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
@@ -1317,8 +1281,8 @@ Only set `merge_ready: yes` when:\n\
 - `quality.md` says `quality_ready: yes`\n\
 - automated proof is sufficient for this slice\n\
 - any required manual proof has actually been performed\n\
-- no unresolved failures undermine confidence\n\
-- the touched code under the owned surfaces matches the claimed slice, or the review confirms the slice was already truthfully satisfied before implementation began.\n",
+- no unresolved warnings or stale failures undermine confidence\n\
+- the implementation and verification artifacts match the real code.\n",
     );
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
@@ -1326,7 +1290,7 @@ Only set `merge_ready: yes` when:\n\
     output
 }
 
-#[allow(clippy::too_many_arguments)] // Prompt construction takes each evidence slice separately for clarity.
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_challenge_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1397,7 +1361,7 @@ fn render_implementation_challenge_prompt(
     output
 }
 
-#[allow(clippy::too_many_arguments)] // Prompt construction takes each evidence slice separately for clarity.
+#[allow(clippy::too_many_arguments)]
 fn render_implementation_fixup_prompt(
     lane: &BlueprintLane,
     context: &str,
@@ -1584,14 +1548,6 @@ fn render_general_review_prompt(lane: &BlueprintLane, context: &str) -> String {
         "# {} — Review\n\nReview the lane outcome for `{}`.\n\nFocus on:\n- correctness\n- milestone fit\n- remaining blockers\n",
         lane.title, lane.id
     );
-    let touch_first = prompt_context_block(context, "Touch first:");
-    if !touch_first.is_empty() {
-        append_prompt_section(&mut output, "Touched surfaces", &touch_first, true);
-    }
-    output.push_str(
-        "\nIf a small direct source fix is needed to make the review judgment truthful and unblock the lane, you may make it, but stay inside the touched surfaces.\n",
-    );
-    output.push_str(&format!("\n\nLane context:\n{}\n", context));
     let security_items = general_security_review_items(lane, context);
     append_prompt_section(
         &mut output,
@@ -3135,7 +3091,7 @@ fn implementation_goal(
     )
 }
 
-#[allow(clippy::too_many_arguments)] // Context mirrors the full implementation artifact set.
+#[allow(clippy::too_many_arguments)]
 fn implementation_prompt_context(
     spec_path: &Path,
     review_path: &Path,
@@ -5111,7 +5067,7 @@ The validator binary should emit structured log lines.
     }
 
     #[test]
-    fn implementation_quality_command_checks_real_touched_surface_changes() {
+    fn implementation_quality_command_does_not_treat_future_slice_wording_as_artifact_mismatch() {
         let unit = BlueprintUnit {
             id: "home-miner-service".to_string(),
             title: "Home Miner Service".to_string(),
@@ -5156,9 +5112,7 @@ The validator binary should emit structured log lines.
             orchestration_state_path: None,
             checks: Vec::new(),
             run_dir: None,
-            prompt_context: Some(
-                "Touch first:\n- `crates/home-miner-service/src/lib.rs`\n".to_string(),
-            ),
+            prompt_context: None,
             verify_command: None,
             health_command: None,
         };
@@ -5177,9 +5131,7 @@ The validator binary should emit structured log lines.
 
         let command = implementation_quality_command(&blueprint, "home-miner-service", &lane);
 
-        assert!(command.contains("git diff --name-only \"$QUALITY_BASE_REF\"..HEAD --"));
-        assert!(command.contains("code_change_present"));
-        assert!(!command.contains("artifact_mismatch_risk"));
+        assert!(!command.contains("future slice"));
     }
 
     #[test]
@@ -5517,9 +5469,12 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Quality Gate\""));
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
-        assert!(graph.contains("#fixup       { backend: cli; model: gpt-5.4; provider: openai; }"));
-        assert!(graph.contains("#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"));
-        assert!(graph.contains("#review      { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains(
+            "#challenge   { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+        ));
+        assert!(graph.contains(
+            "#review      { backend: cli; model: claude-opus-4-6; provider: anthropic; }"
+        ));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
         assert!(graph.contains("quality -> challenge [condition=\"outcome=success\"]"));
@@ -5529,6 +5484,85 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("review -> fixup"));
         assert!(graph.contains("audit -> fixup"));
         assert!(!graph.contains("label=\"Settle\""));
+    }
+
+    #[test]
+    fn bootstrap_workflow_retries_verify_via_polish() {
+        let lane = BlueprintLane {
+            id: "private-control-plane".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Private Control Plane".to_string(),
+            family: "bootstrap".to_string(),
+            workflow_family: Some("bootstrap".to_string()),
+            slug: Some("private-control-plane".to_string()),
+            template: WorkflowTemplate::Bootstrap,
+            goal: "Bootstrap the private control plane.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "test -f spec.md && test -f review.md",
+            "true",
+            "true",
+            "true",
+        );
+
+        assert!(graph.contains("retry_target=\"polish\""));
+        assert!(graph.contains("verify -> exit [condition=\"outcome=success\"]"));
+        assert!(graph.contains("verify -> polish"));
+    }
+
+    #[test]
+    fn service_bootstrap_workflow_retries_verify_outputs_via_polish() {
+        let lane = BlueprintLane {
+            id: "home-miner-service".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "Home Miner Service".to_string(),
+            family: "service_bootstrap".to_string(),
+            workflow_family: Some("service_bootstrap".to_string()),
+            slug: Some("home-miner-service".to_string()),
+            template: WorkflowTemplate::ServiceBootstrap,
+            goal: "Bootstrap the home miner service.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "test -f inventory.md && test -f review.md",
+            "true",
+            "true",
+            "true",
+        );
+
+        assert!(graph.contains("verify_outputs [label=\"Verify Outputs\""));
+        assert!(graph.contains("retry_target=\"polish\""));
+        assert!(graph.contains("verify_outputs -> exit [condition=\"outcome=success\"]"));
+        assert!(graph.contains("verify_outputs -> polish"));
     }
 
     #[test]
@@ -5576,174 +5610,14 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
-        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));
         assert!(run_config.contains("artifact_path = \"../../../outputs/play/tui/integration.md\""));
-    }
-
-    #[test]
-    fn implementation_quality_command_uses_owned_surfaces_from_goal() {
-        let blueprint = ProgramBlueprint {
-            version: 1,
-            program: BlueprintProgram {
-                id: "rxmragent".to_string(),
-                max_parallel: 2,
-                state_path: None,
-                run_dir: None,
-            },
-            inputs: BlueprintInputs::default(),
-            package: BlueprintPackage::default(),
-            units: vec![BlueprintUnit {
-                id: "chain-operations-deploy-port-rename".to_string(),
-                title: "Deploy Port Rename".to_string(),
-                output_root: PathBuf::from("outputs/chain-operations-deploy-port-rename"),
-                artifacts: vec![
-                    BlueprintArtifact {
-                        id: "implementation".to_string(),
-                        path: PathBuf::from(
-                            "outputs/chain-operations-deploy-port-rename/implementation.md",
-                        ),
-                    },
-                    BlueprintArtifact {
-                        id: "verification".to_string(),
-                        path: PathBuf::from(
-                            "outputs/chain-operations-deploy-port-rename/verification.md",
-                        ),
-                    },
-                    BlueprintArtifact {
-                        id: "quality".to_string(),
-                        path: PathBuf::from(
-                            "outputs/chain-operations-deploy-port-rename/quality.md",
-                        ),
-                    },
-                ],
-                milestones: Vec::new(),
-                lanes: vec![BlueprintLane {
-                    id: "chain-operations-deploy-port-rename".to_string(),
-                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
-                    title: "Deploy Port Rename".to_string(),
-                    family: "implementation".to_string(),
-                    workflow_family: Some("implementation".to_string()),
-                    slug: Some("chain-operations-deploy-port-rename".to_string()),
-                    template: WorkflowTemplate::Implementation,
-                    goal:
-                        "Deploy rXMR port rename\n\nOwned surfaces:\n- `scripts/deploy-rxmr.sh`\n"
-                            .to_string(),
-                    managed_milestone: "merge_ready".to_string(),
-                    dependencies: Vec::new(),
-                    produces: vec![
-                        "implementation".to_string(),
-                        "verification".to_string(),
-                        "quality".to_string(),
-                    ],
-                    proof_profile: None,
-                    proof_state_path: None,
-                    program_manifest: None,
-                    service_state_path: None,
-                    orchestration_state_path: None,
-                    checks: Vec::new(),
-                    run_dir: None,
-                    prompt_context: None,
-                    verify_command: None,
-                    health_command: None,
-                }],
-            }],
-        };
-
-        let lane = &blueprint.units[0].lanes[0];
-        let command =
-            implementation_quality_command(&blueprint, "chain-operations-deploy-port-rename", lane);
-
-        assert!(command.contains("scan_surface 'scripts/deploy-rxmr.sh'"));
-        assert!(!command.contains("scan_surface ."));
-        assert!(command.contains("## Touched Surfaces\n- scripts/deploy-rxmr.sh"));
-        assert!(command.contains("QUALITY_BASE_REF"));
-    }
-
-    #[test]
-    fn implementation_quality_command_counts_markdown_surfaces_as_changes() {
-        let blueprint = ProgramBlueprint {
-            version: 1,
-            program: BlueprintProgram {
-                id: "rxmragent".to_string(),
-                max_parallel: 2,
-                state_path: None,
-                run_dir: None,
-            },
-            inputs: BlueprintInputs::default(),
-            package: BlueprintPackage::default(),
-            units: vec![BlueprintUnit {
-                id: "monero-infrastructure-wallet-rpc-ref".to_string(),
-                title: "Wallet RPC Reference".to_string(),
-                output_root: PathBuf::from("outputs/monero-infrastructure-wallet-rpc-ref"),
-                artifacts: vec![
-                    BlueprintArtifact {
-                        id: "implementation".to_string(),
-                        path: PathBuf::from(
-                            "outputs/monero-infrastructure-wallet-rpc-ref/implementation.md",
-                        ),
-                    },
-                    BlueprintArtifact {
-                        id: "verification".to_string(),
-                        path: PathBuf::from(
-                            "outputs/monero-infrastructure-wallet-rpc-ref/verification.md",
-                        ),
-                    },
-                    BlueprintArtifact {
-                        id: "quality".to_string(),
-                        path: PathBuf::from(
-                            "outputs/monero-infrastructure-wallet-rpc-ref/quality.md",
-                        ),
-                    },
-                ],
-                milestones: Vec::new(),
-                lanes: vec![BlueprintLane {
-                    id: "monero-infrastructure-wallet-rpc-ref".to_string(),
-                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
-                    title: "Wallet RPC Reference".to_string(),
-                    family: "implementation".to_string(),
-                    workflow_family: Some("implementation".to_string()),
-                    slug: Some("monero-infrastructure-wallet-rpc-ref".to_string()),
-                    template: WorkflowTemplate::Implementation,
-                    goal: "Wallet RPC reference\n\nOwned surfaces:\n- `CHAIN.md`\n".to_string(),
-                    managed_milestone: "merge_ready".to_string(),
-                    dependencies: Vec::new(),
-                    produces: vec![
-                        "implementation".to_string(),
-                        "verification".to_string(),
-                        "quality".to_string(),
-                    ],
-                    proof_profile: None,
-                    proof_state_path: None,
-                    program_manifest: None,
-                    service_state_path: None,
-                    orchestration_state_path: None,
-                    checks: Vec::new(),
-                    run_dir: None,
-                    prompt_context: None,
-                    verify_command: None,
-                    health_command: None,
-                }],
-            }],
-        };
-
-        let lane = &blueprint.units[0].lanes[0];
-        let command = implementation_quality_command(
-            &blueprint,
-            "monero-infrastructure-wallet-rpc-ref",
-            lane,
-        );
-
-        assert!(command.contains("scan_surface 'CHAIN.md'"));
-        assert!(command.contains("-g '*.md'"));
-        assert!(command.contains("\\.(rs|py|js|ts|tsx|toml|yaml|yml|json|sh|fabro|md)$"));
-        assert!(!command.contains("code_change_present: yes ] ||"));
     }
 
     #[test]
@@ -5782,10 +5656,9 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
-        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
         assert!(run_config.contains("[sandbox.env]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(!run_config.contains("OPENAI_API_KEY = \"${env.OPENAI_API_KEY}\""));
         assert!(run_config.contains("worktree_mode = \"clean\""));
         assert!(run_config.contains("[integration]"));
@@ -5830,9 +5703,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("provider = \"minimax\""));
         assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
         assert!(run_config.contains("[llm.fallbacks]"));
-        assert!(run_config.contains("minimax = [\"openai\", \"kimi\", \"anthropic\"]"));
-        assert!(run_config.contains("openai = [\"anthropic\", \"kimi\"]"));
-        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+        assert!(run_config.contains("anthropic = [\"openai\", \"gemini\", \"kimi\", \"minimax\"]"));
+        assert!(run_config.contains("MINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\""));
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));

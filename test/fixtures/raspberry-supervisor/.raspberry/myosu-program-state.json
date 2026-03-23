@@ -1,22 +1,22 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "myosu-bootstrap",
-  "updated_at": "2026-03-23T00:11:11.687762521Z",
+  "updated_at": "2026-03-22T18:32:05.519972914Z",
   "lanes": {
     "chain:runtime": {
       "lane_key": "chain:runtime",
       "status": "complete",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/chain-runtime.toml"
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/chain-runtime.toml"
     },
     "launch:devnet": {
       "lane_key": "launch:devnet",
       "status": "blocked",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/launch-devnet.toml"
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/launch-devnet.toml"
     },
     "miner:service": {
       "lane_key": "miner:service",
       "status": "failed",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/miner-service.toml",
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/miner-service.toml",
       "current_stage_label": "Service Bringup",
       "last_run_id": "01MYOSUMINERRUN0000000000000",
       "last_started_at": "2026-03-18T23:20:00Z",
@@ -38,12 +38,12 @@
     "operations:scorecard": {
       "lane_key": "operations:scorecard",
       "status": "blocked",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/operations-scorecard.toml"
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/operations-scorecard.toml"
     },
     "play:tui": {
       "lane_key": "play:tui",
       "status": "failed",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/play-tui.toml",
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/play-tui.toml",
       "last_run_id": "01MYOSUPLAYFAIL0000000000000",
       "last_started_at": "2026-03-18T23:21:00Z",
       "last_error": "terminal snapshot mismatch",
@@ -62,7 +62,7 @@
     "validator:oracle": {
       "lane_key": "validator:oracle",
       "status": "complete",
-      "run_config": "/tmp/fabro-pr1-fix/test/fixtures/raspberry-supervisor/run-configs/validator-oracle.toml"
+      "run_config": "/home/r/coding/fabro/test/fixtures/raspberry-supervisor/run-configs/validator-oracle.toml"
     }
   }
 }

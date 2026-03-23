@@ -15,10 +15,15 @@ snapshot_log=$6
 autodev_json=$7
 
 interval_secs=${INTERVAL_SECS:-300}
+stale_report_secs=${STALE_REPORT_SECS:-180}
+no_progress_secs=${NO_PROGRESS_SECS:-900}
 max_parallel=${MAX_PARALLEL:-5}
 max_cycles=${MAX_CYCLES:-40000}
 poll_interval_ms=${POLL_INTERVAL_MS:-1000}
 evolve_every_seconds=${EVOLVE_EVERY_SECS:-0}
+rebuild_cmd=${REBUILD_CMD:-}
+autodev_lock_file=${AUTODEV_LOCK_FILE:-}
+watchdog_state_file=${WATCHDOG_STATE_FILE:-}
 
 mkdir -p "$(dirname "$pid_file")" "$(dirname "$run_log")" "$(dirname "$snapshot_log")"
 
@@ -36,6 +41,36 @@ pid_is_alive() {
   local pid
   pid=$(current_pid)
   [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null
+}
+
+clear_stale_lock() {
+  if [ -z "${autodev_lock_file:-}" ] || [ ! -f "$autodev_lock_file" ]; then
+    return
+  fi
+  python - "$autodev_lock_file" <<'PY' || true
+import json
+import os
+import pathlib
+import signal
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    path.unlink(missing_ok=True)
+    raise SystemExit(0)
+
+pid = data.get("pid")
+if not isinstance(pid, int):
+    path.unlink(missing_ok=True)
+    raise SystemExit(0)
+
+try:
+    os.kill(pid, 0)
+except OSError:
+    path.unlink(missing_ok=True)
+PY
 }
 
 report_has_pending_work() {
@@ -61,10 +96,165 @@ raise SystemExit(0 if (ready or running or failed) else 1)
 PY
 }
 
+report_is_stale() {
+  if [ ! -f "$autodev_json" ]; then
+    return 1
+  fi
+  python - "$autodev_json" "$stale_report_secs" <<'PY'
+import datetime as dt
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+threshold = int(sys.argv[2])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+current = data.get("current") or {}
+updated_at = current.get("updated_at") or data.get("updated_at")
+if not updated_at:
+    raise SystemExit(1)
+
+try:
+    ts = dt.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+except ValueError:
+    raise SystemExit(1)
+
+age = (dt.datetime.now(dt.timezone.utc) - ts).total_seconds()
+raise SystemExit(0 if age >= threshold else 1)
+PY
+}
+
+read_current_signature() {
+  if [ ! -f "$autodev_json" ]; then
+    return 1
+  fi
+  python - "$autodev_json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+current = data.get("current") or {}
+parts = [
+    str(current.get("ready", 0) or 0),
+    str(current.get("running", 0) or 0),
+    str(current.get("failed", 0) or 0),
+    str(current.get("complete", 0) or 0),
+    ",".join(sorted(current.get("ready_lanes") or [])),
+    ",".join(sorted(current.get("running_lanes") or [])),
+    ",".join(sorted(current.get("failed_lanes") or [])),
+]
+print("|".join(parts))
+PY
+}
+
+state_signature() {
+  local signature
+  signature=$(read_current_signature 2>/dev/null || true)
+  [ -n "${signature:-}" ] && printf '%s\n' "$signature"
+}
+
+update_watchdog_state() {
+  if [ -z "${watchdog_state_file:-}" ]; then
+    return
+  fi
+  local signature ts
+  signature=$(state_signature || true)
+  [ -z "${signature:-}" ] && return
+  ts=$(date +%s)
+  python - "$watchdog_state_file" "$signature" "$ts" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+signature = sys.argv[2]
+ts = int(sys.argv[3])
+
+previous = {}
+if path.exists():
+    try:
+        previous = json.loads(path.read_text())
+    except Exception:
+        previous = {}
+
+current = previous if previous.get("signature") == signature else {"signature": signature, "since": ts}
+current["updated_at"] = ts
+path.write_text(json.dumps(current))
+PY
+}
+
+report_has_no_progress() {
+  if [ -z "${watchdog_state_file:-}" ] || [ ! -f "$watchdog_state_file" ]; then
+    return 1
+  fi
+  python - "$watchdog_state_file" "$no_progress_secs" <<'PY'
+import json
+import pathlib
+import time
+import sys
+
+path = pathlib.Path(sys.argv[1])
+threshold = int(sys.argv[2])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+since = data.get("since")
+if not isinstance(since, int):
+    raise SystemExit(1)
+
+age = int(time.time()) - since
+raise SystemExit(0 if age >= threshold else 1)
+PY
+}
+
+run_rebuild() {
+  if [ -z "${rebuild_cmd:-}" ]; then
+    return 0
+  fi
+  local ts
+  ts=$(timestamp)
+  echo "[$ts] rebuilding binaries: $rebuild_cmd" >>"$run_log"
+  bash -lc "$rebuild_cmd" >>"$run_log" 2>&1
+}
+
+stop_autodev() {
+  local pid
+  pid=$(current_pid)
+  if [ -n "${pid:-}" ]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+  clear_stale_lock
+}
+
 start_autodev() {
   local ts
   ts=$(timestamp)
   echo "[$ts] starting autodev for $manifest_path" >>"$run_log"
+  clear_stale_lock
+  if ! run_rebuild; then
+    echo "[$(timestamp)] rebuild failed; skipping autodev restart" >>"$run_log"
+    return 1
+  fi
   setsid "$raspberry_bin" autodev \
     --manifest "$manifest_path" \
     --fabro-bin "$fabro_bin" \
@@ -175,12 +365,25 @@ write_snapshot() {
 }
 
 while true; do
-  if ! pid_is_alive; then
+  if pid_is_alive; then
+    if report_has_pending_work && report_is_stale; then
+      echo "[$(timestamp)] report stale; restarting autodev" >>"$run_log"
+      stop_autodev
+      start_autodev || true
+      sleep 2
+    elif report_has_pending_work && report_has_no_progress; then
+      echo "[$(timestamp)] no progress observed for ${no_progress_secs}s; restarting autodev" >>"$run_log"
+      stop_autodev
+      start_autodev || true
+      sleep 2
+    fi
+  else
     if report_has_pending_work; then
-      start_autodev
+      start_autodev || true
       sleep 2
     fi
   fi
   write_snapshot
+  update_watchdog_state
   sleep "$interval_secs"
 done

@@ -33,14 +33,14 @@ key = "~/.fabro/tls/client.key"
 ca = "~/.fabro/tls/ca.crt"
 
 [exec]
-provider = "minimax"
-model = "MiniMax-M2.7-highspeed"
+provider = "anthropic"
+model = "MiniMax-M2.7"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
-provider = "minimax"
-model = "MiniMax-M2.7-highspeed"
+provider = "anthropic"
+model = "MiniMax-M2.7"
 
 [log]
 level = "info"
@@ -99,7 +99,7 @@ Defaults for `fabro exec` sessions.
 
 | Key | Description | Values | Default |
 |---|---|---|---|
-| `provider` | LLM provider | `"minimax"`, `"anthropic"`, `"openai"`, `"gemini"`, etc. | `"minimax"` |
+| `provider` | LLM provider | `"anthropic"`, `"openai"`, `"gemini"`, etc. | `"anthropic"` |
 | `model` | Model name | Any model ID from `fabro model list` | Per provider |
 | `permissions` | Tool permission level | `"read-only"`, `"read-write"`, `"full"` | `"read-write"` |
 | `output_format` | Output format | `"text"`, `"json"` | `"text"` |

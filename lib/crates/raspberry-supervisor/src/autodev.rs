@@ -759,8 +759,9 @@ fn should_trigger_evolve(
     if doctrine_changed && (locally_settled || spare_capacity_trigger) {
         return true;
     }
-    let recovery_trigger =
-        recovery_needs_evolve && frontier_progressed && (locally_settled || no_active_work);
+    let recovery_trigger = recovery_needs_evolve
+        && frontier_progressed
+        && (locally_settled || no_active_work || spare_capacity);
     if recovery_trigger {
         return true;
     }
@@ -1352,7 +1353,12 @@ fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<
     let mut lanes = program
         .lanes
         .iter()
-        .filter(|lane| lane.status == LaneExecutionStatus::Failed)
+        .filter(|lane| {
+            matches!(
+                lane.status,
+                LaneExecutionStatus::Blocked | LaneExecutionStatus::Failed
+            )
+        })
         .filter_map(|lane| {
             let kind = failure_kind_for_lane(lane)?;
             (default_recovery_action(kind) == FailureRecoveryAction::RegenerateLane)
@@ -1694,6 +1700,49 @@ mod tests {
         let lanes = replayable_failed_lanes(&manifest, &program);
 
         assert_eq!(lanes, vec!["impl:lane".to_string()]);
+    }
+
+    #[test]
+    fn replayable_failed_lanes_include_proof_failures() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane("proof:lane", "Script failed with exit code: 101");
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(1));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![lane],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(lanes, vec!["proof:lane".to_string()]);
+    }
+
+    #[test]
+    fn regenerable_failed_lanes_include_blocked_supervisor_only_lanes() {
+        let mut lane = failed_lane(
+            "blocked:lane",
+            "repo-level orchestration lanes are executed directly by raspberry supervisor",
+        );
+        lane.status = LaneExecutionStatus::Blocked;
+        lane.failure_kind = Some(FailureKind::SupervisorOnlyLane);
+        lane.recovery_action = Some(FailureRecoveryAction::RegenerateLane);
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![lane],
+        };
+
+        let lanes = regenerable_failed_lanes(&program);
+
+        assert_eq!(lanes, vec!["blocked:lane".to_string()]);
     }
 
     #[test]

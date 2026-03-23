@@ -19,7 +19,7 @@ use crate::resource_lease;
 
 const PROGRAM_STATE_SCHEMA_VERSION: &str = "raspberry.program.v2";
 const STALE_RUNNING_GRACE_SECS: i64 = 30;
-const ACTIVE_STALL_TIMEOUT_SECS: i64 = 900;
+const ACTIVE_STALL_TIMEOUT_SECS: i64 = 1800;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramRuntimeState {
@@ -41,21 +41,7 @@ pub struct LaneRuntimeRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_fabro_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_stage_label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_cli_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_started_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_updated_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_in_current_stage_secs: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_stage_idle_secs: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,12 +77,7 @@ pub struct LiveLaneProgress {
     pub fabro_run_id: Option<String>,
     pub workflow_status: Option<RunStatus>,
     pub worker_alive: Option<bool>,
-    pub current_stage_id: Option<String>,
     pub current_stage_label: Option<String>,
-    pub current_stage_provider: Option<String>,
-    pub current_stage_cli_name: Option<String>,
-    pub current_stage_started_at: Option<DateTime<Utc>>,
-    pub current_stage_updated_at: Option<DateTime<Utc>>,
     pub last_completed_stage_label: Option<String>,
     pub last_stage_duration_ms: Option<u64>,
     pub last_usage_summary: Option<String>,
@@ -192,14 +173,7 @@ pub fn ensure_lane_record<'a>(
             run_config: Some(normalized_run_config.clone()),
             current_run_id: None,
             current_fabro_run_id: None,
-            current_stage_id: None,
             current_stage_label: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -232,14 +206,7 @@ pub fn mark_lane_submitted(
     record.status = LaneExecutionStatus::Running;
     record.current_run_id = Some(fabro_run_id.to_string());
     record.current_fabro_run_id = Some(fabro_run_id.to_string());
-    record.current_stage_id = None;
     record.current_stage_label = None;
-    record.current_stage_provider = None;
-    record.current_stage_cli_name = None;
-    record.current_stage_started_at = None;
-    record.current_stage_updated_at = None;
-    record.time_in_current_stage_secs = None;
-    record.current_stage_idle_secs = None;
     record.last_run_id = Some(fabro_run_id.to_string());
     record.last_started_at = Some(now);
     record.last_finished_at = None;
@@ -263,14 +230,7 @@ pub fn mark_lane_started(state: &mut ProgramRuntimeState, lane_key: &str, run_co
     record.status = LaneExecutionStatus::Running;
     record.current_run_id = None;
     record.current_fabro_run_id = None;
-    record.current_stage_id = None;
     record.current_stage_label = None;
-    record.current_stage_provider = None;
-    record.current_stage_cli_name = None;
-    record.current_stage_started_at = None;
-    record.current_stage_updated_at = None;
-    record.time_in_current_stage_secs = None;
-    record.current_stage_idle_secs = None;
     record.last_finished_at = None;
     record.last_exit_status = None;
     record.last_error = None;
@@ -300,14 +260,7 @@ pub fn mark_lane_dispatch_failed(
     record.status = LaneExecutionStatus::Failed;
     record.current_run_id = None;
     record.current_fabro_run_id = outcome.fabro_run_id.clone();
-    record.current_stage_id = None;
     record.current_stage_label = None;
-    record.current_stage_provider = None;
-    record.current_stage_cli_name = None;
-    record.current_stage_started_at = None;
-    record.current_stage_updated_at = None;
-    record.time_in_current_stage_secs = None;
-    record.current_stage_idle_secs = None;
     record.last_run_id = outcome.fabro_run_id.clone();
     record.last_finished_at = Some(now);
     record.last_exit_status = Some(outcome.exit_status);
@@ -341,14 +294,7 @@ pub fn mark_lane_finished(
     };
     record.current_run_id = None;
     record.current_fabro_run_id = outcome.fabro_run_id.clone();
-    record.current_stage_id = None;
     record.current_stage_label = None;
-    record.current_stage_provider = None;
-    record.current_stage_cli_name = None;
-    record.current_stage_started_at = None;
-    record.current_stage_updated_at = None;
-    record.time_in_current_stage_secs = None;
-    record.current_stage_idle_secs = None;
     if outcome.fabro_run_id.is_some() {
         record.last_run_id = outcome.fabro_run_id.clone();
     }
@@ -427,7 +373,6 @@ pub fn refresh_program_state(
             let Some(mut progress) = progress else {
                 continue;
             };
-            let now = Utc::now();
             lane_changed |= assign_opt(
                 &mut record.current_fabro_run_id,
                 progress.fabro_run_id.clone(),
@@ -435,41 +380,8 @@ pub fn refresh_program_state(
             lane_changed |= assign_opt(&mut record.current_run_id, progress.fabro_run_id.clone());
             lane_changed |= assign_opt(&mut record.last_run_id, progress.fabro_run_id.clone());
             lane_changed |= assign_opt(
-                &mut record.current_stage_id,
-                progress.current_stage_id.clone(),
-            );
-            lane_changed |= assign_opt(
                 &mut record.current_stage_label,
                 progress.current_stage_label.clone(),
-            );
-            lane_changed |= assign_opt(
-                &mut record.current_stage_provider,
-                progress.current_stage_provider.clone(),
-            );
-            lane_changed |= assign_opt(
-                &mut record.current_stage_cli_name,
-                progress.current_stage_cli_name.clone(),
-            );
-            lane_changed |= assign_opt(
-                &mut record.current_stage_started_at,
-                progress.current_stage_started_at,
-            );
-            lane_changed |= assign_opt(
-                &mut record.current_stage_updated_at,
-                progress.current_stage_updated_at,
-            );
-            lane_changed |= assign_opt(
-                &mut record.time_in_current_stage_secs,
-                progress
-                    .current_stage_started_at
-                    .map(|started_at| (now - started_at).num_seconds().max(0)),
-            );
-            lane_changed |= assign_opt(
-                &mut record.current_stage_idle_secs,
-                progress
-                    .current_stage_updated_at
-                    .or(progress.updated_at)
-                    .map(|updated_at| (now - updated_at).num_seconds().max(0)),
             );
             lane_changed |= assign_opt(
                 &mut record.last_completed_stage_label,
@@ -525,27 +437,6 @@ pub fn refresh_program_state(
                 if record.current_stage_label.take().is_some() {
                     lane_changed = true;
                 }
-                if record.current_stage_id.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_provider.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_cli_name.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_started_at.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_updated_at.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.time_in_current_stage_secs.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_idle_secs.take().is_some() {
-                    lane_changed = true;
-                }
                 if record.current_run_id.take().is_some() {
                     lane_changed = true;
                 }
@@ -584,27 +475,6 @@ pub fn refresh_program_state(
                 if record.current_stage_label.take().is_some() {
                     lane_changed = true;
                 }
-                if record.current_stage_id.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_provider.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_cli_name.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_started_at.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_updated_at.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.time_in_current_stage_secs.take().is_some() {
-                    lane_changed = true;
-                }
-                if record.current_stage_idle_secs.take().is_some() {
-                    lane_changed = true;
-                }
                 if record.current_run_id.take().is_some() {
                     lane_changed = true;
                 }
@@ -630,28 +500,6 @@ pub fn refresh_program_state(
                     if record.last_finished_at.take().is_some() {
                         lane_changed = true;
                     }
-                    if record.time_in_current_stage_secs
-                        != progress
-                            .current_stage_started_at
-                            .map(|started_at| (now - started_at).num_seconds().max(0))
-                    {
-                        record.time_in_current_stage_secs = progress
-                            .current_stage_started_at
-                            .map(|started_at| (now - started_at).num_seconds().max(0));
-                        lane_changed = true;
-                    }
-                    if record.current_stage_idle_secs
-                        != progress
-                            .current_stage_updated_at
-                            .or(progress.updated_at)
-                            .map(|updated_at| (now - updated_at).num_seconds().max(0))
-                    {
-                        record.current_stage_idle_secs = progress
-                            .current_stage_updated_at
-                            .or(progress.updated_at)
-                            .map(|updated_at| (now - updated_at).num_seconds().max(0));
-                        lane_changed = true;
-                    }
                     if record.failure_kind.take().is_some() {
                         lane_changed = true;
                     }
@@ -674,27 +522,6 @@ pub fn refresh_program_state(
                         lane_changed = true;
                     }
                     if record.current_stage_label.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_id.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_provider.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_cli_name.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_started_at.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_updated_at.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.time_in_current_stage_secs.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_idle_secs.take().is_some() {
                         lane_changed = true;
                     }
                     if record.current_run_id.take().is_some() {
@@ -729,27 +556,6 @@ pub fn refresh_program_state(
                         lane_changed = true;
                     }
                     if record.current_stage_label.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_id.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_provider.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_cli_name.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_started_at.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_updated_at.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.time_in_current_stage_secs.take().is_some() {
-                        lane_changed = true;
-                    }
-                    if record.current_stage_idle_secs.take().is_some() {
                         lane_changed = true;
                     }
                     if record.current_run_id.take().is_some() {
@@ -1013,34 +819,9 @@ fn sync_child_program_runtime_record(
             &mut record.current_fabro_run_id,
             child.current_fabro_run_id.clone(),
         );
-        changed |= assign_opt(&mut record.current_stage_id, child.current_stage_id.clone());
         changed |= assign_opt(
             &mut record.current_stage_label,
             child.current_stage_label.clone(),
-        );
-        changed |= assign_opt(
-            &mut record.current_stage_provider,
-            child.current_stage_provider.clone(),
-        );
-        changed |= assign_opt(
-            &mut record.current_stage_cli_name,
-            child.current_stage_cli_name.clone(),
-        );
-        changed |= assign_opt(
-            &mut record.current_stage_started_at,
-            child.current_stage_started_at,
-        );
-        changed |= assign_opt(
-            &mut record.current_stage_updated_at,
-            child.current_stage_updated_at,
-        );
-        changed |= assign_opt(
-            &mut record.time_in_current_stage_secs,
-            child.time_in_current_stage_secs,
-        );
-        changed |= assign_opt(
-            &mut record.current_stage_idle_secs,
-            child.current_stage_idle_secs,
         );
         changed |= assign_opt(&mut record.last_started_at, child.last_started_at);
         changed |= assign_opt(&mut record.last_run_id, child.last_run_id.clone());
@@ -1075,31 +856,10 @@ fn sync_child_program_runtime_record(
             changed = true;
         }
     } else {
-        if record.current_stage_id.take().is_some() {
-            changed = true;
-        }
         if record.current_run_id.take().is_some() {
             changed = true;
         }
         if record.current_fabro_run_id.take().is_some() {
-            changed = true;
-        }
-        if record.current_stage_provider.take().is_some() {
-            changed = true;
-        }
-        if record.current_stage_cli_name.take().is_some() {
-            changed = true;
-        }
-        if record.current_stage_started_at.take().is_some() {
-            changed = true;
-        }
-        if record.current_stage_updated_at.take().is_some() {
-            changed = true;
-        }
-        if record.time_in_current_stage_secs.take().is_some() {
-            changed = true;
-        }
-        if record.current_stage_idle_secs.take().is_some() {
             changed = true;
         }
         if next_status != LaneExecutionStatus::Running
@@ -1265,9 +1025,6 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
             .map(|state| state.status)
             .or_else(|| run_status.as_ref().map(|status| status.status)),
         worker_alive: worker_process_alive(run_root),
-        current_stage_id: run_state
-            .as_ref()
-            .and_then(|state| state.current_stage_id.clone()),
         current_stage_label: run_state
             .as_ref()
             .and_then(|state| state.current_stage_label.clone()),
@@ -1297,8 +1054,6 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let event_ts = parse_event_timestamp(&value);
-        progress.updated_at = max_datetime(progress.updated_at, event_ts);
         let event = value
             .get("event")
             .and_then(|value| value.as_str())
@@ -1307,19 +1062,11 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
         progress.latest_event = Some(event.clone());
         match event.as_str() {
             "StageStarted" => {
-                progress.current_stage_id = value
-                    .get("node_id")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
                 progress.current_stage_label = value
                     .get("node_label")
                     .or_else(|| value.get("name"))
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned);
-                progress.current_stage_started_at = event_ts;
-                progress.current_stage_updated_at = event_ts;
-                progress.current_stage_provider = None;
-                progress.current_stage_cli_name = None;
             }
             "StageCompleted" => {
                 progress.last_completed_stage_label = value
@@ -1332,68 +1079,18 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
                 progress.last_files_read = parse_string_array(&value, "files_read");
                 progress.last_files_written = parse_string_array(&value, "files_written");
                 progress.last_usage_summary = summarize_event_usage(&value);
-                progress.current_stage_id = None;
                 progress.current_stage_label = None;
-                progress.current_stage_provider = None;
-                progress.current_stage_cli_name = None;
-                progress.current_stage_started_at = None;
-                progress.current_stage_updated_at = None;
             }
             "WorkflowRunCompleted" => {
                 progress.workflow_status = Some(RunStatus::Succeeded);
                 progress.last_usage_summary = summarize_event_usage(&value);
-                progress.current_stage_id = None;
                 progress.current_stage_label = None;
-                progress.current_stage_provider = None;
-                progress.current_stage_cli_name = None;
-                progress.current_stage_started_at = None;
-                progress.current_stage_updated_at = None;
             }
             "StageFailed" => {
-                progress.current_stage_id = value
-                    .get("node_id")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_label = value
-                    .get("node_label")
-                    .or_else(|| value.get("name"))
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_updated_at = event_ts;
-                if progress.current_stage_started_at.is_none() {
-                    progress.current_stage_started_at = event_ts;
-                }
                 progress.last_failure = merge_failure_detail(
                     progress.last_failure.take(),
                     extract_failure_text(&value),
                 );
-            }
-            "StageRetrying" => {
-                progress.current_stage_id = value
-                    .get("node_id")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_label = value
-                    .get("node_label")
-                    .or_else(|| value.get("name"))
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_started_at = event_ts;
-                progress.current_stage_updated_at = event_ts;
-                progress.current_stage_provider = None;
-                progress.current_stage_cli_name = None;
-            }
-            "CliEnsureStarted" | "CliEnsureCompleted" => {
-                progress.current_stage_provider = value
-                    .get("provider")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_cli_name = value
-                    .get("cli_name")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned);
-                progress.current_stage_updated_at =
-                    max_datetime(progress.current_stage_updated_at, event_ts);
             }
             "WorkflowRunFailed" => {
                 progress.workflow_status = Some(RunStatus::Failed);
@@ -1401,22 +1098,13 @@ fn read_live_lane_progress(run_root: &Path) -> Result<Option<LiveLaneProgress>, 
                     progress.last_failure.take(),
                     extract_failure_text(&value),
                 );
-                progress.current_stage_id = None;
                 progress.current_stage_label = None;
-                progress.current_stage_provider = None;
-                progress.current_stage_cli_name = None;
-                progress.current_stage_started_at = None;
-                progress.current_stage_updated_at = None;
             }
             _ => {}
         }
     }
     if authoritative_status.is_some() {
         progress.workflow_status = authoritative_status;
-    }
-    if progress.current_stage_id.is_some() {
-        progress.current_stage_updated_at =
-            max_datetime(progress.current_stage_updated_at, cli_activity_at);
     }
 
     if progress.fabro_run_id.is_none() {
@@ -1499,13 +1187,6 @@ fn latest_cli_activity_at(run_root: &Path) -> Option<DateTime<Utc>> {
     latest
 }
 
-fn parse_event_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
-    let ts = value.get("ts")?.as_str()?;
-    DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
 fn max_datetime(
     left: Option<DateTime<Utc>>,
     right: Option<DateTime<Utc>>,
@@ -1545,10 +1226,7 @@ fn stalled_active_progress_reason(
     if !status.is_active() {
         return None;
     }
-    let activity_at = progress
-        .current_stage_updated_at
-        .or(progress.updated_at)
-        .or(last_started_at)?;
+    let activity_at = progress.updated_at.or(last_started_at)?;
     if (Utc::now() - activity_at).num_seconds() < ACTIVE_STALL_TIMEOUT_SECS {
         return None;
     }
@@ -1564,7 +1242,6 @@ fn live_lane_progress_from_inspection(inspection: &RunInspection) -> LiveLanePro
         fabro_run_id: Some(inspection.run_id.clone()),
         workflow_status: Some(inspection.status),
         worker_alive: worker_process_alive(&inspection.run_dir),
-        current_stage_id: state.and_then(|state| state.current_stage_id.clone()),
         current_stage_label: inspection
             .progress
             .current_stage_label
@@ -1596,10 +1273,6 @@ fn live_lane_progress_from_inspection(inspection: &RunInspection) -> LiveLanePro
             .latest_event
             .clone()
             .or_else(|| state.and_then(|state| state.last_event.clone())),
-        current_stage_provider: None,
-        current_stage_cli_name: None,
-        current_stage_started_at: None,
-        current_stage_updated_at: state.map(|state| state.updated_at),
         last_failure: merge_failure_detail(
             state.and_then(|state| state.last_failure.clone()),
             inspection
@@ -1799,14 +1472,7 @@ mod tests {
                 run_config: Some(PathBuf::from("runtime-page.toml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: None,
                 last_started_at: None,
                 last_finished_at: None,
@@ -1844,14 +1510,7 @@ mod tests {
                 run_config: Some(PathBuf::from("ready-program.yaml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: Some("Implement".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: None,
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,
@@ -1876,14 +1535,7 @@ mod tests {
                 run_config: Some(PathBuf::from("complete-program.yaml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: Some("Review".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: None,
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,
@@ -1964,14 +1616,7 @@ mod tests {
                 run_config: Some(PathBuf::from("complete-program.yaml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: None,
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2016,14 +1661,7 @@ mod tests {
                 run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
                 current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
-                current_stage_id: None,
                 current_stage_label: Some("Review".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,
@@ -2099,14 +1737,7 @@ mod tests {
                 run_config: Some(PathBuf::from("ready-program.yaml")),
                 current_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
                 current_fabro_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
-                current_stage_id: None,
                 current_stage_label: Some("Review".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01KMSTALEFAIL0000000000000".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2212,14 +1843,7 @@ mod tests {
                 run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
                 current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
-                current_stage_id: None,
                 current_stage_label: Some("Review".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,
@@ -2321,14 +1945,7 @@ mod tests {
                 run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
                 current_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 current_fabro_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
-                current_stage_id: None,
                 current_stage_label: Some("Review".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01CONSENSUSFAIL000000000000000".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,
@@ -2382,14 +1999,7 @@ mod tests {
                 run_config: Some(PathBuf::from("run-configs/bootstrap/foundations.toml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01FAILED".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2410,6 +2020,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![crate::evaluate::EvaluatedLane {
                 lane_key: "foundations:foundations".to_string(),
                 unit_id: "foundations".to_string(),
@@ -2430,12 +2041,6 @@ mod tests {
                 current_run_id: None,
                 current_fabro_run_id: None,
                 current_stage: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01READY".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2483,14 +2088,7 @@ mod tests {
                 run_config: Some(PathBuf::from("run-configs/interface.toml")),
                 current_run_id: None,
                 current_fabro_run_id: None,
-                current_stage_id: None,
                 current_stage_label: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01FAILED".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2511,6 +2109,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![crate::evaluate::EvaluatedLane {
                 lane_key: "interface:lane".to_string(),
                 unit_id: "interface".to_string(),
@@ -2531,12 +2130,6 @@ mod tests {
                 current_run_id: None,
                 current_fabro_run_id: None,
                 current_stage: None,
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01COMPLETE".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: Some(Utc::now()),
@@ -2584,14 +2177,7 @@ mod tests {
                 run_config: Some(PathBuf::from("removed.toml")),
                 current_run_id: Some("01KMREMOVED0000000000000000".to_string()),
                 current_fabro_run_id: Some("01KMREMOVED0000000000000000".to_string()),
-                current_stage_id: None,
                 current_stage_label: Some("Specify".to_string()),
-                current_stage_provider: None,
-                current_stage_cli_name: None,
-                current_stage_started_at: None,
-                current_stage_updated_at: None,
-                time_in_current_stage_secs: None,
-                current_stage_idle_secs: None,
                 last_run_id: Some("01KMREMOVED0000000000000000".to_string()),
                 last_started_at: Some(Utc::now()),
                 last_finished_at: None,

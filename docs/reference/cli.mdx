@@ -22,14 +22,14 @@ CLI defaults can be set in `~/.fabro/cli.toml` so you don't have to pass common 
 
 ```toml title="cli.toml"
 [exec]
-provider = "minimax"
-model = "MiniMax-M2.7-highspeed"
+provider = "anthropic"
+model = "MiniMax-M2.7"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
-provider = "minimax"
-model = "MiniMax-M2.7-highspeed"
+provider = "anthropic"
+model = "MiniMax-M2.7"
 ```
 
 CLI flags always override `cli.toml` values, which override hardcoded defaults.
@@ -144,7 +144,7 @@ fabro exec "Refactor the auth module" --permissions full --auto-approve
 | Argument / Flag | Description | Default |
 |---|---|---|
 | `<PROMPT>` | Task prompt (required) | — |
-| `--provider <PROVIDER>` | LLM provider | `minimax` by default for write-heavy sessions (see [default models](/core-concepts/models#default-models)) |
+| `--provider <PROVIDER>` | LLM provider | Auto-detected from configured API keys (see [default models](/core-concepts/models#default-models)) |
 | `--model <MODEL>` | Model name | Per provider (see below) |
 | `--permissions <LEVEL>` | Permission level: `read-only`, `read-write`, or `full` | `read-write` |
 | `--auto-approve` | Skip interactive prompts; deny tools outside permission level | — |

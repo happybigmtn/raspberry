@@ -83,131 +83,6 @@ pub struct SynthReviewArgs {
     pub program: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SynthCliBackend {
-    ClaudeOpus46,
-    CodexGpt54Xhigh,
-}
-
-impl SynthCliBackend {
-    fn display_name(self) -> &'static str {
-        match self {
-            SynthCliBackend::ClaudeOpus46 => "claude-opus-4-6",
-            SynthCliBackend::CodexGpt54Xhigh => "gpt-5.4 (xhigh via Codex)",
-        }
-    }
-
-    fn log_label(self) -> &'static str {
-        match self {
-            SynthCliBackend::ClaudeOpus46 => "claude",
-            SynthCliBackend::CodexGpt54Xhigh => "codex",
-        }
-    }
-}
-
-fn claude_cli_available() -> bool {
-    std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn codex_cli_available() -> bool {
-    std::process::Command::new("codex")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn decomposition_backend_shell_command(
-    backend: SynthCliBackend,
-    prompt_path: &std::path::Path,
-) -> String {
-    text_backend_shell_command(backend, prompt_path, DECOMPOSE_MODEL, 200)
-}
-
-fn genesis_backend_shell_command(
-    backend: SynthCliBackend,
-    prompt_path: &std::path::Path,
-) -> String {
-    match backend {
-        SynthCliBackend::ClaudeOpus46 => format!(
-            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 200",
-            prompt_path.display(),
-            DECOMPOSE_MODEL,
-        ),
-        SynthCliBackend::CodexGpt54Xhigh => text_backend_shell_command(
-            SynthCliBackend::CodexGpt54Xhigh,
-            prompt_path,
-            CODEX_FALLBACK_MODEL,
-            200,
-        ),
-    }
-}
-
-fn text_backend_shell_command(
-    backend: SynthCliBackend,
-    prompt_path: &std::path::Path,
-    claude_model: &str,
-    max_turns: u32,
-) -> String {
-    match backend {
-        SynthCliBackend::ClaudeOpus46 => format!(
-            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns {}",
-            prompt_path.display(),
-            claude_model,
-            max_turns,
-        ),
-        SynthCliBackend::CodexGpt54Xhigh => format!(
-            "cat {} | codex exec --dangerously-bypass-approvals-and-sandbox -m {} -c 'model_reasoning_effort=\"{}\"'",
-            prompt_path.display(),
-            CODEX_FALLBACK_MODEL,
-            CODEX_FALLBACK_REASONING_EFFORT,
-        ),
-    }
-}
-
-fn run_text_backend_with_fallback(
-    primary_backend: SynthCliBackend,
-    current_dir: &Path,
-    prompt_path: &Path,
-    claude_model: &str,
-    max_turns: u32,
-    label: &str,
-) -> anyhow::Result<std::process::Output> {
-    let mut backend = primary_backend;
-    let mut retried_with_codex = false;
-    loop {
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(text_backend_shell_command(
-                backend,
-                prompt_path,
-                claude_model,
-                max_turns,
-            ))
-            .current_dir(current_dir)
-            .output()?;
-
-        if output.status.success() {
-            return Ok(output);
-        }
-
-        if backend == SynthCliBackend::ClaudeOpus46 && codex_cli_available() && !retried_with_codex
-        {
-            eprintln!(
-                "  [{label}] claude-opus-4-6 did not complete successfully; retrying with {}",
-                SynthCliBackend::CodexGpt54Xhigh.display_name()
-            );
-            backend = SynthCliBackend::CodexGpt54Xhigh;
-            retried_with_codex = true;
-            continue;
-        }
-
-        return Ok(output);
-    }
-}
-
 pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
     let registry = load_plan_registry(&args.target_repo)?;
     let mappings_dir = args
@@ -233,13 +108,12 @@ pub fn review_command(args: &SynthReviewArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let primary_backend = if claude_cli_available() {
-        SynthCliBackend::ClaudeOpus46
-    } else if codex_cli_available() {
-        SynthCliBackend::CodexGpt54Xhigh
-    } else {
-        anyhow::bail!("no supported synthesis CLI found; install `claude` or `codex`");
-    };
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        anyhow::bail!("claude CLI not found; required for synth review");
+    }
 
     // Build a manifest of all mapping contracts for Opus to review
     let mut contracts = Vec::new();
@@ -295,21 +169,22 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     println!(
         "Eng-reviewing {} mapping contracts with {} ...",
         composite_plans.len(),
-        primary_backend.display_name()
+        DECOMPOSE_MODEL
     );
 
-    let output = run_text_backend_with_fallback(
-        primary_backend,
-        &args.target_repo,
-        prompt_file.path(),
-        DECOMPOSE_MODEL,
-        50,
-        "review",
-    )?;
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 50",
+            prompt_file.path().display(),
+            DECOMPOSE_MODEL,
+        ))
+        .current_dir(&args.target_repo)
+        .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("synth review failed: {}", stderr.trim());
+        anyhow::bail!("Opus review failed: {}", stderr.trim());
     }
 
     let report_path = mappings_dir.join("review-report.md");
@@ -350,15 +225,11 @@ fn run_decomposition_review(target_repo: &std::path::Path) -> anyhow::Result<()>
         return Ok(());
     }
 
-    let primary_backend = if claude_cli_available() {
-        Some(SynthCliBackend::ClaudeOpus46)
-    } else if codex_cli_available() {
-        Some(SynthCliBackend::CodexGpt54Xhigh)
-    } else {
-        None
-    };
-    if primary_backend.is_none() {
-        eprintln!("  [review] no synthesis CLI found; skipping decomposition review");
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        eprintln!("  [review] claude CLI not found; skipping decomposition review");
         return Ok(());
     }
 
@@ -440,31 +311,85 @@ Be adversarial. The goal is to catch decomposition mistakes before they become w
     std::fs::write(prompt_file.path(), &review_prompt)?;
 
     println!(
-        "Eng-reviewing {} decomposition contracts with {} ...",
-        composite_plans.len(),
-        primary_backend.expect("checked above").display_name()
+        "Eng-reviewing {} decomposition contracts ...",
+        composite_plans.len()
     );
 
-    let output = run_text_backend_with_fallback(
-        primary_backend.expect("checked above"),
-        target_repo,
-        prompt_file.path(),
-        DECOMPOSE_MODEL,
-        50,
-        "review",
-    )?;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 50",
+            prompt_file.path().display(),
+            DECOMPOSE_MODEL,
+        ))
+        .current_dir(target_repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.trim().is_empty() {
-            eprintln!("  [review] {stderr}");
-        }
+    // Stream stderr
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("  [review] {line}");
+            }
+        })
+    };
+
+    // Stream stdout JSON for live output
+    let stdout_handle = {
+        let stdout = child.stdout.take().expect("stdout piped");
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "assistant" {
+                    if let Some(content) = event
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        for block in content {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                    eprint!("{text}");
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                    let hint = block
+                                        .get("input")
+                                        .and_then(|i| {
+                                            i.get("file_path").or_else(|| i.get("command"))
+                                        })
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let short = if hint.len() > 60 { &hint[..60] } else { hint };
+                                    eprintln!("\n  [review-tool] {name}: {short}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let status = child.wait()?;
+    let _ = stderr_handle.join();
+    let _ = stdout_handle.join();
+    eprintln!();
+
+    if !status.success() {
         eprintln!("  [review] review process exited with non-zero status; continuing with current mappings");
-    } else {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.trim().is_empty() {
-            println!("{stdout}");
-        }
     }
 
     let report_path = mappings_dir.join("review-report.md");
@@ -487,15 +412,12 @@ pub struct SynthGenesisArgs {
 }
 
 pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
-    let primary_backend = if claude_cli_available() {
-        SynthCliBackend::ClaudeOpus46
-    } else if codex_cli_available() {
-        SynthCliBackend::CodexGpt54Xhigh
-    } else {
-        anyhow::bail!(
-            "no supported synthesis CLI found; install `claude` or `codex`, or run with existing generated corpus"
-        );
-    };
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        anyhow::bail!("claude CLI not found; required for synth genesis");
+    }
 
     let genesis_dir = args.target_repo.join("genesis");
     if genesis_dir.exists() {
@@ -520,11 +442,106 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
         "Running genesis analysis on {} ...",
         args.target_repo.display()
     );
-    println!(
-        "{} is exploring the codebase and drafting a 180-day turnaround plan.",
-        primary_backend.display_name()
-    );
+    println!("Opus is exploring the codebase and drafting a 180-day turnaround plan.");
     println!();
+
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format stream-json --dangerously-skip-permissions --model {} --max-turns 200",
+            prompt_file.path().display(),
+            DECOMPOSE_MODEL,
+        ))
+        .current_dir(&args.target_repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let success_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Stream stderr for CLI-level messages
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            let mut collected = Vec::new();
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                eprintln!("  [genesis] {line}");
+                collected.push(line);
+            }
+            collected
+        })
+    };
+
+    // Stream stdout JSON lines for real-time Claude output
+    let stdout_handle = {
+        let stdout = child.stdout.take().expect("stdout piped");
+        let success_seen = success_seen.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match event_type {
+                    "assistant" => {
+                        // Text content from Claude
+                        if let Some(message) = event.get("message") {
+                            if let Some(content) = message.get("content").and_then(|c| c.as_array())
+                            {
+                                for block in content {
+                                    if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|v| v.as_str())
+                                        {
+                                            eprint!("{text}");
+                                            let _ = std::io::stderr().flush();
+                                        }
+                                    }
+                                    if block.get("type").and_then(|v| v.as_str())
+                                        == Some("tool_use")
+                                    {
+                                        if let Some(name) =
+                                            block.get("name").and_then(|v| v.as_str())
+                                        {
+                                            let path_hint = block
+                                                .get("input")
+                                                .and_then(|i| {
+                                                    i.get("file_path").or_else(|| i.get("command"))
+                                                })
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let short = if path_hint.len() > 60 {
+                                                &path_hint[..60]
+                                            } else {
+                                                path_hint
+                                            };
+                                            eprintln!("\n  [tool] {name}: {short}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "result" => {
+                        // Final result
+                        if let Some(sub) = event.get("subtype").and_then(|v| v.as_str()) {
+                            eprintln!("\n  [genesis] result: {sub}");
+                            if sub == "success" {
+                                success_seen.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            success_seen.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    };
 
     let outputs_ready = |genesis_dir: &Path| -> bool {
         let plans_dir = genesis_dir.join("plans");
@@ -544,163 +561,33 @@ pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
             && genesis_dir.join("ASSESSMENT.md").is_file()
             && genesis_dir.join("GENESIS-REPORT.md").is_file()
     };
-    let mut attempt_backend = primary_backend;
-    let mut attempt_index = 0usize;
-    loop {
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(genesis_backend_shell_command(
-                attempt_backend,
-                prompt_file.path(),
-            ))
-            .current_dir(&args.target_repo)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let success_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        let stderr_handle = {
-            let stderr = child.stderr.take().expect("stderr piped");
-            let backend = attempt_backend;
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let reader = std::io::BufReader::new(stderr);
-                let mut collected = Vec::new();
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    eprintln!("  [genesis/{}] {line}", backend.log_label());
-                    collected.push(line);
-                }
-                collected
-            })
-        };
-
-        let stdout_handle = {
-            let stdout = child.stdout.take().expect("stdout piped");
-            let success_seen = success_seen.clone();
-            let backend = attempt_backend;
-            std::thread::spawn(move || {
-                use std::io::{BufRead, Write};
-                let reader = std::io::BufReader::new(stdout);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    if backend == SynthCliBackend::ClaudeOpus46 {
-                        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-                            continue;
-                        };
-                        let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        match event_type {
-                            "assistant" => {
-                                if let Some(message) = event.get("message") {
-                                    if let Some(content) =
-                                        message.get("content").and_then(|c| c.as_array())
-                                    {
-                                        for block in content {
-                                            if block.get("type").and_then(|v| v.as_str())
-                                                == Some("text")
-                                            {
-                                                if let Some(text) =
-                                                    block.get("text").and_then(|v| v.as_str())
-                                                {
-                                                    eprint!("{text}");
-                                                    let _ = std::io::stderr().flush();
-                                                }
-                                            }
-                                            if block.get("type").and_then(|v| v.as_str())
-                                                == Some("tool_use")
-                                            {
-                                                if let Some(name) =
-                                                    block.get("name").and_then(|v| v.as_str())
-                                                {
-                                                    let path_hint = block
-                                                        .get("input")
-                                                        .and_then(|i| {
-                                                            i.get("file_path")
-                                                                .or_else(|| i.get("command"))
-                                                        })
-                                                        .and_then(|v| v.as_str())
-                                                        .unwrap_or("");
-                                                    let short = if path_hint.len() > 60 {
-                                                        &path_hint[..60]
-                                                    } else {
-                                                        path_hint
-                                                    };
-                                                    eprintln!("\n  [tool] {name}: {short}");
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            "result" => {
-                                if let Some(sub) = event.get("subtype").and_then(|v| v.as_str()) {
-                                    eprintln!("\n  [genesis] result: {sub}");
-                                    if sub == "success" {
-                                        success_seen
-                                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    if !line.trim().is_empty() {
-                        eprintln!("  [genesis/{}] {line}", backend.log_label());
-                    }
-                }
-                success_seen.load(std::sync::atomic::Ordering::Relaxed)
-            })
-        };
-
-        let wait_started = std::time::Instant::now();
-        let mut outputs_seen_at = None;
-        let status = loop {
-            if let Some(exit_status) = child.try_wait()? {
-                break exit_status;
-            }
-            if outputs_ready(&genesis_dir) {
-                outputs_seen_at.get_or_insert_with(std::time::Instant::now);
-                if outputs_seen_at
-                    .as_ref()
-                    .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
-                {
-                    let _ = child.kill();
-                    break child.wait()?;
-                }
-            }
-            if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+    let wait_started = std::time::Instant::now();
+    let mut success_seen_at = None;
+    let status = loop {
+        if let Some(exit_status) = child.try_wait()? {
+            break exit_status;
+        }
+        if success_seen.load(std::sync::atomic::Ordering::Relaxed) && outputs_ready(&genesis_dir) {
+            success_seen_at.get_or_insert_with(std::time::Instant::now);
+            if success_seen_at
+                .as_ref()
+                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
+            {
                 let _ = child.kill();
-                let _ = child.wait();
-                anyhow::bail!(
-                    "Genesis timed out after 20 minutes waiting for {} to exit",
-                    attempt_backend.display_name()
-                );
+                break child.wait()?;
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        };
-        let genesis_success = stdout_handle.join().unwrap_or(false);
-        let stderr_lines = stderr_handle.join().unwrap_or_default();
-        let corpus_ready = outputs_ready(&genesis_dir);
-
-        if status.success() || genesis_success || corpus_ready {
-            break;
         }
-
-        if attempt_backend == SynthCliBackend::ClaudeOpus46
-            && codex_cli_available()
-            && attempt_index == 0
-        {
-            eprintln!(
-                "  [genesis] claude-opus-4-6 did not complete successfully; retrying with {}",
-                SynthCliBackend::CodexGpt54Xhigh.display_name()
-            );
-            attempt_backend = SynthCliBackend::CodexGpt54Xhigh;
-            attempt_index += 1;
-            continue;
+        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Genesis timed out after 20 minutes waiting for Claude to exit");
         }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    let genesis_success = stdout_handle.join().unwrap_or(false);
+    let stderr_lines = stderr_handle.join().unwrap_or_default();
 
+    if !status.success() && !genesis_success {
         let stderr = stderr_lines.join("\n");
         anyhow::bail!("Genesis failed: {}", stderr.trim());
     }
@@ -772,7 +659,7 @@ Run this as a full sprint: Think → Plan → Build → Review → Verify. Each 
 Explore the codebase thoroughly. Spawn an agent team to read in parallel:
 - Build files: Cargo.toml / package.json / pyproject.toml / go.mod
 - Source structure: src/, lib/, app/ — module boundaries, public API surface
-- Existing docs: README, GOAL.md, DESIGN.md, AGENTS.md, CLAUDE.md
+- Existing docs: README, SPEC.md, SPECS.md
 - **Existing plans**: Read EVERY file in `plans/` and `specs/` directories. These are the team's current plans — your job is to assess, challenge, and enhance them, not start from scratch. Note which plans are strong, which are weak, which are missing, and which contradict each other.
 - Git history: recent 50 commits — who's active, what's changing, what's abandoned
 - Test coverage: test directories, CI config, what's tested vs. untested
@@ -846,9 +733,9 @@ If the project has user-facing surfaces and no existing design system, write `ge
 
 Write to the `genesis/` directory:
 
-a. `genesis/SPEC.md` — What this project is, who it's for, architecture (with ASCII diagram), tech stack, key decisions already made. Write this from the repo's actual codebase reality plus the root doctrine files, especially `GOAL.md` when present.
+a. `genesis/SPEC.md` — What this project is, who it's for, architecture (with ASCII diagram), tech stack, key decisions already made. Write this based on the format of SPEC.md from the Root Directory.
 
-b. `genesis/PLANS.md` — ExecPlan conventions (Progress, Surprises & Discoveries, Decision Log, Outcomes & Retrospective), milestone structure, proof command conventions. Derive this from the existing numbered plan corpus and the repo's current execution style; do not assume a root `PLANS.md` exists.
+b. `genesis/PLANS.md` — ExecPlan conventions (Progress, Surprises & Discoveries, Decision Log, Outcomes & Retrospective), milestone structure, proof command conventions. Copy this file from the Root Directory.
 
 c. `genesis/plans/001-master-plan.md` — 180-day turnaround roadmap:
    - Phase 0 (days 1-30): Stabilization — critical bugs, missing tests, documentation
@@ -910,7 +797,7 @@ Write `genesis/GENESIS-REPORT.md` summarizing:
 - Include ASCII diagrams for architecture, data flow, and state machines.
 - Write all files using the Write tool. Do NOT output content to stdout.
 - 10-20 numbered plans in the master plan. 3-8 milestones per plan.
-- Use the ExecPlan format you define in `genesis/PLANS.md` for every plan.
+- Use the ExecPlan format from PLANS.md for every plan.
 
 Begin with Phase 1: explore the codebase and write ASSESSMENT.md."#,
         target_repo = target_repo.display(),
@@ -947,12 +834,8 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
         if !args.no_decompose {
             let decomposed = run_opus_decomposition(&args.target_repo, &planning_root)?;
             println!(
-                "{} decomposition: decomposed {} composite plan(s)",
-                decomposed
-                    .backend
-                    .map(SynthCliBackend::display_name)
-                    .unwrap_or(DECOMPOSE_MODEL),
-                decomposed.refreshed_paths.len(),
+                "Opus decomposition: decomposed {} composite plan(s)",
+                decomposed.refreshed_paths.len()
             );
 
             let _ = write_plan_mapping_snapshots(
@@ -995,13 +878,7 @@ pub fn create_command(args: &SynthCreateArgs) -> anyhow::Result<()> {
             })?;
 
             println!("Program: {}", authored.blueprint.program.id);
-            println!(
-                "Mode: create ({})",
-                decomposed
-                    .backend
-                    .map(SynthCliBackend::display_name)
-                    .unwrap_or(DECOMPOSE_MODEL)
-            );
+            println!("Mode: create (Opus decomposition)");
             println!("Blueprint: {}", blueprint_path.display());
             println!("Written files:");
             for path in report.written_files {
@@ -1155,31 +1032,31 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let prompt_file = tempfile::NamedTempFile::new()?;
     std::fs::write(prompt_file.path(), &prompt)?;
 
-    let primary_backend = if claude_cli_available() {
-        SynthCliBackend::ClaudeOpus46
-    } else if codex_cli_available() {
-        SynthCliBackend::CodexGpt54Xhigh
-    } else {
-        anyhow::bail!("no supported synthesis CLI found; install `claude` or `codex`");
-    };
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
+        anyhow::bail!("claude CLI not found; required for synth evolve steering");
+    }
 
-    let output = run_text_backend_with_fallback(
-        primary_backend,
-        &args.target_repo,
-        prompt_file.path(),
-        STEERING_MODEL,
-        80,
-        "evolve",
-    )?;
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 80",
+            prompt_file.path().display(),
+            STEERING_MODEL,
+        ))
+        .current_dir(&args.target_repo)
+        .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("synth evolve steering failed: {}", stderr.trim());
+        anyhow::bail!("Opus steering failed: {}", stderr.trim());
     }
 
     let written_files = collect_malinka_written_files(output_repo)?;
     println!("Program: {program}");
-    println!("Mode: evolve ({})", primary_backend.display_name());
+    println!("Mode: evolve (Opus steering)");
     println!("Report: {}", report_path.display());
     if args.preview_root.is_some() {
         println!("Preview root: {}", output_repo.display());
@@ -1634,7 +1511,6 @@ struct MappingValidationContract {
 struct OpusDecompositionReport {
     refreshed_paths: BTreeSet<PathBuf>,
     expected_paths: BTreeSet<PathBuf>,
-    backend: Option<SynthCliBackend>,
 }
 
 fn write_plan_mapping_snapshots(
@@ -2001,8 +1877,6 @@ fn infer_owned_surfaces(child_id: &str, plan_body: &str) -> Vec<String> {
 }
 
 const DECOMPOSE_MODEL: &str = "claude-opus-4-6";
-const CODEX_FALLBACK_MODEL: &str = "gpt-5.4";
-const CODEX_FALLBACK_REASONING_EFFORT: &str = "xhigh";
 
 fn run_opus_decomposition(
     target_repo: &std::path::Path,
@@ -2019,15 +1893,16 @@ fn run_opus_decomposition(
         return Ok(OpusDecompositionReport::default());
     }
 
-    let primary_backend = if claude_cli_available() {
-        SynthCliBackend::ClaudeOpus46
-    } else if codex_cli_available() {
-        SynthCliBackend::CodexGpt54Xhigh
-    } else {
+    let claude_check = std::process::Command::new("claude")
+        .arg("--version")
+        .output();
+    if claude_check.is_err() || !claude_check.as_ref().unwrap().status.success() {
         anyhow::bail!(
-            "no supported decomposition CLI found; install `claude` or `codex`, or use --no-decompose"
+            "claude CLI not found; required for decomposition. \
+             Use --no-decompose for heuristic-only mode, or install: \
+             npm install -g @anthropic-ai/claude-code"
         );
-    };
+    }
 
     let mappings_dir = target_repo
         .join(fabro_synthesis::blueprint::DEFAULT_PACKAGE_DIR)
@@ -2051,7 +1926,7 @@ fn run_opus_decomposition(
         .join("\n");
 
     let run_id = format!(
-        "decompose-{}",
+        "opus-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis())
@@ -2066,99 +1941,81 @@ fn run_opus_decomposition(
         .iter()
         .map(|plan| mapping_snapshot_path(plan))
         .collect::<BTreeSet<_>>();
-    let mut backend = primary_backend;
-    let mut retried_with_codex = false;
-    loop {
-        println!(
-            "Decomposing {count} composite plans with {} (parallel agent team) ...",
-            backend.display_name()
-        );
+    println!(
+        "Decomposing {count} composite plans with {} (parallel agent team) ...",
+        DECOMPOSE_MODEL
+    );
 
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(decomposition_backend_shell_command(
-                backend,
-                prompt_file.path(),
-            ))
-            .current_dir(target_repo)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .spawn()?;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat {} | CLAUDECODE= claude -p --output-format text --dangerously-skip-permissions --model {} --max-turns 200",
+            prompt_file.path().display(),
+            DECOMPOSE_MODEL,
+        ))
+        .current_dir(target_repo)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
-        let stderr_handle = {
-            let stderr = child.stderr.take().expect("stderr piped");
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let reader = std::io::BufReader::new(stderr);
-                let mut collected = Vec::new();
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    eprintln!("  [decompose/{}] {line}", backend.log_label());
-                    collected.push(line);
-                }
-                collected
-            })
-        };
-
-        let wait_started = std::time::Instant::now();
-        let mut refreshed_seen_at = None;
-        let (status, refreshed_paths) = loop {
-            let refreshed_paths =
-                refreshed_opus_paths_for_run(target_repo, &composite_plans, run_id.as_str());
-            if refreshed_paths.len() == expected_paths.len() {
-                refreshed_seen_at.get_or_insert_with(std::time::Instant::now);
-                if refreshed_seen_at
-                    .as_ref()
-                    .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
-                {
-                    let _ = child.kill();
-                    break (child.wait()?, refreshed_paths);
-                }
+    let stderr_handle = {
+        let stderr = child.stderr.take().expect("stderr piped");
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            let mut collected = Vec::new();
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                eprintln!("  [decompose] {line}");
+                collected.push(line);
             }
-            if let Some(status) = child.try_wait()? {
-                break (status, refreshed_paths);
-            }
-            if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+            collected
+        })
+    };
+
+    // Count only mappings refreshed by this invocation.
+    let wait_started = std::time::Instant::now();
+    let mut refreshed_seen_at = None;
+    let (status, refreshed_paths) = loop {
+        let refreshed_paths =
+            refreshed_opus_paths_for_run(target_repo, &composite_plans, run_id.as_str());
+        if refreshed_paths.len() == expected_paths.len() {
+            refreshed_seen_at.get_or_insert_with(std::time::Instant::now);
+            if refreshed_seen_at
+                .as_ref()
+                .is_some_and(|seen_at| seen_at.elapsed() >= std::time::Duration::from_secs(5))
+            {
                 let _ = child.kill();
-                let _ = child.wait();
-                anyhow::bail!(
-                    "{} decomposition timed out after 20 minutes",
-                    backend.display_name()
-                );
+                break (child.wait()?, refreshed_paths);
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        };
-        let stderr_lines = stderr_handle.join().unwrap_or_default();
-
-        if status.success() || !refreshed_paths.is_empty() {
-            println!(
-                "  Decomposed {}/{count} composite plans",
-                refreshed_paths.len()
-            );
-            return Ok(OpusDecompositionReport {
-                refreshed_paths,
-                expected_paths,
-                backend: Some(backend),
-            });
         }
-
-        if backend == SynthCliBackend::ClaudeOpus46 && codex_cli_available() && !retried_with_codex
-        {
-            eprintln!(
-                "  [decompose] claude-opus-4-6 did not complete successfully; retrying with {}",
-                SynthCliBackend::CodexGpt54Xhigh.display_name()
-            );
-            backend = SynthCliBackend::CodexGpt54Xhigh;
-            retried_with_codex = true;
-            continue;
+        if let Some(status) = child.try_wait()? {
+            break (status, refreshed_paths);
         }
+        if wait_started.elapsed() >= std::time::Duration::from_secs(60 * 20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Opus decomposition timed out after 20 minutes");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    let stderr_lines = stderr_handle.join().unwrap_or_default();
 
+    if !status.success() && refreshed_paths.is_empty() {
         anyhow::bail!(
-            "{} decomposition failed: {}",
-            backend.display_name(),
+            "Opus decomposition failed: {}",
             stderr_lines.join("\n").trim()
         );
     }
+
+    println!(
+        "  Decomposed {}/{count} composite plans",
+        refreshed_paths.len()
+    );
+    Ok(OpusDecompositionReport {
+        refreshed_paths,
+        expected_paths,
+    })
 }
 
 fn refreshed_opus_paths_for_run(
@@ -2322,31 +2179,6 @@ mod tests {
         assert!(prompt.contains("plan_id: exact plan_id from the manifest above"));
         assert!(prompt.contains("Use ONLY exact `plan_id` values"));
         assert!(prompt.contains("bootstrap_required: false"));
-    }
-
-    #[test]
-    fn decomposition_backend_shell_command_supports_codex_xhigh_fallback() {
-        let command = decomposition_backend_shell_command(
-            SynthCliBackend::CodexGpt54Xhigh,
-            Path::new("/tmp/prompt.md"),
-        );
-
-        assert!(command.contains("codex exec"));
-        assert!(command.contains("-m gpt-5.4"));
-        assert!(command.contains("model_reasoning_effort=\"xhigh\""));
-        assert!(command.contains("--dangerously-bypass-approvals-and-sandbox"));
-    }
-
-    #[test]
-    fn genesis_backend_shell_command_keeps_claude_stream_json_path() {
-        let command = genesis_backend_shell_command(
-            SynthCliBackend::ClaudeOpus46,
-            Path::new("/tmp/prompt.md"),
-        );
-
-        assert!(command.contains("claude -p"));
-        assert!(command.contains("--output-format stream-json"));
-        assert!(command.contains("--model claude-opus-4-6"));
     }
 
     #[test]

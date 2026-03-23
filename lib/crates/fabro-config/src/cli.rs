@@ -138,23 +138,23 @@ mod tests {
         let toml = r#"
 [exec]
 provider = "anthropic"
-model = "MiniMax-M2.7-highspeed"
+model = "MiniMax-M2.7"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
 provider = "anthropic"
-model = "MiniMax-M2.7-highspeed"
+model = "MiniMax-M2.7"
 "#;
         let config: CliConfig = toml::from_str(toml).unwrap();
         let exec = config.exec.unwrap();
         assert_eq!(exec.provider.as_deref(), Some("anthropic"));
-        assert_eq!(exec.model.as_deref(), Some("MiniMax-M2.7-highspeed"));
+        assert_eq!(exec.model.as_deref(), Some("MiniMax-M2.7"));
         assert_eq!(exec.permissions, Some(PermissionLevel::ReadWrite));
         assert_eq!(exec.output_format, Some(OutputFormat::Text));
         let llm = config.run_defaults.llm.unwrap();
         assert_eq!(llm.provider.as_deref(), Some("anthropic"));
-        assert_eq!(llm.model.as_deref(), Some("MiniMax-M2.7-highspeed"));
+        assert_eq!(llm.model.as_deref(), Some("MiniMax-M2.7"));
     }
 
     #[test]

@@ -259,6 +259,6 @@ fn reconcile_blueprint_does_not_clobber_files_when_reusing_same_repo() {
     assert!(workflow_before.contains("digraph Poker"));
     assert!(workflow_after.contains("digraph Poker"));
     assert!(workflow_after.contains("test -f ./outputs/games/poker/spec.md"));
-    assert!(run_config_after.contains("model = \"MiniMax-M2.7-highspeed\""));
+    assert!(run_config_after.contains("model = \"MiniMax-M2.7\""));
     assert!(run_config_after.contains("graph = \"../../workflows/bootstrap/poker.fabro\""));
 }

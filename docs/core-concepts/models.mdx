@@ -39,9 +39,8 @@ Each provider requires its own API key set via environment variable (e.g. `ANTHR
 ## Default models
 
 When no model is specified for live writing paths, Fabro defaults to the
-Pi/MiniMax path using `provider = "minimax"` and
-`model = "MiniMax-M2.7-highspeed"`. Review-style nodes can still pin a
-different model explicitly, such as `claude-opus-4-6`.
+Anthropic-compatible MiniMax path using `MiniMax-M2.7`. Review-style
+nodes can still pin a different model explicitly, such as `gpt-5.4`.
 
 If a different provider is selected explicitly, Fabro uses that provider's
 default model unless the run config or workflow stylesheet pins a model.

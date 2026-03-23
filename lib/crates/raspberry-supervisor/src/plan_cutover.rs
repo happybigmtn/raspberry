@@ -38,8 +38,7 @@ impl CutoverPhase {
         }
     }
 
-    #[allow(clippy::should_implement_trait)] // Returns Option for lightweight config parsing without FromStr boilerplate.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim() {
             "shadow" => Some(Self::Shadow),
             "parity_review" => Some(Self::ParityReview),
@@ -264,12 +263,6 @@ mod tests {
             current_run_id: None,
             current_fabro_run_id: None,
             current_stage: None,
-            current_stage_provider: None,
-            current_stage_cli_name: None,
-            current_stage_started_at: None,
-            current_stage_updated_at: None,
-            time_in_current_stage_secs: None,
-            current_stage_idle_secs: None,
             last_run_id: None,
             last_started_at: None,
             last_finished_at: None,
@@ -332,6 +325,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![test_lane("craps", "craps", LaneExecutionStatus::Ready)],
         };
         let registry = PlanRegistry {
@@ -363,6 +357,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![
                 test_lane("craps", "craps", LaneExecutionStatus::Ready),
                 test_lane("poker", "poker", LaneExecutionStatus::Complete),
@@ -393,6 +388,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![test_lane("craps", "craps", LaneExecutionStatus::Failed)],
         };
         let registry = PlanRegistry {
