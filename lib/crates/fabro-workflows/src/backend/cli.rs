@@ -1001,6 +1001,7 @@ fn cli_failover_eligible(provider: Provider, stdout: &str, stderr: &str) -> bool
         || combined.contains("rate_limit")
 }
 
+#[allow(clippy::too_many_arguments)] // This threads one CLI attempt through existing backend state without heap-allocating a transient config object on every retry path.
 async fn run_cli_attempt(
     sandbox: &Arc<dyn Sandbox>,
     emitter: &Arc<EventEmitter>,

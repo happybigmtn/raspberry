@@ -515,82 +515,83 @@ impl CodergenBackend for AgentApiBackend {
         // On failover-eligible error, try fallback providers.
         let result = match result {
             Ok(()) => Ok(()),
-            Err(fabro_agent::AgentError::Llm(ref sdk_err)) if sdk_err.failover_eligible() => 
-            {
+            Err(fabro_agent::AgentError::Llm(ref sdk_err)) if sdk_err.failover_eligible() => {
                 let fallback_chain =
                     self.resolved_fallback_chain(effective_provider, &effective_model);
                 if fallback_chain.is_empty() {
                     Err(FabroError::Llm(sdk_err.clone()))
                 } else {
-                let error_msg = sdk_err.to_string();
-                let from_provider = effective_provider.as_str().to_string();
-                let from_model = effective_model.clone();
+                    let error_msg = sdk_err.to_string();
+                    let from_provider = effective_provider.as_str().to_string();
+                    let from_model = effective_model.clone();
 
-                let mut last_err = FabroError::Llm(sdk_err.clone());
-                let mut succeeded = false;
+                    let mut last_err = FabroError::Llm(sdk_err.clone());
+                    let mut succeeded = false;
 
-                for target in &fallback_chain {
-                    emitter.emit(&WorkflowRunEvent::Failover {
-                        stage: node.id.clone(),
-                        from_provider: from_provider.clone(),
-                        from_model: from_model.clone(),
-                        to_provider: target.provider.clone(),
-                        to_model: target.model.clone(),
-                        error: error_msg.clone(),
-                    });
+                    for target in &fallback_chain {
+                        emitter.emit(&WorkflowRunEvent::Failover {
+                            stage: node.id.clone(),
+                            from_provider: from_provider.clone(),
+                            from_model: from_model.clone(),
+                            to_provider: target.provider.clone(),
+                            to_model: target.model.clone(),
+                            error: error_msg.clone(),
+                        });
 
-                    let target_provider: Provider = match target.provider.parse() {
-                        Ok(p) => p,
-                        Err(_) => continue,
-                    };
+                        let target_provider: Provider = match target.provider.parse() {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
 
-                    let new_session = match Self::create_session_for(
-                        &target.model,
-                        target_provider,
-                        node,
-                        sandbox,
-                        &self.env,
-                        tool_hooks.clone(),
-                        self.mcp_servers.clone(),
-                    )
-                    .await
-                    {
-                        Ok(s) => s,
-                        Err(e) => {
-                            last_err = e;
-                            continue;
-                        }
-                    };
-                    session = new_session;
+                        let new_session = match Self::create_session_for(
+                            &target.model,
+                            target_provider,
+                            node,
+                            sandbox,
+                            &self.env,
+                            tool_hooks.clone(),
+                            self.mcp_servers.clone(),
+                        )
+                        .await
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                last_err = e;
+                                continue;
+                            }
+                        };
+                        session = new_session;
 
-                    // Re-subscribe to forward events + track files from the new session
-                    spawn_event_forwarder(
-                        &session,
-                        node.id.clone(),
-                        Arc::clone(emitter),
-                        Arc::clone(&file_tracking),
-                    );
+                        // Re-subscribe to forward events + track files from the new session
+                        spawn_event_forwarder(
+                            &session,
+                            node.id.clone(),
+                            Arc::clone(emitter),
+                            Arc::clone(&file_tracking),
+                        );
 
-                    session.initialize().await;
-                    match session.process_input(prompt).await {
-                        Ok(()) => {
-                            succeeded = true;
-                            break;
-                        }
-                        Err(fabro_agent::AgentError::Llm(err)) if err.failover_eligible() => {
-                            last_err = FabroError::Llm(err);
-                        }
-                        Err(fabro_agent::AgentError::Llm(err)) => return Err(FabroError::Llm(err)),
-                        Err(fabro_agent::AgentError::Aborted(_)) => {
-                            return Err(FabroError::Cancelled)
-                        }
-                        Err(other) => {
-                            return Err(FabroError::handler(format!(
-                                "Agent session failed: {other}"
-                            )));
+                        session.initialize().await;
+                        match session.process_input(prompt).await {
+                            Ok(()) => {
+                                succeeded = true;
+                                break;
+                            }
+                            Err(fabro_agent::AgentError::Llm(err)) if err.failover_eligible() => {
+                                last_err = FabroError::Llm(err);
+                            }
+                            Err(fabro_agent::AgentError::Llm(err)) => {
+                                return Err(FabroError::Llm(err))
+                            }
+                            Err(fabro_agent::AgentError::Aborted(_)) => {
+                                return Err(FabroError::Cancelled)
+                            }
+                            Err(other) => {
+                                return Err(FabroError::handler(format!(
+                                    "Agent session failed: {other}"
+                                )));
+                            }
                         }
                     }
-                }
 
                     if succeeded {
                         Ok(())

@@ -5517,15 +5517,9 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Quality Gate\""));
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
-        assert!(graph.contains(
-            "#fixup       { backend: cli; model: gpt-5.4; provider: openai; }"
-        ));
-        assert!(graph.contains(
-            "#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"
-        ));
-        assert!(graph.contains(
-            "#review      { backend: cli; model: gpt-5.4; provider: openai; }"
-        ));
+        assert!(graph.contains("#fixup       { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#review      { backend: cli; model: gpt-5.4; provider: openai; }"));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
         assert!(graph.contains("quality -> challenge [condition=\"outcome=success\"]"));
@@ -5638,7 +5632,9 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
                     workflow_family: Some("implementation".to_string()),
                     slug: Some("chain-operations-deploy-port-rename".to_string()),
                     template: WorkflowTemplate::Implementation,
-                    goal: "Deploy rXMR port rename\n\nOwned surfaces:\n- `scripts/deploy-rxmr.sh`\n".to_string(),
+                    goal:
+                        "Deploy rXMR port rename\n\nOwned surfaces:\n- `scripts/deploy-rxmr.sh`\n"
+                            .to_string(),
                     managed_milestone: "merge_ready".to_string(),
                     dependencies: Vec::new(),
                     produces: vec![
@@ -5661,11 +5657,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         };
 
         let lane = &blueprint.units[0].lanes[0];
-        let command = implementation_quality_command(
-            &blueprint,
-            "chain-operations-deploy-port-rename",
-            lane,
-        );
+        let command =
+            implementation_quality_command(&blueprint, "chain-operations-deploy-port-rename", lane);
 
         assert!(command.contains("scan_surface 'scripts/deploy-rxmr.sh'"));
         assert!(!command.contains("scan_surface ."));
@@ -5741,8 +5734,11 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         };
 
         let lane = &blueprint.units[0].lanes[0];
-        let command =
-            implementation_quality_command(&blueprint, "monero-infrastructure-wallet-rpc-ref", lane);
+        let command = implementation_quality_command(
+            &blueprint,
+            "monero-infrastructure-wallet-rpc-ref",
+            lane,
+        );
 
         assert!(command.contains("scan_surface 'CHAIN.md'"));
         assert!(command.contains("-g '*.md'"));
