@@ -51,6 +51,8 @@ pub struct AutodevReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutodevCurrentSnapshot {
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<usize>,
     pub ready: usize,
     pub running: usize,
     pub blocked: usize,
@@ -262,7 +264,7 @@ pub fn orchestrate_program(
     if let Some(_maintenance) = load_active_maintenance(&manifest_path, &initial_manifest)? {
         let current = evaluate_program(&manifest_path)
             .ok()
-            .map(|program| current_snapshot(&program));
+            .map(|program| current_snapshot(&program, None));
         let report = AutodevReport {
             program: initial_manifest.program.clone(),
             stop_reason: AutodevStopReason::Maintenance,
@@ -432,7 +434,7 @@ pub fn orchestrate_program(
             running_after,
             complete_after,
         });
-        report.current = Some(current_snapshot(&program_after));
+        report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
         report.updated_at = Utc::now();
         save_autodev_report(&manifest_path, &manifest, &report)?;
         maybe_refresh_paperclip_dashboard(
@@ -451,23 +453,22 @@ pub fn orchestrate_program(
             .iter()
             .any(|lane| lane.status == LaneExecutionStatus::Running);
         let spare_child_slots = max_parallel.saturating_sub(running_after);
-        if spare_child_slots > 0 {
-            if advance_child_programs(
+        if spare_child_slots > 0
+            && advance_child_programs(
                 &manifest_path,
                 &manifest,
                 settings,
                 &program_after,
                 spare_child_slots,
-            )? {
-                if has_more_cycles(max_cycles, cycle_number) {
-                    thread::sleep(poll_interval);
-                    continue;
-                }
-            }
+            )?
+            && has_more_cycles(max_cycles, cycle_number)
+        {
+            thread::sleep(poll_interval);
+            continue;
         }
         if !has_ready && !has_running {
             report.stop_reason = AutodevStopReason::Settled;
-            report.current = Some(current_snapshot(&program_after));
+            report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
             report.updated_at = Utc::now();
             save_autodev_report(&manifest_path, &manifest, &report)?;
             maybe_refresh_paperclip_dashboard(
@@ -488,7 +489,11 @@ pub fn orchestrate_program(
     report.updated_at = Utc::now();
     let final_manifest = ProgramManifest::load(&manifest_path)?;
     let final_program = evaluate_program(&manifest_path)?;
-    report.current = Some(current_snapshot(&final_program));
+    let final_max_parallel = settings
+        .max_parallel_override
+        .unwrap_or(final_manifest.max_parallel)
+        .max(1);
+    report.current = Some(current_snapshot(&final_program, Some(final_max_parallel)));
     save_autodev_report(&manifest_path, &final_manifest, &report)?;
     maybe_refresh_paperclip_dashboard(
         &manifest_path,
@@ -648,6 +653,7 @@ fn should_evolve(last_evolve_at: Option<Instant>, evolve_every: Duration) -> boo
     evolve_every.is_zero() || last_evolve_at.elapsed() >= evolve_every
 }
 
+#[allow(clippy::too_many_arguments)]
 fn should_trigger_evolve(
     last_evolve_at: Option<Instant>,
     evolve_every: Duration,
@@ -670,8 +676,9 @@ fn should_trigger_evolve(
     if doctrine_changed && (locally_settled || spare_capacity_trigger) {
         return true;
     }
-    let recovery_trigger =
-        recovery_needs_evolve && frontier_progressed && (locally_settled || no_active_work);
+    let recovery_trigger = recovery_needs_evolve
+        && frontier_progressed
+        && (locally_settled || no_active_work || spare_capacity);
     if recovery_trigger {
         return true;
     }
@@ -954,7 +961,11 @@ pub fn load_optional_autodev_report(
     })?;
     let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
     let program = evaluate_program(manifest_path)?;
-    let next_snapshot = current_snapshot(&program);
+    let preserved_max_parallel = report
+        .current
+        .as_ref()
+        .and_then(|current| current.max_parallel);
+    let next_snapshot = current_snapshot(&program, preserved_max_parallel);
     if report.current.as_ref() != Some(&next_snapshot) {
         report.current = Some(next_snapshot);
         report.updated_at = Utc::now();
@@ -977,7 +988,11 @@ pub fn sync_autodev_report_with_program(
         source,
     })?;
     let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
-    let next_snapshot = current_snapshot(program);
+    let preserved_max_parallel = report
+        .current
+        .as_ref()
+        .and_then(|current| current.max_parallel);
+    let next_snapshot = current_snapshot(program, preserved_max_parallel);
     if report.current.as_ref() == Some(&next_snapshot) {
         return Ok(());
     }
@@ -1025,7 +1040,10 @@ fn deserialize_autodev_report(
     })
 }
 
-fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurrentSnapshot {
+fn current_snapshot(
+    program: &crate::evaluate::EvaluatedProgram,
+    max_parallel: Option<usize>,
+) -> AutodevCurrentSnapshot {
     let mut ready = 0usize;
     let mut running = 0usize;
     let mut blocked = 0usize;
@@ -1056,6 +1074,7 @@ fn current_snapshot(program: &crate::evaluate::EvaluatedProgram) -> AutodevCurre
 
     AutodevCurrentSnapshot {
         updated_at: Utc::now(),
+        max_parallel,
         ready,
         running,
         blocked,
@@ -1117,6 +1136,14 @@ fn replay_target_lane(
     allow_regenerate: bool,
 ) -> Option<String> {
     let kind = failure_kind_for_lane(lane)?;
+    if is_retryable_verify_gate_miss(lane) {
+        return retry_after_cooldown(
+            lane,
+            now,
+            TRANSIENT_LAUNCH_RETRY_MIN_SECS,
+            lane.lane_key.clone(),
+        );
+    }
     match default_recovery_action(kind) {
         FailureRecoveryAction::ReplaySourceLane => {
             integration_source_lane_key(manifest, lane).or_else(|| Some(lane.lane_key.clone()))
@@ -1152,11 +1179,25 @@ fn replay_target_lane(
     }
 }
 
+fn is_retryable_verify_gate_miss(lane: &crate::evaluate::EvaluatedLane) -> bool {
+    let error = lane
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    error.contains("goal gate unsatisfied for node verify") && error.contains("no retry target")
+}
+
 fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<String> {
     let mut lanes = program
         .lanes
         .iter()
-        .filter(|lane| lane.status == LaneExecutionStatus::Failed)
+        .filter(|lane| {
+            matches!(
+                lane.status,
+                LaneExecutionStatus::Blocked | LaneExecutionStatus::Failed
+            )
+        })
         .filter_map(|lane| {
             let kind = failure_kind_for_lane(lane)?;
             (default_recovery_action(kind) == FailureRecoveryAction::RegenerateLane)
@@ -1480,6 +1521,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![
                 failed_lane(
                     "impl:lane",
@@ -1492,6 +1534,49 @@ mod tests {
         let lanes = replayable_failed_lanes(&manifest, &program);
 
         assert_eq!(lanes, vec!["impl:lane".to_string()]);
+    }
+
+    #[test]
+    fn replayable_failed_lanes_include_proof_failures() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane("proof:lane", "Script failed with exit code: 101");
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(1));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![lane],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(lanes, vec!["proof:lane".to_string()]);
+    }
+
+    #[test]
+    fn regenerable_failed_lanes_include_blocked_supervisor_only_lanes() {
+        let mut lane = failed_lane(
+            "blocked:lane",
+            "repo-level orchestration lanes are executed directly by raspberry supervisor",
+        );
+        lane.status = LaneExecutionStatus::Blocked;
+        lane.failure_kind = Some(FailureKind::SupervisorOnlyLane);
+        lane.recovery_action = Some(FailureRecoveryAction::RegenerateLane);
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![lane],
+        };
+
+        let lanes = regenerable_failed_lanes(&program);
+
+        assert_eq!(lanes, vec!["blocked:lane".to_string()]);
     }
 
     #[test]
@@ -1510,6 +1595,7 @@ mod tests {
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -1575,6 +1661,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -1747,6 +1834,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 5,
+            runtime_max_parallel: None,
             lanes: vec![
                 EvaluatedLane {
                     lane_key: "alpha:program".to_string(),
@@ -2035,6 +2123,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2061,6 +2150,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 
@@ -2088,6 +2178,7 @@ units:
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![lane],
         };
 

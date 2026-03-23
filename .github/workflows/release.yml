@@ -10,6 +10,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SEGMENT_BASE_URL: ${{ vars.SEGMENT_BASE_URL }}
+  SEGMENT_WRITE_KEY: ${{ secrets.SEGMENT_WRITE_KEY }}
 
 jobs:
   compile:
@@ -23,6 +25,8 @@ jobs:
             runner: macos-15
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

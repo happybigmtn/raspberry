@@ -1282,11 +1282,10 @@ dependencies = [
 
 [[package]]
 name = "fabro-agent"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "bollard",
  "chrono",
  "clap",
  "dirs",
@@ -1294,6 +1293,8 @@ dependencies = [
  "fabro-config",
  "fabro-llm",
  "fabro-mcp",
+ "fabro-model",
+ "fabro-sandbox",
  "fabro-util",
  "futures",
  "glob",
@@ -1305,7 +1306,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-escape",
- "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-api"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1327,15 +1327,15 @@ dependencies = [
  "dirs",
  "fabro-agent",
  "fabro-config",
- "fabro-daytona",
  "fabro-db",
- "fabro-exe",
  "fabro-github",
  "fabro-graphviz",
  "fabro-hooks",
  "fabro-interview",
  "fabro-llm",
+ "fabro-model",
  "fabro-retro",
+ "fabro-sandbox",
  "fabro-types",
  "fabro-util",
  "fabro-workflows",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-beastie"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "core-foundation 0.9.4",
  "libc",
@@ -1380,7 +1380,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-cli"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1399,9 +1399,7 @@ dependencies = [
  "fabro-api",
  "fabro-beastie",
  "fabro-config",
- "fabro-daytona",
  "fabro-devcontainer",
- "fabro-exe",
  "fabro-git-storage",
  "fabro-github",
  "fabro-graphviz",
@@ -1409,10 +1407,12 @@ dependencies = [
  "fabro-interview",
  "fabro-llm",
  "fabro-mcp",
+ "fabro-model",
  "fabro-openai-oauth",
  "fabro-retro",
- "fabro-ssh",
+ "fabro-sandbox",
  "fabro-synthesis",
+ "fabro-telemetry",
  "fabro-util",
  "fabro-validate",
  "fabro-workflows",
@@ -1424,6 +1424,7 @@ dependencies = [
  "jsonwebtoken",
  "libc",
  "open",
+ "paste",
  "predicates",
  "rand 0.8.5",
  "raspberry-supervisor",
@@ -1452,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-config"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1467,31 +1468,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "fabro-daytona"
-version = "0.174.0"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "daytona-api-client",
- "daytona-sdk",
- "fabro-agent",
- "fabro-config",
- "fabro-github",
- "git2",
- "rand 0.8.5",
- "serde",
- "shlex",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "fabro-db"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "chrono",
  "sqlx",
@@ -1502,8 +1480,9 @@ dependencies = [
 
 [[package]]
 name = "fabro-devcontainer"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
+ "fabro-util",
  "insta",
  "reqwest 0.12.28",
  "serde",
@@ -1516,28 +1495,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "fabro-exe"
-version = "0.174.0"
-dependencies = [
- "async-trait",
- "base64",
- "fabro-agent",
- "fabro-config",
- "fabro-github",
- "openssh",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "shlex",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "fabro-git-storage"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "git2",
  "tempfile",
@@ -1548,12 +1507,10 @@ dependencies = [
 
 [[package]]
 name = "fabro-github"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
- "async-trait",
  "base64",
  "chrono",
- "fabro-tracker",
  "jsonwebtoken",
  "mockito",
  "reqwest 0.12.28",
@@ -1565,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-graphviz"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "nom",
  "regex",
@@ -1575,12 +1532,14 @@ dependencies = [
 
 [[package]]
 name = "fabro-hooks"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "async-trait",
  "fabro-agent",
  "fabro-config",
  "fabro-llm",
+ "fabro-model",
+ "fabro-util",
  "mockito",
  "regex",
  "reqwest 0.12.28",
@@ -1594,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-interview"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "async-trait",
  "dialoguer",
@@ -1603,25 +1562,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "fabro-linear"
-version = "0.174.0"
-dependencies = [
- "async-trait",
- "fabro-tracker",
- "mockito",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fabro-llm"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1631,10 +1577,12 @@ dependencies = [
  "cli-table",
  "dialoguer",
  "dotenvy",
+ "fabro-model",
  "fabro-util",
  "futures",
  "http",
  "httpmock",
+ "indicatif",
  "insta",
  "rand 0.8.5",
  "reqwest 0.12.28",
@@ -1650,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-mcp"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "fabro-config",
@@ -1664,8 +1612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fabro-model"
+version = "0.176.2"
+dependencies = [
+ "insta",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fabro-openai-oauth"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "axum",
  "base64",
@@ -1683,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "fabro-retro"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1697,8 +1654,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "fabro-sandbox"
+version = "0.176.2"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bollard",
+ "chrono",
+ "daytona-api-client",
+ "daytona-sdk",
+ "fabro-config",
+ "fabro-github",
+ "futures",
+ "git2",
+ "glob",
+ "libc",
+ "openssh",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "fabro-slack"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "fabro-interview",
  "fabro-workflows",
@@ -1716,44 +1703,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "fabro-sprites"
-version = "0.174.0"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "fabro-agent",
- "rand 0.8.5",
- "serde",
- "shlex",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "fabro-ssh"
-version = "0.174.0"
-dependencies = [
- "async-trait",
- "base64",
- "fabro-agent",
- "fabro-config",
- "fabro-github",
- "openssh",
- "serde",
- "serde_json",
- "shlex",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "fabro-synthesis"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "fabro-config",
@@ -1769,15 +1720,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "fabro-telemetry"
+version = "0.176.2"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "dirs",
+ "exec",
+ "fork",
+ "git2",
+ "insta",
+ "mac_address",
+ "md5",
+ "regex",
+ "reqwest 0.12.28",
+ "sentry",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "fabro-tracker"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "async-trait",
+ "fabro-github",
+ "mockito",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "fabro-types"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "chrono",
  "prettyplease",
@@ -1792,23 +1773,14 @@ dependencies = [
 
 [[package]]
 name = "fabro-util"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
- "base64",
- "chrono",
  "console 0.15.11",
  "dirs",
- "exec",
- "fork",
- "git2",
  "insta",
- "mac_address",
- "md5",
  "regex",
- "reqwest 0.12.28",
- "sentry",
  "serde",
  "serde_json",
  "tempfile",
@@ -1817,22 +1789,21 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
 name = "fabro-validate"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "fabro-graphviz",
- "fabro-llm",
+ "fabro-model",
  "serde",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "fabro-workflows"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1843,9 +1814,7 @@ dependencies = [
  "dotenvy",
  "fabro-agent",
  "fabro-config",
- "fabro-daytona",
  "fabro-devcontainer",
- "fabro-exe",
  "fabro-git-storage",
  "fabro-github",
  "fabro-graphviz",
@@ -1853,8 +1822,9 @@ dependencies = [
  "fabro-interview",
  "fabro-llm",
  "fabro-mcp",
+ "fabro-model",
  "fabro-retro",
- "fabro-ssh",
+ "fabro-sandbox",
  "fabro-util",
  "fabro-validate",
  "futures",
@@ -2194,8 +2164,6 @@ dependencies = [
  "libc",
  "libgit2-sys",
  "log",
- "openssl-probe 0.1.6",
- "openssl-sys",
  "url",
 ]
 
@@ -2967,9 +2935,7 @@ checksum = "c9b3acc4b91781bb0b3386669d325163746af5f6e4f73e6d2d630e09a35f3487"
 dependencies = [
  "cc",
  "libc",
- "libssh2-sys",
  "libz-sys",
- "openssl-sys",
  "pkg-config",
 ]
 
@@ -2997,20 +2963,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
  "cc",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
-name = "libssh2-sys"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "220e4f05ad4a218192533b300327f5150e809b54c4ec83b5a1d91833601811b9"
-dependencies = [
- "cc",
- "libc",
- "libz-sys",
- "openssl-sys",
  "pkg-config",
  "vcpkg",
 ]
@@ -3263,7 +3215,7 @@ dependencies = [
  "libc",
  "log",
  "openssl",
- "openssl-probe 0.2.1",
+ "openssl-probe",
  "openssl-sys",
  "schannel",
  "security-framework",
@@ -3691,12 +3643,6 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[package]]
-name = "openssl-probe"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-probe"
@@ -4185,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "raspberry-cli"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4198,7 +4144,7 @@ dependencies = [
 
 [[package]]
 name = "raspberry-supervisor"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4213,7 +4159,7 @@ dependencies = [
 
 [[package]]
 name = "raspberry-tui"
-version = "0.174.0"
+version = "0.176.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4628,7 +4574,7 @@ version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
 dependencies = [
- "openssl-probe 0.2.1",
+ "openssl-probe",
  "rustls-pki-types",
  "schannel",
  "security-framework",
@@ -5616,9 +5562,9 @@ dependencies = [
 
 [[package]]
 name = "tar"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
 dependencies = [
  "filetime",
  "libc",

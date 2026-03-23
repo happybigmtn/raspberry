@@ -18,18 +18,7 @@ pub enum SandboxProvider {
     Ssh,
 }
 
-impl SandboxProvider {
-    #[must_use]
-    pub fn is_remote(&self) -> bool {
-        match self {
-            Self::Daytona => true,
-            #[cfg(feature = "exedev")]
-            Self::Exe => true,
-            Self::Ssh => true,
-            _ => false,
-        }
-    }
-}
+impl SandboxProvider {}
 
 impl fmt::Display for SandboxProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

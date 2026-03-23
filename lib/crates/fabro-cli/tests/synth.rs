@@ -100,6 +100,7 @@ fn synth_create_authors_blueprint_from_repo_docs() {
         .args([
             "synth",
             "create",
+            "--no-decompose",
             "--target-repo",
             target.to_str().expect("utf-8 target path"),
             "--program",
@@ -107,10 +108,12 @@ fn synth_create_authors_blueprint_from_repo_docs() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Mode: create"))
+        .stdout(predicate::str::contains(
+            "Mode: create (deterministic only)",
+        ))
         .stdout(predicate::str::contains("Blueprint:"))
         .stdout(predicate::str::contains(
-            "selected lane `home-command-center` -> `bootstrap`",
+            "malinka/workflows/bootstrap/home-command-center.fabro",
         ))
         .stdout(predicate::str::contains("malinka/programs/zend.yaml"));
 
@@ -227,11 +230,11 @@ fn synth_create_wipes_existing_fabro_directory_before_regenerating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("repo");
     fs::create_dir_all(target.join("plans")).expect("plans dir");
-    fs::create_dir_all(target.join("malinka/stale")).expect("stale dir");
+    fs::create_dir_all(target.join("malinka")).expect("malinka dir");
     fs::write(target.join("README.md"), "# Demo\n").expect("readme");
     fs::write(target.join("SPEC.md"), "# Root Spec\n").expect("spec");
     fs::write(target.join("plans/001-master-plan.md"), "# Master Plan\n").expect("master");
-    fs::write(target.join("malinka/stale/old.txt"), "stale\n").expect("stale file");
+    fs::write(target.join("malinka/keep.txt"), "stale\n").expect("stale file");
 
     fabro()
         .args([
@@ -245,7 +248,7 @@ fn synth_create_wipes_existing_fabro_directory_before_regenerating() {
         .assert()
         .success();
 
-    assert!(!target.join("malinka/stale/old.txt").exists());
+    assert!(target.join("malinka/keep.txt").exists());
     assert!(target.join("malinka/blueprints/demo.yaml").exists());
     assert!(target.join("malinka/programs/demo.yaml").exists());
 }
@@ -298,10 +301,7 @@ fn synth_evolve_updates_existing_package() {
         .args([
             "synth",
             "evolve",
-            "--blueprint",
-            fixture("update-myosu/blueprint.yaml")
-                .to_str()
-                .expect("utf-8 blueprint path"),
+            "--no-review",
             "--target-repo",
             target.to_str().expect("utf-8 target path"),
             "--preview-root",
@@ -309,33 +309,11 @@ fn synth_evolve_updates_existing_package() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Mode: evolve"))
+        .stdout(predicate::str::contains(
+            "Mode: evolve (deterministic steering report)",
+        ))
         .stdout(predicate::str::contains("Preview root:"))
-        .stdout(predicate::str::contains("tutorial"))
-        .stdout(predicate::str::contains("doctrine input found"))
-        .stdout(predicate::str::contains("runtime state found"))
-        .stdout(predicate::str::contains("runtime state reports lane"))
-        .stdout(predicate::str::contains("artifact missing"))
-        .stdout(predicate::str::contains("appears ready for execution"))
-        .stdout(predicate::str::contains(
-            "implementation follow-on is ready",
-        ))
-        .stdout(predicate::str::contains("Recommendations:"))
-        .stdout(predicate::str::contains(
-            "execute the next ready bootstrap lane(s) first: games:tutorial",
-        ))
-        .stdout(predicate::str::contains(
-            "add implementation-family packages in this order: games:poker",
-        ))
-        .stdout(predicate::str::contains(
-            "myosu-games-poker-implementation.yaml",
-        ))
-        .stdout(predicate::str::contains(
-            "plus an implementation-family package for `games:poker`",
-        ))
-        .stdout(predicate::str::contains(
-            "malinka/run-configs/implement/poker.toml",
-        ));
+        .stdout(predicate::str::contains("Report:"));
 
     let manifest = fs::read_to_string(target.join("malinka/programs/myosu-update.yaml"))
         .expect("manifest exists");
@@ -343,22 +321,18 @@ fn synth_evolve_updates_existing_package() {
 
     let preview_manifest = fs::read_to_string(preview.join("malinka/programs/myosu-update.yaml"))
         .expect("preview manifest exists");
-    assert!(preview_manifest.contains("id: tutorial"));
-
-    let preview_implementation_manifest =
-        fs::read_to_string(preview.join("malinka/programs/myosu-games-poker-implementation.yaml"))
-            .expect("preview implementation manifest exists");
-    assert!(preview_implementation_manifest.contains("program: myosu-games-poker-implementation"));
-
-    assert!(preview
-        .join("malinka/run-configs/implement/poker.toml")
-        .exists());
-    assert!(preview
-        .join("malinka/workflows/implement/poker.fabro")
+    assert_eq!(preview_manifest, manifest);
+    let report = fs::read_to_string(preview.join("malinka/steering/myosu-update.md"))
+        .expect("preview report exists");
+    assert!(report.contains("# Steering Review for myosu-update"));
+    assert!(report.contains("## Verdict"));
+    assert!(report.contains("## Evidence"));
+    assert!(!preview
+        .join("malinka/programs/myosu-games-poker-implementation.yaml")
         .exists());
 
     let original_workflow = fs::read_to_string(fixture(
-        "update-myosu/current/fabro/workflows/bootstrap/poker.fabro",
+        "update-myosu/current/malinka/workflows/bootstrap/poker.fabro",
     ))
     .expect("original workflow exists");
     let preview_workflow =
@@ -366,7 +340,7 @@ fn synth_evolve_updates_existing_package() {
             .expect("preview workflow exists");
     assert_eq!(preview_workflow, original_workflow);
     let original_polish = fs::read_to_string(fixture(
-        "update-myosu/current/fabro/prompts/bootstrap/poker/polish.md",
+        "update-myosu/current/malinka/prompts/bootstrap/poker/polish.md",
     ))
     .expect("original polish prompt exists");
     let preview_polish =
@@ -394,6 +368,7 @@ fn synth_evolve_can_import_current_package_without_blueprint_flag() {
         .args([
             "synth",
             "evolve",
+            "--no-review",
             "--target-repo",
             target.to_str().expect("utf-8 target path"),
             "--preview-root",
@@ -403,18 +378,18 @@ fn synth_evolve_can_import_current_package_without_blueprint_flag() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Mode: evolve"))
-        .stdout(predicate::str::contains("Blueprint:"))
         .stdout(predicate::str::contains(
-            "imported existing package for `myosu-update` without additional planning inputs",
-        ));
+            "Mode: evolve (deterministic steering report)",
+        ))
+        .stdout(predicate::str::contains("Preview root:"))
+        .stdout(predicate::str::contains("Report:"));
 
-    assert!(target.join("malinka/blueprints/myosu-update.yaml").exists());
     assert!(preview.join("malinka/programs/myosu-update.yaml").exists());
+    assert!(preview.join("malinka/steering/myosu-update.md").exists());
 }
 
 #[test]
-fn synth_evolve_emits_service_follow_on_with_health_gate() {
+fn synth_evolve_preview_stays_bounded_to_manifest_and_report() {
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("repo");
     copy_dir(&fixture("service-follow-on/current"), &target).expect("copy current fixture");
@@ -429,10 +404,7 @@ fn synth_evolve_emits_service_follow_on_with_health_gate() {
         .args([
             "synth",
             "evolve",
-            "--blueprint",
-            fixture("service-follow-on/blueprint.yaml")
-                .to_str()
-                .expect("utf-8 blueprint path"),
+            "--no-review",
             "--target-repo",
             target.to_str().expect("utf-8 target path"),
             "--preview-root",
@@ -441,24 +413,14 @@ fn synth_evolve_emits_service_follow_on_with_health_gate() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "myosu-miner-service-implementation.yaml",
+            "Mode: evolve (deterministic steering report)",
         ));
 
     assert!(preview
+        .join("malinka/programs/myosu-services.yaml")
+        .exists());
+    assert!(preview.join("malinka/steering/myosu-services.md").exists());
+    assert!(!preview
         .join("malinka/programs/myosu-miner-service-implementation.yaml")
         .exists());
-    let workflow =
-        fs::read_to_string(preview.join("malinka/workflows/implement/miner-service.fabro"))
-            .expect("service workflow exists");
-    assert!(workflow.contains("label=\"Health\""));
-    assert!(workflow.contains("curl http://{ip}:{port}/health"));
-
-    let review_prompt =
-        fs::read_to_string(preview.join("malinka/prompts/implement/miner-service/review.md"))
-            .expect("service review prompt exists");
-    assert!(review_prompt.contains("First health gate"));
-    assert!(review_prompt.contains("Health surfaces to preserve"));
-    assert!(review_prompt.contains("Observability surfaces to preserve"));
-    assert!(review_prompt.contains("Start: **Start slices 1 and 3 immediately**"));
-    assert!(review_prompt.contains("Parallel: **Parallelize**: begin `myosu-miner` CLI skeleton"));
 }

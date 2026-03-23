@@ -403,7 +403,6 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
 
     let fabro_binary = current_fabro_binary()?;
     let raspberry_binary = current_raspberry_binary();
-    let fabro_agent_binary = current_fabro_agent_binary();
     let fabro_repo = default_fabro_repo();
     write_paperclip_cli_script(
         &paths.paperclip_cli_script_path,
@@ -418,11 +417,7 @@ fn prepare_paperclip_context(args: &PaperclipRepoArgs) -> Result<PaperclipRepoCo
         &fabro_binary,
         raspberry_binary.as_deref(),
     )?;
-    write_minimax_agent_script(
-        &paths.minimax_agent_script_path,
-        fabro_agent_binary.as_deref(),
-        fabro_repo.as_deref(),
-    )?;
+    write_minimax_agent_script(&paths.minimax_agent_script_path, fabro_repo.as_deref())?;
     write_run_script(
         &paths.run_script_path,
         default_paperclip_repo(),
@@ -1381,6 +1376,7 @@ struct BundleAgentDraft {
     agent: BundleAgent,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_company_bundle(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -1810,7 +1806,7 @@ fn orchestrator_draft(
 }
 
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
-#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
+#[allow(clippy::too_many_arguments)]
 fn lane_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -1895,6 +1891,7 @@ fn lane_agent_draft(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn top_level_plan_agent_draft(
     blueprint: &ProgramBlueprint,
     target_repo: &Path,
@@ -2113,7 +2110,6 @@ fn preferred_automation_codex_home() -> Option<PathBuf> {
 }
 
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
-#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_agent_slug(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> String {
     if unit.lanes.len() == 1 {
         return unit.id.clone();
@@ -2122,7 +2118,6 @@ fn lane_agent_slug(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) 
 }
 
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
-#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_agent_name(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) -> String {
     if unit.lanes.len() == 1 {
         return unit.title.clone();
@@ -2130,7 +2125,6 @@ fn lane_agent_name(unit: &BlueprintUnit, lane: &fabro_synthesis::BlueprintLane) 
     format!("{} / {}", unit.title, lane.title)
 }
 
-#[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 #[allow(dead_code)] // Reserved for optional lane-level Paperclip agents if operators re-enable them.
 fn lane_artifact_block(entry: Option<&FrontierSyncEntry>, unit: &BlueprintUnit) -> String {
     entry
@@ -3238,35 +3232,20 @@ fn write_orchestrator_script(
     Ok(())
 }
 
-fn write_minimax_agent_script(
-    path: &Path,
-    fabro_agent_binary: Option<&Path>,
-    fabro_repo: Option<&Path>,
-) -> Result<()> {
-    let binary_resolution = fabro_agent_binary
-        .map(|path| {
+fn write_minimax_agent_script(path: &Path, fabro_repo: Option<&Path>) -> Result<()> {
+    let pi_cli_fallback = fabro_repo
+        .map(|repo| {
             format!(
-                "  if [ -x {fallback} ]; then\n    fabro_agent_bin={fallback}\n  elif command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n",
-                fallback = shell_quote(&path.display().to_string()),
+                "elif [ -x {repo}/node_modules/.bin/pi ]; then\n  exec {repo}/node_modules/.bin/pi --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\n",
+                repo = shell_quote(&repo.display().to_string()),
+                model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
             )
         })
-        .unwrap_or_else(|| {
-            "  if command -v fabro-agent >/dev/null 2>&1; then\n    fabro_agent_bin=\"$(command -v fabro-agent)\"\n  else\n    fabro_agent_bin=\"\"\n  fi\n".to_string()
-        });
-    let cargo_fallback = fabro_repo.map(|repo| {
-        format!(
-            "cd {repo}\nexec cargo run --quiet -p fabro-agent -- --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\n",
-            repo = shell_quote(&repo.display().to_string()),
-            model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
-        )
-    }).unwrap_or_else(|| {
-        "echo \"Unable to resolve fabro-agent. Set FABRO_AGENT_BIN or run from a fabro checkout.\" >&2\nexit 1\n".to_string()
-    });
+        .unwrap_or_default();
     let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n\nprompt=\"$(cat)\"\n\nfabro_agent_bin=\"${{FABRO_AGENT_BIN:-}}\"\nif [ -z \"$fabro_agent_bin\" ]; then\n{binary_resolution}fi\n\nif [ -n \"$fabro_agent_bin\" ]; then\n  exec \"$fabro_agent_bin\" --provider minimax --model {model} --permissions full --auto-approve --output-format json -- \"$prompt\"\nfi\n\n{cargo_fallback}",
-        binary_resolution = binary_resolution,
+        "#!/usr/bin/env bash\nset -euo pipefail\n\nif [ -z \"${{MINIMAX_API_KEY:-}}\" ]; then\n  echo \"MINIMAX_API_KEY is required for Paperclip MiniMax workers.\" >&2\n  exit 1\nfi\n\nprompt=\"$(cat)\"\n\nif [ -n \"${{PI_BIN:-}}\" ]; then\n  exec \"$PI_BIN\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif command -v pi >/dev/null 2>&1; then\n  exec \"$(command -v pi)\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif [ -n \"${{PI_CLI_JS:-}}\" ]; then\n  exec node \"$PI_CLI_JS\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nelif [ -n \"${{PI_PACKAGE_DIR:-}}\" ] && [ -x \"$PI_PACKAGE_DIR/dist/cli.js\" ]; then\n  exec node \"$PI_PACKAGE_DIR/dist/cli.js\" --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\n{pi_cli_fallback}elif command -v npx >/dev/null 2>&1; then\n  exec npx --yes @mariozechner/pi-coding-agent --provider minimax --model {model} --mode json -p --no-session --tools read,bash,edit,write,grep,find,ls \"$prompt\"\nfi\n\necho \"Unable to resolve Pi CLI. Set PI_BIN or PI_CLI_JS, install pi, or ensure npx is available.\" >&2\nexit 1\n",
         model = shell_quote(PAPERCLIP_DEFAULT_AUTOMATION_MODEL),
-        cargo_fallback = cargo_fallback,
+        pi_cli_fallback = pi_cli_fallback,
     );
     std::fs::write(path, body)?;
     Ok(())
@@ -3303,12 +3282,6 @@ fn write_run_script(path: &Path, paperclip_repo: Option<PathBuf>, data_dir: &Pat
 
 fn current_fabro_binary() -> Result<PathBuf> {
     std::env::current_exe().context("failed to resolve current fabro binary")
-}
-
-fn current_fabro_agent_binary() -> Option<PathBuf> {
-    let current = std::env::current_exe().ok()?;
-    let sibling = current.with_file_name("fabro-agent");
-    sibling.exists().then_some(sibling)
 }
 
 fn current_raspberry_binary() -> Option<PathBuf> {
@@ -4901,6 +4874,7 @@ fn generated_agent_matches(agent: &PaperclipManagedAgent, desired_agent: &Bundle
             == desired_agent.lane_key.as_deref()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_company_project(
     api_base: &str,
     company_id: &str,
@@ -5092,6 +5066,7 @@ async fn ensure_project_workspace(
         .context("failed to parse created project workspace")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_coordination_issues(
     api_base: &str,
     company_id: &str,
@@ -5892,8 +5867,6 @@ fn plan_status_to_priority(status: &str) -> &'static str {
         "critical"
     } else if status.contains("blocked") || status == "unmodeled" {
         "high"
-    } else if status.contains("running") {
-        "medium"
     } else {
         "medium"
     }

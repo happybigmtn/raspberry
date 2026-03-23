@@ -624,8 +624,19 @@ fn tool_detail(envelope: &serde_json::Value) -> Option<String> {
         "edit_file" | "edit" => arg("path")
             .or_else(|| arg("file_path"))
             .map(|p| truncate(p, 60)),
+        "list_dir" => arg("path")
+            .or_else(|| arg("file_path"))
+            .map(|p| truncate(p, 60)),
         "web_search" => arg("query").map(|q| truncate(q, 60)),
         "web_fetch" => arg("url").map(|u| truncate(u, 60)),
+        "spawn_agent" => arg("task").map(|t| truncate(t, 60)),
+        "wait" | "send_input" | "close_agent" => arg("agent_id").map(String::from),
+        "use_skill" => arg("skill_name").map(String::from),
+        "apply_patch" => Some("…".into()),
+        "read_many_files" => arguments
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|a| format!("{} files", a.len())),
         _ => None,
     }
 }

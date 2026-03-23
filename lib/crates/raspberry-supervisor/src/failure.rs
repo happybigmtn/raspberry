@@ -8,6 +8,7 @@ pub enum FailureKind {
     SourceBranchMissing,
     IntegrationConflict,
     IntegrationTargetUnavailable,
+    SupervisorOnlyLane,
     DeterministicVerifyCycle,
     TransientLaunchFailure,
     ProviderAccessLimited,
@@ -26,6 +27,7 @@ impl fmt::Display for FailureKind {
             Self::SourceBranchMissing => "source_branch_missing",
             Self::IntegrationConflict => "integration_conflict",
             Self::IntegrationTargetUnavailable => "integration_target_unavailable",
+            Self::SupervisorOnlyLane => "supervisor_only_lane",
             Self::DeterministicVerifyCycle => "deterministic_verify_cycle",
             Self::TransientLaunchFailure => "transient_launch_failure",
             Self::ProviderAccessLimited => "provider_access_limited",
@@ -110,6 +112,9 @@ pub fn classify_failure(
     {
         return Some(FailureKind::IntegrationTargetUnavailable);
     }
+    if combined.contains("executed directly by raspberry supervisor") {
+        return Some(FailureKind::SupervisorOnlyLane);
+    }
     if combined.contains("cycle detection")
         || combined.contains("deterministic failure cycle detected")
         || combined.contains("deterministic cycle")
@@ -129,6 +134,10 @@ pub fn classify_failure(
         || combined.contains("codex_home points to")
         || (combined.contains("could not update path") && combined.contains("codex_home"))
         || combined.contains("failed to connect to websocket")
+        || (combined.contains("cli command exited with code 1")
+            && combined.contains("\"total_cost_usd\":0")
+            && combined.contains("\"input_tokens\":0")
+            && combined.contains("\"output_tokens\":0"))
     {
         return Some(FailureKind::TransientLaunchFailure);
     }
@@ -191,6 +200,7 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
             FailureRecoveryAction::ReplaySourceLane
         }
         FailureKind::IntegrationTargetUnavailable => FailureRecoveryAction::ReplayLane,
+        FailureKind::ProofScriptFailure => FailureRecoveryAction::ReplayLane,
         FailureKind::IntegrationConflict => FailureRecoveryAction::RefreshFromTrunk,
         FailureKind::EnvironmentCollision
         | FailureKind::StallWatchdog
@@ -198,7 +208,7 @@ pub fn default_recovery_action(kind: FailureKind) -> FailureRecoveryAction {
         FailureKind::ProviderAccessLimited => FailureRecoveryAction::SurfaceBlocked,
         FailureKind::DeterministicVerifyCycle
         | FailureKind::CapabilityContractMismatch
-        | FailureKind::ProofScriptFailure => FailureRecoveryAction::RegenerateLane,
+        | FailureKind::SupervisorOnlyLane => FailureRecoveryAction::RegenerateLane,
         FailureKind::Unknown | FailureKind::ProviderPolicyMismatch => {
             FailureRecoveryAction::SurfaceBlocked
         }
@@ -372,8 +382,12 @@ mod tests {
             FailureRecoveryAction::RegenerateLane
         );
         assert_eq!(
-            default_recovery_action(FailureKind::ProofScriptFailure),
+            default_recovery_action(FailureKind::SupervisorOnlyLane),
             FailureRecoveryAction::RegenerateLane
+        );
+        assert_eq!(
+            default_recovery_action(FailureKind::ProofScriptFailure),
+            FailureRecoveryAction::ReplayLane
         );
         assert_eq!(
             default_recovery_action(FailureKind::TransientLaunchFailure),
@@ -414,6 +428,32 @@ mod tests {
                 None,
             ),
             Some(FailureKind::ProofScriptFailure)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_zero_usage_cli_exits_as_transient_launch_failures() {
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "Handler error: CLI command exited with code 1: stdout: {\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::TransientLaunchFailure)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_supervisor_only_lane_failures() {
+        assert_eq!(
+            classify_failure(
+                Some("repo-level orchestration lanes are executed directly by raspberry supervisor"),
+                None,
+                None,
+            ),
+            Some(FailureKind::SupervisorOnlyLane)
         );
     }
 

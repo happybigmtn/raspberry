@@ -80,7 +80,7 @@ impl WorkflowArchetype {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "implement"
             | "implement_module"
@@ -145,7 +145,7 @@ impl ReviewProfile {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "standard" | "production_service" | "production" | "data_and_migration"
             | "migration_risky" | "data_integrity" => Some(Self::Standard),
@@ -210,6 +210,8 @@ pub enum PlanRegistryError {
 struct PlanMappingContract {
     #[serde(default)]
     mapping_source: Option<String>,
+    #[serde(default)]
+    plan_id: Option<String>,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -308,12 +310,27 @@ where
 }
 
 pub fn load_plan_registry(target_repo: &Path) -> Result<PlanRegistry, PlanRegistryError> {
-    load_plan_registry_from_planning_root(target_repo, Path::new(""))
+    load_plan_registry_internal(target_repo, Path::new(""), true)
 }
 
 pub fn load_plan_registry_from_planning_root(
     target_repo: &Path,
     planning_root: &Path,
+) -> Result<PlanRegistry, PlanRegistryError> {
+    load_plan_registry_internal(target_repo, planning_root, true)
+}
+
+pub fn load_plan_registry_relaxed_from_planning_root(
+    target_repo: &Path,
+    planning_root: &Path,
+) -> Result<PlanRegistry, PlanRegistryError> {
+    load_plan_registry_internal(target_repo, planning_root, false)
+}
+
+fn load_plan_registry_internal(
+    target_repo: &Path,
+    planning_root: &Path,
+    strict_contracts: bool,
 ) -> Result<PlanRegistry, PlanRegistryError> {
     let plans_dir = if planning_root.as_os_str().is_empty() {
         target_repo.join("plans")
@@ -380,10 +397,32 @@ pub fn load_plan_registry_from_planning_root(
                 let mapping_contract = detected_mapping_contract_path
                     .as_ref()
                     .map(|contract_path| load_mapping_contract(target_repo, contract_path))
-                    .transpose()?;
-                let authoritative_contract = mapping_contract
+                    .transpose();
+                let mapping_contract = match mapping_contract {
+                    Ok(contract) => contract,
+                    Err(error) if !strict_contracts => None,
+                    Err(error) => return Err(error),
+                };
+                let mut authoritative_contract = mapping_contract
                     .as_ref()
                     .filter(|contract| contract.mapping_source.as_deref() != Some("heuristic"));
+                if let Some(contract_plan_id) = authoritative_contract
+                    .and_then(|contract| contract.plan_id.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    if contract_plan_id != plan_id {
+                        if strict_contracts {
+                            return Err(PlanRegistryError::ParseMappingContract {
+                                path: path.clone(),
+                                message: format!(
+                                    "plan_id `{contract_plan_id}` does not match filename-derived id `{plan_id}`"
+                                ),
+                            });
+                        }
+                        authoritative_contract = None;
+                    }
+                }
                 let mapping_contract_path = if authoritative_contract.is_some() {
                     detected_mapping_contract_path.clone()
                 } else {
@@ -421,25 +460,41 @@ pub fn load_plan_registry_from_planning_root(
                 let composite = authoritative_contract
                     .and_then(|contract| contract.composite)
                     .unwrap_or(inferred_composite);
+                let children = authoritative_contract
+                    .map(contract_child_records)
+                    .unwrap_or_default();
                 let mut dependency_plan_ids =
                     dependency_plan_ids(&body, &id_by_path, planning_root);
-                if let Some(contract_dependencies) = authoritative_contract
-                    .map(|contract| normalized_dependency_ids(&contract.dependency_plan_ids))
-                    .filter(|dependencies| !dependencies.is_empty())
+                let contract_dependencies = authoritative_contract
+                    .map(|contract| {
+                        resolve_contract_dependency_ids(
+                            &path,
+                            &contract.dependency_plan_ids,
+                            &id_by_path,
+                        )
+                    })
+                    .transpose();
+                let contract_dependencies = match contract_dependencies {
+                    Ok(dependencies) => dependencies,
+                    Err(error) if !strict_contracts => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some(contract_dependencies) =
+                    contract_dependencies.filter(|dependencies| !dependencies.is_empty())
                 {
                     dependency_plan_ids = contract_dependencies;
                 }
                 let inferred_executable = category != PlanCategory::Meta;
                 let bootstrap_required = authoritative_contract
                     .and_then(|contract| contract.bootstrap_required)
-                    .unwrap_or(inferred_executable);
+                    .unwrap_or_else(|| {
+                        inferred_executable
+                            && !plan_looks_implementation_ready(&body, category, &children)
+                    });
                 let implementation_required = authoritative_contract
                     .and_then(|contract| contract.implementation_required)
                     .unwrap_or(inferred_executable);
                 let _executable = bootstrap_required || implementation_required;
-                let children = authoritative_contract
-                    .map(contract_child_records)
-                    .unwrap_or_default();
 
                 Ok(PlanRecord {
                     plan_id,
@@ -688,12 +743,12 @@ fn contract_child_records(contract: &PlanMappingContract) -> Vec<PlanChildRecord
                 archetype: child
                     .archetype
                     .as_deref()
-                    .and_then(WorkflowArchetype::from_str),
+                    .and_then(WorkflowArchetype::parse),
                 lane_kind: child.lane_kind.as_deref().and_then(parse_lane_kind),
                 review_profile: child
                     .review_profile
                     .as_deref()
-                    .and_then(ReviewProfile::from_str),
+                    .and_then(ReviewProfile::parse),
                 proof_commands: child.proof_commands.clone(),
                 owned_surfaces: child.owned_surfaces.clone(),
                 where_surfaces: child.where_surfaces.clone(),
@@ -707,32 +762,110 @@ fn contract_child_records(contract: &PlanMappingContract) -> Vec<PlanChildRecord
         .collect()
 }
 
-fn normalized_dependency_ids(values: &[String]) -> Vec<String> {
-    let mut dependency_ids = values
-        .iter()
-        .map(|value| {
-            // Normalize through the same path as plan_id_from_path so that
-            // references like "004-casino-core-trait" resolve to "casino-core"
-            let sanitized = sanitize_identifier(value);
-            let mut parts = sanitized.splitn(2, '-');
-            let first = parts.next().unwrap_or_default();
-            let remainder = if first.len() == 3 && first.chars().all(|ch| ch.is_ascii_digit()) {
-                parts.next().unwrap_or_default()
-            } else {
-                sanitized.as_str()
-            };
-            remainder
-                .trim_end_matches("-game")
-                .trim_end_matches("-plan")
-                .trim_end_matches("-crate")
-                .trim_end_matches("-trait")
-                .to_string()
-        })
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
+fn resolve_contract_dependency_ids(
+    mapping_path: &Path,
+    values: &[String],
+    id_by_path: &BTreeMap<PathBuf, String>,
+) -> Result<Vec<String>, PlanRegistryError> {
+    let known_ids = id_by_path.values().cloned().collect::<Vec<_>>();
+    let mut dependency_ids = Vec::new();
+
+    for raw in values {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if known_ids.iter().any(|known| known == trimmed) {
+            dependency_ids.push(trimmed.to_string());
+            continue;
+        }
+
+        let looks_like_plan_reference = trimmed.contains('/')
+            || trimmed.ends_with(".md")
+            || trimmed.split('-').next().is_some_and(|prefix| {
+                prefix.len() == 3 && prefix.chars().all(|ch| ch.is_ascii_digit())
+            });
+        if looks_like_plan_reference {
+            let candidate = plan_id_from_path(Path::new(trimmed));
+            if known_ids.iter().any(|known| known == &candidate) {
+                dependency_ids.push(candidate);
+                continue;
+            }
+        }
+
+        return Err(PlanRegistryError::ParseMappingContract {
+            path: mapping_path.to_path_buf(),
+            message: format!(
+                "dependency_plan_ids contains unknown plan id `{trimmed}`; expected one of {:?}",
+                known_ids
+            ),
+        });
+    }
+
     dependency_ids.sort();
     dependency_ids.dedup();
-    dependency_ids
+    Ok(dependency_ids)
+}
+
+fn plan_looks_implementation_ready(
+    body: &str,
+    category: PlanCategory,
+    children: &[PlanChildRecord],
+) -> bool {
+    if category == PlanCategory::Meta {
+        return false;
+    }
+    if !children.is_empty()
+        && children.iter().all(|child| {
+            !child.proof_commands.is_empty()
+                || !child.owned_surfaces.is_empty()
+                || child.required_tests.is_some()
+                || child.verification_plan.is_some()
+        })
+    {
+        return true;
+    }
+
+    let lower = body.to_ascii_lowercase();
+    let has_validation_section = [
+        "## acceptance criteria",
+        "## validation",
+        "## verification",
+        "## failure handling",
+        "## test plan",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let has_progress = lower.contains("## progress")
+        || lower.contains("## milestones")
+        || body
+            .lines()
+            .any(|line| line.trim_start().starts_with("- [ ]"));
+    let repo_surface_refs = body
+        .split('`')
+        .filter(|segment| {
+            let trimmed = segment.trim();
+            trimmed.starts_with("crates/")
+                || trimmed.starts_with("bin/")
+                || trimmed.starts_with("src/")
+                || trimmed.starts_with("services/")
+                || trimmed.starts_with(".github/")
+        })
+        .count();
+    let has_proof_commands = body.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains("cargo ")
+            || trimmed.contains("pytest")
+            || trimmed.contains("pnpm ")
+            || trimmed.contains("npm run ")
+            || trimmed.contains("uv run ")
+            || trimmed.contains("go test")
+            || trimmed.contains("just ")
+            || trimmed.contains("Proof commands:")
+            || trimmed.contains("Required tests:")
+    });
+
+    repo_surface_refs >= 2 && has_proof_commands && (has_validation_section || has_progress)
 }
 
 fn parse_category(value: Option<&str>) -> Option<PlanCategory> {
@@ -1206,5 +1339,37 @@ mod tests {
             PathBuf::from("genesis/plans/013-house-agent.md")
         );
         assert_eq!(house.dependency_plan_ids, vec!["provably-fair".to_string()]);
+    }
+
+    #[test]
+    fn load_plan_registry_infers_detailed_plans_can_skip_bootstrap() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("plans/005-blueprint-pipeline.md"),
+            concat!(
+                "# Blueprint Pipeline\n\n",
+                "## Progress\n",
+                "- [ ] Wire the loader\n\n",
+                "Owned surfaces:\n",
+                "- `crates/blueprint-loader/src/lib.rs`\n",
+                "- `bin/house/src/main.rs`\n\n",
+                "Proof commands:\n",
+                "- `cargo test -p blueprint-loader`\n\n",
+                "## Validation\n",
+                "- loader returns real distributions\n",
+            ),
+        )
+        .expect("plan");
+
+        let registry = load_plan_registry(temp.path()).expect("registry");
+        let plan = registry
+            .plans
+            .iter()
+            .find(|plan| plan.plan_id == "blueprint-pipeline")
+            .expect("plan record");
+
+        assert!(!plan.bootstrap_required);
+        assert!(plan.implementation_required);
     }
 }

@@ -23,13 +23,13 @@ CLI defaults can be set in `~/.fabro/cli.toml` so you don't have to pass common 
 ```toml title="cli.toml"
 [exec]
 provider = "anthropic"
-model = "MiniMax-M2.7-highspeed"
+model = "MiniMax-M2.7"
 permissions = "read-write"
 output_format = "text"
 
 [llm]
 provider = "anthropic"
-model = "MiniMax-M2.7-highspeed"
+model = "MiniMax-M2.7"
 ```
 
 CLI flags always override `cli.toml` values, which override hardcoded defaults.
@@ -144,7 +144,7 @@ fabro exec "Refactor the auth module" --permissions full --auto-approve
 | Argument / Flag | Description | Default |
 |---|---|---|
 | `<PROMPT>` | Task prompt (required) | — |
-| `--provider <PROVIDER>` | LLM provider | `anthropic` |
+| `--provider <PROVIDER>` | LLM provider | Auto-detected from configured API keys (see [default models](/core-concepts/models#default-models)) |
 | `--model <MODEL>` | Model name | Per provider (see below) |
 | `--permissions <LEVEL>` | Permission level: `read-only`, `read-write`, or `full` | `read-write` |
 | `--auto-approve` | Skip interactive prompts; deny tools outside permission level | — |
@@ -791,18 +791,32 @@ fabro parse workflow.fabro
 
 ---
 
-## `fabro init`
+## `fabro repo init`
 
-Initialize a new Fabro project in the current git repository. Creates an `fabro.toml` project config and a sample `hello` workflow.
+Initialize a new Fabro project in the current git repository. Creates a `fabro.toml` project config and a sample `hello` workflow.
 
 ```bash
-fabro init
+fabro repo init
 ```
 
 The command must be run inside a git repository. It creates:
 - `fabro.toml` — project configuration with comments and a link to docs
 - `fabro/workflows/hello/workflow.fabro` — a simple greeting workflow
 - `fabro/workflows/hello/workflow.toml` — run config for the hello workflow
+
+After creating files, it checks whether the GitHub App is installed for the repository. If the app is not installed and the repository owner differs from the app owner, it warns that the app may need to be [made public](/integrations/github#github-app-is-private-but-this-repo-belongs-to-a-different-owner) first.
+
+<Note>
+The old `fabro init` still works but prints a deprecation warning. Use `fabro repo init` instead.
+</Note>
+
+## `fabro repo deinit`
+
+Remove Fabro from a project by deleting `fabro.toml` and the `fabro/` directory. Fails with an error if the project is not initialized.
+
+```bash
+fabro repo deinit
+```
 
 ## `fabro diff`
 
@@ -926,9 +940,24 @@ fabro asset cp <RUN_ID>:report.html ./output    # specific file
 | `<SOURCE>` | `RUN_ID` (all assets) or `RUN_ID:path` (specific file) |
 | `[DEST]` | Destination directory (defaults to `.`) |
 | `--node <NODE>` | Filter to assets from a specific node |
-| `--tree` | Preserve `{node}/{retry}/` directory structure |
+| `--tree` | Preserve `\{node\}/\{retry\}/` directory structure |
 
 When copying all assets in flat mode, filenames must be unique across nodes. Use `--tree` or `--node` to disambiguate.
+
+## `fabro provider login`
+
+Re-authenticate with an LLM provider without re-running the full install wizard. Useful when tokens expire or when switching accounts.
+
+```bash
+fabro provider login --provider openai
+fabro provider login --provider anthropic
+```
+
+| Flag | Description |
+|---|---|
+| `--provider <PROVIDER>` | LLM provider to authenticate with (required) |
+
+For OpenAI, this launches a browser-based OAuth PKCE flow with an automatic fallback to manual API key entry. All other providers prompt for an API key with validation. Credentials are merged non-destructively into `~/.fabro/.env`.
 
 ## `fabro install`
 
@@ -936,7 +965,64 @@ Interactive setup wizard that walks you through configuring API keys and validat
 
 ```bash
 fabro install
+fabro install --web-url https://fabro.example.com
 ```
+
+| Flag | Description | Default |
+|---|---|---|
+| `--web-url <URL>` | Web UI base URL for OAuth callback endpoints | `http://localhost:5173` |
+
+---
+
+## `fabro secret set`
+
+Store a secret in `~/.fabro/.env`.
+
+```bash
+fabro secret set ANTHROPIC_API_KEY sk-ant-...
+```
+
+| Argument | Description |
+|---|---|
+| `<KEY>` | Name of the secret (required) |
+| `<VALUE>` | Value to store (required) |
+
+## `fabro secret get`
+
+Print the value of a secret from `~/.fabro/.env`.
+
+```bash
+fabro secret get ANTHROPIC_API_KEY
+```
+
+| Argument | Description |
+|---|---|
+| `<KEY>` | Name of the secret (required) |
+
+## `fabro secret list`
+
+List secret names stored in `~/.fabro/.env`.
+
+```bash
+fabro secret list
+fabro secret list --show-values
+```
+
+| Flag | Description |
+|---|---|
+| `--show-values` | Print values alongside keys |
+
+## `fabro secret rm`
+
+Remove a secret from `~/.fabro/.env`.
+
+```bash
+fabro secret rm ANTHROPIC_API_KEY
+```
+
+| Argument | Description |
+|---|---|
+| `<KEY>` | Name of the secret to remove (required) |
 
 ---
 

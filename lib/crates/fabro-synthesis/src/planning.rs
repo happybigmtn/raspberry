@@ -724,57 +724,71 @@ fn derive_registry_plan_intents(
 
     for plan in registry.plans {
         let family = registry_plan_family(&plan);
-        let output_root = PathBuf::from("outputs").join(&plan.plan_id);
-        let (kind, artifacts, milestones, produces, health_command, verify_command) =
-            registry_plan_contract(&plan, family, &output_root, target_repo);
-        let tasks = corpus
-            .plan_docs
-            .iter()
-            .find(|doc| doc.path == plan.path)
-            .map(|doc| open_tasks(&doc.body))
-            .unwrap_or_default();
-        let goal = build_goal(
-            &plan.title,
-            &family,
-            &output_root,
-            corpus,
-            &tasks,
-            &artifacts,
-        );
-        let prompt_context = build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
-        let mut dependencies = registry_plan_dependencies(&plan);
-        if let Some((workspace_dependency, _)) = &workspace_dependency {
-            let needs_workspace = plan.category != PlanCategory::Meta
-                && !dependencies
-                    .iter()
-                    .any(|dependency| dependency.unit == workspace_dependency.unit);
-            if needs_workspace {
-                dependencies.insert(0, workspace_dependency.clone());
-            }
-        }
-
         let parent_id = plan.plan_id.clone();
-        intents.push(LaneIntent {
-            id: parent_id.clone(),
-            title: plan.title.clone(),
-            output_root,
-            family,
-            kind,
-            goal,
-            prompt_context,
-            dependencies,
-            produces,
-            health_command,
-            verify_command,
-            proof_profile: None,
-            milestones,
-            artifacts,
-        });
+        let child_count = if !plan.children.is_empty() {
+            plan.children.len()
+        } else {
+            plan.declared_child_ids.len()
+        };
+        let emit_parent_intent =
+            plan.bootstrap_required || !plan.implementation_required || child_count <= 1;
+        let parent_dependency = if emit_parent_intent {
+            let output_root = PathBuf::from("outputs").join(&plan.plan_id);
+            let (kind, artifacts, milestones, produces, health_command, verify_command) =
+                registry_plan_contract(&plan, family, &output_root, target_repo);
+            let tasks = corpus
+                .plan_docs
+                .iter()
+                .find(|doc| doc.path == plan.path)
+                .map(|doc| open_tasks(&doc.body))
+                .unwrap_or_default();
+            let goal = build_goal(
+                &plan.title,
+                &family,
+                &output_root,
+                corpus,
+                &tasks,
+                &artifacts,
+            );
+            let prompt_context =
+                build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
+            let mut dependencies = registry_plan_dependencies(&plan);
+            if let Some((workspace_dependency, _)) = &workspace_dependency {
+                let needs_workspace = plan.category != PlanCategory::Meta
+                    && !dependencies
+                        .iter()
+                        .any(|dependency| dependency.unit == workspace_dependency.unit);
+                if needs_workspace {
+                    dependencies.insert(0, workspace_dependency.clone());
+                }
+            }
 
-        if plan.composite
-            && plan.declared_child_ids.len() > 1
-            && plan.category != PlanCategory::Meta
-        {
+            intents.push(LaneIntent {
+                id: parent_id.clone(),
+                title: plan.title.clone(),
+                output_root,
+                family,
+                kind,
+                goal,
+                prompt_context,
+                dependencies,
+                produces,
+                health_command,
+                verify_command,
+                proof_profile: None,
+                milestones,
+                artifacts,
+            });
+            Some(LaneDependency {
+                unit: parent_id.clone(),
+                lane: None,
+                milestone: Some("reviewed".to_string()),
+            })
+        } else {
+            None
+        };
+
+        if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
             let effective_children = if plan.children.is_empty() {
                 infer_child_records_from_ids(target_repo, &plan)
             } else {
@@ -786,7 +800,7 @@ fn derive_registry_plan_intents(
             };
             let child_intents = derive_child_intents(
                 target_repo,
-                &parent_id,
+                parent_dependency.as_ref(),
                 &enriched_plan,
                 corpus,
                 &workspace_dependency,
@@ -1061,6 +1075,12 @@ fn infer_owned_surfaces_from_plan(child_id: &str, plan_body: &str) -> Vec<String
 }
 
 fn registry_plan_family(plan: &PlanRecord) -> WorkflowTemplate {
+    if !plan.bootstrap_required
+        && plan.implementation_required
+        && plan.category != PlanCategory::Meta
+    {
+        return WorkflowTemplate::Implementation;
+    }
     match plan.category {
         PlanCategory::Meta => WorkflowTemplate::RecurringReport,
         PlanCategory::Service | PlanCategory::Infrastructure => WorkflowTemplate::ServiceBootstrap,
@@ -1078,14 +1098,18 @@ fn registry_plan_contract(
     family: WorkflowTemplate,
     output_root: &Path,
     target_repo: &Path,
-) -> (
-    LaneKind,
-    Vec<BlueprintArtifact>,
-    Vec<MilestoneManifest>,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> ContractParts {
+    if family == WorkflowTemplate::Implementation {
+        let kind = match plan.category {
+            PlanCategory::Service | PlanCategory::Infrastructure => LaneKind::Service,
+            PlanCategory::Interface | PlanCategory::Game => LaneKind::Interface,
+            PlanCategory::Foundation | PlanCategory::Verification | PlanCategory::Economic => {
+                LaneKind::Platform
+            }
+            PlanCategory::Meta | PlanCategory::Unknown => LaneKind::Artifact,
+        };
+        return implementation_contract_for_kind(kind, target_repo);
+    }
     match plan.category {
         PlanCategory::Meta => family_contract(&family, output_root, target_repo),
         PlanCategory::Service => reviewed_contract(
@@ -1139,20 +1163,15 @@ fn registry_plan_dependencies(plan: &PlanRecord) -> Vec<LaneDependency> {
 
 fn derive_child_intents(
     target_repo: &Path,
-    parent_id: &str,
+    parent_dependency: Option<&LaneDependency>,
     plan: &PlanRecord,
     corpus: &PlanningCorpus,
     workspace_dependency: &Option<(LaneDependency, LaneIntent)>,
 ) -> Vec<LaneIntent> {
-    let parent_dependency = LaneDependency {
-        unit: parent_id.to_string(),
-        lane: None,
-        milestone: Some("reviewed".to_string()),
-    };
-
     plan.children
         .iter()
         .map(|child| {
+            let parent_id = &plan.plan_id;
             let child_unit_id = if child.child_id.starts_with(parent_id) {
                 child.child_id.clone()
             } else {
@@ -1186,7 +1205,18 @@ fn derive_child_intents(
             let prompt_context =
                 build_child_prompt_context(corpus, plan, child, &child_unit_id, &artifacts);
 
-            let mut dependencies = vec![parent_dependency.clone()];
+            let mut dependencies = plan
+                .dependency_plan_ids
+                .iter()
+                .map(|dependency| LaneDependency {
+                    unit: dependency.clone(),
+                    lane: None,
+                    milestone: Some("reviewed".to_string()),
+                })
+                .collect::<Vec<_>>();
+            if let Some(parent_dependency) = parent_dependency {
+                dependencies.push(parent_dependency.clone());
+            }
             if let Some((ws_dep, _)) = workspace_dependency {
                 if !dependencies.iter().any(|d| d.unit == ws_dep.unit) {
                     dependencies.insert(0, ws_dep.clone());
@@ -1227,21 +1257,9 @@ fn child_artifacts_and_milestones(
 ) -> (Vec<BlueprintArtifact>, Vec<MilestoneManifest>, Vec<String>) {
     match family {
         WorkflowTemplate::Implementation => {
-            let artifacts = vec![
-                BlueprintArtifact {
-                    id: "spec".to_string(),
-                    path: PathBuf::from("spec.md"),
-                },
-                BlueprintArtifact {
-                    id: "review".to_string(),
-                    path: PathBuf::from("review.md"),
-                },
-            ];
-            let produces = artifacts.iter().map(|a| a.id.clone()).collect();
-            let milestones = vec![MilestoneManifest {
-                id: "implemented".to_string(),
-                requires: vec!["spec".to_string(), "review".to_string()],
-            }];
+            let kind = LaneKind::Platform;
+            let (_kind, artifacts, milestones, produces, _, _) =
+                implementation_contract_for_kind(kind, Path::new("."));
             (artifacts, milestones, produces)
         }
         _ => {
@@ -1771,10 +1789,11 @@ fn referenced_plan_docs_for_task(corpus: &PlanningCorpus, task: &str) -> Vec<Pla
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
         let prefix = stem.split('-').next().unwrap_or_default().trim();
-        if prefix.len() == 3 && prefix.chars().all(|ch| ch.is_ascii_digit()) {
-            if lower.contains(&format!("plan {prefix}")) {
-                docs.push(doc.clone());
-            }
+        if prefix.len() == 3
+            && prefix.chars().all(|ch| ch.is_ascii_digit())
+            && lower.contains(&format!("plan {prefix}"))
+        {
+            docs.push(doc.clone());
         }
     }
     docs.sort_by(|left, right| left.path.cmp(&right.path));
@@ -2134,8 +2153,7 @@ fn derive_max_parallel(intents: &[LaneIntent]) -> usize {
         .iter()
         .filter(|intent| intent.dependencies.is_empty())
         .count()
-        .max(1)
-        .min(3)
+        .clamp(1, 3)
 }
 
 fn select_family(target_repo: &Path, corpus: &PlanningCorpus) -> WorkflowTemplate {
@@ -2200,19 +2218,21 @@ struct LaneIdentity {
     title: String,
 }
 
-fn category_contract(
-    category: TaskCategory,
-    family: WorkflowTemplate,
-    output_root: &Path,
-    target_repo: &Path,
-) -> (
+type ContractParts = (
     LaneKind,
     Vec<BlueprintArtifact>,
     Vec<MilestoneManifest>,
     Vec<String>,
     Option<String>,
     Option<String>,
-) {
+);
+
+fn category_contract(
+    category: TaskCategory,
+    family: WorkflowTemplate,
+    output_root: &Path,
+    target_repo: &Path,
+) -> ContractParts {
     match category {
         TaskCategory::Foundations => reviewed_contract(
             LaneKind::Platform,
@@ -2272,14 +2292,7 @@ fn reviewed_contract(
     family: WorkflowTemplate,
     output_root: &Path,
     target_repo: &Path,
-) -> (
-    LaneKind,
-    Vec<BlueprintArtifact>,
-    Vec<MilestoneManifest>,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> ContractParts {
     match family {
         WorkflowTemplate::Implementation => implementation_contract(output_root, target_repo),
         WorkflowTemplate::RecurringReport => (
@@ -2513,14 +2526,7 @@ fn family_contract(
     family: &WorkflowTemplate,
     output_root: &Path,
     target_repo: &Path,
-) -> (
-    LaneKind,
-    Vec<BlueprintArtifact>,
-    Vec<MilestoneManifest>,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> ContractParts {
     match family {
         WorkflowTemplate::RecurringReport => (
             LaneKind::Recurring,
@@ -2606,19 +2612,13 @@ fn family_contract(
     }
 }
 
-fn implementation_contract(
-    output_root: &Path,
-    target_repo: &Path,
-) -> (
-    LaneKind,
-    Vec<BlueprintArtifact>,
-    Vec<MilestoneManifest>,
-    Vec<String>,
-    Option<String>,
-    Option<String>,
-) {
-    let proof_command = guess_proof_command(target_repo);
+fn implementation_contract(output_root: &Path, target_repo: &Path) -> ContractParts {
     let kind = infer_bootstrap_kind(output_root);
+    implementation_contract_for_kind(kind, target_repo)
+}
+
+fn implementation_contract_for_kind(kind: LaneKind, target_repo: &Path) -> ContractParts {
+    let proof_command = guess_proof_command(target_repo);
     (
         kind,
         vec![
@@ -3672,6 +3672,106 @@ units:
             .as_deref()
             .unwrap_or_default()
             .contains("mapped from plan structure"));
+    }
+
+    #[test]
+    fn create_authoring_skips_parent_bootstrap_for_implementation_ready_composites() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# rXMRagent\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/plan-mappings")).expect("mapping dir");
+        fs::write(
+            temp.path().join("plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master");
+        fs::write(
+            temp.path().join("plans/005-craps-game.md"),
+            concat!(
+                "# Craps Game\n\n",
+                "Owned surfaces:\n",
+                "- `crates/casino-core/src/craps.rs`\n",
+                "- `bin/house/src/session.rs`\n\n",
+                "Proof commands:\n",
+                "- `cargo test -p casino-core -- craps`\n",
+                "- `cargo test -p house -- session`\n\n",
+                "## Validation\n",
+                "- session payout path is deterministic\n",
+            ),
+        )
+        .expect("craps plan");
+        fs::write(
+            temp.path()
+                .join("malinka/plan-mappings/005-craps-game.yaml"),
+            concat!(
+                "mapping_source: opus\n",
+                "plan_id: craps\n",
+                "title: Craps Game\n",
+                "category: game\n",
+                "composite: true\n",
+                "bootstrap_required: false\n",
+                "implementation_required: true\n",
+                "children:\n",
+                "  - id: casino-core\n",
+                "    title: Casino Core\n",
+                "    archetype: implement\n",
+                "    lane_kind: platform\n",
+                "    proof_commands:\n",
+                "      - cargo test -p casino-core -- craps\n",
+                "    owned_surfaces:\n",
+                "      - crates/casino-core/src/craps.rs\n",
+                "  - id: house-session\n",
+                "    title: House Session\n",
+                "    archetype: implement\n",
+                "    lane_kind: service\n",
+                "    proof_commands:\n",
+                "      - cargo test -p house -- session\n",
+                "    owned_surfaces:\n",
+                "      - bin/house/src/session.rs\n",
+            ),
+        )
+        .expect("mapping");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("rxmragent")).expect("author blueprint");
+        let unit_ids = authored
+            .blueprint
+            .units
+            .iter()
+            .map(|unit| unit.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!unit_ids.contains(&"craps"));
+        let casino_core = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-casino-core")
+            .expect("casino core child");
+        let house_session = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "craps-house-session")
+            .expect("house child");
+
+        assert_eq!(
+            casino_core.lanes[0].template,
+            WorkflowTemplate::Implementation
+        );
+        assert_eq!(
+            house_session.lanes[0].template,
+            WorkflowTemplate::Implementation
+        );
+        assert!(casino_core
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.path == PathBuf::from("implementation.md")));
+        assert!(house_session
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.path == PathBuf::from("implementation.md")));
     }
 
     #[test]

@@ -38,7 +38,7 @@ impl CutoverPhase {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim() {
             "shadow" => Some(Self::Shadow),
             "parity_review" => Some(Self::ParityReview),
@@ -325,6 +325,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![test_lane("craps", "craps", LaneExecutionStatus::Ready)],
         };
         let registry = PlanRegistry {
@@ -356,6 +357,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![
                 test_lane("craps", "craps", LaneExecutionStatus::Ready),
                 test_lane("poker", "poker", LaneExecutionStatus::Complete),
@@ -386,6 +388,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "test".to_string(),
             max_parallel: 3,
+            runtime_max_parallel: None,
             lanes: vec![test_lane("craps", "craps", LaneExecutionStatus::Failed)],
         };
         let registry = PlanRegistry {

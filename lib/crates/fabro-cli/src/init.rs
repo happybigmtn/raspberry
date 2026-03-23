@@ -1,21 +1,23 @@
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
-pub async fn run_init() -> Result<()> {
+fn git_repo_root() -> Result<PathBuf> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("failed to run git")?;
-
     if !output.status.success() {
         bail!("not a git repository — run `git init` first");
     }
-
-    let repo_root = PathBuf::from(
+    Ok(PathBuf::from(
         String::from_utf8(output.stdout)
             .context("git output was not valid UTF-8")?
             .trim(),
-    );
+    ))
+}
+
+pub async fn run_init() -> Result<()> {
+    let repo_root = git_repo_root()?;
 
     let fabro_toml = repo_root.join("fabro.toml");
     if fabro_toml.exists() {
@@ -110,6 +112,48 @@ draft = true
     Ok(())
 }
 
+pub fn run_deinit() -> Result<()> {
+    let repo_root = git_repo_root()?;
+
+    let fabro_toml = repo_root.join("fabro.toml");
+
+    let green = console::Style::new().green();
+    let dim = console::Style::new().dim();
+
+    match std::fs::remove_file(&fabro_toml) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("not initialized — fabro.toml not found");
+        }
+        Err(e) => bail!("failed to remove {}: {e}", fabro_toml.display()),
+    }
+    eprintln!(
+        "  {} {}",
+        green.apply_to("✔"),
+        dim.apply_to("removed fabro.toml")
+    );
+
+    let fabro_dir = repo_root.join("fabro");
+    if fabro_dir.exists() {
+        std::fs::remove_dir_all(&fabro_dir)
+            .with_context(|| format!("failed to remove {}", fabro_dir.display()))?;
+        eprintln!(
+            "  {} {}",
+            green.apply_to("✔"),
+            dim.apply_to("removed fabro/")
+        );
+    }
+
+    eprintln!(
+        "\n{}",
+        console::Style::new()
+            .bold()
+            .apply_to("Project deinitialized.")
+    );
+
+    Ok(())
+}
+
 async fn check_github_app_installation() {
     // Get the git remote origin URL
     let output = match std::process::Command::new("git")
@@ -193,8 +237,14 @@ async fn check_github_app_installation() {
 
     let client = reqwest::Client::new();
 
-    match fabro_github::check_app_installed(&client, &jwt, &owner, &repo, "https://api.github.com")
-        .await
+    match fabro_github::check_app_installed(
+        &client,
+        &jwt,
+        &owner,
+        &repo,
+        fabro_github::GITHUB_API_BASE_URL,
+    )
+    .await
     {
         Ok(true) => {
             let green = console::Style::new().green();
@@ -210,6 +260,42 @@ async fn check_github_app_installation() {
             };
 
             let yellow = console::Style::new().yellow();
+
+            // Best-effort: warn if the app is private and the repo belongs to a different owner.
+            if let Ok(app_info) = fabro_github::get_authenticated_app(
+                &client,
+                &jwt,
+                fabro_github::GITHUB_API_BASE_URL,
+            )
+            .await
+            {
+                let cross_owner = !app_info.owner.login.eq_ignore_ascii_case(&owner);
+                let is_private = cross_owner
+                    && fabro_github::is_app_public(
+                        &client,
+                        &app_info.slug,
+                        fabro_github::GITHUB_API_BASE_URL,
+                    )
+                    .await
+                        == Ok(false);
+
+                if is_private {
+                    eprintln!(
+                        "\n  {} GitHub App \"{}\" is private but this repo belongs to a different owner ({}).",
+                        yellow.apply_to("!"),
+                        app_info.slug,
+                        owner
+                    );
+                    eprintln!(
+                        "    The app must be made public before it can be installed outside {}.",
+                        app_info.owner.login
+                    );
+                    eprintln!(
+                        "    Update visibility at: https://github.com/settings/apps/{}",
+                        app_info.slug
+                    );
+                }
+            }
             eprintln!(
                 "\n  {} GitHub App is not installed for {owner}/{repo}",
                 yellow.apply_to("!")
@@ -231,7 +317,7 @@ async fn check_github_app_installation() {
                     &jwt,
                     &owner,
                     &repo,
-                    "https://api.github.com",
+                    fabro_github::GITHUB_API_BASE_URL,
                 )
                 .await
                 {

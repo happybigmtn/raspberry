@@ -253,9 +253,9 @@ pub fn resolve_fidelity(
 
 // --- Thread ID resolution (spec 5.4) ---
 
-/// Resolve the thread ID for a node, following the precedence (spec lines 1196-1204):
-/// 1. Target node `thread_id` attribute
-/// 2. Incoming edge `thread_id` attribute
+/// Resolve the thread ID for a node, following the precedence:
+/// 1. Incoming edge `thread_id` attribute
+/// 2. Target node `thread_id` attribute
 /// 3. Graph-level default thread
 /// 4. Derived class from enclosing subgraph (first class from the node's classes list)
 /// 5. Fallback to previous node ID
@@ -266,15 +266,15 @@ pub fn resolve_thread_id(
     graph: &Graph,
     previous_node_id: Option<&str>,
 ) -> Option<String> {
-    // Step 1: Node thread_id
-    if let Some(tid) = node.thread_id() {
-        return Some(tid.to_string());
-    }
-    // Step 2: Edge thread_id
+    // Step 1: Edge thread_id
     if let Some(edge) = incoming_edge {
         if let Some(tid) = edge.thread_id() {
             return Some(tid.to_string());
         }
+    }
+    // Step 2: Node thread_id
+    if let Some(tid) = node.thread_id() {
+        return Some(tid.to_string());
     }
     // Step 3: Graph-level default thread
     if let Some(tid) = graph.default_thread() {
@@ -760,7 +760,7 @@ pub async fn git_push_host(
     github_app: &Option<fabro_github::GitHubAppCredentials>,
     label: &str,
 ) -> bool {
-    let (origin_url, _) = match fabro_daytona::detect_repo_info(repo_path) {
+    let (origin_url, _) = match fabro_sandbox::daytona::detect_repo_info(repo_path) {
         Ok(info) => info,
         Err(e) => {
             tracing::warn!(error = %e, label, "Cannot detect origin for push");
@@ -796,28 +796,6 @@ pub async fn git_push_host(
         }
         Err(e) => {
             tracing::warn!(error = %e, label, "Failed to push");
-            false
-        }
-    }
-}
-
-/// Push the run branch to origin inside a remote sandbox (best-effort).
-async fn git_push_remote(sandbox: &dyn Sandbox, branch: &str) -> bool {
-    if let Err(e) = sandbox.refresh_push_credentials().await {
-        tracing::warn!(error = %e, "Failed to refresh push credentials");
-    }
-    let cmd = format!("{GIT_REMOTE} push origin {branch}");
-    match sandbox.exec_command(&cmd, 60_000, None, None, None).await {
-        Ok(r) if r.exit_code == 0 => {
-            tracing::info!(branch, "Pushed run branch to origin");
-            true
-        }
-        Ok(r) => {
-            tracing::warn!(branch, exit_code = r.exit_code, "Failed to push run branch");
-            false
-        }
-        Err(e) => {
-            tracing::warn!(branch, error = %e, "Failed to push run branch");
             false
         }
     }
@@ -874,59 +852,6 @@ pub async fn git_merge_ff_only(sandbox: &dyn Sandbox, sha: &str) -> bool {
 pub async fn git_replace_worktree(sandbox: &dyn Sandbox, path: &str, branch: &str) -> bool {
     let _ = git_remove_worktree(sandbox, path).await;
     git_add_worktree(sandbox, path, branch).await
-}
-
-/// Set up git inside a remote sandbox for checkpoint commits.
-/// Returns `(base_sha, branch_name, base_branch)` on success.
-pub async fn setup_remote_git(
-    sandbox: &dyn Sandbox,
-    run_id: &str,
-) -> std::result::Result<(String, String, Option<String>), String> {
-    // Get current branch name before creating the run branch
-    let branch_result = sandbox
-        .exec_command("git rev-parse --abbrev-ref HEAD", 10_000, None, None, None)
-        .await
-        .map_err(|e| format!("git rev-parse --abbrev-ref HEAD failed: {e}"))?;
-    let base_branch = if branch_result.exit_code == 0 {
-        let name = branch_result.stdout.trim().to_string();
-        if name.is_empty() || name == "HEAD" {
-            None
-        } else {
-            Some(name)
-        }
-    } else {
-        None
-    };
-
-    // Get current HEAD as base SHA
-    let sha_result = sandbox
-        .exec_command("git rev-parse HEAD", 10_000, None, None, None)
-        .await
-        .map_err(|e| format!("git rev-parse HEAD failed: {e}"))?;
-    if sha_result.exit_code != 0 {
-        return Err(format!(
-            "git rev-parse HEAD failed (exit {}): {}",
-            sha_result.exit_code, sha_result.stderr
-        ));
-    }
-    let base_sha = sha_result.stdout.trim().to_string();
-
-    let branch_name = format!("{}{run_id}", crate::git::RUN_BRANCH_PREFIX);
-
-    // Create and checkout a run branch
-    let checkout_cmd = format!("git checkout -b {branch_name}");
-    let checkout_result = sandbox
-        .exec_command(&checkout_cmd, 10_000, None, None, None)
-        .await
-        .map_err(|e| format!("git checkout failed: {e}"))?;
-    if checkout_result.exit_code != 0 {
-        return Err(format!(
-            "git checkout -b failed (exit {}): {}",
-            checkout_result.exit_code, checkout_result.stderr
-        ));
-    }
-
-    Ok((base_sha, branch_name, base_branch))
 }
 
 /// Configuration for a workflow run.
@@ -1110,12 +1035,52 @@ impl WorkflowRunEngine {
         stage_index: usize,
         visit: usize,
         asset_globs: &[String],
+        run_id: &str,
+        hook_work_dir: Option<&Path>,
     ) -> Result<(Outcome, u32)> {
         let handler = self.services.registry.resolve(node);
 
         let node_timeout = node.timeout();
 
         for attempt in 1..=policy.max_attempts {
+            // Run StageStart hook (blocking — can skip or block node)
+            {
+                let mut hook_ctx = HookContext::new(
+                    HookEvent::StageStart,
+                    run_id.to_string(),
+                    graph.name.clone(),
+                );
+                hook_ctx.cwd = hook_work_dir.map(|p| p.display().to_string());
+                set_hook_node(&mut hook_ctx, node);
+                hook_ctx.attempt = Some(usize::try_from(attempt).unwrap_or(usize::MAX));
+                hook_ctx.max_attempts =
+                    Some(usize::try_from(policy.max_attempts).unwrap_or(usize::MAX));
+                let decision = self.run_hooks(&hook_ctx, hook_work_dir).await;
+                match decision {
+                    HookDecision::Skip { reason } => {
+                        let mut outcome = Outcome::skipped();
+                        outcome.notes =
+                            Some(reason.unwrap_or_else(|| "skipped by StageStart hook".into()));
+                        return Ok((outcome, attempt));
+                    }
+                    HookDecision::Block { reason } => {
+                        let msg = reason.unwrap_or_else(|| "blocked by StageStart hook".into());
+                        return Err(FabroError::engine(msg));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Emit StageStarted (fires once per attempt, only after hook passes)
+            self.services.emitter.emit(&WorkflowRunEvent::StageStarted {
+                node_id: node.id.clone(),
+                name: node.label().to_string(),
+                index: stage_index,
+                handler_type: node.handler_type().map(String::from),
+                script: node_script(node),
+                attempt: usize::try_from(attempt).unwrap_or(usize::MAX),
+                max_attempts: usize::try_from(policy.max_attempts).unwrap_or(usize::MAX),
+            });
             // Floor to integer seconds: macOS stat reports mtime as integer seconds,
             // so a fractional epoch would reject files created in the same second.
             let command_start_epoch = std::time::SystemTime::now()
@@ -1303,7 +1268,7 @@ impl WorkflowRunEngine {
     /// 1. Initialize sandbox
     /// 2. Fire `SandboxReady` hook (blocking — can abort run)
     /// 3. Emit `SandboxInitialized` event
-    /// 4. Remote git setup if `sandbox.is_remote()`
+    /// 4. Sandbox git setup via `sandbox.setup_git_for_run()`
     /// 5. Run setup commands
     /// 6. Run devcontainer lifecycle phases
     /// 7. Execute the workflow graph via `run_internal`
@@ -1348,23 +1313,30 @@ impl WorkflowRunEngine {
                 working_directory: self.services.sandbox.working_directory().to_string(),
             });
 
-        // 4. Remote git setup if sandbox is remote and config doesn't already have git info
+        // 4. Sandbox git setup — let the sandbox set up its own git state if needed
         //    (skip when resuming from an existing branch — caller sets run_branch/base_sha)
-        if self.services.sandbox.is_remote() && config.run_branch.is_none() {
-            match setup_remote_git(self.services.sandbox.as_ref(), &config.run_id).await {
-                Ok((base_sha, run_branch, base_branch)) => {
+        if config.run_branch.is_none() {
+            match self
+                .services
+                .sandbox
+                .setup_git_for_run(&config.run_id)
+                .await
+            {
+                Ok(Some(info)) => {
                     config.git_checkpoint_enabled = true;
-                    config.base_sha = Some(base_sha);
-                    config.run_branch = Some(run_branch);
+                    config.base_sha = Some(info.base_sha);
+                    config.run_branch = Some(info.run_branch);
                     if config.base_branch.is_none() {
-                        config.base_branch = base_branch;
+                        config.base_branch = info.base_branch;
                     }
                     config.meta_branch =
                         Some(crate::git::MetadataStore::branch_name(&config.run_id));
                 }
+                Ok(None) => {
+                    // Sandbox does not manage git internally (e.g. local sandbox)
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Remote git setup failed, running without git checkpoints");
-                    // Leave config.git_checkpoint_enabled as-is (false for remote when no base_sha)
+                    tracing::warn!(error = %e, "Sandbox git setup failed, running without git checkpoints");
                 }
             }
         }
@@ -1537,9 +1509,9 @@ impl WorkflowRunEngine {
         };
         self.services.set_git_state(git_state);
 
-        // Local git checkpoint: sandbox is local and checkpointing is enabled
+        // Host-side git checkpoint: sandbox has a host-accessible worktree
         let local_git_checkpoint =
-            config.git_checkpoint_enabled && !self.services.sandbox.is_remote();
+            config.git_checkpoint_enabled && self.services.sandbox.host_git_dir().is_some();
 
         self.services
             .emitter
@@ -1890,65 +1862,13 @@ impl WorkflowRunEngine {
             context.set(context::keys::CURRENT_NODE, serde_json::json!(&node.id));
             let retry_policy = build_retry_policy(node, graph);
 
-            self.services.emitter.emit(&WorkflowRunEvent::StageStarted {
-                node_id: node.id.clone(),
-                name: node.label().to_string(),
-                index: stage_index,
-                handler_type: node.handler_type().map(String::from),
-                script: node_script(node),
-                attempt: 1,
-                max_attempts: usize::try_from(retry_policy.max_attempts).unwrap_or(usize::MAX),
-            });
-
-            // StageStart hook (blocking — can skip node)
-            {
-                let mut hook_ctx =
-                    HookContext::new(HookEvent::StageStart, run_id.clone(), graph.name.clone());
-                hook_ctx.cwd = hook_work_dir.as_ref().map(|p| p.display().to_string());
-                set_hook_node(&mut hook_ctx, node);
-                hook_ctx.attempt = Some(1);
-                hook_ctx.max_attempts =
-                    Some(usize::try_from(retry_policy.max_attempts).unwrap_or(usize::MAX));
-                let decision = self.run_hooks(&hook_ctx, hook_work_dir.as_deref()).await;
-                match decision {
-                    HookDecision::Skip { reason } => {
-                        let mut outcome = Outcome::skipped();
-                        outcome.notes =
-                            Some(reason.unwrap_or_else(|| "skipped by StageStart hook".into()));
-                        completed_nodes.push(node.id.clone());
-                        node_outcomes.insert(node.id.clone(), outcome);
-                        previous_node_id = Some(node.id.clone());
-                        stage_index += 1;
-                        // Select next edge and continue
-                        let selection = select_edge(
-                            &node.id,
-                            &Outcome::skipped(),
-                            &context,
-                            graph,
-                            node.selection(),
-                        );
-                        if let Some(sel) = selection {
-                            current_node_id = sel.edge.to.clone();
-                            incoming_edge = Some(sel.edge);
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
-                    HookDecision::Block { reason } => {
-                        let msg = reason.unwrap_or_else(|| "blocked by StageStart hook".into());
-                        return Err(FabroError::engine(msg));
-                    }
-                    _ => {}
-                }
-            }
-
             let stage_start = Instant::now();
 
             let (mut outcome, attempts_used) = if let Some((ref token, _)) = stall_token {
                 tokio::select! {
                     result = self.execute_with_retry(
                         node, &context, graph, &config.run_dir, &retry_policy, stage_index, visit, &config.asset_globs,
+                        &run_id, hook_work_dir.as_deref(),
                     ) => result?,
                     () = token.cancelled() => {
                         let idle_secs = graph.stall_timeout().map_or(0, |d| d.as_secs());
@@ -1972,6 +1892,8 @@ impl WorkflowRunEngine {
                     stage_index,
                     visit,
                     &config.asset_globs,
+                    &run_id,
+                    hook_work_dir.as_deref(),
                 )
                 .await?
             };
@@ -1984,7 +1906,10 @@ impl WorkflowRunEngine {
 
             // Gap #1: Auto status -- when auto_status=true and outcome is non-success,
             // override to success with auto-status note
-            if node.auto_status() && outcome.status != StageStatus::Success {
+            if node.auto_status()
+                && outcome.status != StageStatus::Success
+                && outcome.status != StageStatus::Skipped
+            {
                 outcome = Outcome {
                     status: StageStatus::Success,
                     notes: Some(
@@ -2023,7 +1948,10 @@ impl WorkflowRunEngine {
                 None
             };
 
-            if outcome.status == StageStatus::Fail {
+            // Hook-skipped stages have no StageStarted, so skip completion events/hooks
+            if outcome.status == StageStatus::Skipped {
+                // No StageCompleted/StageFailed — proceed to write_node_status, edge selection, etc.
+            } else if outcome.status == StageStatus::Fail {
                 self.services.emitter.emit(&WorkflowRunEvent::StageFailed {
                     node_id: node.id.clone(),
                     name: node.label().to_string(),
@@ -2301,8 +2229,9 @@ impl WorkflowRunEngine {
                         // Push run branch (skip in dry-run mode)
                         if !config.dry_run {
                             if let Some(ref branch) = config.run_branch {
-                                let push_ok = if self.services.sandbox.is_remote() {
-                                    git_push_remote(&*self.services.sandbox, branch).await
+                                let push_ok = if self.services.sandbox.git_push_branch(branch).await
+                                {
+                                    true
                                 } else if let Some(ref repo_path) = config.host_repo_path {
                                     let refspec = format!("refs/heads/{branch}");
                                     git_push_host(
@@ -3845,7 +3774,25 @@ mod tests {
     }
 
     #[test]
-    fn thread_id_node_overrides_edge() {
+    fn thread_id_node_used_when_no_edge_thread() {
+        // When the edge has no thread_id, the node's thread_id is used.
+        let mut node = Node::new("work");
+        node.attrs.insert(
+            "thread_id".to_string(),
+            AttrValue::String("node-thread".to_string()),
+        );
+        let edge = Edge::new("prev", "work");
+        let graph = Graph::new("test");
+        assert_eq!(
+            resolve_thread_id(Some(&edge), &node, &graph, Some("prev")),
+            Some("node-thread".to_string())
+        );
+    }
+
+    #[test]
+    fn thread_id_edge_overrides_node() {
+        // Edge thread_id should take precedence over node thread_id,
+        // matching the fidelity precedence where edge > node.
         let mut node = Node::new("work");
         node.attrs.insert(
             "thread_id".to_string(),
@@ -3859,7 +3806,8 @@ mod tests {
         let graph = Graph::new("test");
         assert_eq!(
             resolve_thread_id(Some(&edge), &node, &graph, Some("prev")),
-            Some("node-thread".to_string())
+            Some("edge-thread".to_string()),
+            "edge thread_id should override node thread_id"
         );
     }
 
@@ -5830,6 +5778,102 @@ mod tests {
         // With preserve=true, cleanup should succeed without error
         let result = engine.cleanup_sandbox("test-run", "test-wf", true).await;
         assert!(result.is_ok());
+    }
+
+    /// Handler that returns a retryable error on the first call and succeeds on subsequent calls.
+    struct FailOnceThenSucceedHandler {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait]
+    impl HandlerTrait for FailOnceThenSucceedHandler {
+        async fn execute(
+            &self,
+            _node: &Node,
+            _context: &Context,
+            _graph: &Graph,
+            _run_dir: &Path,
+            _services: &crate::handler::EngineServices,
+        ) -> std::result::Result<Outcome, FabroError> {
+            let n = self.call_count.fetch_add(1, Ordering::Relaxed);
+            if n == 0 {
+                Err(FabroError::handler("transient failure"))
+            } else {
+                Ok(Outcome::success())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_emits_stage_started_per_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = Graph::new("retry_events");
+        g.attrs
+            .insert("goal".to_string(), AttrValue::String("test".to_string()));
+
+        let mut start = Node::new("start");
+        start.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("Mdiamond".to_string()),
+        );
+        g.nodes.insert("start".to_string(), start);
+
+        let mut work = Node::new("work");
+        work.attrs.insert(
+            "type".to_string(),
+            AttrValue::String("fail_once".to_string()),
+        );
+        // Allow 1 retry → 2 attempts total
+        work.attrs
+            .insert("max_retries".to_string(), AttrValue::Integer(1));
+        g.nodes.insert("work".to_string(), work);
+
+        let mut exit = Node::new("exit");
+        exit.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("Msquare".to_string()),
+        );
+        g.nodes.insert("exit".to_string(), exit);
+
+        g.edges.push(Edge::new("start", "work"));
+        g.edges.push(Edge::new("work", "exit"));
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::<WorkflowRunEvent>::new()));
+        let events_clone = events.clone();
+        let mut emitter = EventEmitter::new();
+        emitter.on_event(move |event| {
+            events_clone.lock().unwrap().push(event.clone());
+        });
+
+        let mut registry = make_registry();
+        registry.register(
+            "fail_once",
+            Box::new(FailOnceThenSucceedHandler {
+                call_count: std::sync::atomic::AtomicU32::new(0),
+            }),
+        );
+
+        let engine = WorkflowRunEngine::new(registry, Arc::new(emitter), local_env());
+        let config = test_run_config(dir.path(), "retry-events-test");
+        let outcome = engine.run(&g, &config).await.unwrap();
+        assert_eq!(outcome.status, StageStatus::Success);
+
+        let collected = events.lock().unwrap();
+        // Collect all StageStarted events for the "work" node
+        let work_started: Vec<_> = collected
+            .iter()
+            .filter_map(|e| match e {
+                WorkflowRunEvent::StageStarted {
+                    node_id, attempt, ..
+                } if node_id == "work" => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            work_started,
+            vec![1, 2],
+            "expected StageStarted for attempt 1 and attempt 2, got: {work_started:?}"
+        );
     }
 
     #[tokio::test]

@@ -8,9 +8,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fabro_agent::Sandbox;
-use fabro_daytona::{DaytonaConfig, DaytonaSandbox, DaytonaSnapshotConfig};
 use fabro_graphviz::graph::{AttrValue, Edge, Graph, Node};
 use fabro_llm::provider::Provider;
+use fabro_sandbox::daytona::{DaytonaConfig, DaytonaSandbox, DaytonaSnapshotConfig};
 use fabro_workflows::artifact::sync_artifacts_to_env;
 use fabro_workflows::checkpoint::Checkpoint;
 use fabro_workflows::context::Context;
@@ -230,7 +230,7 @@ async fn daytona_full_lifecycle() {
 #[tokio::test]
 #[ignore]
 async fn daytona_snapshot_sandbox() {
-    use fabro_daytona::DaytonaSnapshotConfig;
+    use fabro_sandbox::daytona::DaytonaSnapshotConfig;
 
     dotenvy::dotenv().ok();
 
@@ -241,7 +241,7 @@ async fn daytona_snapshot_sandbox() {
             cpu: Some(2),
             memory: Some(4),
             disk: Some(10),
-            dockerfile: Some(fabro_daytona::DockerfileSource::Inline(
+            dockerfile: Some(fabro_sandbox::daytona::DockerfileSource::Inline(
                 "FROM ubuntu:22.04\nRUN apt-get update && apt-get install -y ripgrep".to_string(),
             )),
         }),
@@ -1307,7 +1307,7 @@ async fn daytona_asset_collection() {
         git_author: fabro_workflows::git::GitAuthor::default(),
         base_branch: None,
         pull_request: None,
-        asset_globs: Vec::new(),
+        asset_globs: vec!["test-results/**".to_string()],
         workflow_slug: None,
     };
 
@@ -1423,8 +1423,8 @@ async fn daytona_clone_private_repo_with_github_app_iat() {
         .unwrap();
     assert_eq!(result.exit_code, 0);
     assert!(
-        result.stdout.contains("brynary/arc"),
-        "origin should point to brynary/arc, got: {}",
+        result.stdout.contains("fabro-sh/fabro"),
+        "origin should point to fabro-sh/fabro, got: {}",
         result.stdout.trim()
     );
 
@@ -1852,9 +1852,6 @@ async fn daytona_cp_upload_download_round_trip() {
 async fn daytona_computer_use_browser_screenshot() {
     use base64::Engine;
 
-    // Run from a temp dir so detect_repo_info() finds no git repo and skips cloning.
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
     dotenvy::dotenv().ok();
     if let Some(home) = dirs::home_dir() {
         dotenvy::from_path(home.join(".fabro/.env")).ok();
@@ -1867,6 +1864,7 @@ async fn daytona_computer_use_browser_screenshot() {
             disk: None,
             dockerfile: None,
         }),
+        skip_clone: true,
         ..DaytonaConfig::default()
     };
     let env = DaytonaSandbox::new(config, None, None, None)
@@ -2013,8 +2011,6 @@ async fn daytona_playwright_mcp_sandbox_transport() {
     use fabro_agent::Sandbox;
 
     // Create sandbox from daytona-medium (has Node.js + Chromium)
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
     dotenvy::dotenv().ok();
     if let Some(home) = dirs::home_dir() {
         dotenvy::from_path(home.join(".fabro/.env")).ok();
@@ -2027,6 +2023,7 @@ async fn daytona_playwright_mcp_sandbox_transport() {
             disk: None,
             dockerfile: None,
         }),
+        skip_clone: true,
         ..DaytonaConfig::default()
     };
     let sandbox = DaytonaSandbox::new(config, None, None, None)

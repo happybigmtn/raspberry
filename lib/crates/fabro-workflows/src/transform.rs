@@ -112,10 +112,10 @@ impl Transform for StylesheetApplicationTransform {
     }
 }
 
-/// For nodes with `model` but no `provider`, infer the provider from the model catalog.
-pub struct ProviderInferenceTransform;
+/// Resolves model aliases to canonical IDs and infers the provider from the model catalog.
+pub struct ModelResolutionTransform;
 
-impl Transform for ProviderInferenceTransform {
+impl Transform for ModelResolutionTransform {
     fn apply(&self, graph: &mut Graph) {
         for node in graph.nodes.values_mut() {
             let model = node
@@ -124,10 +124,17 @@ impl Transform for ProviderInferenceTransform {
                 .and_then(AttrValue::as_str)
                 .map(String::from);
             if let Some(model) = model {
-                if !node.attrs.contains_key("provider") {
-                    if let Some(info) = fabro_llm::catalog::get_model_info(&model) {
+                if let Some(info) = fabro_model::get_model_info(&model) {
+                    let canonical_id = info.id;
+                    let provider = info.provider;
+                    // Resolve alias to canonical model ID
+                    if model != canonical_id {
                         node.attrs
-                            .insert("provider".to_string(), AttrValue::String(info.provider));
+                            .insert("model".to_string(), AttrValue::String(canonical_id));
+                    }
+                    if !node.attrs.contains_key("provider") {
+                        node.attrs
+                            .insert("provider".to_string(), AttrValue::String(provider));
                     }
                 }
             }
@@ -233,6 +240,12 @@ impl Transform for FileInliningTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn variable_expansion_replaces_goal() {
@@ -637,7 +650,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ProviderInferenceTransform tests
+    // ModelResolutionTransform tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -650,7 +663,7 @@ mod tests {
         );
         graph.nodes.insert("a".to_string(), node);
 
-        ProviderInferenceTransform.apply(&mut graph);
+        ModelResolutionTransform.apply(&mut graph);
 
         assert_eq!(
             graph.nodes["a"]
@@ -675,7 +688,7 @@ mod tests {
         );
         graph.nodes.insert("a".to_string(), node);
 
-        ProviderInferenceTransform.apply(&mut graph);
+        ModelResolutionTransform.apply(&mut graph);
 
         assert_eq!(
             graph.nodes["a"]
@@ -696,7 +709,7 @@ mod tests {
         );
         graph.nodes.insert("a".to_string(), node);
 
-        ProviderInferenceTransform.apply(&mut graph);
+        ModelResolutionTransform.apply(&mut graph);
 
         assert_eq!(graph.nodes["a"].attrs.get("provider"), None);
     }
@@ -707,9 +720,56 @@ mod tests {
         let node = Node::new("a");
         graph.nodes.insert("a".to_string(), node);
 
-        ProviderInferenceTransform.apply(&mut graph);
+        ModelResolutionTransform.apply(&mut graph);
 
         assert_eq!(graph.nodes["a"].attrs.get("provider"), None);
+    }
+
+    #[test]
+    fn model_resolution_resolves_alias_to_canonical_id() {
+        let mut graph = Graph::new("test");
+        let mut node = Node::new("a");
+        node.attrs
+            .insert("model".to_string(), AttrValue::String("gpt-54".to_string()));
+        graph.nodes.insert("a".to_string(), node);
+
+        ModelResolutionTransform.apply(&mut graph);
+
+        assert_eq!(
+            graph.nodes["a"]
+                .attrs
+                .get("model")
+                .and_then(AttrValue::as_str),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            graph.nodes["a"]
+                .attrs
+                .get("provider")
+                .and_then(AttrValue::as_str),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn model_resolution_keeps_canonical_id_unchanged() {
+        let mut graph = Graph::new("test");
+        let mut node = Node::new("a");
+        node.attrs.insert(
+            "model".to_string(),
+            AttrValue::String("gpt-5.4".to_string()),
+        );
+        graph.nodes.insert("a".to_string(), node);
+
+        ModelResolutionTransform.apply(&mut graph);
+
+        assert_eq!(
+            graph.nodes["a"]
+                .attrs
+                .get("model")
+                .and_then(AttrValue::as_str),
+            Some("gpt-5.4")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -806,6 +866,7 @@ mod tests {
 
     #[test]
     fn resolve_file_ref_expands_tilde() {
+        let _guard = home_env_lock().lock().expect("home env lock");
         let home = dirs::home_dir().expect("home dir must exist");
         let test_file = home.join(".fabro_test_tilde_tmp");
         std::fs::write(&test_file, "tilde content").unwrap();

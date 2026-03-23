@@ -1154,7 +1154,7 @@ fn worker_process_alive(run_root: &Path) -> Option<bool> {
     }
     #[cfg(target_os = "linux")]
     {
-        return Some(Path::new("/proc").join(pid).exists());
+        Some(Path::new("/proc").join(pid).exists())
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1222,15 +1222,11 @@ fn stalled_active_progress_reason(
     progress: &LiveLaneProgress,
     last_started_at: Option<DateTime<Utc>>,
 ) -> Option<String> {
-    let Some(status) = progress.workflow_status else {
-        return None;
-    };
+    let status = progress.workflow_status?;
     if !status.is_active() {
         return None;
     }
-    let Some(activity_at) = progress.updated_at.or(last_started_at) else {
-        return None;
-    };
+    let activity_at = progress.updated_at.or(last_started_at)?;
     if (Utc::now() - activity_at).num_seconds() < ACTIVE_STALL_TIMEOUT_SECS {
         return None;
     }
@@ -1814,6 +1810,29 @@ mod tests {
             ),
         )
         .expect("write progress");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/status.json"),
+            "{\n  \"status\": \"succeeded\",\n  \"reason\": \"completed\",\n  \"updated_at\": \"2026-03-18T22:00:00Z\"\n}\n",
+        )
+        .expect("write status");
+        std::fs::write(
+            temp.path().join("runs/consensus-chapter/state.json"),
+            concat!(
+                "{\n",
+                "  \"run_id\": \"01CONSENSUSFAIL000000000000000\",\n",
+                "  \"updated_at\": \"2026-03-18T22:00:00Z\",\n",
+                "  \"status\": \"succeeded\",\n",
+                "  \"reason\": \"completed\",\n",
+                "  \"last_completed_stage_id\": \"brief\",\n",
+                "  \"last_completed_stage_label\": \"Brief\",\n",
+                "  \"last_completed_stage_status\": \"success\",\n",
+                "  \"last_event\": \"WorkflowRunCompleted\",\n",
+                "  \"last_event_seq\": 9,\n",
+                "  \"completed_stage_count\": 1\n",
+                "}\n"
+            ),
+        )
+        .expect("write state");
 
         let mut state = ProgramRuntimeState::new("raspberry-demo");
         state.lanes.insert(
@@ -2001,6 +2020,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![crate::evaluate::EvaluatedLane {
                 lane_key: "foundations:foundations".to_string(),
                 unit_id: "foundations".to_string(),
@@ -2089,6 +2109,7 @@ mod tests {
         let program = EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
+            runtime_max_parallel: None,
             lanes: vec![crate::evaluate::EvaluatedLane {
                 lane_key: "interface:lane".to_string(),
                 unit_id: "interface".to_string(),

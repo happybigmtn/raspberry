@@ -11,9 +11,9 @@ use fabro_api::server::{build_router, create_app_state};
 use fabro_api::server_config::*;
 use fabro_config::run::*;
 use fabro_config::sandbox::SandboxConfig;
-use fabro_daytona::*;
 use fabro_hooks::*;
 use fabro_interview::Interviewer;
+use fabro_sandbox::daytona::*;
 use fabro_workflows::handler::exit::ExitHandler;
 use fabro_workflows::handler::start::StartHandler;
 use fabro_workflows::handler::HandlerRegistry;
@@ -306,8 +306,9 @@ fn fully_populated_server_config() -> ServerConfig {
                         dockerfile: Some(DockerfileSource::Inline("FROM x".into())),
                     }),
                     network: Some(DaytonaNetwork::Block),
+                    skip_clone: false,
                 }),
-                exe: Some(fabro_exe::ExeConfig { image: None }),
+                exe: Some(fabro_sandbox::exe::ExeConfig { image: None }),
                 ssh: None,
                 env: Some(Default::default()),
             }),

@@ -1271,6 +1271,8 @@ mod tests {
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
+            failure_kind: None,
+            recovery_action: None,
         }
     }
 
@@ -1499,9 +1501,9 @@ mod tests {
         assert_eq!(
             app.displayed_lane_keys(),
             vec![
-                "miner:service".to_string(),
                 "launch:devnet".to_string(),
                 "operations:scorecard".to_string(),
+                "miner:service".to_string(),
                 "play:tui".to_string(),
                 "chain:runtime".to_string(),
                 "validator:oracle".to_string(),

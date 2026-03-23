@@ -4,11 +4,11 @@ mod doctor;
 mod init;
 mod install;
 mod logging;
+mod provider_auth;
 mod skill;
 mod upgrade;
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -72,6 +72,25 @@ enum Command {
     Exec(fabro_agent::cli::AgentArgs),
     /// Launch a workflow run
     Run(commands::run::RunArgs),
+    /// Create a workflow run (allocate run dir, persist spec)
+    Create(commands::run::RunArgs),
+    /// Start a created workflow run (spawn engine process)
+    Start {
+        /// Run ID prefix or workflow name
+        run: String,
+    },
+    /// Attach to a running or finished workflow run
+    Attach {
+        /// Run ID prefix or workflow name
+        run: String,
+    },
+    /// Internal: run the engine process (reads spec.json from run dir)
+    #[command(name = "_run_engine", hide = true)]
+    RunEngine {
+        /// Path to the run directory
+        #[arg(long)]
+        run_dir: PathBuf,
+    },
     /// Validate a workflow
     Validate(commands::validate::ValidateArgs),
     /// Render a workflow graph as SVG or PNG
@@ -115,10 +134,15 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Initialize a new project
+    /// Initialize a new project (deprecated: use `repo init`)
+    #[command(hide = true)]
     Init,
     /// Set up the Fabro environment (LLMs, certs, GitHub)
-    Install,
+    Install {
+        /// Base URL for the web UI (used for OAuth callback URLs)
+        #[arg(long, default_value = "http://localhost:5173")]
+        web_url: String,
+    },
     /// List workflow runs
     #[command(hide = true)]
     Ps(commands::runs::RunsListArgs),
@@ -130,14 +154,22 @@ enum Command {
         command: PrCommand,
     },
     /// Skill management
+    #[command(hide = true)]
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
+    },
+    /// Manage secrets in ~/.fabro/.env
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommand,
     },
     /// Rewind a workflow run to an earlier checkpoint
     Rewind(commands::rewind::RewindArgs),
     /// Fork a workflow run from an earlier checkpoint into a new run
     Fork(commands::fork::ForkArgs),
+    /// Block until a workflow run completes
+    Wait(commands::wait::WaitArgs),
     /// Workflow operations
     Workflow {
         #[command(subcommand)]
@@ -156,6 +188,16 @@ enum Command {
     Docs,
     /// Upgrade fabro to the latest version
     Upgrade(upgrade::UpgradeArgs),
+    /// Repository commands
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+    /// Provider operations
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
     /// System maintenance commands
     System {
         #[command(subcommand)]
@@ -198,6 +240,31 @@ enum SystemCommand {
 }
 
 #[derive(Subcommand)]
+enum RepoCommand {
+    /// Initialize a new project
+    Init {
+        /// Also install the fabro-create-workflow skill
+        #[arg(long, hide = true)]
+        skill: bool,
+    },
+    /// Remove fabro.toml and fabro/ directory
+    Deinit,
+}
+
+#[derive(Subcommand)]
+enum SecretCommand {
+    /// Get a secret value
+    Get(commands::secret::SecretGetArgs),
+    /// List secret names
+    #[command(alias = "ls")]
+    List(commands::secret::SecretListArgs),
+    /// Remove a secret
+    Rm(commands::secret::SecretRmArgs),
+    /// Set a secret value
+    Set(commands::secret::SecretSetArgs),
+}
+
+#[derive(Subcommand)]
 enum SkillCommand {
     /// Install a built-in skill
     Install(skill::SkillInstallArgs),
@@ -209,6 +276,12 @@ enum WorkflowCommand {
     List(commands::workflow::WorkflowListArgs),
     /// Create a new workflow
     Create(commands::workflow::WorkflowCreateArgs),
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Log in to an LLM provider
+    Login(commands::provider::ProviderLoginArgs),
 }
 
 #[derive(Subcommand)]
@@ -245,227 +318,10 @@ pub(crate) fn build_github_app_credentials(
     })
 }
 
-/// Fork the workflow as a background process, print the run ID, and exit.
-fn detach_run(args: commands::run::RunArgs) -> Result<()> {
-    let run_id = ulid::Ulid::new().to_string();
-
-    let run_dir = args.run_dir.clone().unwrap_or_else(|| {
-        let base = dirs::home_dir()
-            .expect("could not determine home directory")
-            .join(".fabro")
-            .join("runs");
-        base.join(format!(
-            "{}-{}",
-            chrono::Local::now().format("%Y%m%d"),
-            run_id
-        ))
-    });
-    std::fs::create_dir_all(&run_dir)?;
-    std::fs::write(run_dir.join("id.txt"), &run_id)?;
-    fabro_workflows::run_status::write_run_status(
-        &run_dir,
-        fabro_workflows::run_status::RunStatus::Submitted,
-        None,
-    );
-    std::fs::File::create(run_dir.join("progress.jsonl"))?;
-
-    let log_path = run_dir.join("detach.log");
-    std::fs::File::create(&log_path)?;
-
-    // Rebuild argv: current exe + original args, stripping --detach/-d, injecting --run-id and --run-dir
-    let exe = std::env::current_exe()?;
-    let raw_args: Vec<String> = std::env::args().collect();
-    let child_args = rebuild_detached_args(&raw_args, &run_id, &run_dir)?;
-    write_detach_prelude(&log_path, &exe, &child_args)?;
-    let wrapper_command = build_detached_wrapper_command(&exe, &child_args, &run_dir, &log_path)?;
-
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg("-c")
-        .arg(wrapper_command)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null());
-
-    // Detach from the controlling terminal on unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-
-    let mut child = cmd.spawn()?;
-    ensure_detached_child_started(&mut child, &run_dir)?;
-    println!("{run_id}");
-    Ok(())
-}
-
-fn rebuild_detached_args(
-    raw_args: &[String],
-    run_id: &str,
-    run_dir: &std::path::Path,
-) -> Result<Vec<String>> {
-    let run_index = raw_args
-        .iter()
-        .position(|arg| arg == "run")
-        .ok_or_else(|| {
-            anyhow::anyhow!("failed to rebuild detached argv: missing `run` subcommand")
-        })?;
-
-    let mut child_args: Vec<String> = raw_args
-        .iter()
-        .skip(1)
-        .take(run_index.saturating_sub(1))
-        .cloned()
-        .collect();
-    child_args.push("run".to_string());
-
-    let mut iter = raw_args.iter().skip(run_index + 1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--detach" || arg == "-d" {
-            continue;
-        }
-        if arg == "--run-dir" {
-            iter.next();
-            continue;
-        }
-        if arg.starts_with("--run-dir=") {
-            continue;
-        }
-        if arg == "--run-id" {
-            iter.next();
-            continue;
-        }
-        if arg.starts_with("--run-id=") {
-            continue;
-        }
-        child_args.push(arg.clone());
-    }
-
-    child_args.push("--run-id".to_string());
-    child_args.push(run_id.to_string());
-    child_args.push("--run-dir".to_string());
-    child_args.push(run_dir.to_string_lossy().to_string());
-    Ok(child_args)
-}
-
-fn build_detached_wrapper_command(
-    exe: &Path,
-    child_args: &[String],
-    run_dir: &Path,
-    log_path: &Path,
-) -> Result<String> {
-    let quoted_exe = shell_quote(exe.as_os_str().to_string_lossy().as_ref())?;
-    let quoted_args = child_args
-        .iter()
-        .map(|arg| shell_quote(arg))
-        .collect::<Result<Vec<_>>>()?;
-    let quoted_log_path = shell_quote(log_path.as_os_str().to_string_lossy().as_ref())?;
-    let quoted_status_path = shell_quote(
-        run_dir
-            .join("status.json")
-            .as_os_str()
-            .to_string_lossy()
-            .as_ref(),
-    )?;
-
-    Ok(format!(
-        "{} {} >> {} 2>&1\n\
-code=$?\n\
-if [ \"$code\" -ne 0 ] && [ -f {} ]; then\n\
-  if grep -q '\"status\": \"submitted\"' {} || grep -q '\"status\": \"starting\"' {}; then\n\
-    printf '{{\\n  \"status\": \"failed\",\\n  \"reason\": \"workflow_error\",\\n  \"updated_at\": \"%s\"\\n}}\\n' \"$(date -u +\"%Y-%m-%dT%H:%M:%S.%NZ\")\" > {}\n\
-  fi\n\
-fi\n\
-exit \"$code\"\n",
-        quoted_exe,
-        quoted_args.join(" "),
-        quoted_log_path,
-        quoted_status_path,
-        quoted_status_path,
-        quoted_status_path,
-        quoted_status_path,
-    ))
-}
-
-fn write_detach_prelude(log_path: &Path, exe: &Path, child_args: &[String]) -> Result<()> {
-    let mut prelude = format!("# fabro detach\nexe: {}\n", exe.display());
-    for arg in child_args {
-        prelude.push_str("arg: ");
-        prelude.push_str(arg);
-        prelude.push('\n');
-    }
-    std::fs::write(log_path, prelude)?;
-    Ok(())
-}
-
-fn detached_run_started(run_dir: &Path) -> bool {
-    run_dir.join("run.pid").exists()
-}
-
-fn shell_quote(value: &str) -> Result<String> {
-    shlex::try_quote(value)
-        .map(|quoted| quoted.into_owned())
-        .map_err(|_| anyhow::anyhow!("failed to shell-quote detached argument"))
-}
-
-fn ensure_detached_child_started(child: &mut std::process::Child, run_dir: &Path) -> Result<()> {
-    for _ in 0..60 {
-        if detached_run_started(run_dir) {
-            return Ok(());
-        }
-        if let Some(status) = child.try_wait()? {
-            fabro_workflows::run_status::write_run_status(
-                run_dir,
-                fabro_workflows::run_status::RunStatus::Failed,
-                Some(fabro_workflows::run_status::StatusReason::WorkflowError),
-            );
-            let detail = read_detach_log(run_dir)
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| {
-                    format!("detached child exited immediately with status {status}")
-                });
-            return Err(anyhow::anyhow!(detail));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGTERM);
-    }
-    let _ = child.kill();
-    fabro_workflows::run_status::write_run_status(
-        run_dir,
-        fabro_workflows::run_status::RunStatus::Failed,
-        Some(fabro_workflows::run_status::StatusReason::WorkflowError),
-    );
-    let detail = read_detach_log(run_dir)
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| "detached child never created run.pid".to_string());
-    Err(anyhow::anyhow!(
-        "detached child did not create run.pid within startup window: {detail}"
-    ))
-}
-
-fn read_detach_log(run_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(run_dir.join("detach.log"))
-        .ok()
-        .and_then(|contents| {
-            contents
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(ToOwned::to_owned)
-        })
-}
-
 #[tokio::main]
 async fn main() {
-    fabro_util::telemetry::panic::install_panic_hook();
+    fabro_telemetry::panic::install_panic_hook();
+    fabro_telemetry::init_cli();
 
     let start = std::time::Instant::now();
     let raw_args: Vec<String> = std::env::args().collect();
@@ -473,7 +329,32 @@ async fn main() {
     let (command_name, result) = main_inner().await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    send_telemetry_event(&raw_args, &command_name, duration_ms, &result);
+    let is_error = result.is_err();
+    let command = fabro_telemetry::sanitize::sanitize_command(&raw_args, &command_name);
+    let repository = fabro_telemetry::git::repository_identifier();
+    let ci = std::env::var("CI").is_ok();
+    if is_error {
+        fabro_telemetry::track!("CLI Errored", {
+            "subcommand": command_name,
+            "command": command,
+            "durationMs": duration_ms,
+            "repository": repository,
+            "ci": ci,
+            "success": false,
+            "exitCode": 1,
+        }, error);
+    } else {
+        fabro_telemetry::track!("CLI Executed", {
+            "subcommand": command_name,
+            "command": command,
+            "durationMs": duration_ms,
+            "repository": repository,
+            "ci": ci,
+            "success": true,
+            "exitCode": 0,
+        });
+    }
+    fabro_telemetry::shutdown();
 
     if let Err(err) = result {
         let style = console::Style::new().red().bold();
@@ -494,178 +375,6 @@ async fn main() {
             }
         }
         std::process::exit(1);
-    }
-}
-
-fn send_telemetry_event(
-    raw_args: &[String],
-    command_name: &str,
-    duration_ms: u64,
-    result: &Result<()>,
-) {
-    let is_error = result.is_err();
-    let telemetry = match fabro_util::telemetry::Telemetry::for_cli() {
-        Ok(t) => t,
-        Err(err) => {
-            debug!(%err, "Telemetry initialization failed");
-            return;
-        }
-    };
-    if !telemetry.should_track(is_error) {
-        return;
-    }
-
-    let event_name = if is_error {
-        "Command Error"
-    } else {
-        "Command Run"
-    };
-    let properties = serde_json::json!({
-        "subcommand": command_name,
-        "command": fabro_util::telemetry::sanitize::sanitize_command(raw_args, command_name),
-        "durationMs": duration_ms,
-        "repository": fabro_util::telemetry::git::repository_identifier(),
-        "ci": std::env::var("CI").is_ok(),
-        "success": !is_error,
-        "exitCode": if is_error { 1 } else { 0 },
-    });
-
-    let track = telemetry.build_track(event_name, properties);
-    fabro_util::telemetry::sender::send(track);
-    debug!(
-        event = event_name,
-        subcommand = command_name,
-        "Telemetry event queued"
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        build_detached_wrapper_command, ensure_detached_child_started, rebuild_detached_args,
-        write_detach_prelude,
-    };
-    use std::path::Path;
-
-    #[test]
-    fn rebuild_detached_args_preserves_global_flags_before_run() {
-        let raw_args = vec![
-            "fabro".to_string(),
-            "--no-upgrade-check".to_string(),
-            "run".to_string(),
-            "--detach".to_string(),
-            "workflow.toml".to_string(),
-        ];
-
-        let args = rebuild_detached_args(
-            &raw_args,
-            "01TESTRUNID000000000000000",
-            std::path::Path::new("/tmp/run"),
-        )
-        .unwrap();
-
-        assert_eq!(
-            args,
-            vec![
-                "--no-upgrade-check".to_string(),
-                "run".to_string(),
-                "workflow.toml".to_string(),
-                "--run-id".to_string(),
-                "01TESTRUNID000000000000000".to_string(),
-                "--run-dir".to_string(),
-                "/tmp/run".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn ensure_detached_child_started_reports_immediate_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("detach.log"), "error: boom\n").unwrap();
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("exit 2")
-            .spawn()
-            .unwrap();
-
-        let err = ensure_detached_child_started(&mut child, dir.path()).unwrap_err();
-        assert!(err.to_string().contains("error: boom"));
-
-        let status = std::fs::read_to_string(dir.path().join("status.json")).unwrap();
-        assert!(status.contains("\"status\": \"failed\""));
-    }
-
-    #[test]
-    fn detached_wrapper_marks_submitted_run_failed_on_nonzero_exit() {
-        let dir = tempfile::tempdir().unwrap();
-        let run_dir = dir.path();
-        let log_path = run_dir.join("detach.log");
-        let status_path = run_dir.join("status.json");
-        std::fs::write(
-            &status_path,
-            "{\n  \"status\": \"submitted\",\n  \"updated_at\": \"2026-03-19T00:00:00Z\"\n}\n",
-        )
-        .unwrap();
-
-        let command = build_detached_wrapper_command(
-            Path::new("sh"),
-            &["-c".to_string(), "echo boom >&2; exit 7".to_string()],
-            run_dir,
-            &log_path,
-        )
-        .unwrap();
-
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .status()
-            .unwrap();
-        assert_eq!(status.code(), Some(7));
-
-        let status = std::fs::read_to_string(&status_path).unwrap();
-        assert!(status.contains("\"status\": \"failed\""));
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("boom"));
-    }
-
-    #[test]
-    fn ensure_detached_child_started_requires_run_pid() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("status.json"),
-            "{\n  \"status\": \"submitted\",\n  \"updated_at\": \"2026-03-19T00:00:00Z\"\n}\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("detach.log"), "still booting\n").unwrap();
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 10")
-            .spawn()
-            .unwrap();
-
-        let err = ensure_detached_child_started(&mut child, dir.path()).unwrap_err();
-        assert!(err.to_string().contains("run.pid"));
-
-        let status = std::fs::read_to_string(dir.path().join("status.json")).unwrap();
-        assert!(status.contains("\"status\": \"failed\""));
-    }
-
-    #[test]
-    fn write_detach_prelude_records_exe_and_args() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("detach.log");
-        write_detach_prelude(
-            &log_path,
-            Path::new("/tmp/fabro"),
-            &["run".to_string(), "workflow.toml".to_string()],
-        )
-        .unwrap();
-
-        let log = std::fs::read_to_string(log_path).unwrap();
-        assert!(log.contains("# fabro detach"));
-        assert!(log.contains("exe: /tmp/fabro"));
-        assert!(log.contains("arg: run"));
-        assert!(log.contains("arg: workflow.toml"));
     }
 }
 
@@ -691,6 +400,10 @@ async fn main_inner() -> (String, Result<()>) {
         },
         Command::Exec(_) => "exec",
         Command::Run(_) => "run",
+        Command::Create(_) => "create",
+        Command::Start { .. } => "start",
+        Command::Attach { .. } => "attach",
+        Command::RunEngine { .. } => "_run_engine",
         Command::Validate(_) => "validate",
         Command::Graph(_) => "graph",
         Command::Parse(_) => "parse",
@@ -708,8 +421,12 @@ async fn main_inner() -> (String, Result<()>) {
         #[cfg(feature = "server")]
         Command::Serve(_) => "serve",
         Command::Doctor { .. } => "doctor",
+        Command::Repo { command } => match command {
+            RepoCommand::Init { .. } => "repo init",
+            RepoCommand::Deinit => "repo deinit",
+        },
         Command::Init => "init",
-        Command::Install => "install",
+        Command::Install { .. } => "install",
         Command::Ps(_) => "ps",
         Command::Rm(_) => "rm",
         Command::Pr { command } => match command {
@@ -719,8 +436,15 @@ async fn main_inner() -> (String, Result<()>) {
             PrCommand::Merge(_) => "pr merge",
             PrCommand::Close(_) => "pr close",
         },
+        Command::Secret { command } => match command {
+            SecretCommand::Get(_) => "secret get",
+            SecretCommand::List(_) => "secret list",
+            SecretCommand::Rm(_) => "secret rm",
+            SecretCommand::Set(_) => "secret set",
+        },
         Command::Rewind(_) => "rewind",
         Command::Fork(_) => "fork",
+        Command::Wait(_) => "wait",
         Command::Workflow { command } => match command {
             WorkflowCommand::List(_) => "workflow list",
             WorkflowCommand::Create(_) => "workflow create",
@@ -747,6 +471,9 @@ async fn main_inner() -> (String, Result<()>) {
         Command::Discord => "discord",
         Command::Docs => "docs",
         Command::Upgrade(_) => "upgrade",
+        Command::Provider { command } => match command {
+            ProviderCommand::Login(_) => "provider login",
+        },
         Command::System { command } => match command {
             SystemCommand::Prune(_) => "system prune",
             SystemCommand::Df(_) => "system df",
@@ -794,7 +521,12 @@ async fn main_inner() -> (String, Result<()>) {
 
     let upgrade_handle = if matches!(
         cli.command,
-        Command::Run(_) | Command::Exec(_) | Command::Init | Command::Install
+        Command::Run(_)
+            | Command::Create(_)
+            | Command::Exec(_)
+            | Command::Repo { .. }
+            | Command::Init
+            | Command::Install { .. }
     ) {
         upgrade::spawn_upgrade_check(cli.no_upgrade_check, upgrade_check_enabled)
     } else {
@@ -936,26 +668,126 @@ async fn main_inner() -> (String, Result<()>) {
                 }
             }
             Command::Run(mut args) => {
-                if args.detach {
-                    return detach_run(args);
-                }
-
                 let styles: &'static fabro_util::terminal::Styles =
                     Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
                 let cli_config = cli_config::load_cli_config(None)?;
                 args.verbose = args.verbose || cli_config.verbose;
-                let github_app = build_github_app_credentials(cli_config.app_id());
 
+                if args.detach {
+                    // Detach mode: create + start + print run ID
+                    let (run_id, run_dir) =
+                        commands::create::create_run(&args, cli_config.run_defaults, styles, true)
+                            .await?;
+                    commands::start::start_run(&run_dir)?;
+                    println!("{run_id}");
+                } else {
+                    // Foreground mode: use existing run_command
+                    let github_app = build_github_app_credentials(cli_config.app_id());
+                    let git_author = fabro_workflows::git::GitAuthor::from_options(
+                        cli_config.git_author().and_then(|a| a.name.clone()),
+                        cli_config.git_author().and_then(|a| a.email.clone()),
+                    );
+
+                    #[cfg(feature = "sleep_inhibitor")]
+                    let _sleep_guard = fabro_beastie::guard(cli_config.prevent_idle_sleep);
+
+                    commands::run::run_command(
+                        args,
+                        cli_config.run_defaults,
+                        styles,
+                        github_app,
+                        git_author,
+                    )
+                    .await?;
+                }
+            }
+            Command::Create(args) => {
+                let styles: &'static fabro_util::terminal::Styles =
+                    Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
+                let cli_config = cli_config::load_cli_config(None)?;
+                let (run_id, _run_dir) =
+                    commands::create::create_run(&args, cli_config.run_defaults, styles, true)
+                        .await?;
+                println!("{run_id}");
+            }
+            Command::Start { run } => {
+                let base = fabro_workflows::run_lookup::default_runs_base();
+                let run_info = fabro_workflows::run_lookup::resolve_run(&base, &run)?;
+                let pid = commands::start::start_run(&run_info.path)?;
+                eprintln!("Started engine process (PID {pid})");
+            }
+            Command::Attach { run } => {
+                let styles: &'static fabro_util::terminal::Styles =
+                    Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
+                let base = fabro_workflows::run_lookup::default_runs_base();
+                let run_info = fabro_workflows::run_lookup::resolve_run(&base, &run)?;
+                let exit_code = commands::attach::attach_run(&run_info.path, false, styles).await?;
+                if exit_code != std::process::ExitCode::SUCCESS {
+                    std::process::exit(1);
+                }
+            }
+            Command::RunEngine { run_dir } => {
+                let styles: &'static fabro_util::terminal::Styles =
+                    Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
+                let cli_config = cli_config::load_cli_config(None)?;
+                let github_app = build_github_app_credentials(cli_config.app_id());
                 let git_author = fabro_workflows::git::GitAuthor::from_options(
                     cli_config.git_author().and_then(|a| a.name.clone()),
                     cli_config.git_author().and_then(|a| a.email.clone()),
                 );
 
-                #[cfg(feature = "sleep_inhibitor")]
-                let _sleep_guard = fabro_beastie::guard(cli_config.prevent_idle_sleep);
+                // Load spec and reconstruct RunArgs
+                let spec = fabro_workflows::run_spec::RunSpec::load(&run_dir)?;
+
+                // Restore the working directory captured at create time
+                std::env::set_current_dir(&spec.working_directory).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to set working directory to {}: {e}",
+                        spec.working_directory.display()
+                    )
+                })?;
+
+                // Prefer the original workflow path while it still exists so repo-relative
+                // prompt/file refs continue to resolve correctly for detached runs.
+                // Fall back to the cached run-dir snapshot for older runs or missing sources.
+                let workflow_path = if spec.workflow_path.exists() {
+                    spec.workflow_path.clone()
+                } else {
+                    commands::run::cached_run_config_path(&run_dir)
+                };
+
+                let run_args = commands::run::RunArgs {
+                    workflow: Some(workflow_path),
+                    run_dir: Some(run_dir),
+                    dry_run: spec.dry_run,
+                    preflight: false,
+                    auto_approve: spec.auto_approve,
+                    resume: spec.resume,
+                    run_branch: spec.run_branch,
+                    goal: spec.goal,
+                    goal_file: None,
+                    model: Some(spec.model),
+                    provider: Some(spec.provider.unwrap_or_default()).filter(|s| !s.is_empty()),
+                    verbose: spec.verbose,
+                    sandbox: spec
+                        .sandbox_provider
+                        .parse::<fabro_workflows::sandbox_provider::SandboxProvider>()
+                        .ok()
+                        .map(commands::run::CliSandboxProvider::from),
+                    label: spec
+                        .labels
+                        .into_iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect(),
+                    no_retro: spec.no_retro,
+                    ssh: spec.ssh,
+                    preserve_sandbox: spec.preserve_sandbox,
+                    detach: false,
+                    run_id: Some(spec.run_id),
+                };
 
                 commands::run::run_command(
-                    args,
+                    run_args,
                     cli_config.run_defaults,
                     styles,
                     github_app,
@@ -1048,11 +880,27 @@ async fn main_inner() -> (String, Result<()>) {
             Command::Docs => {
                 open::that("https://docs.fabro.sh/")?;
             }
+            Command::Repo { command } => match command {
+                RepoCommand::Init { skill } => {
+                    init::run_init().await?;
+                    if skill {
+                        let base = std::env::current_dir()?.join(".claude").join("skills");
+                        skill::install_skill_to(&base)?;
+                    }
+                }
+                RepoCommand::Deinit => {
+                    init::run_deinit()?;
+                }
+            },
             Command::Init => {
+                eprintln!(
+                    "{} `fabro init` is deprecated, use `fabro repo init` instead",
+                    console::Style::new().yellow().apply_to("warning:")
+                );
                 init::run_init().await?;
             }
-            Command::Install => {
-                install::run_install().await?;
+            Command::Install { web_url } => {
+                install::run_install(&web_url).await?;
             }
             Command::Ps(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stdout();
@@ -1082,6 +930,20 @@ async fn main_inner() -> (String, Result<()>) {
                     }
                 }
             }
+            Command::Secret { command } => match command {
+                SecretCommand::Get(args) => {
+                    commands::secret::get_command(&args)?;
+                }
+                SecretCommand::List(args) => {
+                    commands::secret::list_command(&args)?;
+                }
+                SecretCommand::Rm(args) => {
+                    commands::secret::rm_command(&args)?;
+                }
+                SecretCommand::Set(args) => {
+                    commands::secret::set_command(&args)?;
+                }
+            },
             Command::Rewind(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stderr();
                 commands::rewind::run(&args, &styles)?;
@@ -1089,6 +951,10 @@ async fn main_inner() -> (String, Result<()>) {
             Command::Fork(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stderr();
                 commands::fork::run(&args, &styles)?;
+            }
+            Command::Wait(args) => {
+                let styles = fabro_util::terminal::Styles::detect_stderr();
+                commands::wait::run(args, &styles)?;
             }
             Command::Workflow { command } => match command {
                 WorkflowCommand::List(args) => {
@@ -1146,6 +1012,11 @@ async fn main_inner() -> (String, Result<()>) {
             Command::Upgrade(args) => {
                 upgrade::run_upgrade(args).await?;
             }
+            Command::Provider { command } => match command {
+                ProviderCommand::Login(args) => {
+                    commands::provider::login_command(args).await?;
+                }
+            },
             Command::System { command } => match command {
                 SystemCommand::Prune(args) => {
                     commands::runs::prune_command(&args)?;
@@ -1155,12 +1026,12 @@ async fn main_inner() -> (String, Result<()>) {
                 }
             },
             Command::SendAnalytics { path } => {
-                let result = fabro_util::telemetry::sender::send_to_segment(&path).await;
+                let result = fabro_telemetry::sender::upload(&path).await;
                 let _ = std::fs::remove_file(&path);
                 result?;
             }
             Command::SendPanic { path } => {
-                let result = fabro_util::telemetry::panic::send_panic_to_sentry(&path).await;
+                let result = fabro_telemetry::panic::capture(&path).await;
                 let _ = std::fs::remove_file(&path);
                 result?;
             }
@@ -1176,4 +1047,100 @@ async fn main_inner() -> (String, Result<()>) {
     }
 
     (command_name, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_provider_login_openai() {
+        let cli = Cli::try_parse_from(["fabro", "provider", "login", "--provider", "openai"])
+            .expect("should parse");
+        match cli.command {
+            Command::Provider {
+                command: ProviderCommand::Login(args),
+            } => {
+                assert_eq!(args.provider, fabro_model::Provider::OpenAi);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_login_anthropic() {
+        let cli = Cli::try_parse_from(["fabro", "provider", "login", "--provider", "anthropic"])
+            .expect("should parse");
+        match cli.command {
+            Command::Provider {
+                command: ProviderCommand::Login(args),
+            } => {
+                assert_eq!(args.provider, fabro_model::Provider::Anthropic);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_login_missing_provider_flag() {
+        let result = Cli::try_parse_from(["fabro", "provider", "login"]);
+        assert!(result.is_err(), "should fail without --provider");
+    }
+
+    #[test]
+    fn parse_provider_login_bogus_provider() {
+        let result = Cli::try_parse_from(["fabro", "provider", "login", "--provider", "bogus"]);
+        assert!(result.is_err(), "should fail with unknown provider");
+    }
+
+    #[test]
+    fn parse_create_command() {
+        let cli = Cli::try_parse_from(["fabro", "create", "my-workflow.toml", "--goal", "test"])
+            .expect("should parse");
+        match cli.command {
+            Command::Create(args) => {
+                assert_eq!(
+                    args.workflow.as_deref(),
+                    Some(std::path::Path::new("my-workflow.toml"))
+                );
+                assert_eq!(args.goal.as_deref(), Some("test"));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parse_start_command() {
+        let cli = Cli::try_parse_from(["fabro", "start", "ABC123"]).expect("should parse");
+        match cli.command {
+            Command::Start { run } => {
+                assert_eq!(run, "ABC123");
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parse_attach_command() {
+        let cli = Cli::try_parse_from(["fabro", "attach", "ABC123"]).expect("should parse");
+        match cli.command {
+            Command::Attach { run } => {
+                assert_eq!(run, "ABC123");
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parse_run_engine_command() {
+        let cli = Cli::try_parse_from(["fabro", "_run_engine", "--run-dir", "/tmp/runs/test"])
+            .expect("should parse");
+        match cli.command {
+            Command::RunEngine { run_dir } => {
+                assert_eq!(run_dir, std::path::PathBuf::from("/tmp/runs/test"));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
 }
