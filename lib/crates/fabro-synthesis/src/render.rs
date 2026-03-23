@@ -585,6 +585,7 @@ fn render_workflow_graph(
     audit_command: &str,
     quality_command: &str,
 ) -> String {
+    let graph_verify_command = graph_verify_command(lane, verify_command);
     let prompt_path = |name: &str| -> String {
         format!(
             "@../../prompts/{}/{}/{}.md",
@@ -607,7 +608,7 @@ fn render_workflow_graph(
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
-            escape_graph_attr(verify_command),
+            escape_graph_attr(&graph_verify_command),
         ),
         WorkflowTemplate::ServiceBootstrap => format!(
             "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs -> exit\n}}\n",
@@ -620,7 +621,7 @@ fn render_workflow_graph(
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
-            escape_graph_attr(verify_command),
+            escape_graph_attr(&graph_verify_command),
         ),
         WorkflowTemplate::Implementation => {
             let profile = lane.proof_profile.as_deref().unwrap_or("standard");
@@ -645,7 +646,7 @@ fn render_workflow_graph(
             let (extra_nodes, extra_edges) = profile_extra_graph_elements(
                 profile,
                 &prompt_path,
-                verify_command,
+                &graph_verify_command,
                 health_command,
             );
 
@@ -665,7 +666,7 @@ fn render_workflow_graph(
                 DEFAULT_REVIEW_PROVIDER,
                 escape_graph_attr(&preflight_command(verify_command)),
                 prompt_path("plan"),
-                escape_graph_attr(verify_command),
+                escape_graph_attr(&graph_verify_command),
                 health_node,
                 escape_graph_attr(quality_command),
                 prompt_path("polish"),
@@ -683,12 +684,100 @@ fn render_workflow_graph(
             graph_name(lane),
             goal,
         ),
+        WorkflowTemplate::Orchestration if lane.program_manifest.is_none() => format!(
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, max_retries=0]\n\n    start -> specify -> review -> polish -> verify -> exit\n}}\n",
+            graph_name(lane),
+            goal,
+            DEFAULT_REVIEW_MODEL,
+            DEFAULT_REVIEW_PROVIDER,
+            DEFAULT_WRITE_MODEL,
+            DEFAULT_WRITE_PROVIDER,
+            prompt_path("plan"),
+            prompt_path("review"),
+            prompt_path("polish"),
+            escape_graph_attr(&graph_verify_command),
+        ),
         WorkflowTemplate::Orchestration => format!(
             "digraph {} {{\n    graph [goal=\"{}\"]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    unsupported [label=\"Supervisor Orchestration\", shape=parallelogram, script=\"printf 'repo-level orchestration lanes are executed directly by raspberry supervisor\\n' >&2; exit 1\", max_retries=0]\n    exit [shape=Msquare, label=\"Exit\"]\n\n    start -> unsupported -> exit\n}}\n",
             graph_name(lane),
             goal,
         ),
     }
+}
+
+fn graph_verify_command(lane: &BlueprintLane, verify_command: &str) -> String {
+    normalize_negative_search_proof_command(lane, verify_command)
+}
+
+fn normalize_negative_search_proof_command(lane: &BlueprintLane, verify_command: &str) -> String {
+    let trimmed = verify_command.trim();
+    if !lane_expects_negative_search_proof(lane)
+        || !is_plain_search_command(trimmed)
+        || search_command_handles_no_match(trimmed)
+    {
+        return trimmed.to_string();
+    }
+
+    format!(
+        "(set +e\n{trimmed}\nstatus=$?\nif [ \"$status\" -eq 1 ]; then\n  exit 0\nfi\nexit \"$status\")"
+    )
+}
+
+fn lane_expects_negative_search_proof(lane: &BlueprintLane) -> bool {
+    let text = format!(
+        "{}\n{}\n{}",
+        lane.title,
+        lane.goal,
+        lane.prompt_context.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+
+    [
+        "remove",
+        "removed",
+        "removing",
+        "retire",
+        "retired",
+        "drop legacy",
+        "dropped legacy",
+        "eliminate",
+        "eliminated",
+        "forbid",
+        "forbidden",
+        "without",
+        "free of",
+        "clean",
+        "forbidden-language",
+        "legacy workflow doctrine",
+        "legacy control plane",
+        "drift back",
+    ]
+    .iter()
+    .any(|cue| text.contains(cue))
+}
+
+fn is_plain_search_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.contains('\n') {
+        return false;
+    }
+    if !(trimmed.starts_with("rg ")
+        || trimmed.starts_with("grep ")
+        || trimmed.starts_with("git grep "))
+    {
+        return false;
+    }
+    !trimmed.contains("&&")
+        && !trimmed.contains("||")
+        && !trimmed.contains(';')
+        && !trimmed.starts_with('!')
+}
+
+fn search_command_handles_no_match(command: &str) -> bool {
+    command.contains("|| true")
+        || command.contains("||true")
+        || command.contains("status=$?")
+        || command.starts_with('!')
 }
 
 fn profile_max_visits(profile: &str) -> u32 {
@@ -3454,6 +3543,10 @@ fn implementation_verify_command(
         return "true".to_string();
     }
     commands = normalize_verify_commands(lane, commands);
+    commands = commands
+        .into_iter()
+        .map(|command| normalize_negative_search_proof_command(lane, &command))
+        .collect();
 
     format!("set -e\n{}", commands.join("\n"))
 }
@@ -4991,6 +5084,83 @@ The validator binary should emit structured log lines.
     }
 
     #[test]
+    fn implementation_verify_command_normalizes_negative_search_proof_for_removal_lane() {
+        let lane = BlueprintLane {
+            id: "raspberry-first-cutover-doctrine-guardrails".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Remove legacy workflow doctrine".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("doctrine-guardrails".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Remove legacy workflow doctrine from active surfaces.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec![
+                "rg -n \"Symphony|Nightwatch|strategy reconciler\" AGENTS.md GOAL.md README.md docs/README.md DEPLOYMENT.md".to_string(),
+            ],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert!(command.contains("rg -n \"Symphony|Nightwatch|strategy reconciler\""));
+        assert!(command.contains("status=$?"));
+        assert!(command.contains("if [ \"$status\" -eq 1 ]"));
+    }
+
+    #[test]
+    fn implementation_verify_command_keeps_positive_search_proof_unchanged() {
+        let lane = BlueprintLane {
+            id: "token-proof-ui".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Verify token lineage surface".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("token-proof-ui".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Verify the token lineage surface remains present.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec!["rg -n \"token-lineage\" web/app/token/page.tsx".to_string()],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert_eq!(
+            command,
+            "set -e\nrg -n \"token-lineage\" web/app/token/page.tsx"
+        );
+    }
+
+    #[test]
     fn implementation_verify_command_normalizes_bootstrap_pair_and_control_flow() {
         let lane = BlueprintLane {
             id: "command-center-client-implement".to_string(),
@@ -5529,6 +5699,72 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("review -> fixup"));
         assert!(graph.contains("audit -> fixup"));
         assert!(!graph.contains("label=\"Settle\""));
+    }
+
+    #[test]
+    fn repo_local_orchestration_workflow_uses_artifact_flow() {
+        let lane = BlueprintLane {
+            id: "host-proof-bundles".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Orchestration,
+            title: "Refresh host proof bundles".to_string(),
+            family: "orchestration".to_string(),
+            workflow_family: Some("orchestration".to_string()),
+            slug: Some("host-proof-bundles".to_string()),
+            template: WorkflowTemplate::Orchestration,
+            goal: "Refresh host proof bundles for deploy parity.".to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+
+        assert!(graph.contains("Specify"));
+        assert!(graph.contains("Review"));
+        assert!(graph.contains("Polish"));
+        assert!(graph.contains("Verify"));
+        assert!(!graph.contains("Supervisor Orchestration"));
+    }
+
+    #[test]
+    fn child_program_orchestration_workflow_keeps_supervisor_stub() {
+        let lane = BlueprintLane {
+            id: "program".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Orchestration,
+            title: "Child Program".to_string(),
+            family: "program".to_string(),
+            workflow_family: Some("program".to_string()),
+            slug: Some("child-program".to_string()),
+            template: WorkflowTemplate::Orchestration,
+            goal: "Coordinate the child program.".to_string(),
+            managed_milestone: "coordinated".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: Some(PathBuf::from("malinka/programs/child.yaml")),
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+
+        assert!(graph.contains("Supervisor Orchestration"));
     }
 
     #[test]
