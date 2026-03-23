@@ -175,6 +175,24 @@ fn is_readonly_stage(node_id: &str) -> bool {
     )
 }
 
+fn stage_system_prompt(node_id: &str) -> Option<&'static str> {
+    match node_id {
+        "implement" | "specify" => Some(
+            "You are executing the IMPLEMENT stage of an automated pipeline. Your output will be verified by a shell script that runs proof commands (cargo test, cargo check, etc). You MUST: (1) read existing code before implementing — don't assume not implemented, (2) implement functionality completely — placeholders and stubs waste time, (3) run the proof commands from your goal to verify your changes work, (4) write the required durable artifacts (spec.md, review.md). Tests must verify behavioral outcomes, not just compilation."
+        ),
+        "fixup" | "polish" => Some(
+            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. If failures are from code outside your lane's surfaces, fix them minimally. Do not rewrite artifacts from scratch — fix what's broken."
+        ),
+        "challenge" => Some(
+            "You are executing an ADVERSARIAL CHALLENGE. Your job: find gaps, scope drift, weak proof, and stub implementations. Check whether tests actually verify behavioral outcomes or are trivially passable. Do NOT approve — flag issues for the review stage. Write findings to verification.md."
+        ),
+        "review" => Some(
+            "You are executing the REVIEW stage with merge authority. Read quality.md (machine-generated). Read the implementation and verification artifacts. Write promotion.md with merge_ready: yes|no. Only approve when proof gates pass, tests verify real behavior, and no stubs or placeholders remain."
+        ),
+        _ => None,
+    }
+}
+
 /// Build the CLI command string for a given provider.
 ///
 /// The `prompt_file` is the path to a file containing the prompt text, which
@@ -186,6 +204,7 @@ pub fn cli_command_for_provider(
     prompt_file: &str,
     reasoning_effort: Option<&str>,
     readonly: bool,
+    system_prompt: Option<&str>,
 ) -> String {
     // Use `cat | command` instead of `command < file` because the background
     // launch wrapper (`setsid sh -c '...' </dev/null`) can clobber stdin
@@ -215,8 +234,12 @@ pub fn cli_command_for_provider(
             } else {
                 PI_TOOLS_FULL
             };
+            let sys_prompt_flag = match system_prompt {
+                Some(text) => format!(" --append-system-prompt '{}'", text.replace('\'', "'\\''")),
+                None => String::new(),
+            };
             format!(
-                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools {tools}{model_flag}{thinking_flag} \"$prompt\""
+                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools {tools}{model_flag}{thinking_flag}{sys_prompt_flag} \"$prompt\""
             )
         }
         // --yolo: auto-approve all tool calls
@@ -1195,12 +1218,14 @@ impl CodergenBackend for AgentCliBackend {
             ensure_cli(cli, provider, sandbox, emitter).await?;
             let reasoning = node.reasoning_effort();
             let readonly = is_readonly_stage(&node.id);
+            let sys_prompt = stage_system_prompt(&node.id);
             let command = cli_command_for_provider(
                 provider,
                 &model,
                 &shell_quote(&prompt_path),
                 Some(reasoning),
                 readonly,
+                sys_prompt,
             );
 
             write_provider_used_json(
@@ -2259,6 +2284,7 @@ mod tests {
             "/tmp/prompt.txt",
             None,
             false,
+            None,
         );
         assert!(cmd.starts_with("cat /tmp/prompt.txt | codex exec --json --yolo"));
         assert!(cmd.contains("-m gpt-5.3-codex"));
@@ -2272,6 +2298,7 @@ mod tests {
             "/tmp/prompt.txt",
             None,
             false,
+            None,
         );
         assert!(cmd.starts_with("cat /tmp/prompt.txt |"));
         assert!(cmd.contains("claude -p"));
@@ -2288,6 +2315,7 @@ mod tests {
             "/tmp/prompt.txt",
             None,
             false,
+            None,
         );
         assert!(cmd.starts_with("cat /tmp/prompt.txt | gemini -o json --yolo"));
         assert!(cmd.contains("-m gemini-3.1-pro"));
@@ -2301,6 +2329,7 @@ mod tests {
             "/tmp/prompt.txt",
             Some("high"),
             false,
+            None,
         );
         assert!(cmd.starts_with("prompt=\"$(cat /tmp/prompt.txt)\" && pi --provider minimax"));
         assert!(cmd.contains("--mode json -p --no-session"));
@@ -2317,6 +2346,7 @@ mod tests {
             "/tmp/prompt.txt",
             Some("medium"),
             false,
+            None,
         );
         assert!(cmd.contains("--thinking medium"));
 
@@ -2326,6 +2356,7 @@ mod tests {
             "/tmp/prompt.txt",
             None,
             false,
+            None,
         );
         assert!(cmd.contains("--thinking high"));
     }
@@ -2338,6 +2369,7 @@ mod tests {
             "/tmp/prompt.txt",
             Some("high"),
             true,
+            None,
         );
         assert!(cmd.contains("--tools read,bash,grep,find,ls"));
         assert!(!cmd.contains("edit"));
@@ -2357,16 +2389,24 @@ mod tests {
 
     #[test]
     fn cli_command_omits_model_when_empty() {
-        let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt", None, false);
+        let cmd = cli_command_for_provider(Provider::OpenAi, "", "/tmp/prompt.txt", None, false,
+            None,
+        );
         assert!(cmd.contains("codex exec --json --yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt", None, false);
+        let cmd = cli_command_for_provider(Provider::Anthropic, "", "/tmp/prompt.txt", None, false,
+            None,
+        );
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(!cmd.contains("--model "));
-        let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt", None, false);
+        let cmd = cli_command_for_provider(Provider::Gemini, "", "/tmp/prompt.txt", None, false,
+            None,
+        );
         assert!(cmd.contains("--yolo"));
         assert!(!cmd.contains("-m "));
-        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt", None, false);
+        let cmd = cli_command_for_provider(Provider::Minimax, "", "/tmp/prompt.txt", None, false,
+            None,
+        );
         assert!(cmd.contains("pi --provider minimax"));
         assert!(!cmd.contains("--model "));
     }
