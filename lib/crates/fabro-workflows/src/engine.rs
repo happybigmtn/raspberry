@@ -1714,11 +1714,14 @@ impl WorkflowRunEngine {
                 .ok_or_else(|| FabroError::engine(format!("node not found: {current_node_id}")))?;
 
             // Always track visit count (used for stage directory naming)
-            let count = loop_state
-                .node_visits
-                .entry(current_node_id.clone())
-                .or_insert(0);
-            *count += 1;
+            let visit_count = {
+                let count = loop_state
+                    .node_visits
+                    .entry(current_node_id.clone())
+                    .or_insert(0);
+                *count += 1;
+                *count
+            };
 
             let node_limit = node
                 .max_visits()
@@ -1726,17 +1729,43 @@ impl WorkflowRunEngine {
                 .filter(|&v| v > 0);
 
             if let Some(limit) = node_limit {
-                if *count >= limit {
-                    tracing::warn!(node = %current_node_id, visits = *count, limit, source = "node", "Node visit limit exceeded");
+                if visit_count >= limit {
+                    // Before terminating, check if there is a fallback_retry_target
+                    // that can try to unblock (e.g., an unblock node with wider scope
+                    // that fixes pre-existing issues outside the lane's surfaces).
+                    if let Some(fallback) = graph
+                        .fallback_retry_target()
+                        .filter(|t| *t != current_node_id && graph.nodes.contains_key(*t))
+                    {
+                        let fb_count = loop_state.node_visits.get(fallback).copied().unwrap_or(0);
+                        let fb_limit = graph
+                            .nodes
+                            .get(fallback)
+                            .and_then(|n| n.max_visits())
+                            .and_then(|v| usize::try_from(v).ok())
+                            .unwrap_or(2);
+                        if fb_count < fb_limit {
+                            tracing::info!(
+                                node = %current_node_id,
+                                visits = visit_count,
+                                limit,
+                                fallback,
+                                "visit limit exceeded, routing to fallback_retry_target"
+                            );
+                            current_node_id = fallback.to_string();
+                            continue;
+                        }
+                    }
+                    tracing::warn!(node = %current_node_id, visits = visit_count, limit, source = "node", "Node visit limit exceeded");
                     return Err(FabroError::engine(format!(
-                        "node \"{}\" visited {count} times (node limit {limit}); run is stuck in a cycle",
+                        "node \"{}\" visited {visit_count} times (node limit {limit}); run is stuck in a cycle",
                         current_node_id
                     )));
                 }
-            } else if graph_max_node_visits > 0 && *count >= graph_max_node_visits {
-                tracing::warn!(node = %current_node_id, visits = *count, limit = graph_max_node_visits, source = "graph", "Node visit limit exceeded");
+            } else if graph_max_node_visits > 0 && visit_count >= graph_max_node_visits {
+                tracing::warn!(node = %current_node_id, visits = visit_count, limit = graph_max_node_visits, source = "graph", "Node visit limit exceeded");
                 return Err(FabroError::engine(format!(
-                    "node \"{}\" visited {count} times (graph limit {graph_max_node_visits}); run is stuck in a cycle",
+                    "node \"{}\" visited {visit_count} times (graph limit {graph_max_node_visits}); run is stuck in a cycle",
                     current_node_id
                 )));
             }
