@@ -1663,14 +1663,36 @@ fn default_verify_command(
     lane: &BlueprintLane,
 ) -> String {
     let artifact_paths = lane_artifact_paths(blueprint, unit_id, lane, Path::new("."));
-    if artifact_paths.is_empty() {
-        return "true".to_string();
-    }
-    artifact_paths
+    let mut parts: Vec<String> = artifact_paths
         .iter()
         .map(|path| format!("test -f {}", path.display()))
-        .collect::<Vec<_>>()
-        .join(" && ")
+        .collect();
+    // Extract proof commands from the lane goal and prompt context so the
+    // verify gate tests functional behavior, not just file existence.
+    for source in [Some(lane.goal.as_str()), lane.prompt_context.as_deref()] {
+        let Some(text) = source else { continue };
+        for heading in ["First proof gate:", "Proof commands:"] {
+            let block = prompt_context_block(text, heading);
+            for line in &block {
+                let candidate = line
+                    .trim()
+                    .trim_start_matches("- ")
+                    .trim()
+                    .trim_matches('`')
+                    .trim();
+                if looks_like_shell_command(candidate) {
+                    let cmd = candidate.to_string();
+                    if !parts.contains(&cmd) {
+                        parts.push(cmd);
+                    }
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        return "true".to_string();
+    }
+    format!("set -e\n{}", parts.join("\n"))
 }
 
 fn diff_blueprints(current: &ProgramBlueprint, desired: &ProgramBlueprint) -> Vec<String> {
@@ -3397,6 +3419,33 @@ fn implementation_verify_command(
         for command in &evidence.smoke_commands {
             if !commands.contains(command) {
                 commands.push(command.clone());
+            }
+        }
+    }
+    // When evidence has no proof commands, extract them from the lane goal and
+    // prompt context.  The blueprint/plan specifies "First proof gate:" and
+    // "Proof commands:" but synth decomposition doesn't always populate
+    // evidence.proof_commands.  Without this fallback, the verify script
+    // degrades to file-existence checks, letting the model satisfy the gate
+    // without running functional tests.
+    if commands.is_empty() {
+        for source in [Some(lane.goal.as_str()), lane.prompt_context.as_deref()] {
+            let Some(text) = source else { continue };
+            for heading in ["First proof gate:", "Proof commands:"] {
+                let block = prompt_context_block(text, heading);
+                for line in &block {
+                    let candidate = line
+                        .trim()
+                        .trim_start_matches("- ")
+                        .trim()
+                        .trim_matches('`')
+                        .trim();
+                    if looks_like_shell_command(candidate)
+                        && !commands.contains(&candidate.to_string())
+                    {
+                        commands.push(candidate.to_string());
+                    }
+                }
             }
         }
     }
