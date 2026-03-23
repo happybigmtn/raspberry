@@ -1379,6 +1379,38 @@ impl CodergenBackend for AgentCliBackend {
 
             let parsed_response = parse_cli_response(provider, &result.stdout)
                 .ok_or_else(|| FabroError::handler("Failed to parse CLI output".to_string()))?;
+            // Detect silent provider failures: pi returns exit 0 with an
+            // empty assistant response on auth errors (401).  Treat as a
+            // retryable provider failure rather than a successful empty run.
+            if parsed_response.text.trim().is_empty()
+                && parsed_response.input_tokens == 0
+                && parsed_response.output_tokens == 0
+            {
+                let detail =
+                    "provider returned empty response with zero tokens (possible auth failure)";
+                let can_fallback = index + 1 < attempt_targets.len()
+                    && cli_failure_is_retryable_for_fallback(detail);
+                if can_fallback {
+                    let next = &attempt_targets[index + 1];
+                    tracing::info!(
+                        from_provider = provider.as_str(),
+                        from_model = model.as_str(),
+                        to_provider = next.provider.as_str(),
+                        to_model = next.model.as_str(),
+                        reason = detail,
+                        "provider fallback activated (silent empty response)"
+                    );
+                    attempt_failures.push(format!(
+                        "{}:{} failed: {detail}",
+                        provider.as_str(),
+                        model
+                    ));
+                    continue;
+                }
+                return Err(FabroError::handler(format!(
+                    "CLI command produced empty response: {detail}"
+                )));
+            }
             write_provider_used_json(
                 stage_dir,
                 ProviderUsedJson {

@@ -362,11 +362,17 @@ pub fn mark_lane_regenerate_noop(
 ) {
     let now = Utc::now();
     let record = ensure_lane_record(state, lane_key, run_config);
+    // Only update last_finished_at on the FIRST noop transition.  Repeated
+    // noop marks (from evolve running every cycle) must not reset the
+    // SurfaceBlocked cooldown timer, otherwise the lane can never be retried.
+    let already_noop = record.failure_kind == Some(FailureKind::RegenerateNoop);
     record.status = LaneExecutionStatus::Failed;
     record.current_run_id = None;
     record.current_fabro_run_id = None;
     record.current_stage_label = None;
-    record.last_finished_at = Some(now);
+    if !already_noop {
+        record.last_finished_at = Some(now);
+    }
     record.last_exit_status = Some(1);
     record.last_error = Some(detail.to_string());
     record.failure_kind = Some(FailureKind::RegenerateNoop);
