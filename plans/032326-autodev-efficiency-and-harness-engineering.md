@@ -250,3 +250,116 @@ rather than quota-exhaustion incidents.
 | 13 | Dynamic stall timeouts | Low | Medium | §3e | |
 | 14 | Provider fallback telemetry | Low | Small | §5d | DONE |
 | 15 | Integration lane wiring | Low | Small | §3f | |
+
+---
+
+## Round 2: Quality and Harness Review (2026-03-23 afternoon)
+
+Live run state: 25 complete, 4 running, 6 ready. MiniMax handling all stages
+via pi. Three-agent review uncovered critical issues.
+
+### Round 2 Current State
+
+| Metric | Before Round 2 | After Round 2 Fixes |
+|--------|---------------|---------------------|
+| Complete | 25 | 25 (in-progress) |
+| Running | 5 | 4 |
+| Quality gate scan_placeholder | DEAD CODE | Active on owned surfaces |
+| cargo run verify scripts | Hang forever (30min stall) | cargo build (compile-only) |
+| System prompts | 4 stages | 6 stages (added deep_review, escalation) |
+| Plan prompts | Miss full context | Always include Full Slice Contract |
+| Catalog MiniMax-M2.7 (anthropic) | Dead entry with wrong provider | Removed |
+| Pi launch quoting | Broken (pid="") | Fixed via heredoc script |
+| MiniMax alias shadowing | minimax-m2.5 shadows m2.7 | Fixed |
+
+### Round 2 Fixes (DONE)
+
+| # | Fix | Section | Status |
+|---|-----|---------|--------|
+| R2.1 | Fix scan_placeholder() dead code in quality gates | §6a | DONE |
+| R2.2 | Fix cargo run verify scripts → cargo build | §6b | DONE |
+| R2.3 | Add deep_review/escalation system prompts | §6c | DONE |
+| R2.4 | Plan prompts always include full slice context | §6d | DONE |
+| R2.5 | Remove dead MiniMax-M2.7 catalog entry | §6e | DONE |
+| R2.6 | Fix pi launch shell quoting (heredoc) | §6f | DONE |
+| R2.7 | Fix MiniMax-M2.7-highspeed alias shadowing | §6g | DONE |
+| R2.8 | Remove Kimi K2.5 from review (Codex incompatible) | §6h | DONE |
+
+### Round 2 Findings (TODO - Next Round)
+
+| # | Finding | Impact | Effort | Status |
+|---|---------|--------|--------|--------|
+| R2.9 | Reject no-op lanes in audit gate | Critical | Small | DONE |
+| R2.10 | Chain sibling lanes sharing surfaces | Critical | Medium | DONE (92 deps) |
+| R2.11 | Merge game logic siblings (5→2 lanes/game) | High | Medium | Deferred (chaining solves) |
+| R2.12 | Sequence test lanes after implementation | High | Medium | DONE (via R2.10) |
+| R2.13 | Raise max_parallel to 5-6 after surface fixes | Medium | Small | |
+| R2.14 | Add routing JSON instructions to system prompts | Medium | Small | N/A (exit codes) |
+| R2.15 | Remove dead challenge→review edges in hardened graphs | Low | Small | |
+| R3.1 | Enforce surface ownership in audit gate | Critical | Medium | DONE |
+| R3.2 | Scope verify scripts (cargo test --workspace → -p crate) | Critical | Medium | DONE |
+| R3.3 | Anti-no-op implement system prompt | High | Small | DONE |
+| R3.4 | Surface ownership in fixup system prompt | High | Small | DONE |
+| R3.5 | Review stage git diff check instruction | High | Small | DONE |
+| R4.1 | Implement prompt: anti-behavioral-stub language | Critical | Small | DONE |
+| R4.2 | Challenge prompt: hunt hollow implementations | Critical | Small | DONE |
+| R4.3 | Plan prompt: require full lifecycle tests | High | Small | DONE |
+| R4.4 | Quality gate: test quality ratio check | High | Medium | DONE |
+| R4.5 | AGENTS.md: scoped commands, surface ownership | Medium | Small | DONE |
+| R4.6 | Audit gate: quality.md hard gate | Medium | Small | DONE |
+
+---
+
+## §6: Round 2 Details
+
+### 6a. Quality Gate scan_placeholder() (DONE)
+
+**File:** `lib/crates/fabro-synthesis/src/render.rs`
+
+The quality gate shell script defined `scan_placeholder()` but called `true`
+instead of invoking it on owned surfaces. Fixed by parsing "Owned surfaces:"
+from the lane goal text and generating `scan_placeholder 'path'` calls.
+
+### 6b. Cargo Run Verify Scripts (DONE)
+
+**File:** `lib/crates/fabro-synthesis/src/render.rs` (default_verify_command)
+
+Proof commands starting with `cargo run` are replaced with `cargo build` during
+extraction, preventing 30-minute hangs on server/TUI lanes. 10 legacy lanes
+with `cargo run` baked into blueprint goals still need re-decomposition.
+
+### 6c. Deep Review/Escalation System Prompts (DONE)
+
+**File:** `lib/crates/fabro-workflows/src/backend/cli.rs` (stage_system_prompt)
+
+Added match arms for `deep_review` (adversarial deep review with file/line
+citations) and `escalation` (backward-compat review for foundation code).
+
+### 6d. Plan Prompt Full Context (DONE)
+
+**File:** `lib/crates/fabro-synthesis/src/render.rs` (render_implementation_plan_prompt)
+
+Changed from only including context when no structured sections exist, to
+always including the full slice contract. MiniMax writing code now sees the
+same concrete expectations (test vectors, interface specs) that the reviewer
+sees.
+
+### 6e-6h. Catalog/Config Fixes (DONE)
+
+- Removed dead `MiniMax-M2.7` entry under `provider: "anthropic"` from catalog.json
+- Removed `MiniMax-M2.7-highspeed` alias from `minimax-m2.5` (was shadowing real entry)
+- Removed Kimi K2.5 from review chain (Codex CLI uses /v1/responses, Kimi only supports /v1/chat/completions)
+- Fixed shell quoting in pi launch: heredoc script instead of nested single quotes
+
+### 6i. Reject No-Op Lanes in Audit Gate (DONE)
+
+**File:** `lib/crates/fabro-synthesis/src/render.rs` (implementation_audit_command)
+
+**Finding:** MiniMax occasionally declares "no-op slice" and writes promotion.md
+with `merge_ready: yes` without implementing anything. The quality gate passes
+(nothing to scan) and the audit passes (promotion.md is well-formed). The lane
+completes with zero code changes.
+
+**Fix:** Added a git-diff guard to the audit script that requires at least one
+file to be changed. Lanes that genuinely need no code changes (rare) will fail
+at audit and get fixup'd — better than silently approving empty work.

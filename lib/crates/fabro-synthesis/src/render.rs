@@ -488,6 +488,15 @@ fn render_lane(
         .verify_command
         .clone()
         .unwrap_or_else(|| default_verify_command(blueprint, unit_id, lane));
+    // Scope workspace-wide test commands to lane surfaces to prevent agents
+    // from modifying unrelated code to make workspace tests pass.
+    let verify_command = if verify_command.contains("cargo test --workspace") {
+        let surfaces = extract_owned_surfaces(&lane.goal);
+        let scoped = scope_cargo_test_to_surfaces("cargo test --workspace", &surfaces);
+        verify_command.replace("cargo test --workspace", &scoped)
+    } else {
+        verify_command
+    };
     let health_command = lane
         .health_command
         .clone()
@@ -555,7 +564,8 @@ fn write_manifest(
     layout: &PackageLayout<'_>,
 ) -> Result<PathBuf, RenderError> {
     let manifest_path = layout.manifest_path();
-    let manifest = ManifestOut::from_blueprint(blueprint);
+    let mut manifest = ManifestOut::from_blueprint(blueprint);
+    chain_sibling_surfaces(&mut manifest, blueprint);
     let yaml =
         serde_yaml::to_string(&manifest).map_err(|source| RenderError::ManifestSerialize {
             path: manifest_path.clone(),
@@ -832,17 +842,54 @@ fn implementation_quality_command(
     for surface in &touched_surfaces {
         surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
     }
+    // Extract owned surfaces from the goal text ("Owned surfaces:\n- `path`")
+    for source in [&lane.goal] {
+        let mut in_section = false;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Owned surfaces:") {
+                in_section = true;
+                continue;
+            }
+            if in_section {
+                if trimmed.is_empty() || (!trimmed.starts_with('-') && !trimmed.starts_with('*')) {
+                    break;
+                }
+                let path = trimmed
+                    .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace())
+                    .trim_matches('`')
+                    .trim();
+                if !path.is_empty() {
+                    surface_scan_lines
+                        .push(format!("scan_placeholder {}", shell_single_quote(path)));
+                }
+            }
+        }
+    }
     if surface_scan_lines.is_empty() {
         surface_scan_lines.push("true".to_string());
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*display\\.contains\\|assert.*format!\\|assert_eq.*format' -i -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
         surface_scan = surface_scan_lines.join("\n"),
         touched_surface_section = touched_surface_section,
+        surface_scan_dirs = {
+            let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
+                .iter()
+                .filter_map(|s| {
+                    std::path::Path::new(s)
+                        .parent()
+                        .map(|p| p.display().to_string())
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if dirs.is_empty() { ".".to_string() } else { dirs.join(" ") }
+        },
     )
 }
 
@@ -1002,6 +1049,9 @@ fn render_prompt(kind: &str, lane: &BlueprintLane) -> String {
         let health_surfaces = prompt_context_block(context, "Service/health surfaces to preserve:");
         let observability_surfaces =
             prompt_context_block(context, "Observability surfaces to preserve:");
+        // Acceptance criteria and required tests are extracted inside
+        // render_implementation_plan_prompt from the context string directly,
+        // following the Ralph playbook pattern of acceptance-driven backpressure.
         let implementation_artifact_expectations = implementation_artifact_expectations(
             &implement_now,
             &touch_first,
@@ -1118,18 +1168,6 @@ fn render_implementation_plan_prompt(
     implementation_artifact_expectations: &[String],
     verification_artifact_expectations: &[String],
 ) -> String {
-    let has_structured_sections = !implement_now.is_empty()
-        || !touch_first.is_empty()
-        || !build_slice.is_empty()
-        || !setup_first.is_empty()
-        || !first_proof_gate.is_empty()
-        || !first_health_gate.is_empty()
-        || !execution_guidance.is_empty()
-        || !manual_notes.is_empty()
-        || !health_surfaces.is_empty()
-        || !observability_surfaces.is_empty()
-        || !implementation_artifact_expectations.is_empty()
-        || !verification_artifact_expectations.is_empty();
     let mut output = format!(
         "# {} — Plan\n\nLane: `{}`\n\nGoal:\n- {}\n",
         lane.title, lane.id, lane.goal
@@ -1171,14 +1209,29 @@ fn render_implementation_plan_prompt(
         verification_artifact_expectations,
         false,
     );
+    // Extract acceptance criteria and required tests from context (Ralph playbook pattern)
+    let ac_block = prompt_context_block(context, "Acceptance criteria:");
+    let rt_block = prompt_context_block(context, "Required tests:");
+    if !ac_block.is_empty() {
+        output.push_str("\n\nAcceptance criteria (your implementation MUST satisfy ALL of these):");
+        for line in &ac_block {
+            output.push_str(&format!("\n- {}", line.trim_start_matches("- ").trim()));
+        }
+    }
+    if !rt_block.is_empty() {
+        output.push_str("\n\nRequired tests (the challenge stage will verify these exist):");
+        for line in &rt_block {
+            output.push_str(&format!("\n- {}", line.trim_start_matches("- ").trim()));
+        }
+    }
     output.push_str(
-        "\n\nImplementation quality:\n- implement functionality completely — placeholders and stubs waste time redoing the same work\n- if the proof commands include `cargo test`, the tests must verify behavioral outcomes (given X input, assert Y output), not just compilation\n- do not write tests that trivially pass without real logic behind them\n- the verify gate will run the proof commands; if they don't test real behavior, the review stage will reject\n",
+        "\n\nImplementation quality:\n- implement functionality completely — every function must do real work, not return defaults or skip the action\n- BEHAVIORAL STUBS ARE WORSE THAN COMPILATION FAILURES: a function that compiles but does not perform its stated purpose will be caught by the adversarial challenge stage and rejected\n- tests must verify behavioral outcomes (given X input, assert Y output), not just compilation or derive macros (Display, Clone, PartialEq)\n- include at least one FULL LIFECYCLE test that drives from initial state through multiple actions to terminal state\n- do not duplicate tests — one test per behavior, not five tests for the same Display output\n",
     );
     output.push_str(
         "\nStage ownership:\n- do not write `promotion.md` during Plan/Implement\n- do not hand-author `quality.md`; it is regenerated by the Quality Gate\n- `promotion.md` is owned by the Review stage only\n- keep source edits inside the named slice and touched surfaces\n",
     );
-    if !has_structured_sections {
-        output.push_str(&format!("\n\nCurrent Slice Contract:\n{}\n", context));
+    if !context.is_empty() {
+        output.push_str(&format!("\n\nFull Slice Contract:\n{}\n", context));
     }
     output
 }
@@ -1684,7 +1737,19 @@ fn default_verify_command(
                     .trim_matches('`')
                     .trim();
                 if looks_like_shell_command(candidate) {
-                    let cmd = candidate.to_string();
+                    let cmd = if candidate.starts_with("cargo run") {
+                        candidate.replacen("cargo run", "cargo build", 1)
+                    } else if candidate == "cargo test --workspace"
+                        || candidate == "cargo test --workspace --"
+                    {
+                        // Scope workspace-wide tests to owned surfaces' crates
+                        // to prevent agents from "fixing" unrelated failures by
+                        // deleting production code.
+                        let surfaces = extract_owned_surfaces(&lane.goal);
+                        scope_cargo_test_to_surfaces(candidate, &surfaces)
+                    } else {
+                        candidate.to_string()
+                    };
                     if !parts.contains(&cmd) {
                         parts.push(cmd);
                     }
@@ -1696,6 +1761,37 @@ fn default_verify_command(
         return "true".to_string();
     }
     format!("set -e\n{}", parts.join("\n"))
+}
+
+/// Replace `cargo test --workspace` with per-crate test commands derived from
+/// owned surfaces. E.g., `crates/casino-core/src/baccarat.rs` → `cargo test -p casino-core`.
+fn scope_cargo_test_to_surfaces(original: &str, surfaces: &[String]) -> String {
+    if surfaces.is_empty() {
+        return original.to_string();
+    }
+    let mut crate_names: Vec<String> = surfaces
+        .iter()
+        .filter_map(|surface| {
+            // Extract crate name from paths like "crates/casino-core/src/..."
+            // or "robopoker/crates/auth/src/..."
+            let parts: Vec<&str> = surface.split('/').collect();
+            parts
+                .iter()
+                .position(|&p| p == "crates" || p == "bin")
+                .and_then(|idx| parts.get(idx + 1))
+                .map(|name| name.to_string())
+        })
+        .collect();
+    crate_names.sort();
+    crate_names.dedup();
+    if crate_names.is_empty() {
+        return original.to_string();
+    }
+    crate_names
+        .iter()
+        .map(|name| format!("cargo test -p {name}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn diff_blueprints(current: &ProgramBlueprint, desired: &ProgramBlueprint) -> Vec<String> {
@@ -2969,7 +3065,89 @@ fn implementation_audit_command(
         .collect::<Vec<_>>()
         .join(" && ");
 
-    format!("{artifact_checks} && {promotion_command}")
+    // Reject no-op lanes: require at least one source file changed.
+    let noop_guard = "test \"$(git diff --name-only HEAD | wc -l)\" -gt 0 || test \"$(git diff --cached --name-only | wc -l)\" -gt 0";
+
+    // Surface ownership enforcement: reject changes outside owned surfaces.
+    // Agents must not modify files outside their declared scope — this prevents
+    // destructive behavior where agents delete unrelated production code to
+    // make workspace-wide tests pass.
+    let owned_surfaces = extract_owned_surfaces(&lane.goal);
+    let surface_guard = if owned_surfaces.is_empty() {
+        String::new()
+    } else {
+        // Build allowed path prefixes from owned surfaces (use parent dirs for .rs files)
+        let mut allowed: Vec<String> = owned_surfaces
+            .iter()
+            .map(|s| {
+                // Allow the surface itself and its parent directory
+                if s.contains('.') {
+                    // File path — allow file and parent dir
+                    let parent = std::path::Path::new(s)
+                        .parent()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    format!("{s}|{parent}/")
+                } else {
+                    // Directory path
+                    format!("{s}/|{s}")
+                }
+            })
+            .collect();
+        // Always allow output artifacts
+        allowed.push("outputs/".to_string());
+        allowed.push("promotion.md".to_string());
+        allowed.push("quality.md".to_string());
+        allowed.push("deep-review-findings.md".to_string());
+        allowed.push("verification.md".to_string());
+        allowed.push("escalation-verdict.md".to_string());
+        allowed.push("spec.md".to_string());
+        allowed.push("review.md".to_string());
+        allowed.push("implementation.md".to_string());
+
+        let pattern = allowed.join("|");
+        // Check that every changed file matches at least one allowed pattern
+        format!(
+            " && {{ changed=$(git diff --name-only HEAD 2>/dev/null); \
+            if [ -n \"$changed\" ]; then \
+            violations=$(echo \"$changed\" | grep -Ev '{pattern}' || true); \
+            if [ -n \"$violations\" ]; then \
+            echo \"SURFACE VIOLATION: changes outside owned surfaces:\"; \
+            echo \"$violations\"; \
+            exit 1; fi; fi; }}"
+        )
+    };
+
+    // Hard quality gate: quality.md must say quality_ready: yes.
+    // Prevents review agents from overriding machine-detected quality issues.
+    let quality_hard_gate = " && grep -Eq '^quality_ready: yes$' quality.md";
+
+    format!("{artifact_checks} && {promotion_command} && {noop_guard}{quality_hard_gate}{surface_guard}")
+}
+
+fn extract_owned_surfaces(goal: &str) -> Vec<String> {
+    let mut surfaces = Vec::new();
+    let mut in_section = false;
+    for line in goal.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Owned surfaces:") {
+            in_section = true;
+            continue;
+        }
+        if in_section {
+            if trimmed.is_empty() || (!trimmed.starts_with('-') && !trimmed.starts_with('*')) {
+                break;
+            }
+            let path = trimmed
+                .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace())
+                .trim_matches('`')
+                .trim();
+            if !path.is_empty() {
+                surfaces.push(path.to_string());
+            }
+        }
+    }
+    surfaces
 }
 
 fn lane_review_artifact_path(
@@ -5980,6 +6158,79 @@ impl<'a> PackageLayout<'a> {
             .join("prompts")
             .join(lane.workflow_family())
             .join(lane.slug())
+    }
+}
+
+/// Chain sibling lanes that share the same owned source file so they execute
+/// sequentially instead of in parallel. Without this, two agents writing the
+/// same `.rs` file in separate worktrees produce guaranteed merge conflicts.
+fn chain_sibling_surfaces(manifest: &mut ManifestOut, blueprint: &ProgramBlueprint) {
+    use std::collections::HashMap;
+
+    // Build surface → ordered list of (unit_id, lane_id, managed_milestone)
+    let mut surface_to_lanes: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for unit in &blueprint.units {
+        for lane in &unit.lanes {
+            let mut in_section = false;
+            for line in lane.goal.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("Owned surfaces:") {
+                    in_section = true;
+                    continue;
+                }
+                if in_section {
+                    if trimmed.is_empty()
+                        || (!trimmed.starts_with('-') && !trimmed.starts_with('*'))
+                    {
+                        break;
+                    }
+                    let path = trimmed
+                        .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace())
+                        .trim_matches('`')
+                        .trim();
+                    if !path.is_empty() {
+                        surface_to_lanes.entry(path.to_string()).or_default().push((
+                            unit.id.clone(),
+                            lane.id.clone(),
+                            lane.managed_milestone.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // For each surface with 2+ lanes, chain them: lane[1] depends on lane[0], etc.
+    let mut injected = 0;
+    for (_surface, lanes) in &surface_to_lanes {
+        if lanes.len() < 2 {
+            continue;
+        }
+        for pair in lanes.windows(2) {
+            let (prev_unit, _prev_lane, prev_milestone) = &pair[0];
+            let (cur_unit, cur_lane, _) = &pair[1];
+
+            let dep = raspberry_supervisor::manifest::LaneDependency {
+                unit: prev_unit.clone(),
+                lane: None,
+                milestone: Some(prev_milestone.clone()),
+            };
+
+            // Find the manifest unit+lane and add the dependency
+            if let Some(unit) = manifest.units.iter_mut().find(|u| u.id == *cur_unit) {
+                if let Some(lane) = unit.lanes.iter_mut().find(|l| l.id == *cur_lane) {
+                    if !lane.depends_on.iter().any(|d| d.unit == *prev_unit) {
+                        lane.depends_on.push(dep);
+                        injected += 1;
+                    }
+                }
+            }
+        }
+    }
+    if injected > 0 {
+        eprintln!(
+            "[synth] Chained {injected} sibling lane dependencies to prevent surface merge conflicts"
+        );
     }
 }
 

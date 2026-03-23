@@ -400,7 +400,7 @@ mod tests {
             limits: ModelLimits {
                 context_window: 262144,
                 max_output: Some(
-                    16000,
+                    32768,
                 ),
             },
             training: Some(
@@ -409,8 +409,8 @@ mod tests {
             features: ModelFeatures {
                 tools: true,
                 vision: true,
-                reasoning: false,
-                effort: false,
+                reasoning: true,
+                effort: true,
             },
             costs: ModelCosts {
                 input_cost_per_mtok: Some(
@@ -426,6 +426,7 @@ mod tests {
             ),
             aliases: [
                 "kimi",
+                "kimi-for-coding",
             ],
             default: true,
         }
@@ -450,10 +451,10 @@ mod tests {
     }
 
     #[test]
-    fn minimax_m2_7_in_catalog() {
+    fn minimax_m2_7_resolves_to_highspeed() {
         let m = get_model_info("MiniMax-M2.7").unwrap();
-        assert_eq!(m.provider, "anthropic");
-        assert_eq!(m.id, "MiniMax-M2.7");
+        assert_eq!(m.provider, "minimax");
+        assert_eq!(m.id, "MiniMax-M2.7-highspeed");
     }
 
     #[test]
@@ -707,11 +708,10 @@ mod tests {
     }
 
     #[test]
-    fn closest_model_haiku_to_kimi() {
+    fn closest_model_haiku_to_kimi_none() {
         let haiku = get_model_info("claude-haiku-4-5").unwrap();
-        let result = closest_model("kimi", &haiku).unwrap();
-        // kimi-k2.5: no reasoning, vision, tools — matches haiku's caps
-        assert_eq!(result.id, "kimi-k2.5");
+        // kimi-k2.5 has reasoning=true; haiku has reasoning=false — no match
+        assert!(closest_model("kimi", &haiku).is_none());
     }
 
     #[test]
@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(chain[0].provider, "anthropic");
         assert_eq!(chain[0].model, "claude-opus-4-6");
         assert_eq!(chain[1].provider, "minimax");
-        assert_eq!(chain[1].model, "minimax-m2.5");
+        assert_eq!(chain[1].model, "MiniMax-M2.7-highspeed");
     }
 
     #[test]

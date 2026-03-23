@@ -21,16 +21,16 @@ const WRITE_CHAIN: &[ModelTarget] = &[
         model: "MiniMax-M2.7-highspeed",
     },
     ModelTarget {
+        provider: Provider::Kimi,
+        model: "kimi-k2.5",
+    },
+    ModelTarget {
         provider: Provider::Anthropic,
         model: "claude-opus-4-6",
     },
 ];
 
 const REVIEW_CHAIN: &[ModelTarget] = &[
-    ModelTarget {
-        provider: Provider::Kimi,
-        model: "kimi-k2.5",
-    },
     ModelTarget {
         provider: Provider::Minimax,
         model: "MiniMax-M2.7-highspeed",
@@ -45,6 +45,10 @@ const SYNTH_CHAIN: &[ModelTarget] = &[
     ModelTarget {
         provider: Provider::Anthropic,
         model: "claude-opus-4-6",
+    },
+    ModelTarget {
+        provider: Provider::OpenAi,
+        model: "gpt-5.3-codex",
     },
     ModelTarget {
         provider: Provider::Minimax,
@@ -104,8 +108,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn write_profile_is_minimax_with_opus_fallback() {
+    fn write_profile_orders_minimax_kimi_opus() {
         let chain = automation_chain(AutomationProfile::Write);
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].provider, Provider::Minimax);
+        assert_eq!(chain[0].model, "MiniMax-M2.7-highspeed");
+        assert_eq!(chain[1].provider, Provider::Kimi);
+        assert_eq!(chain[1].model, "kimi-k2.5");
+        assert_eq!(chain[2].provider, Provider::Anthropic);
+        assert_eq!(chain[2].model, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn review_profile_orders_minimax_opus() {
+        let chain = automation_chain(AutomationProfile::Review);
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].provider, Provider::Minimax);
         assert_eq!(chain[0].model, "MiniMax-M2.7-highspeed");
@@ -114,22 +130,14 @@ mod tests {
     }
 
     #[test]
-    fn review_profile_orders_kimi_minimax_opus() {
-        let chain = automation_chain(AutomationProfile::Review);
-        assert_eq!(chain.len(), 3);
-        assert_eq!(chain[0].provider, Provider::Kimi);
-        assert_eq!(chain[0].model, "kimi-k2.5");
-        assert_eq!(chain[1].provider, Provider::Minimax);
-        assert_eq!(chain[1].model, "MiniMax-M2.7-highspeed");
-        assert_eq!(chain[2].provider, Provider::Anthropic);
-        assert_eq!(chain[2].model, "claude-opus-4-6");
-    }
-
-    #[test]
-    fn synth_profile_orders_opus_minimax() {
+    fn synth_profile_orders_opus_codex_minimax() {
         let chain = automation_chain(AutomationProfile::Synth);
-        assert_eq!(chain.len(), 2);
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].provider, Provider::Anthropic);
         assert_eq!(chain[0].model, "claude-opus-4-6");
-        assert_eq!(chain[1].model, "MiniMax-M2.7-highspeed");
+        assert_eq!(chain[1].provider, Provider::OpenAi);
+        assert_eq!(chain[1].model, "gpt-5.3-codex");
+        assert_eq!(chain[2].provider, Provider::Minimax);
+        assert_eq!(chain[2].model, "MiniMax-M2.7-highspeed");
     }
 }

@@ -178,16 +178,22 @@ fn is_readonly_stage(node_id: &str) -> bool {
 fn stage_system_prompt(node_id: &str) -> Option<&'static str> {
     match node_id {
         "implement" | "specify" => Some(
-            "You are executing the IMPLEMENT stage of an automated pipeline. Your output will be verified by a shell script that runs proof commands (cargo test, cargo check, etc). You MUST: (1) read existing code before implementing — don't assume not implemented, (2) implement functionality completely — placeholders and stubs waste time, (3) run the proof commands from your goal to verify your changes work, (4) write the required durable artifacts (spec.md, review.md). Tests must verify behavioral outcomes, not just compilation."
+            "You are executing the IMPLEMENT stage of an automated pipeline. RULES: (1) Read existing code before implementing. (2) Implement functionality COMPLETELY. Code that compiles but does nothing is worse than code that fails to compile — the review will catch hollow implementations. (3) Every public function must have real logic, not a stub that returns a default or immediately transitions state without doing work. (4) Write tests that exercise BEHAVIORAL outcomes: given specific input, assert specific output. Tests for Display, Clone, PartialEq derive macros do not count. (5) Include at least one full lifecycle test that drives the system from initial state to terminal state through multiple actions. (6) Run the proof commands from your goal to verify changes work. (7) Write required durable artifacts (spec.md, review.md). ANTI-PATTERNS TO AVOID: returning hardcoded values, marking state as complete without performing the action (e.g. Hit without drawing a card), writing tests that only cover the happy path. The challenge stage will specifically look for functions that compile but do nothing meaningful. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. The audit gate rejects changes outside your scope."
         ),
         "fixup" | "polish" => Some(
-            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. If failures are from code outside your lane's surfaces, fix them minimally. Do not rewrite artifacts from scratch — fix what's broken."
+            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, IGNORE them and focus on your owned files only. Do not delete, modify, or rewrite files outside your scope."
         ),
         "challenge" => Some(
-            "You are executing an ADVERSARIAL CHALLENGE. Your job: find gaps, scope drift, weak proof, and stub implementations. Check whether tests actually verify behavioral outcomes or are trivially passable. Do NOT approve — flag issues for the review stage. Write findings to verification.md."
+            "You are executing an ADVERSARIAL CHALLENGE. SPECIFICALLY CHECK: (1) Functions that compile but do nothing meaningful — e.g. a Hit action that does not draw a card, a settle function that returns hardcoded values. Read every match arm and verify it performs real work. (2) Tests that only verify derive macros (Display, Clone, PartialEq) — count how many tests exercise actual business logic vs formatting. (3) State machines that never reach their terminal state through normal gameplay. Run through the lifecycle mentally: can a user actually play the game from start to finish? (4) Duplicate tests that inflate coverage without testing new behavior. Flag every issue with file:line. Write findings to verification.md. Do NOT approve."
         ),
         "review" => Some(
-            "You are executing the REVIEW stage with merge authority. Read quality.md (machine-generated). Read the implementation and verification artifacts. Write promotion.md with merge_ready: yes|no. Only approve when proof gates pass, tests verify real behavior, and no stubs or placeholders remain."
+            "You are executing the REVIEW stage with merge authority. Read quality.md (machine-generated). Read the implementation and verification artifacts. Write promotion.md with merge_ready: yes|no. Only approve when proof gates pass, tests verify real behavior, and no stubs or placeholders remain. CRITICAL: run `git diff --stat HEAD` to verify actual code changes exist. If no files were changed, set merge_ready: no with reason explaining what implementation is missing."
+        ),
+        "deep_review" => Some(
+            "You are executing an ADVERSARIAL DEEP REVIEW in an automated pipeline. Challenge every trust boundary, input validation, and error path. Verify that tests exercise real behavioral outcomes, not trivial assertions. Check for placeholder debt (todo!, unimplemented!, stub comments). Write your findings to deep-review-findings.md with specific file paths and line numbers."
+        ),
+        "escalation" => Some(
+            "You are executing an ESCALATION REVIEW for code that modifies shared foundation infrastructure. Verify backward compatibility: all downstream consumers must continue to compile and pass tests. Check that public API changes are additive, not breaking. Approve only if all existing tests pass and new interfaces are documented. Write escalation-verdict.md."
         ),
         _ => None,
     }
@@ -1263,9 +1269,10 @@ impl CodergenBackend for AgentCliBackend {
                 );
             }
 
-            let inner_command = format!("export PATH=\"$HOME/.local/bin:$PATH\" && {command}");
+            let inner_command = format!("export PATH=\"$HOME/.local/bin:$PATH\" && {command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}");
+            let script_path = format!("{exit_code_path}.sh");
             let bg_command = format!(
-                "SID=$(command -v setsid || true)\n$SID sh -c '{inner_command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}' </dev/null >/dev/null 2>&1 &\necho $!"
+                "cat > {script_path} << 'FABRO_SCRIPT_EOF'\n{inner_command}\nFABRO_SCRIPT_EOF\nSID=$(command -v setsid || true)\n$SID sh {script_path} </dev/null >/dev/null 2>&1 &\necho $!"
             );
             let launch_start = std::time::Instant::now();
             let launch_env_ref = if launch_env.is_empty() {
