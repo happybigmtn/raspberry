@@ -190,10 +190,33 @@ pub fn execute_selected_lanes(
             ));
         }
 
+        // Join ALL threads before processing results — prevents abandoned
+        // threads running unsupervised if one panics.
+        let mut joined_results = Vec::new();
+        let mut panic_error: Option<DispatchError> = None;
         for (lane_key, handle) in handles {
-            let (lane, is_program_lane, is_integration_lane, output) = handle
-                .join()
-                .map_err(|_| DispatchError::WorkerPanicked { lane: lane_key })?;
+            match handle.join() {
+                Ok(result) => joined_results.push(result),
+                Err(payload) => {
+                    let reason = payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic")
+                        .to_string();
+                    eprintln!("[dispatch] worker thread panicked for lane `{lane_key}`: {reason}");
+                    if panic_error.is_none() {
+                        panic_error = Some(DispatchError::WorkerPanicked { lane: lane_key });
+                    }
+                }
+            }
+        }
+        if let Some(error) = panic_error {
+            return Err(error);
+        }
+
+        // Process results and update state only after all threads succeeded
+        for (lane, is_program_lane, is_integration_lane, output) in joined_results {
             let output = output?;
             if is_integration_lane {
                 mark_lane_finished(&mut state, &lane.lane_key, &lane.run_config, &output);

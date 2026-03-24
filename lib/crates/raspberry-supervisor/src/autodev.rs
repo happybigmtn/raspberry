@@ -254,10 +254,7 @@ fn is_synth_evolve_timeout(error: &AutodevError) -> bool {
     match error {
         AutodevError::FabroFailed {
             step, exit_status, ..
-        } => {
-            (step == "synth evolve" || step == "synth create")
-                && matches!(*exit_status, 124 | 137 | 143)
-        }
+        } => step == "synth create" && matches!(*exit_status, 124 | 137 | 143),
         _ => false,
     }
 }
@@ -1200,23 +1197,37 @@ fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) 
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-    if fetch.map(|s| s.success()).unwrap_or(false) {
-        // Only reset if we're on the main branch and not in a dirty state
-        // that the user is actively working on.
-        let head_branch = Command::new("git")
+    match &fetch {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "[autodev] git fetch origin failed (exit {}), target repo may be stale",
+                s.code().unwrap_or(-1)
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("[autodev] git fetch origin failed to spawn: {e}");
+            return;
+        }
+    }
+    // Only reset if we're on the main branch to avoid clobbering user work.
+    let head_branch = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    if head_branch.as_deref() == Some("main") {
+        let reset = Command::new("git")
             .current_dir(&target_repo)
-            .args(["symbolic-ref", "--short", "HEAD"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        if head_branch.as_deref() == Some("main") {
-            let _ = Command::new("git")
-                .current_dir(&target_repo)
-                .args(["reset", "--hard", "origin/main"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            .args(["reset", "--hard", "origin/main"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if let Err(e) = reset {
+            eprintln!("[autodev] git reset --hard origin/main failed: {e}");
         }
     }
 }

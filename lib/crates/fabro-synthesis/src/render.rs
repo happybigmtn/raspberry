@@ -903,7 +903,7 @@ fn implementation_quality_command(
     }
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*display\\.contains\\|assert.*format!\\|assert_eq.*format' -i -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -1271,22 +1271,36 @@ fn render_implementation_plan_prompt(
 fn prompt_context_block(context: &str, heading: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut capture = false;
+    let mut consecutive_empty = 0u8;
 
     for line in context.lines() {
         let trimmed = line.trim();
-        if capture && trimmed.ends_with(':') && !trimmed.starts_with('-') {
+        // Stop at the next heading (non-list line ending with ':')
+        if capture
+            && trimmed.ends_with(':')
+            && !trimmed.starts_with('-')
+            && !trimmed.starts_with('*')
+        {
             break;
         }
         if trimmed == heading {
             capture = true;
+            consecutive_empty = 0;
             continue;
         }
         if !capture {
             continue;
         }
         if trimmed.is_empty() {
-            break;
+            consecutive_empty += 1;
+            // Allow one blank line within a section for readability;
+            // two consecutive blank lines end the block.
+            if consecutive_empty >= 2 {
+                break;
+            }
+            continue;
         }
+        consecutive_empty = 0;
         lines.push(trimmed.to_string());
     }
 
@@ -3134,7 +3148,7 @@ fn implementation_audit_command(
 
     let artifact_checks = paths
         .iter()
-        .map(|path| format!("test -f {}", path.display()))
+        .map(|path| format!("test -f '{}'", path.display()))
         .collect::<Vec<_>>()
         .join(" && ");
 
@@ -3152,37 +3166,46 @@ fn implementation_audit_command(
     let surface_guard = if owned_surfaces.is_empty() {
         String::new()
     } else {
-        // Build allowed path prefixes from owned surfaces (use parent dirs for .rs files)
+        // Build allowed path prefixes from owned surfaces (use parent dirs for .rs files).
+        // Escape regex metacharacters so surface paths are matched literally.
+        let escape_grep = |s: &str| -> String {
+            s.chars()
+                .map(|c| match c {
+                    '.' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '*' | '?' | '^' | '$'
+                    | '\\' => {
+                        format!("\\{c}")
+                    }
+                    _ => c.to_string(),
+                })
+                .collect()
+        };
         let mut allowed: Vec<String> = owned_surfaces
             .iter()
             .map(|s| {
-                // Allow the surface itself and its parent directory
+                let esc = escape_grep(s);
                 if s.contains('.') {
-                    // File path — allow file and parent dir
                     let parent = std::path::Path::new(s)
                         .parent()
-                        .map(|p| p.display().to_string())
+                        .map(|p| escape_grep(&p.display().to_string()))
                         .unwrap_or_default();
-                    format!("{s}|{parent}/")
+                    format!("{esc}|{parent}/")
                 } else {
-                    // Directory path
-                    format!("{s}/|{s}")
+                    format!("{esc}/|{esc}")
                 }
             })
             .collect();
-        // Always allow output artifacts
+        // Always allow output artifacts (these are safe literal patterns)
         allowed.push("outputs/".to_string());
-        allowed.push("promotion.md".to_string());
-        allowed.push("quality.md".to_string());
-        allowed.push("deep-review-findings.md".to_string());
-        allowed.push("verification.md".to_string());
-        allowed.push("escalation-verdict.md".to_string());
-        allowed.push("spec.md".to_string());
-        allowed.push("review.md".to_string());
-        allowed.push("implementation.md".to_string());
+        allowed.push("promotion\\.md".to_string());
+        allowed.push("quality\\.md".to_string());
+        allowed.push("deep-review-findings\\.md".to_string());
+        allowed.push("verification\\.md".to_string());
+        allowed.push("escalation-verdict\\.md".to_string());
+        allowed.push("spec\\.md".to_string());
+        allowed.push("review\\.md".to_string());
+        allowed.push("implementation\\.md".to_string());
 
         let pattern = allowed.join("|");
-        // Check that every changed file matches at least one allowed pattern.
         // Use merge-base to scope to this run's commits — the worktree inherits
         // prior integrate commits whose files must not trigger violations.
         format!(

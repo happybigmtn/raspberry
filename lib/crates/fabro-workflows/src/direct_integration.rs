@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::manifest::Manifest as RunManifest;
 
 const DIRECT_INTEGRATION_LOCK_WAIT_SECS: u64 = 30;
+const STALE_LOCK_SECS: u64 = 300;
 const REMOTE_NAME: &str = "origin";
 const DEFAULT_TARGET_BRANCH: &str = "origin/HEAD";
 
@@ -132,7 +133,7 @@ fn run_integration_worktree(
     ) {
         Ok(output) => output,
         Err(DirectIntegrationError::Git { message, .. }) if is_merge_conflict_message(&message) => {
-            resolve_lane_owned_output_conflicts(request, worktree_path, source_ref)?
+            resolve_lane_owned_output_conflicts(request, worktree_path, source_ref, base_ref)?
         }
         Err(error) => return Err(error),
     };
@@ -229,6 +230,7 @@ fn resolve_lane_owned_output_conflicts(
     request: &DirectIntegrationRequest,
     worktree_path: &Path,
     source_ref: &str,
+    base_ref: &str,
 ) -> Result<GitOutput, DirectIntegrationError> {
     let conflicted = conflicted_paths(worktree_path)?;
     if conflicted.is_empty() {
@@ -265,7 +267,7 @@ fn resolve_lane_owned_output_conflicts(
             run_git(
                 worktree_path,
                 "checkout target for non-owned",
-                ["checkout", "HEAD", "--", path.to_string_lossy().as_ref()],
+                ["checkout", base_ref, "--", path.to_string_lossy().as_ref()],
             )?;
             target_resolved.push(path.display().to_string());
         }
@@ -355,6 +357,18 @@ fn acquire_integration_lock(repo: &Path) -> Result<IntegrationLock, DirectIntegr
         {
             Ok(_) => return Ok(IntegrationLock { path: lock_path }),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                // Remove stale locks left by crashed processes
+                if let Ok(meta) = fs::metadata(&lock_path) {
+                    let is_stale = meta
+                        .modified()
+                        .ok()
+                        .and_then(|m| m.elapsed().ok())
+                        .is_some_and(|age| age >= Duration::from_secs(STALE_LOCK_SECS));
+                    if is_stale {
+                        let _ = fs::remove_file(&lock_path);
+                        continue;
+                    }
+                }
                 if started.elapsed() >= Duration::from_secs(DIRECT_INTEGRATION_LOCK_WAIT_SECS) {
                     return Err(DirectIntegrationError::LockTimeout { path: lock_path });
                 }
