@@ -45,25 +45,28 @@ pub struct ReconcileReport {
 
 pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderError> {
     validate_blueprint(Path::new("<render>"), req.blueprint)?;
-    let layout = PackageLayout::new(req.blueprint, req.target_repo);
+    // Inject auto-generated workspace-verify lanes for units with enough children
+    let augmented = inject_workspace_verify_lanes(req.blueprint);
+    let blueprint = &augmented;
+    let layout = PackageLayout::new(blueprint, req.target_repo);
     let mut written_files = Vec::new();
     if layout.manifest_path().exists() {
         if let Ok(current) = crate::blueprint::import_existing_package(ImportRequest {
             target_repo: req.target_repo,
-            program: &req.blueprint.program.id,
+            program: &blueprint.program.id,
         }) {
-            remove_obsolete_lane_files(&current, req.blueprint, req.target_repo)?;
+            remove_obsolete_lane_files(&current, blueprint, req.target_repo)?;
         }
     }
 
-    for unit in &req.blueprint.units {
+    for unit in &blueprint.units {
         for lane in &unit.lanes {
-            let files = render_lane(req.blueprint, &layout, &unit.id, lane)?;
+            let files = render_lane(blueprint, &layout, &unit.id, lane)?;
             written_files.extend(files);
         }
     }
 
-    written_files.push(write_manifest(req.blueprint, &layout)?);
+    written_files.push(write_manifest(blueprint, &layout)?);
     Ok(RenderReport { written_files })
 }
 
@@ -202,6 +205,171 @@ fn augment_with_implementation_follow_on_units(
     }
 
     Ok(blueprint)
+}
+
+/// Auto-generate a workspace-verify lane for each unit that has enough
+/// implementation child lanes.  The lane runs `cargo check --workspace &&
+/// cargo test --workspace` after all children complete, catching cross-crate
+/// regressions that per-crate verify gates miss.
+fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBlueprint {
+    const MIN_IMPL_LANES: usize = 3;
+    let mut augmented = blueprint.clone();
+
+    for unit in &mut augmented.units {
+        let impl_lanes: Vec<_> = unit
+            .lanes
+            .iter()
+            .filter(|l| l.template == WorkflowTemplate::Implementation)
+            .collect();
+        if impl_lanes.len() < MIN_IMPL_LANES {
+            continue;
+        }
+        let verify_id = format!("{}-workspace-verify", unit.id);
+        if unit.lanes.iter().any(|l| l.id == verify_id) {
+            continue;
+        }
+        // Depend on every implementation lane in this unit
+        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = impl_lanes
+            .iter()
+            .map(|l| raspberry_supervisor::manifest::LaneDependency {
+                unit: unit.id.clone(),
+                lane: Some(l.id.clone()),
+                milestone: Some(l.managed_milestone.clone()),
+            })
+            .collect();
+        unit.lanes.push(BlueprintLane {
+            id: verify_id,
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{} Workspace Verification", unit.title),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some(format!("{}-workspace-verify", unit.id)),
+            template: WorkflowTemplate::Implementation,
+            goal: format!(
+                "Verify full workspace compiles and all tests pass after integrating \
+                 child lanes for unit `{}`.\n\n\
+                 This is a READ-ONLY verification lane. Do NOT modify source code.\n\
+                 Run `cargo check --workspace` and `cargo test --workspace`.\n\
+                 Report any cross-crate compilation errors, test failures, type \
+                 mismatches, or convention inconsistencies in spec.md.\n\n\
+                 Specifically check for:\n\
+                 - Narrowing casts (`as i16`, `as i32`) in settlement/payout code \
+                   that could overflow for large values\n\
+                 - Inconsistent state machine patterns across GameVariant implementations\n\
+                 - Missing re-exports or import path mismatches between crates\n\
+                 - Tests that pass per-crate but fail workspace-wide\n\n\
+                 Proof commands:\n\
+                 - `cargo check --workspace`\n\
+                 - `cargo test --workspace`\n\n\
+                 Required durable artifacts:\n\
+                 - `spec.md`\n\
+                 - `review.md`",
+                unit.id
+            ),
+            managed_milestone: format!("{}-workspace-verified", unit.id),
+            dependencies: deps,
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo check --workspace && cargo test --workspace".to_string()),
+            health_command: None,
+        });
+        // Add a milestone for the verify lane
+        unit.milestones
+            .push(raspberry_supervisor::manifest::MilestoneManifest {
+                id: format!("{}-workspace-verified", unit.id),
+                requires: vec!["spec".to_string(), "review".to_string()],
+            });
+    }
+
+    // Phase 2: Generate contract-verify lanes from protocol declarations
+    for protocol in &augmented.protocols {
+        let lane_id = format!("{}-contract-verify", protocol.id);
+        // Find a suitable unit to host this lane (first consumer unit, or first implementor)
+        let host_unit_id = protocol
+            .consumer_units
+            .first()
+            .or(protocol.implementor_units.first());
+        let Some(host_id) = host_unit_id else {
+            continue;
+        };
+        let Some(host_unit) = augmented.units.iter_mut().find(|u| u.id == *host_id) else {
+            continue;
+        };
+        if host_unit.lanes.iter().any(|l| l.id == lane_id) {
+            continue;
+        }
+        // Depend on all implementor and consumer units
+        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = protocol
+            .implementor_units
+            .iter()
+            .chain(protocol.consumer_units.iter())
+            .map(|unit_id| raspberry_supervisor::manifest::LaneDependency {
+                unit: unit_id.clone(),
+                lane: None,
+                milestone: None,
+            })
+            .collect();
+        let verify_cmd = protocol
+            .verification_command
+            .clone()
+            .unwrap_or_else(|| "cargo test --workspace".to_string());
+        host_unit.lanes.push(BlueprintLane {
+            id: lane_id,
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{} Contract Verification", protocol.trait_name),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some(format!("{}-contract-verify", protocol.id)),
+            template: WorkflowTemplate::Implementation,
+            goal: format!(
+                "Verify that all `{trait_name}` implementors satisfy the contract \
+                 expected by consumers.\n\n\
+                 Implementor units: {implementors}\n\
+                 Consumer units: {consumers}\n\n\
+                 Run the verification command and check that:\n\
+                 - All trait method signatures match between implementors and consumers\n\
+                 - Wire format / serialization is consistent\n\
+                 - Error types are compatible across the boundary\n\
+                 - Integration tests exercise the full call path\n\n\
+                 Proof commands:\n\
+                 - `{verify_cmd}`\n\n\
+                 Required durable artifacts:\n\
+                 - `spec.md`\n\
+                 - `review.md`",
+                trait_name = protocol.trait_name,
+                implementors = protocol.implementor_units.join(", "),
+                consumers = protocol.consumer_units.join(", "),
+            ),
+            managed_milestone: format!("{}-contract-verified", protocol.id),
+            dependencies: deps,
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some(verify_cmd),
+            health_command: None,
+        });
+        host_unit
+            .milestones
+            .push(raspberry_supervisor::manifest::MilestoneManifest {
+                id: format!("{}-contract-verified", protocol.id),
+                requires: vec!["spec".to_string(), "review".to_string()],
+            });
+    }
+
+    augmented
 }
 
 fn refine_blueprint_from_evidence(
@@ -503,7 +671,19 @@ fn render_lane(
         .unwrap_or_else(|| "true".to_string());
     let promotion_command = implementation_promotion_contract_command(blueprint, unit_id, lane);
     let audit_command = implementation_audit_command(blueprint, unit_id, lane, &promotion_command);
-    let quality_command = implementation_quality_command(blueprint, unit_id, lane);
+    let mut quality_command = implementation_quality_command(blueprint, unit_id, lane);
+    // For integration-profile lanes, add overflow/cast detection to the quality gate
+    if lane.proof_profile.as_deref() == Some("integration") {
+        let overflow_scan = "\n\
+            overflow_hits=\"$(rg -n 'as i16|as i8|as u8|as u16' -g '*.rs' crates/ 2>/dev/null \
+            | grep -v '#\\[test\\]\\|#\\[cfg(test)\\]\\|tests/' || true)\"\n\
+            if [ -n \"$overflow_hits\" ]; then\n  \
+                echo ''\n  \
+                echo '## Narrowing Cast Warnings' >> \"$QUALITY_PATH\"\n  \
+                echo \"$overflow_hits\" >> \"$QUALITY_PATH\"\n\
+            fi";
+        quality_command = format!("{quality_command}\n{overflow_scan}");
+    }
 
     let graph = render_workflow_graph(
         lane,
@@ -733,6 +913,7 @@ fn profile_max_visits(profile: &str) -> u32 {
     match profile {
         "hardened" => 5,
         "unblock" => 5,
+        "integration" => 6,
         "foundation" => 4,
         _ => 3,
     }
@@ -740,7 +921,9 @@ fn profile_max_visits(profile: &str) -> u32 {
 
 fn profile_fallback_retry_target(profile: &str) -> String {
     match profile {
-        "unblock" | "hardened" => "\n        fallback_retry_target=\"deep_review\",".to_string(),
+        "unblock" | "hardened" | "integration" => {
+            "\n        fallback_retry_target=\"deep_review\",".to_string()
+        }
         _ => String::new(),
     }
 }
@@ -2626,6 +2809,7 @@ fn implementation_blueprint_for_candidate(
             ],
             lanes: vec![implementation_lane],
         }],
+        protocols: Vec::new(),
     })
 }
 
@@ -4796,6 +4980,7 @@ Required before validator:oracle implementation-family workflow:
             },
             inputs: BlueprintInputs::default(),
             package: BlueprintPackage::default(),
+            protocols: vec![],
             units: vec![crate::blueprint::BlueprintUnit {
                 id: "private-control-plane".to_string(),
                 title: "Private Control Plane".to_string(),
@@ -4910,6 +5095,7 @@ Required before validator:oracle implementation-family workflow:
             },
             inputs: BlueprintInputs::default(),
             package: BlueprintPackage::default(),
+            protocols: vec![],
             units: vec![crate::blueprint::BlueprintUnit {
                 id: "private-control-plane".to_string(),
                 title: "Private Control Plane".to_string(),
@@ -4976,6 +5162,7 @@ Required before validator:oracle implementation-family workflow:
             inputs: BlueprintInputs::default(),
             package: BlueprintPackage::default(),
             units: Vec::new(),
+            protocols: vec![],
         };
         let mut lane = BlueprintLane {
             id: "oracle".to_string(),
@@ -5490,6 +5677,7 @@ The validator binary should emit structured log lines.
             inputs: BlueprintInputs::default(),
             package: BlueprintPackage::default(),
             units: vec![unit],
+            protocols: vec![],
         };
 
         let command = implementation_quality_command(&blueprint, "home-miner-service", &lane);

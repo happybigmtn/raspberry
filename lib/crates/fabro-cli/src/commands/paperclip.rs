@@ -7250,6 +7250,7 @@ mod tests {
             },
             inputs: Default::default(),
             package: Default::default(),
+            protocols: vec![],
             units: vec![BlueprintUnit {
                 id: "command-center-client".to_string(),
                 title: "Command Center Client".to_string(),
@@ -7508,6 +7509,7 @@ mod tests {
                 inputs: Default::default(),
                 package: Default::default(),
                 units: vec![unit.clone()],
+                protocols: vec![],
             },
             temp.path(),
             &mission,
@@ -7582,6 +7584,7 @@ mod tests {
             inputs: Default::default(),
             package: Default::default(),
             units: Vec::new(),
+            protocols: vec![],
         };
         let script_path = temp
             .path()
@@ -7621,6 +7624,7 @@ mod tests {
             inputs: Default::default(),
             package: Default::default(),
             units: Vec::new(),
+            protocols: vec![],
         };
         let mission = BootstrapMission {
             company_description: "Demo".to_string(),
@@ -8568,6 +8572,7 @@ mod tests {
             },
             inputs: Default::default(),
             package: Default::default(),
+            protocols: vec![],
             units: vec![BlueprintUnit {
                 id: "command-center-client".to_string(),
                 title: "Command Center Client".to_string(),

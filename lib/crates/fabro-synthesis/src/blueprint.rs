@@ -23,6 +23,22 @@ pub struct ProgramBlueprint {
     #[serde(default)]
     pub package: BlueprintPackage,
     pub units: Vec<BlueprintUnit>,
+    #[serde(default)]
+    pub protocols: Vec<BlueprintProtocol>,
+}
+
+/// Declares a shared interface boundary between implementor and consumer units.
+/// Used by `synth create` to auto-generate contract verification lanes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct BlueprintProtocol {
+    pub id: String,
+    pub trait_name: String,
+    #[serde(default)]
+    pub implementor_units: Vec<String>,
+    #[serde(default)]
+    pub consumer_units: Vec<String>,
+    #[serde(default)]
+    pub verification_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -231,6 +247,7 @@ pub fn import_existing_package(req: ImportRequest<'_>) -> Result<ProgramBlueprin
         inputs: BlueprintInputs::default(),
         package: BlueprintPackage::default(),
         units,
+        protocols: Vec::new(),
     })
 }
 

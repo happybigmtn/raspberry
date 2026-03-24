@@ -123,6 +123,7 @@ pub fn author_blueprint_for_create_with_planning_root(
         },
         package: BlueprintPackage::default(),
         units: intents.iter().map(materialize_unit).collect(),
+        protocols: Vec::new(),
     };
 
     Ok(AuthoredBlueprint {
