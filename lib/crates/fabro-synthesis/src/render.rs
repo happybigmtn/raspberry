@@ -67,7 +67,64 @@ pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderEr
     }
 
     written_files.push(write_manifest(blueprint, &layout)?);
+    ensure_gitignore_has_fabro_work(req.target_repo);
     Ok(RenderReport { written_files })
+}
+
+/// Ensure the target repo's .gitignore includes `.fabro-work/` and common agent junk.
+/// Idempotent: only appends missing entries.
+fn ensure_gitignore_has_fabro_work(target_repo: &Path) {
+    let gitignore_path = target_repo.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+
+    let required_entries = [
+        "# Fabro ephemeral workflow state",
+        ".fabro-work/",
+        "",
+        "# Agent debris (heredoc artifacts, stray files)",
+        "EOF",
+        "ENDFILE",
+        "ENDOFFILE",
+        "REVIEW_EOF",
+        "ENDOFPROMPT",
+    ];
+
+    let mut to_add = Vec::new();
+    for entry in &required_entries {
+        if entry.is_empty() || entry.starts_with('#') {
+            // Always include comments/blanks if we're adding anything
+            continue;
+        }
+        if !existing.lines().any(|line| line.trim() == *entry) {
+            to_add.push(*entry);
+        }
+    }
+    if to_add.is_empty() {
+        return;
+    }
+
+    let mut block = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        block.push('\n');
+    }
+    block.push_str("\n# Fabro ephemeral workflow state\n");
+    block.push_str(".fabro-work/\n");
+    block.push_str("\n# Agent debris (heredoc artifacts, stray files)\n");
+    for entry in &to_add {
+        if *entry != ".fabro-work/" {
+            block.push_str(entry);
+            block.push('\n');
+        }
+    }
+
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gitignore_path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(block.as_bytes())
+        });
 }
 
 pub fn cleanup_obsolete_package_files(
@@ -974,7 +1031,7 @@ fn profile_extra_graph_elements(
         "hardened" => {
             // Adversarial deep review for security + correctness critical work
             let nodes = format!(
-                "    deep_review [label=\"Deep Review\", prompt=\"You are an adversarial reviewer. Challenge every trust boundary, invariant, edge case, and correctness assumption. Re-run proof commands independently. Write deep-review-findings.md.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
+                "    deep_review [label=\"Deep Review\", prompt=\"You are an adversarial reviewer. Challenge every trust boundary, invariant, edge case, and correctness assumption. Re-run proof commands independently. Write .fabro-work/deep-review-findings.md.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
                 verify = escape_graph_attr(verify_command),
             );
             let edges = "    challenge -> deep_review [condition=\"outcome=success\"]\n    deep_review -> recheck [condition=\"outcome=success\"]\n    deep_review -> fixup\n    recheck -> review [condition=\"outcome=success\"]\n    recheck -> fixup\n".to_string();
@@ -982,7 +1039,7 @@ fn profile_extra_graph_elements(
         }
         "foundation" => {
             let nodes =
-                "    escalation [label=\"Opus Signoff\", prompt=\"This child modifies shared foundation code. Review for downstream compatibility. Approve only if backward-compatible or all consumers updated. Write escalation-verdict.md.\", reasoning_effort=\"high\"]\n"
+                "    escalation [label=\"Opus Signoff\", prompt=\"This child modifies shared foundation code. Review for downstream compatibility. Approve only if backward-compatible or all consumers updated. Write .fabro-work/escalation-verdict.md.\", reasoning_effort=\"high\"]\n"
                 .to_string();
             let edges = "    challenge -> escalation [condition=\"outcome=success\"]\n    escalation -> review [condition=\"outcome=success\"]\n    escalation -> fixup\n".to_string();
             (nodes, edges)
@@ -1043,7 +1100,7 @@ fn implementation_quality_path(
     lane_artifact_paths_relative(blueprint, unit_id, lane)
         .into_iter()
         .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("quality.md"))
-        .unwrap_or_else(|| PathBuf::from("quality.md"))
+        .unwrap_or_else(|| PathBuf::from(".fabro-work/quality.md"))
 }
 
 fn implementation_quality_command(
@@ -1152,7 +1209,7 @@ fn implementation_promotion_path(
     let promotion_path = lane_artifact_paths_relative(blueprint, unit_id, lane)
         .into_iter()
         .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("promotion.md"))
-        .unwrap_or_else(|| PathBuf::from("promotion.md"));
+        .unwrap_or_else(|| PathBuf::from(".fabro-work/promotion.md"));
     promotion_path
 }
 
@@ -1486,7 +1543,7 @@ fn render_implementation_plan_prompt(
          - Use `Settlement::new(delta)` for wins/losses and `Settlement::push()` for ties\n",
     );
     output.push_str(
-        "\nStage ownership:\n- do not write `promotion.md` during Plan/Implement\n- do not hand-author `quality.md`; it is regenerated by the Quality Gate\n- `promotion.md` is owned by the Review stage only\n- keep source edits inside the named slice and touched surfaces\n",
+        "\nStage ownership:\n- do not write `.fabro-work/promotion.md` during Plan/Implement\n- do not hand-author `.fabro-work/quality.md`; it is regenerated by the Quality Gate\n- `.fabro-work/promotion.md` is owned by the Review stage only\n- keep source edits inside the named slice and touched surfaces\n- ALL ephemeral workflow files (quality.md, promotion.md, verification.md, deep-review-findings.md) MUST be written to the `.fabro-work/` directory, never the repo root\n",
     );
     if !context.is_empty() {
         output.push_str(&format!("\n\nFull Slice Contract:\n{}\n", context));
@@ -1656,23 +1713,23 @@ fn render_implementation_review_prompt(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
     output.push_str(
-        "\nDeterministic evidence:\n- treat `quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
+        "\nDeterministic evidence:\n- treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
     );
     output.push_str(
-        "\n\nWrite `promotion.md` in this exact machine-readable form:\n\n\
+        "\n\nWrite `.fabro-work/promotion.md` in this exact machine-readable form:\n\n\
 merge_ready: yes|no\n\
 manual_proof_pending: yes|no\n\
 reason: <one sentence>\n\
 next_action: <one sentence>\n\n\
 Only set `merge_ready: yes` when:\n\
-- `quality.md` says `quality_ready: yes`\n\
+- `.fabro-work/quality.md` says `quality_ready: yes`\n\
 - automated proof is sufficient for this slice\n\
 - any required manual proof has actually been performed\n\
 - no unresolved warnings or stale failures undermine confidence\n\
 - the implementation and verification artifacts match the real code.\n",
     );
     output.push_str(
-        "\nReview stage ownership:\n- you may write or replace `promotion.md` in this stage\n- read `quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
+        "\nReview stage ownership:\n- you may write or replace `.fabro-work/promotion.md` in this stage\n- read `.fabro-work/quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
     );
     output
 }
@@ -1728,7 +1785,9 @@ fn render_implementation_challenge_prompt(
     let mut rt_block = prompt_context_block(_context, "Required tests:");
     rt_block.extend(prompt_context_block(&lane.goal, "Required tests:"));
     if !ac_block.is_empty() || !rt_block.is_empty() {
-        output.push_str("\n\nGoal-specific checklist (flag EVERY unmet item in verification.md):");
+        output.push_str(
+            "\n\nGoal-specific checklist (flag EVERY unmet item in .fabro-work/verification.md):",
+        );
         for line in &ac_block {
             output.push_str(&format!("\n- {}", line.trim_start_matches("- ").trim()));
         }
@@ -1743,7 +1802,7 @@ fn render_implementation_challenge_prompt(
         "\n\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Are the tests actually verifying behavioral outcomes, or are they trivial stubs that pass without real logic?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
     );
     output.push_str(
-        "\nWrite a short challenge note in `verification.md` or amend it if needed, focusing on concrete gaps and the next fixup target. Do not write `promotion.md` here.\n",
+        "\nWrite a short challenge note in `.fabro-work/verification.md` or amend it if needed, focusing on concrete gaps and the next fixup target. Do not write `promotion.md` here.\n",
     );
     output
 }
@@ -1791,7 +1850,7 @@ fn render_implementation_fixup_prompt(
         false,
     );
     output.push_str(
-        "\n\nPriorities:\n- unblock the active slice's first proof gate — this is the #1 priority\n- prefer staying within the named slice and touched surfaces\n- if the proof gate fails on pre-existing issues OUTSIDE your surfaces (e.g., linter warnings in unrelated files, missing imports in dependencies), you MUST fix those issues minimally to unblock the gate — do not leave the lane stuck on problems you can solve\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `quality.md`; the Quality Gate rewrites it after verification\n",
+        "\n\nPriorities:\n- unblock the active slice's first proof gate — this is the #1 priority\n- prefer staying within the named slice and touched surfaces\n- if the proof gate fails on pre-existing issues OUTSIDE your surfaces (e.g., linter warnings in unrelated files, missing imports in dependencies), you MUST fix those issues minimally to unblock the gate — do not leave the lane stuck on problems you can solve\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `.fabro-work/promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `.fabro-work/quality.md`; the Quality Gate rewrites it after verification\n- ALL ephemeral files (quality.md, promotion.md, verification.md) go in `.fabro-work/`, never the repo root\n",
     );
     output
 }
@@ -3426,11 +3485,7 @@ fn implementation_audit_command(
             .collect();
         // Always allow output artifacts (these are safe literal patterns)
         allowed.push("outputs/".to_string());
-        allowed.push("promotion\\.md".to_string());
-        allowed.push("quality\\.md".to_string());
-        allowed.push("deep-review-findings\\.md".to_string());
-        allowed.push("verification\\.md".to_string());
-        allowed.push("escalation-verdict\\.md".to_string());
+        allowed.push("\\.fabro-work/".to_string());
         allowed.push("spec\\.md".to_string());
         allowed.push("review\\.md".to_string());
         allowed.push("implementation\\.md".to_string());
@@ -3452,7 +3507,11 @@ fn implementation_audit_command(
 
     // Hard quality gate: quality.md must say quality_ready: yes.
     // Prevents review agents from overriding machine-detected quality issues.
-    let quality_hard_gate = " && grep -Eq '^quality_ready: yes$' quality.md";
+    let quality_file = implementation_quality_path(blueprint, unit_id, lane);
+    let quality_hard_gate = format!(
+        " && grep -Eq '^quality_ready: yes$' {}",
+        shell_single_quote(&quality_file.display().to_string())
+    );
 
     // Lane memory: on any audit failure, capture findings to remediation.md
     // in the output directory so the next run attempt sees what went wrong.
@@ -3470,16 +3529,16 @@ fn implementation_audit_command(
                 echo '# Remediation Notes (auto-captured from failed audit)'\n    \
                 echo ''\n    \
                 echo '## Quality Gate'\n    \
-                cat quality.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/quality.md 2>/dev/null || cat quality.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Verification Findings'\n    \
-                cat verification.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/verification.md 2>/dev/null || cat verification.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Deep Review Findings'\n    \
-                cat deep-review-findings.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/deep-review-findings.md 2>/dev/null || cat deep-review-findings.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Promotion Decision'\n    \
-                cat promotion.md 2>/dev/null || echo '(not found)'\n  \
+                cat .fabro-work/promotion.md 2>/dev/null || cat promotion.md 2>/dev/null || echo '(not found)'\n  \
             }} > '{remediation_path}'\n\
         }}"
     );
@@ -5936,14 +5995,16 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(plan.contains("Implementation artifact must cover"));
         assert!(plan.contains("Verification artifact must cover"));
-        assert!(plan.contains("do not hand-author `quality.md`"));
+        assert!(plan.contains("do not hand-author `.fabro-work/quality.md`"));
         assert!(review.contains("Review only the current slice"));
-        assert!(review.contains("treat `quality.md` as machine-generated truth"));
-        assert!(review.contains("Write `promotion.md` in this exact machine-readable form"));
+        assert!(review.contains("treat `.fabro-work/quality.md` as machine-generated truth"));
+        assert!(
+            review.contains("Write `.fabro-work/promotion.md` in this exact machine-readable form")
+        );
         assert!(review.contains("Review stage ownership"));
         assert!(review.contains("Current slice"));
         assert!(polish.contains("# Gameplay TUI Implementation Lane — Fixup"));
-        assert!(polish.contains("do not hand-author `quality.md`"));
+        assert!(polish.contains("do not hand-author `.fabro-work/quality.md`"));
         assert!(polish.contains("prefer staying within the named slice and touched surfaces"));
     }
 

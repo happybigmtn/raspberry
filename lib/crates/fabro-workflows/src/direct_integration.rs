@@ -141,6 +141,10 @@ fn run_integration_worktree(
         }
         Err(error) => return Err(error),
     };
+    // Strip agent debris from staging area before committing.
+    // Agents sometimes write junk files (heredoc artifacts, stray .md) to root.
+    strip_agent_debris_from_staging(worktree_path);
+
     let already_integrated = git_exit_status(
         worktree_path,
         ["diff", "--cached", "--quiet"],
@@ -332,6 +336,72 @@ fn resolve_lane_owned_output_conflicts(
     }
 
     Ok(GitOutput { stdout: summary })
+}
+
+/// Remove known agent debris from the git staging area so junk never lands on trunk.
+/// Patterns: heredoc artifacts (EOF, ENDFILE, etc.), stray root-level .md that aren't
+/// project docs, single-character files, leaked lane directories, and .fabro-work/.
+fn strip_agent_debris_from_staging(worktree: &Path) {
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(worktree)
+        .output();
+    let Ok(output) = staged else { return };
+    if !output.status.success() {
+        return;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let junk: Vec<&str> = stdout
+        .lines()
+        .filter(|path| {
+            let path = path.trim();
+            if path.is_empty() {
+                return false;
+            }
+            // .fabro-work/ is ephemeral, never commit
+            if path.starts_with(".fabro-work/") {
+                return true;
+            }
+            // Only check root-level files (no '/' in path)
+            if path.contains('/') {
+                return false;
+            }
+            // Known heredoc/shell artifacts
+            let known_junk = ["EOF", "ENDFILE", "ENDOFFILE", "REVIEW_EOF", "ENDOFPROMPT"];
+            if known_junk.contains(&path) {
+                return true;
+            }
+            // Single-character files at root (e.g., "1", "0")
+            if path.len() == 1 && path.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return true;
+            }
+            // Root-level ephemeral workflow .md files that should be in outputs/ or .fabro-work/
+            let ephemeral_md = [
+                "quality.md",
+                "promotion.md",
+                "verification.md",
+                "deep-review-findings.md",
+                "escalation-verdict.md",
+                "integration.md",
+                "task_plan.md",
+            ];
+            if ephemeral_md.contains(&path) {
+                return true;
+            }
+            false
+        })
+        .collect();
+
+    if junk.is_empty() {
+        return;
+    }
+    tracing::info!(count = junk.len(), "stripping agent debris from staging");
+    let mut args = vec!["rm", "--cached", "--ignore-unmatch", "--force", "--"];
+    args.extend(junk);
+    let _ = Command::new("git")
+        .args(&args)
+        .current_dir(worktree)
+        .output();
 }
 
 fn conflicted_paths(repo: &Path) -> Result<Vec<PathBuf>, DirectIntegrationError> {
