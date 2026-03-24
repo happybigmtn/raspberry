@@ -778,6 +778,57 @@ fn render_lane(
         quality_command = format!("{quality_command}\n{f64_lane_scan}");
     }
 
+    // Per-lane Python checks: syntax validation and duplicate function detection.
+    let owned_py: Vec<&str> = owned_surfaces
+        .iter()
+        .filter(|s| s.ends_with(".py"))
+        .map(String::as_str)
+        .collect();
+    if !owned_py.is_empty() {
+        let py_paths = owned_py
+            .iter()
+            .map(|p| shell_single_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Syntax check: py_compile catches syntax errors before integration
+        let py_syntax = format!(
+            "\npy_syntax_errors=\"\"\n\
+            for pyf in {py_paths}; do\n  \
+                if [ -f \"$pyf\" ]; then\n    \
+                    err=$(python3 -m py_compile \"$pyf\" 2>&1) || py_syntax_errors=\"$py_syntax_errors\\n$pyf: $err\"\n  \
+                fi\n\
+            done\n\
+            if [ -n \"$py_syntax_errors\" ]; then\n  \
+                echo '## Python Syntax Errors' >> \"$QUALITY_PATH\"\n  \
+                printf '%b\\n' \"$py_syntax_errors\" >> \"$QUALITY_PATH\"\n  \
+                quality_ready=no\n\
+            fi"
+        );
+        quality_command = format!("{quality_command}\n{py_syntax}\n");
+
+        // Duplicate function/handler detection: catches copy-paste errors
+        // where the same function name appears twice in the same file.
+        let py_dup = format!(
+            "py_dup_hits=\"\"\n\
+            for pyf in {py_paths}; do\n  \
+                if [ -f \"$pyf\" ]; then\n    \
+                    dups=$(grep -n '^[[:space:]]*def ' \"$pyf\" 2>/dev/null \
+                        | sed 's/.*def //' | sed 's/(.*//'\
+                        | sort | uniq -d)\n    \
+                    if [ -n \"$dups\" ]; then\n      \
+                        py_dup_hits=\"$py_dup_hits\\n$pyf: duplicate defs: $dups\"\n    \
+                    fi\n  \
+                fi\n\
+            done\n\
+            if [ -n \"$py_dup_hits\" ]; then\n  \
+                echo '## Duplicate Function Definitions' >> \"$QUALITY_PATH\"\n  \
+                printf '%b\\n' \"$py_dup_hits\" >> \"$QUALITY_PATH\"\n  \
+                quality_ready=no\n\
+            fi"
+        );
+        quality_command = format!("{quality_command}\n{py_dup}");
+    }
+
     let graph = render_workflow_graph(
         lane,
         &verify_command,

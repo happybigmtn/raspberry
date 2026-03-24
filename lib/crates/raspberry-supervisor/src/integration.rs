@@ -108,8 +108,29 @@ fn detect_post_merge_check(target_repo: &Path) -> Option<String> {
         return Some("npm run build --if-present".to_string());
     }
     if target_repo.join("pyproject.toml").exists() || target_repo.join("setup.py").exists() {
+        // Compile-check all Python source files. Fails if any have syntax errors.
         return Some(
-            "python -m py_compile $(find . -name '*.py' -not -path './.*' | head -20) 2>&1 || true"
+            "find . -name '*.py' -not -path './.fabro-work/*' -not -path './.raspberry/*' \
+             -not -path './.*' -not -path '*/node_modules/*' \
+             | xargs python3 -m py_compile"
+                .to_string(),
+        );
+    }
+    // Detect Python projects without pyproject.toml (e.g. services/ layout)
+    if target_repo.join("requirements.txt").exists()
+        || std::fs::read_dir(target_repo)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|e| e.path().extension().is_some_and(|ext| ext == "py"))
+            })
+            .unwrap_or(false)
+    {
+        return Some(
+            "find . -name '*.py' -not -path './.fabro-work/*' -not -path './.raspberry/*' \
+             -not -path './.*' -not -path '*/node_modules/*' \
+             | xargs python3 -m py_compile"
                 .to_string(),
         );
     }
