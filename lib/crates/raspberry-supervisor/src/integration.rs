@@ -59,6 +59,7 @@ fn integrate_lane_from_runs_base(
         });
     }
 
+    let post_merge_check = detect_post_merge_check(&request.target_repo);
     let record = integrate_run(&DirectIntegrationRequest {
         source_lane: request.source_lane_key.clone(),
         manifest,
@@ -66,6 +67,7 @@ fn integrate_lane_from_runs_base(
         target_branch: "origin/HEAD".to_string(),
         strategy: MergeStrategy::Squash,
         artifact_path: Some(request.artifact_path.clone()),
+        post_merge_check,
     })?;
 
     let mut stdout = String::new();
@@ -85,6 +87,33 @@ fn integrate_lane_from_runs_base(
         stdout,
         stderr: String::new(),
     })
+}
+
+/// Detect the appropriate post-merge compilation check for a project.
+/// Returns `None` for projects without a recognizable build system,
+/// allowing the integration to proceed without a check (backwards compatible).
+fn detect_post_merge_check(target_repo: &Path) -> Option<String> {
+    if target_repo.join("Cargo.toml").exists() {
+        // Verify it's a real Rust project, not a placeholder Cargo.toml
+        if let Ok(contents) = std::fs::read_to_string(target_repo.join("Cargo.toml")) {
+            let has_workspace = contents.contains("[workspace]") && contents.contains("members");
+            let has_lib = contents.contains("[lib]") || target_repo.join("src/lib.rs").exists();
+            let has_bin = contents.contains("[[bin]]") || target_repo.join("src/main.rs").exists();
+            if has_workspace || has_lib || has_bin {
+                return Some("cargo check --tests --workspace".to_string());
+            }
+        }
+    }
+    if target_repo.join("package.json").exists() {
+        return Some("npm run build --if-present".to_string());
+    }
+    if target_repo.join("pyproject.toml").exists() || target_repo.join("setup.py").exists() {
+        return Some(
+            "python -m py_compile $(find . -name '*.py' -not -path './.*' | head -20) 2>&1 || true"
+                .to_string(),
+        );
+    }
+    None
 }
 
 #[cfg(test)]

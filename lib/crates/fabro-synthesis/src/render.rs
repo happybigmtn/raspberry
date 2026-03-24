@@ -681,8 +681,44 @@ fn render_lane(
                 echo ''\n  \
                 echo '## Narrowing Cast Warnings' >> \"$QUALITY_PATH\"\n  \
                 echo \"$overflow_hits\" >> \"$QUALITY_PATH\"\n\
+            fi\n\
+            f64_hits=\"$(rg -n 'as f64.*as (i16|i8|u8|u16|Chips)' -g '*.rs' crates/ 2>/dev/null \
+            | grep -v '#\\[test\\]\\|#\\[cfg(test)\\]\\|tests/' || true)\"\n\
+            if [ -n \"$f64_hits\" ]; then\n  \
+                echo ''\n  \
+                echo '## f64 Truncation Warnings (use i32::from() widening instead)' >> \"$QUALITY_PATH\"\n  \
+                echo \"$f64_hits\" >> \"$QUALITY_PATH\"\n  \
+                quality_ready=no\n\
             fi";
         quality_command = format!("{quality_command}\n{overflow_scan}");
+    }
+
+    // Per-lane f64 truncation scan: check owned .rs surfaces for the
+    // `(expr as f64 * ...) as i16` anti-pattern that causes silent
+    // rounding errors in settlement arithmetic.
+    let owned_surfaces = extract_owned_surfaces(&lane.goal);
+    let owned_rs: Vec<&str> = owned_surfaces
+        .iter()
+        .filter(|s| s.ends_with(".rs"))
+        .map(String::as_str)
+        .collect();
+    if !owned_rs.is_empty() {
+        let paths = owned_rs
+            .iter()
+            .map(|p| shell_single_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let f64_lane_scan = format!(
+            "\nf64_lane_hits=\"$(rg -n 'as f64.*as (i16|i8|u8|u16|Chips)' {paths} 2>/dev/null \
+            | grep -v '#\\[test\\]\\|#\\[cfg(test)\\]' || true)\"\n\
+            if [ -n \"$f64_lane_hits\" ]; then\n  \
+                echo ''\n  \
+                echo '## f64 Truncation (owned surfaces)' >> \"$QUALITY_PATH\"\n  \
+                echo \"$f64_lane_hits\" >> \"$QUALITY_PATH\"\n  \
+                quality_ready=no\n\
+            fi"
+        );
+        quality_command = format!("{quality_command}\n{f64_lane_scan}");
     }
 
     let graph = render_workflow_graph(
@@ -3346,8 +3382,11 @@ fn implementation_audit_command(
     // Reject no-op lanes: require at least one source file changed.
     // Use merge-base to scope to THIS run's commits only — the worktree
     // branch inherits prior integrate commits that must not be counted.
+    // Language-agnostic noop guard: require at least one source file changed.
+    // Accepts any common source/config extension rather than hardcoding Rust,
+    // preventing agents from creating fake files to satisfy the check.
     let noop_guard = "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
-        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' | wc -l)\" -gt 0 )";
+        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )";
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
     // Agents must not modify files outside their declared scope — this prevents

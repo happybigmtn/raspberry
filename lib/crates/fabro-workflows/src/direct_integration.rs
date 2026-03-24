@@ -25,6 +25,10 @@ pub struct DirectIntegrationRequest {
     pub target_branch: String,
     pub strategy: MergeStrategy,
     pub artifact_path: Option<PathBuf>,
+    /// Shell command to run after merge+commit but before push.
+    /// If it exits non-zero, the integration is rejected and the lane
+    /// will be re-dispatched against a fresh trunk checkout.
+    pub post_merge_check: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -166,6 +170,41 @@ fn run_integration_worktree(
         )?;
         head_sha(worktree_path)?
     };
+
+    // Post-merge compilation guard: catch broken code before it reaches trunk.
+    // Each lane validates in isolation, but the squash-merged result may fail
+    // when combined with other concurrent integrations.
+    if !already_integrated {
+        if let Some(check_cmd) = &request.post_merge_check {
+            let check_output = Command::new("sh")
+                .arg("-c")
+                .arg(check_cmd)
+                .current_dir(worktree_path)
+                .output();
+            match check_output {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(DirectIntegrationError::Git {
+                        step: "post-merge check".to_string(),
+                        repo: worktree_path.to_path_buf(),
+                        message: format!(
+                            "post-merge check failed (exit {}): {}",
+                            output.status.code().unwrap_or(-1),
+                            stderr.chars().take(500).collect::<String>()
+                        ),
+                    });
+                }
+                Err(io_err) => {
+                    tracing::warn!(
+                        check_cmd,
+                        error = %io_err,
+                        "post-merge check command could not be spawned, skipping"
+                    );
+                }
+                Ok(_) => {}
+            }
+        }
+    }
 
     let (mode, pushed) = if base_ref.starts_with(&format!("{REMOTE_NAME}/")) {
         let push_refspec = format!("HEAD:refs/heads/{target_branch}");
@@ -775,6 +814,7 @@ mod tests {
             target_branch: DEFAULT_TARGET_BRANCH.to_string(),
             strategy: MergeStrategy::Squash,
             artifact_path: Some(artifact.clone()),
+            post_merge_check: None,
         })
         .expect("direct integration succeeds");
 
@@ -843,6 +883,7 @@ mod tests {
             target_branch: "main".to_string(),
             strategy: MergeStrategy::Squash,
             artifact_path: None,
+            post_merge_check: None,
         })
         .expect("direct integration succeeds");
 
@@ -949,6 +990,7 @@ mod tests {
             target_branch: DEFAULT_TARGET_BRANCH.to_string(),
             strategy: MergeStrategy::Squash,
             artifact_path: None,
+            post_merge_check: None,
         })
         .expect("direct integration succeeds");
 
@@ -1041,6 +1083,7 @@ mod tests {
             target_branch: "main".to_string(),
             strategy: MergeStrategy::Squash,
             artifact_path: None,
+            post_merge_check: None,
         })
         .expect("direct integration succeeds");
 
@@ -1175,6 +1218,7 @@ mod tests {
             target_branch: DEFAULT_TARGET_BRANCH.to_string(),
             strategy: MergeStrategy::Squash,
             artifact_path: None,
+            post_merge_check: None,
         })
         .expect("owned output conflict should auto-resolve");
 

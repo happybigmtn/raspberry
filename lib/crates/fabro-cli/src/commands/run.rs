@@ -1753,6 +1753,7 @@ pub async fn run_command(
                             target_branch: integration_cfg.target_branch.clone(),
                             strategy: integration_cfg.strategy,
                             artifact_path: integration_cfg.artifact_path.clone(),
+                            post_merge_check: None,
                         };
                         fabro_workflows::direct_integration::integrate_run(&request)
                             .map_err(|error| anyhow::anyhow!(error.to_string()))
