@@ -240,45 +240,57 @@ fn resolve_lane_owned_output_conflicts(
     }
 
     let owned = lane_owned_output_paths(request);
-    if conflicted.iter().any(|path| !owned.contains(path)) {
-        return Err(DirectIntegrationError::Git {
-            step: "merge --squash".to_string(),
-            repo: worktree_path.to_path_buf(),
-            message: format!(
-                "conflicts include non-owned paths: {}",
-                conflicted
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        });
-    }
 
+    // Resolve each conflict: owned paths take the source (run's version),
+    // non-owned paths take the target (trunk version).  Non-owned conflicts
+    // arise because the run's worktree was forked from an older trunk — the
+    // stale copies of files modified by other lanes cause merge conflicts
+    // that are safe to resolve by keeping the current trunk version.
+    let mut source_resolved = Vec::new();
+    let mut target_resolved = Vec::new();
     for path in &conflicted {
+        if owned.contains(path) {
+            run_git(
+                worktree_path,
+                "checkout source artifact",
+                [
+                    "checkout",
+                    source_ref,
+                    "--",
+                    path.to_string_lossy().as_ref(),
+                ],
+            )?;
+            source_resolved.push(path.display().to_string());
+        } else {
+            run_git(
+                worktree_path,
+                "checkout target for non-owned",
+                ["checkout", "HEAD", "--", path.to_string_lossy().as_ref()],
+            )?;
+            target_resolved.push(path.display().to_string());
+        }
         run_git(
             worktree_path,
-            "checkout source artifact",
-            [
-                "checkout",
-                source_ref,
-                "--",
-                path.to_string_lossy().as_ref(),
-            ],
-        )?;
-        run_git(
-            worktree_path,
-            "add resolved artifact",
+            "add resolved",
             ["add", path.to_string_lossy().as_ref()],
         )?;
     }
 
-    Ok(GitOutput {
-        stdout: format!(
-            "auto-resolved owned artifact conflicts for {}\n",
-            request.source_lane
-        ),
-    })
+    let mut summary = String::new();
+    if !source_resolved.is_empty() {
+        summary.push_str(&format!(
+            "auto-resolved owned conflicts (source): {}\n",
+            source_resolved.join(", ")
+        ));
+    }
+    if !target_resolved.is_empty() {
+        summary.push_str(&format!(
+            "auto-resolved non-owned conflicts (target): {}\n",
+            target_resolved.join(", ")
+        ));
+    }
+
+    Ok(GitOutput { stdout: summary })
 }
 
 fn conflicted_paths(repo: &Path) -> Result<Vec<PathBuf>, DirectIntegrationError> {

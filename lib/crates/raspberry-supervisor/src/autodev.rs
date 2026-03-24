@@ -115,7 +115,7 @@ const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
 const MAX_SURFACE_BLOCKED_RETRIES: u32 = 10;
 const REGENERATE_SPARE_CAPACITY_RETRY_SECS: u64 = 15;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
-const SYNTH_EVOLVE_TIMEOUT_SECS: u64 = 15;
+const SYNTH_EVOLVE_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -254,7 +254,10 @@ fn is_synth_evolve_timeout(error: &AutodevError) -> bool {
     match error {
         AutodevError::FabroFailed {
             step, exit_status, ..
-        } => step == "synth evolve" && matches!(*exit_status, 124 | 137 | 143),
+        } => {
+            (step == "synth evolve" || step == "synth create")
+                && matches!(*exit_status, 124 | 137 | 143)
+        }
         _ => false,
     }
 }
@@ -447,7 +450,14 @@ pub fn orchestrate_program(
                     last_evolve_at = Some(Instant::now());
                     last_evolve_frontier = Some(frontier_before);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    eprintln!(
+                        "[autodev] synth evolve failed for program `{}`: {error}; continuing",
+                        manifest.program
+                    );
+                    last_evolve_at = Some(Instant::now());
+                    last_evolve_frontier = Some(frontier_before);
+                }
             }
         }
         autodev_debug_step(
