@@ -32,6 +32,10 @@ const WRITE_CHAIN: &[ModelTarget] = &[
 
 const REVIEW_CHAIN: &[ModelTarget] = &[
     ModelTarget {
+        provider: Provider::Kimi,
+        model: "kimi-k2.5",
+    },
+    ModelTarget {
         provider: Provider::Minimax,
         model: "MiniMax-M2.7-highspeed",
     },
@@ -120,13 +124,15 @@ mod tests {
     }
 
     #[test]
-    fn review_profile_orders_minimax_opus() {
+    fn review_profile_orders_kimi_minimax_opus() {
         let chain = automation_chain(AutomationProfile::Review);
-        assert_eq!(chain.len(), 2);
-        assert_eq!(chain[0].provider, Provider::Minimax);
-        assert_eq!(chain[0].model, "MiniMax-M2.7-highspeed");
-        assert_eq!(chain[1].provider, Provider::Anthropic);
-        assert_eq!(chain[1].model, "claude-opus-4-6");
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].provider, Provider::Kimi);
+        assert_eq!(chain[0].model, "kimi-k2.5");
+        assert_eq!(chain[1].provider, Provider::Minimax);
+        assert_eq!(chain[1].model, "MiniMax-M2.7-highspeed");
+        assert_eq!(chain[2].provider, Provider::Anthropic);
+        assert_eq!(chain[2].model, "claude-opus-4-6");
     }
 
     #[test]

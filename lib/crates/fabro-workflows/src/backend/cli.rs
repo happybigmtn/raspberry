@@ -31,8 +31,8 @@ impl AgentCli {
         match provider {
             Provider::Anthropic => Self::Claude,
             Provider::Gemini => Self::Gemini,
-            Provider::Minimax => Self::Pi,
-            Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => Self::Codex,
+            Provider::Minimax | Provider::Kimi => Self::Pi,
+            Provider::OpenAi | Provider::Zai | Provider::Inception => Self::Codex,
         }
     }
 
@@ -217,7 +217,7 @@ pub fn cli_command_for_provider(
     // redirects in nested shells. A pipe creates an explicit new stdin.
     match provider {
         // --yolo: auto-approve all tool calls and bypass sandbox prompts
-        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => {
+        Provider::OpenAi | Provider::Zai | Provider::Inception => {
             let model_flag = if model.is_empty() {
                 String::new()
             } else {
@@ -225,11 +225,20 @@ pub fn cli_command_for_provider(
             };
             format!("cat {prompt_file} | codex exec --json --yolo{model_flag}")
         }
-        Provider::Minimax => {
-            let model_flag = if model.is_empty() {
+        Provider::Minimax | Provider::Kimi => {
+            let pi_provider = match provider {
+                Provider::Kimi => "kimi-coding",
+                _ => "minimax",
+            };
+            // Map fabro catalog model names to pi provider model IDs
+            let pi_model = match provider {
+                Provider::Kimi => "k2p5",
+                _ => model,
+            };
+            let model_flag = if pi_model.is_empty() {
                 String::new()
             } else {
-                format!(" --model {model}")
+                format!(" --model {pi_model}")
             };
             let thinking_flag = match reasoning_effort {
                 Some(effort) if effort != "high" => format!(" --thinking {effort}"),
@@ -245,7 +254,7 @@ pub fn cli_command_for_provider(
                 None => String::new(),
             };
             format!(
-                "prompt=\"$(cat {prompt_file})\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools {tools}{model_flag}{thinking_flag}{sys_prompt_flag} \"$prompt\""
+                "prompt=\"$(cat {prompt_file})\" && pi --provider {pi_provider} --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools {tools}{model_flag}{thinking_flag}{sys_prompt_flag} \"$prompt\""
             )
         }
         // --yolo: auto-approve all tool calls
@@ -506,10 +515,8 @@ fn parse_pi_json(output: &str) -> Option<CliResponse> {
 /// Parse CLI output, choosing the right parser based on provider.
 pub fn parse_cli_response(provider: Provider, output: &str) -> Option<CliResponse> {
     match provider {
-        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => {
-            parse_codex_ndjson(output)
-        }
-        Provider::Minimax => parse_pi_json(output),
+        Provider::OpenAi | Provider::Zai | Provider::Inception => parse_codex_ndjson(output),
+        Provider::Minimax | Provider::Kimi => parse_pi_json(output),
         Provider::Gemini => parse_gemini_json(output),
         Provider::Anthropic => parse_claude_ndjson(output),
     }
@@ -709,17 +716,8 @@ fn build_launch_env_for_provider(
     if provider == Provider::OpenAi {
         launch_env.remove("OPENAI_API_KEY");
     }
-    // Kimi routes through Codex CLI (OpenAI-compatible).  Set the base URL
-    // and API key so codex talks to Kimi's endpoint instead of OpenAI.
-    if provider == Provider::Kimi {
-        launch_env.insert(
-            "OPENAI_BASE_URL".to_string(),
-            "https://api.kimi.com/coding/v1".to_string(),
-        );
-        if let Ok(key) = std::env::var("KIMI_API_KEY") {
-            launch_env.insert("OPENAI_API_KEY".to_string(), key);
-        }
-    }
+    // Kimi routes through pi CLI (kimi-coding provider) which reads
+    // KIMI_API_KEY from the environment or ~/.pi/agent/auth.json.
     launch_env
 }
 
@@ -1643,7 +1641,7 @@ mod tests {
         );
         assert_eq!(AgentCli::for_provider(Provider::OpenAi), AgentCli::Codex);
         assert_eq!(AgentCli::for_provider(Provider::Gemini), AgentCli::Gemini);
-        assert_eq!(AgentCli::for_provider(Provider::Kimi), AgentCli::Codex);
+        assert_eq!(AgentCli::for_provider(Provider::Kimi), AgentCli::Pi);
         assert_eq!(AgentCli::for_provider(Provider::Zai), AgentCli::Codex);
         assert_eq!(AgentCli::for_provider(Provider::Minimax), AgentCli::Pi);
         assert_eq!(AgentCli::for_provider(Provider::Inception), AgentCli::Codex);
