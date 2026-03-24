@@ -367,6 +367,7 @@ pub fn orchestrate_program(
         autodev_debug_step(&initial_manifest.program, cycle_number, "cycle-start");
         let manifest = ProgramManifest::load(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "manifest-loaded");
+        sync_target_repo_to_origin(&manifest, &manifest_path);
         let program_before = evaluate_program(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "program-before-evaluated");
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
@@ -1168,6 +1169,41 @@ fn repo_relative_or_absolute(target_repo: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(target_repo)
         .map(PathBuf::from)
         .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Fast-forward the target repo's local checkout to match origin/main.
+///
+/// Integration lanes push directly to origin via SSH, but the autodev
+/// evaluate function checks the local filesystem for milestone artifacts.
+/// Without this sync, artifacts exist on origin but not locally, so
+/// milestones are never satisfied and lanes re-dispatch indefinitely.
+fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) {
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    let fetch = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["fetch", "origin", "--quiet"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if fetch.map(|s| s.success()).unwrap_or(false) {
+        // Only reset if we're on the main branch and not in a dirty state
+        // that the user is actively working on.
+        let head_branch = Command::new("git")
+            .current_dir(&target_repo)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        if head_branch.as_deref() == Some("main") {
+            let _ = Command::new("git")
+                .current_dir(&target_repo)
+                .args(["reset", "--hard", "origin/main"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
 }
 
 pub(crate) fn autodev_cargo_target_dir(target_repo: &Path) -> PathBuf {
