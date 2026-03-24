@@ -526,10 +526,42 @@ fn render_lane(
     write_file(&workflow_path, &graph, &mut written_files)?;
     write_file(&run_config_path, &run_config, &mut written_files)?;
     if lane.template != WorkflowTemplate::Integration {
-        let plan_prompt = render_prompt("plan", lane);
-        let review_prompt = render_prompt("review", lane);
-        let challenge_prompt = render_prompt("challenge", lane);
-        let polish_prompt = render_prompt("polish", lane);
+        // Lane memory: if remediation.md exists from a prior failed run, inject
+        // its findings into the lane goal so the next attempt sees what went wrong.
+        let lane_with_remediation;
+        let effective_lane = if let Some(unit) = blueprint.units.iter().find(|u| u.id == unit_id) {
+            let remediation_path = layout
+                .target_repo
+                .join(&unit.output_root)
+                .join("remediation.md");
+            if remediation_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&remediation_path) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() && !lane.goal.contains("PRIOR RUN FINDINGS") {
+                        lane_with_remediation = BlueprintLane {
+                            goal: format!(
+                                "PRIOR RUN FINDINGS (from automated review — address these):\n{trimmed}\n\n{}",
+                                lane.goal
+                            ),
+                            ..lane.clone()
+                        };
+                        &lane_with_remediation
+                    } else {
+                        lane
+                    }
+                } else {
+                    lane
+                }
+            } else {
+                lane
+            }
+        } else {
+            lane
+        };
+        let plan_prompt = render_prompt("plan", effective_lane);
+        let review_prompt = render_prompt("review", effective_lane);
+        let challenge_prompt = render_prompt("challenge", effective_lane);
+        let polish_prompt = render_prompt("polish", effective_lane);
         write_file(
             &prompt_dir.join("plan.md"),
             &plan_prompt,
@@ -1360,6 +1392,26 @@ fn render_implementation_review_prompt(
         &security_review_items,
         false,
     );
+    // Acceptance criteria and required tests as mandatory review checklist.
+    // Scan both prompt_context and lane.goal since ACs may be in either.
+    let mut ac_block = prompt_context_block(context, "Acceptance criteria:");
+    ac_block.extend(prompt_context_block(&lane.goal, "Acceptance criteria:"));
+    let mut rt_block = prompt_context_block(context, "Required tests:");
+    rt_block.extend(prompt_context_block(&lane.goal, "Required tests:"));
+    if !ac_block.is_empty() || !rt_block.is_empty() {
+        output.push_str(
+            "\n\nMandatory verification checklist (set merge_ready: no if ANY item fails):",
+        );
+        for line in &ac_block {
+            output.push_str(&format!("\n- [ ] {}", line.trim_start_matches("- ").trim()));
+        }
+        for line in &rt_block {
+            output.push_str(&format!(
+                "\n- [ ] Verify test exists and exercises real behavior: {}",
+                line.trim_start_matches("- ").trim()
+            ));
+        }
+    }
     output.push_str(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
@@ -1429,8 +1481,26 @@ fn render_implementation_challenge_prompt(
         verification_artifact_expectations,
         false,
     );
+    // Goal-specific checklist from acceptance criteria and required tests.
+    // Scan both prompt_context and lane.goal since ACs may be in either.
+    let mut ac_block = prompt_context_block(_context, "Acceptance criteria:");
+    ac_block.extend(prompt_context_block(&lane.goal, "Acceptance criteria:"));
+    let mut rt_block = prompt_context_block(_context, "Required tests:");
+    rt_block.extend(prompt_context_block(&lane.goal, "Required tests:"));
+    if !ac_block.is_empty() || !rt_block.is_empty() {
+        output.push_str("\n\nGoal-specific checklist (flag EVERY unmet item in verification.md):");
+        for line in &ac_block {
+            output.push_str(&format!("\n- {}", line.trim_start_matches("- ").trim()));
+        }
+        for line in &rt_block {
+            output.push_str(&format!(
+                "\n- Verify test: {}",
+                line.trim_start_matches("- ").trim()
+            ));
+        }
+    }
     output.push_str(
-        "\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Are the tests actually verifying behavioral outcomes, or are they trivial stubs that pass without real logic?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
+        "\n\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Are the tests actually verifying behavioral outcomes, or are they trivial stubs that pass without real logic?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
     );
     output.push_str(
         "\nWrite a short challenge note in `verification.md` or amend it if needed, focusing on concrete gaps and the next fixup target. Do not write `promotion.md` here.\n",
@@ -1718,11 +1788,14 @@ fn default_verify_command(
     unit_id: &str,
     lane: &BlueprintLane,
 ) -> String {
-    let artifact_paths = lane_artifact_paths(blueprint, unit_id, lane, Path::new("."));
-    let mut parts: Vec<String> = artifact_paths
-        .iter()
-        .map(|path| format!("test -f {}", path.display()))
-        .collect();
+    // Artifact file checks (test -f spec.md, test -f review.md) are NOT
+    // included here.  They are enforced by the audit gate instead.
+    // Previously, placing them first in the verify script caused instant
+    // 2ms failures when agents wrote artifacts during polish rather than
+    // specify/review, triggering unnecessary retry cycles and sometimes
+    // marking the entire lane as failed.
+    let _ = (blueprint, unit_id);
+    let mut parts: Vec<String> = Vec::new();
     // Extract proof commands from the lane goal and prompt context so the
     // verify gate tests functional behavior, not just file existence.
     for source in [Some(lane.goal.as_str()), lane.prompt_context.as_deref()] {
@@ -3066,7 +3139,11 @@ fn implementation_audit_command(
         .join(" && ");
 
     // Reject no-op lanes: require at least one source file changed.
-    let noop_guard = "test \"$(git diff --name-only HEAD | wc -l)\" -gt 0 || test \"$(git diff --cached --name-only | wc -l)\" -gt 0";
+    // Check that the worktree has code changes relative to its parent branch.
+    // Changes are committed at each stage, so we compare HEAD against its merge-base
+    // with origin/main (or just count commits beyond the initial checkout).
+    let noop_guard =
+        "( test \"$(git log --oneline origin/main..HEAD -- '*.rs' '*.toml' | wc -l)\" -gt 0 )";
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
     // Agents must not modify files outside their declared scope — this prevents
@@ -3108,7 +3185,7 @@ fn implementation_audit_command(
         let pattern = allowed.join("|");
         // Check that every changed file matches at least one allowed pattern
         format!(
-            " && {{ changed=$(git diff --name-only HEAD 2>/dev/null); \
+            " && {{ changed=$(git diff --name-only origin/main..HEAD 2>/dev/null); \
             if [ -n \"$changed\" ]; then \
             violations=$(echo \"$changed\" | grep -Ev '{pattern}' || true); \
             if [ -n \"$violations\" ]; then \
@@ -3122,7 +3199,44 @@ fn implementation_audit_command(
     // Prevents review agents from overriding machine-detected quality issues.
     let quality_hard_gate = " && grep -Eq '^quality_ready: yes$' quality.md";
 
-    format!("{artifact_checks} && {promotion_command} && {noop_guard}{quality_hard_gate}{surface_guard}")
+    // Lane memory: on any audit failure, capture findings to remediation.md
+    // in the output directory so the next run attempt sees what went wrong.
+    let output_dir = blueprint
+        .units
+        .iter()
+        .find(|u| u.id == unit_id)
+        .map(|u| u.output_root.display().to_string())
+        .unwrap_or_else(|| format!("outputs/{unit_id}"));
+    let remediation_path = format!("{output_dir}/remediation.md");
+    let remediation_script = format!(
+        "capture_remediation() {{\n  \
+            mkdir -p '{output_dir}'\n  \
+            {{\n    \
+                echo '# Remediation Notes (auto-captured from failed audit)'\n    \
+                echo ''\n    \
+                echo '## Quality Gate'\n    \
+                cat quality.md 2>/dev/null || echo '(not found)'\n    \
+                echo ''\n    \
+                echo '## Verification Findings'\n    \
+                cat verification.md 2>/dev/null || echo '(not found)'\n    \
+                echo ''\n    \
+                echo '## Deep Review Findings'\n    \
+                cat deep-review-findings.md 2>/dev/null || echo '(not found)'\n    \
+                echo ''\n    \
+                echo '## Promotion Decision'\n    \
+                cat promotion.md 2>/dev/null || echo '(not found)'\n  \
+            }} > '{remediation_path}'\n\
+        }}"
+    );
+
+    // Wrap audit as: try checks, if they fail capture remediation then exit 1
+    format!(
+        "{remediation_script}\n\
+        if ! ( {artifact_checks} && {promotion_command} && {noop_guard}{quality_hard_gate}{surface_guard} ); then\n  \
+            capture_remediation\n  \
+            exit 1\n\
+        fi"
+    )
 }
 
 fn extract_owned_surfaces(goal: &str) -> Vec<String> {

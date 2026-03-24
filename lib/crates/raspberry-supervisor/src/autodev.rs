@@ -1652,27 +1652,46 @@ fn run_synth_evolve(
 ) -> Result<(), AutodevError> {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     let temp_dir = autodev_temp_dir(&manifest.program)?;
-    let blueprint_path = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
 
-    let import = Command::new(&settings.fabro_bin)
-        .current_dir(&target_repo)
-        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
-        .arg("--no-upgrade-check")
-        .arg("synth")
-        .arg("import")
-        .arg("--target-repo")
-        .arg(&target_repo)
-        .arg("--program")
-        .arg(&manifest.program)
-        .arg("--output")
-        .arg(&blueprint_path)
-        .output()
-        .map_err(|source| AutodevError::Spawn {
-            step: "synth import".to_string(),
+    // Prefer the source blueprint (malinka/blueprints/<program>.yaml) if it exists.
+    // This ensures manual goal edits (failure history, required tests) and blueprint
+    // changes take effect on the next evolve cycle without requiring a manual
+    // `synth create` invocation.  Fall back to import from rendered package.
+    let source_blueprint = manifest_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("blueprints/{}.yaml", manifest.program));
+    let blueprint_path = if source_blueprint.exists() {
+        let copied = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
+        fs::copy(&source_blueprint, &copied).map_err(|source| AutodevError::Spawn {
+            step: "copy source blueprint".to_string(),
             program: manifest.program.clone(),
             source,
         })?;
-    ensure_success("synth import", &manifest.program, import)?;
+        copied
+    } else {
+        let imported = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
+        let import = Command::new(&settings.fabro_bin)
+            .current_dir(&target_repo)
+            .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
+            .arg("--no-upgrade-check")
+            .arg("synth")
+            .arg("import")
+            .arg("--target-repo")
+            .arg(&target_repo)
+            .arg("--program")
+            .arg(&manifest.program)
+            .arg("--output")
+            .arg(&imported)
+            .output()
+            .map_err(|source| AutodevError::Spawn {
+                step: "synth import".to_string(),
+                program: manifest.program.clone(),
+                source,
+            })?;
+        ensure_success("synth import", &manifest.program, import)?;
+        imported
+    };
 
     inject_inputs_into_blueprint(
         &blueprint_path,
@@ -1680,13 +1699,11 @@ fn run_synth_evolve(
         &settings.evidence_paths,
     )?;
 
-    // Use --no-review for deterministic reconciliation.  The LLM steering path
-    // exceeds the SYNTH_EVOLVE_TIMEOUT_SECS budget and always times out, which
-    // prevents regenerable lanes from ever getting fresh run configs.  The
-    // deterministic path re-renders the package from the current blueprint,
-    // which is exactly what regenerate_lane recovery requires.
-    let mut evolve = Command::new("timeout");
-    evolve
+    // Use synth create --no-review --no-decompose for deterministic re-rendering.
+    // This re-renders prompts, workflow graphs, and run configs from the blueprint,
+    // picking up any goal edits (failure history, required tests) or template changes.
+    let mut create = Command::new("timeout");
+    create
         .arg("--signal=TERM")
         .arg(SYNTH_EVOLVE_TIMEOUT_SECS.to_string())
         .arg(&settings.fabro_bin)
@@ -1694,21 +1711,22 @@ fn run_synth_evolve(
         .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
         .arg("--no-upgrade-check")
         .arg("synth")
-        .arg("evolve")
+        .arg("create")
         .arg("--no-review")
+        .arg("--no-decompose")
         .arg("--blueprint")
         .arg(&blueprint_path)
         .arg("--target-repo")
         .arg(&target_repo);
     if let Some(preview_root) = &settings.preview_evolve_root {
-        evolve.arg("--preview-root").arg(preview_root);
+        create.arg("--preview-root").arg(preview_root);
     }
-    let output = evolve.output().map_err(|source| AutodevError::Spawn {
-        step: "synth evolve".to_string(),
+    let output = create.output().map_err(|source| AutodevError::Spawn {
+        step: "synth create".to_string(),
         program: manifest.program.clone(),
         source,
     })?;
-    ensure_success("synth evolve", &manifest.program, output)?;
+    ensure_success("synth create", &manifest.program, output)?;
 
     let _ = fs::remove_dir_all(&temp_dir);
     Ok(())
