@@ -3139,11 +3139,10 @@ fn implementation_audit_command(
         .join(" && ");
 
     // Reject no-op lanes: require at least one source file changed.
-    // Check that the worktree has code changes relative to its parent branch.
-    // Changes are committed at each stage, so we compare HEAD against its merge-base
-    // with origin/main (or just count commits beyond the initial checkout).
-    let noop_guard =
-        "( test \"$(git log --oneline origin/main..HEAD -- '*.rs' '*.toml' | wc -l)\" -gt 0 )";
+    // Use merge-base to scope to THIS run's commits only — the worktree
+    // branch inherits prior integrate commits that must not be counted.
+    let noop_guard = "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' | wc -l)\" -gt 0 )";
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
     // Agents must not modify files outside their declared scope — this prevents
@@ -3183,9 +3182,12 @@ fn implementation_audit_command(
         allowed.push("implementation.md".to_string());
 
         let pattern = allowed.join("|");
-        // Check that every changed file matches at least one allowed pattern
+        // Check that every changed file matches at least one allowed pattern.
+        // Use merge-base to scope to this run's commits — the worktree inherits
+        // prior integrate commits whose files must not trigger violations.
         format!(
-            " && {{ changed=$(git diff --name-only origin/main..HEAD 2>/dev/null); \
+            " && {{ _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            changed=$(git diff --name-only \"$_mb\"..HEAD 2>/dev/null); \
             if [ -n \"$changed\" ]; then \
             violations=$(echo \"$changed\" | grep -Ev '{pattern}' || true); \
             if [ -n \"$violations\" ]; then \
