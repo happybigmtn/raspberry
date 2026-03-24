@@ -356,6 +356,7 @@ pub fn orchestrate_program(
     };
 
     let mut cycle_number = 0usize;
+    let mut last_complete_count: Option<usize> = None;
     loop {
         if let Some(limit) = max_cycles {
             if cycle_number >= limit {
@@ -367,7 +368,12 @@ pub fn orchestrate_program(
         autodev_debug_step(&initial_manifest.program, cycle_number, "cycle-start");
         let manifest = ProgramManifest::load(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "manifest-loaded");
-        sync_target_repo_to_origin(&manifest, &manifest_path);
+        // Only sync the target repo when the complete count may have changed
+        // (first cycle, or after a dispatch/evolve that could trigger integration).
+        // This avoids running git fetch+reset every 5s poll cycle.
+        if last_complete_count.is_none() {
+            sync_target_repo_to_origin(&manifest, &manifest_path);
+        }
         let program_before = evaluate_program(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "program-before-evaluated");
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
@@ -565,6 +571,12 @@ pub fn orchestrate_program(
             &format!("dispatch-complete outcomes={}", dispatched.len()),
         );
 
+        // After dispatch, sync the target repo if integrations may have landed.
+        // This ensures evaluate sees freshly-pushed artifacts for milestone checks.
+        if !dispatched.is_empty() || evolved {
+            sync_target_repo_to_origin(&manifest, &manifest_path);
+        }
+
         // Skip redundant evaluation when nothing changed (no dispatch, no evolve).
         // Between program_before and here only ms elapsed; re-evaluating 221 lanes
         // with check probes and progress file reads is wasted work.
@@ -594,6 +606,9 @@ pub fn orchestrate_program(
             .iter()
             .filter(|lane| lane.status == LaneExecutionStatus::Complete)
             .count();
+
+        // Track complete count so we know when to sync on the next cycle
+        last_complete_count = Some(complete_after);
 
         report.cycles.push(AutodevCycleReport {
             cycle: cycle_number,
