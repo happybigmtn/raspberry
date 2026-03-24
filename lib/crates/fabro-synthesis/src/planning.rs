@@ -723,7 +723,7 @@ fn derive_registry_plan_intents(
         intents.push(intent.clone());
     }
 
-    for plan in registry.plans {
+    for plan in &registry.plans {
         let family = registry_plan_family(&plan);
         let parent_id = plan.plan_id.clone();
         let child_count = if !plan.children.is_empty() {
@@ -797,7 +797,7 @@ fn derive_registry_plan_intents(
             };
             let enriched_plan = PlanRecord {
                 children: effective_children,
-                ..plan
+                ..plan.clone()
             };
             let child_intents = derive_child_intents(
                 target_repo,
@@ -805,6 +805,7 @@ fn derive_registry_plan_intents(
                 &enriched_plan,
                 corpus,
                 &workspace_dependency,
+                &registry.plans,
             );
             intents.extend(child_intents);
         }
@@ -1168,6 +1169,7 @@ fn derive_child_intents(
     plan: &PlanRecord,
     corpus: &PlanningCorpus,
     workspace_dependency: &Option<(LaneDependency, LaneIntent)>,
+    all_plans: &[PlanRecord],
 ) -> Vec<LaneIntent> {
     plan.children
         .iter()
@@ -1206,13 +1208,42 @@ fn derive_child_intents(
             let prompt_context =
                 build_child_prompt_context(corpus, plan, child, &child_unit_id, &artifacts);
 
+            // Resolve dependency_plan_ids: if a dependency references a composite
+            // plan, resolve it to the last child lane of that composite (the child
+            // that must complete before dependent work can start).
             let mut dependencies = plan
                 .dependency_plan_ids
                 .iter()
-                .map(|dependency| LaneDependency {
-                    unit: dependency.clone(),
-                    lane: None,
-                    milestone: Some("reviewed".to_string()),
+                .filter_map(|dep_plan_id| {
+                    let dep_plan = all_plans.iter().find(|p| p.plan_id == *dep_plan_id);
+                    match dep_plan {
+                        Some(p) if p.composite && !p.children.is_empty() => {
+                            let last_child = p.children.last().expect("non-empty checked");
+                            let resolved_unit = if last_child.child_id.starts_with(&p.plan_id) {
+                                last_child.child_id.clone()
+                            } else {
+                                format!("{}-{}", p.plan_id, last_child.child_id)
+                            };
+                            Some(LaneDependency {
+                                unit: resolved_unit,
+                                lane: None,
+                                milestone: None,
+                            })
+                        }
+                        Some(_) => Some(LaneDependency {
+                            unit: dep_plan_id.clone(),
+                            lane: None,
+                            milestone: Some("reviewed".to_string()),
+                        }),
+                        // Unknown plan — skip rather than create a broken dependency
+                        None => {
+                            eprintln!(
+                                "warning: plan `{}` dependency_plan_id `{}` references unknown plan, skipping",
+                                plan.plan_id, dep_plan_id
+                            );
+                            None
+                        }
+                    }
                 })
                 .collect::<Vec<_>>();
             if let Some(parent_dependency) = parent_dependency {
