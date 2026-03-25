@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use raspberry_supervisor::manifest::{LaneDependency, LaneKind, MilestoneManifest};
 use raspberry_supervisor::{
-    load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord, PlanRecord,
-    WorkflowArchetype,
+    load_plan_registry_from_planning_root, PlanCategory, PlanChildRecord, PlanMappingSource,
+    PlanRecord, WorkflowArchetype,
 };
 
 use crate::blueprint::{
@@ -723,6 +723,27 @@ fn derive_registry_plan_intents(
         intents.push(intent.clone());
     }
 
+    // Scaffold-first ordering: identify infrastructure/scaffold plans and
+    // inject them as implicit dependencies for all non-infrastructure plans.
+    // This ensures project scaffolding (package.json, tsconfig, schema) completes
+    // before feature lanes try to write code that depends on them.
+    // Identify scaffold plans: only plans explicitly categorized as Infrastructure
+    // or with "project-scaffold" in their ID. These must complete before feature
+    // lanes dispatch (agents need package.json, tsconfig, schema before writing code).
+    // Only applies to plans from YAML plan-mappings (Opus-decomposed) to avoid
+    // false positives on legacy master-plan-based projects.
+    let scaffold_plan_ids: Vec<String> = registry
+        .plans
+        .iter()
+        .filter(|p| {
+            p.mapping_source == PlanMappingSource::Contract
+                && (p.category == PlanCategory::Infrastructure
+                    || p.plan_id == "project-scaffold"
+                    || p.plan_id == "workspace-setup")
+        })
+        .map(|p| p.plan_id.clone())
+        .collect();
+
     for plan in &registry.plans {
         let family = registry_plan_family(&plan);
         let parent_id = plan.plan_id.clone();
@@ -754,6 +775,35 @@ fn derive_registry_plan_intents(
             let prompt_context =
                 build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
             let mut dependencies = registry_plan_dependencies(&plan);
+            // Inject scaffold dependencies for non-infrastructure parent intents
+            if plan.category != PlanCategory::Infrastructure
+                && !scaffold_plan_ids.contains(&plan.plan_id)
+            {
+                for scaffold_id in &scaffold_plan_ids {
+                    if !dependencies.iter().any(|d| d.unit == *scaffold_id) {
+                        // Resolve composite scaffold to its last child
+                        let resolved = registry
+                            .plans
+                            .iter()
+                            .find(|p| p.plan_id == *scaffold_id)
+                            .filter(|p| p.composite && !p.children.is_empty())
+                            .and_then(|p| p.children.last())
+                            .map(|last| {
+                                if last.child_id.starts_with(scaffold_id) {
+                                    last.child_id.clone()
+                                } else {
+                                    format!("{scaffold_id}-{}", last.child_id)
+                                }
+                            })
+                            .unwrap_or_else(|| scaffold_id.clone());
+                        dependencies.push(LaneDependency {
+                            unit: resolved,
+                            lane: None,
+                            milestone: None,
+                        });
+                    }
+                }
+            }
             if let Some((workspace_dependency, _)) = &workspace_dependency {
                 let needs_workspace = plan.category != PlanCategory::Meta
                     && !dependencies
@@ -795,8 +845,20 @@ fn derive_registry_plan_intents(
             } else {
                 plan.children.clone()
             };
+            // Inject scaffold plans as implicit dependencies for non-infrastructure plans.
+            let mut enriched_deps = plan.dependency_plan_ids.clone();
+            if plan.category != PlanCategory::Infrastructure
+                && !scaffold_plan_ids.contains(&plan.plan_id)
+            {
+                for scaffold_id in &scaffold_plan_ids {
+                    if !enriched_deps.contains(scaffold_id) {
+                        enriched_deps.push(scaffold_id.clone());
+                    }
+                }
+            }
             let enriched_plan = PlanRecord {
                 children: effective_children,
+                dependency_plan_ids: enriched_deps,
                 ..plan.clone()
             };
             let child_intents = derive_child_intents(
