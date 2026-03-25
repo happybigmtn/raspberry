@@ -102,13 +102,16 @@ async fn ensure_cli(
         return Ok(());
     }
 
-    // Install Node.js (if needed) and the CLI in a single shell so PATH persists
+    // Install Node.js (if needed) and the CLI in a single shell so PATH persists.
+    // File lock prevents concurrent npm install -g races (ENOTEMPTY on rename).
     let install_cmd = format!(
         "export PATH=\"$HOME/.local/bin:$PATH\" && \
          (node --version >/dev/null 2>&1 || \
           (mkdir -p ~/.local && curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C ~/.local)) && \
-         npm install -g {}",
-        cli.npm_package()
+         mkdir -p /tmp/.fabro-cli-locks && \
+         (flock -w 120 9 && npm install -g {pkg}) 9>/tmp/.fabro-cli-locks/{name}.lock",
+        pkg = cli.npm_package(),
+        name = cli_name,
     );
     let install_result = sandbox
         .exec_command(&install_cmd, 180_000, None, None, None)
