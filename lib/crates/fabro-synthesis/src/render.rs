@@ -426,6 +426,123 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
             });
     }
 
+    // Phase 3: Generate plan-review lanes — adversarial bug review after all
+    // child lanes of a plan complete. Groups units by plan prefix, creates a
+    // review lane that depends on all children and runs the 3-step process.
+    const MIN_PLAN_CHILDREN: usize = 2;
+    let mut plan_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for unit in &augmented.units {
+        let impl_lanes: Vec<_> = unit
+            .lanes
+            .iter()
+            .filter(|l| l.template == WorkflowTemplate::Implementation)
+            .filter(|l| {
+                !l.id.contains("workspace-verify")
+                    && !l.id.contains("contract-verify")
+                    && !l.id.contains("plan-review")
+            })
+            .collect();
+        if impl_lanes.is_empty() {
+            continue;
+        }
+        // Derive plan prefix: unit IDs are "{plan}-{child}" — take everything
+        // before the last "-" that produces a shared prefix with at least 2 units.
+        // Heuristic: find the longest common prefix among units sharing a dash-prefix.
+        let parts: Vec<&str> = unit.id.split('-').collect();
+        if parts.len() >= 2 {
+            // Try progressively shorter prefixes
+            for prefix_len in (1..parts.len()).rev() {
+                let prefix = parts[..prefix_len].join("-");
+                plan_groups.entry(prefix).or_default().push(unit.id.clone());
+                break;
+            }
+        }
+    }
+    // Only create plan-review for groups with enough children
+    for (plan_prefix, child_unit_ids) in &plan_groups {
+        if child_unit_ids.len() < MIN_PLAN_CHILDREN {
+            continue;
+        }
+        let review_id = format!("{plan_prefix}-plan-review");
+        // Check if already exists
+        if augmented
+            .units
+            .iter()
+            .any(|u| u.lanes.iter().any(|l| l.id == review_id))
+        {
+            continue;
+        }
+        // Depend on all child units completing
+        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = child_unit_ids
+            .iter()
+            .map(|uid| raspberry_supervisor::manifest::LaneDependency {
+                unit: uid.clone(),
+                lane: None,
+                milestone: None,
+            })
+            .collect();
+        // Host the review lane in a new unit (or first child unit)
+        let host_id = child_unit_ids.first().expect("non-empty").clone();
+        let Some(host_unit) = augmented.units.iter_mut().find(|u| u.id == host_id) else {
+            continue;
+        };
+        let review_goal = format!(
+            "Adversarial bug review for plan `{plan_prefix}` ({n} child units).\n\n\
+             All implementation lanes for this plan have completed and their code is on trunk.\n\
+             Run a 3-step adversarial review:\n\n\
+             **Step 1 — Bug Finder:** Search the codebase for ALL potential bugs in code \
+             written by child lanes. Be thorough and aggressive. Score: +1 low, +5 medium, \
+             +10 critical. Maximize score. Report anything that *could* be a bug.\n\n\
+             **Step 2 — Bug Skeptic:** Challenge each bug from Step 1. For each, determine \
+             if it's real or a false positive. Disprove as many as possible. Score: +[bug pts] \
+             for correct disproves, -2x for wrong dismissals.\n\n\
+             **Step 3 — Arbiter:** For each disputed bug, render final verdict: REAL BUG or \
+             NOT A BUG. Output confirmed bugs with severity and one-line fix.\n\n\
+             After the review, FIX all confirmed bugs directly in the codebase.\n\n\
+             Then write `.fabro-work/meta-review-{plan_prefix}.md` analyzing the BUG PATTERNS \
+             (not individual bugs) and proposing quality gate rules, prompt improvements, or \
+             convention checks that would prevent this class of bug in future plans.\n\n\
+             Child units: {children}\n\n\
+             Proof commands:\n\
+             - `cargo check --workspace || npm run build --if-present || true`\n\
+             - `cargo test --workspace || npm test --if-present || true`\n\n\
+             Required durable artifacts:\n\
+             - `spec.md` (bug review report)\n\
+             - `review.md` (meta-review with fabro improvement proposals)",
+            n = child_unit_ids.len(),
+            children = child_unit_ids.join(", "),
+        );
+        host_unit.lanes.push(BlueprintLane {
+            id: review_id.clone(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{plan_prefix} Plan Review"),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some(review_id.clone()),
+            template: WorkflowTemplate::Implementation,
+            goal: review_goal,
+            managed_milestone: format!("{plan_prefix}-plan-reviewed"),
+            dependencies: deps,
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo check --workspace 2>/dev/null || npm run build --if-present 2>/dev/null || true".to_string()),
+            health_command: None,
+        });
+        host_unit
+            .milestones
+            .push(raspberry_supervisor::manifest::MilestoneManifest {
+                id: format!("{plan_prefix}-plan-reviewed"),
+                requires: vec!["spec".to_string(), "review".to_string()],
+            });
+    }
+
     augmented
 }
 
