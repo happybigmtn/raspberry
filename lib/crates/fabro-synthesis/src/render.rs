@@ -489,7 +489,7 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
         let review_goal = format!(
             "Adversarial bug review for plan `{plan_prefix}` ({n} child units).\n\n\
              All implementation lanes for this plan have completed and their code is on trunk.\n\
-             Run a 3-step adversarial review:\n\n\
+             Execute this 6-step process IN ORDER:\n\n\
              **Step 1 — Bug Finder:** Search the codebase for ALL potential bugs in code \
              written by child lanes. Be thorough and aggressive. Score: +1 low, +5 medium, \
              +10 critical. Maximize score. Report anything that *could* be a bug.\n\n\
@@ -498,17 +498,29 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
              for correct disproves, -2x for wrong dismissals.\n\n\
              **Step 3 — Arbiter:** For each disputed bug, render final verdict: REAL BUG or \
              NOT A BUG. Output confirmed bugs with severity and one-line fix.\n\n\
-             After the review, FIX all confirmed bugs directly in the codebase.\n\n\
-             Then write `.fabro-work/meta-review-{plan_prefix}.md` analyzing the BUG PATTERNS \
-             (not individual bugs) and proposing quality gate rules, prompt improvements, or \
-             convention checks that would prevent this class of bug in future plans.\n\n\
+             **Step 4 — Fix:** For each confirmed REAL BUG, apply the fix directly in the \
+             codebase. Run the proof commands to verify. Do NOT skip any confirmed bug.\n\n\
+             **Step 5 — Meta-Review:** Write `.fabro-work/meta-review-{plan_prefix}.md` \
+             analyzing the BUG PATTERNS found (not individual bugs). For each pattern, \
+             propose a specific fabro-level change:\n\
+             - Quality gate rule (shell script addition to render.rs quality command)\n\
+             - Prompt improvement (wording change in plan/review/challenge prompts)\n\
+             - Convention check (regex pattern to add to the quality gate)\n\
+             Format each proposal as: PATTERN: ..., PROPOSED CHANGE: ..., \
+             EXPECTED IMPACT: prevents N bugs per M plans, RISK: false positive rate.\n\n\
+             **Step 6 — Implement Meta-Review:** For each proposal in the meta-review, \
+             evaluate: will this change prevent >2 bugs per 10 plans? Is the false positive \
+             rate < 10%? Could it break existing passing lanes? \
+             APPROVED proposals: implement them NOW. Edit the quality gate scripts, prompts, \
+             or convention checks in the codebase. Run tests to verify. \
+             REJECTED proposals: note why in the meta-review file.\n\n\
              Child units: {children}\n\n\
              Proof commands:\n\
              - `cargo check --workspace || npm run build --if-present || true`\n\
              - `cargo test --workspace || npm test --if-present || true`\n\n\
              Required durable artifacts:\n\
-             - `spec.md` (bug review report)\n\
-             - `review.md` (meta-review with fabro improvement proposals)",
+             - `spec.md` (bug review report with all 6 steps)\n\
+             - `review.md` (summary: bugs found/fixed, meta-proposals approved/rejected)",
             n = child_unit_ids.len(),
             children = child_unit_ids.join(", "),
         );
