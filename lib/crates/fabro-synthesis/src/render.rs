@@ -833,7 +833,7 @@ fn render_lane(
     // every file listed in its Deliverables section exists on disk.
     let contract_check = "\n\
         if [ -f .fabro-work/contract.md ]; then\n  \
-            contract_missing=\"\"\n  \
+            rm -f .fabro-work/.contract-missing\n  \
             sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ' | while IFS= read -r line; do\n    \
                 cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | tr -d ' ')\n    \
                 if [ -n \"$cfile\" ] && echo \"$cfile\" | grep -qE '\\.(rs|ts|tsx|js|py|go|sol|rb|json|toml|yaml|yml)$'; then\n      \
