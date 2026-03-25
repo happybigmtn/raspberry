@@ -829,6 +829,27 @@ fn render_lane(
         quality_command = format!("{quality_command}\n{py_dup}");
     }
 
+    // Contract-aware quality gate: if .fabro-work/contract.md exists, verify
+    // every file listed in its Deliverables section exists on disk.
+    let contract_check = "\n\
+        if [ -f .fabro-work/contract.md ]; then\n  \
+            contract_missing=\"\"\n  \
+            while IFS= read -r line; do\n    \
+                cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | xargs 2>/dev/null)\n    \
+                if [ -n \"$cfile\" ] && echo \"$cfile\" | grep -qE '\\.(rs|ts|tsx|js|py|go|sol|rb|json|toml|yaml|yml)$'; then\n      \
+                    if [ ! -e \"$cfile\" ]; then\n        \
+                        contract_missing=\"$contract_missing\\n$cfile\"\n      \
+                    fi\n    \
+                fi\n  \
+            done < <(sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ')\n  \
+            if [ -n \"$contract_missing\" ]; then\n    \
+                echo '## Contract Deliverables Missing' >> \"$QUALITY_PATH\"\n    \
+                printf '%b\\n' \"$contract_missing\" >> \"$QUALITY_PATH\"\n    \
+                quality_ready=no\n  \
+            fi\n\
+        fi";
+    quality_command = format!("{quality_command}\n{contract_check}");
+
     let graph = render_workflow_graph(
         lane,
         &verify_command,
@@ -1013,7 +1034,7 @@ fn render_workflow_graph(
             let fallback_attr = profile_fallback_retry_target(profile);
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"Read the implementation plan carefully. Before writing any code, write .fabro-work/contract.md defining what DONE looks like for this lane.\\n\\nFormat:\\n\\n## Deliverables\\nList every file you will create or modify, one per line with backtick path.\\n\\n## Acceptance Criteria\\nList 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\\n\\n## Out of Scope\\nList what this lane will NOT implement.\\n\\nDo NOT write any source code. Only write the contract. Run `mkdir -p .fabro-work` first.\", reasoning_effort=\"medium\"]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 fallback_attr,
@@ -1134,12 +1155,18 @@ fn implementation_promotion_contract_command(
     lane: &BlueprintLane,
 ) -> String {
     let promotion_path = implementation_promotion_path(blueprint, unit_id, lane);
+    let p = promotion_path.display();
+    // Validate promotion format: merge_ready, manual_proof_pending, and all 4
+    // scored dimensions must be present. Each score must be >= 6 (threshold).
     format!(
-        "grep -Eq '^merge_ready: yes$' {} && grep -Eq '^manual_proof_pending: no$' {} && grep -Eq '^reason: .+$' {} && grep -Eq '^next_action: .+$' {}",
-        promotion_path.display(),
-        promotion_path.display(),
-        promotion_path.display(),
-        promotion_path.display()
+        "grep -Eq '^merge_ready: yes$' {p} && \
+        grep -Eq '^manual_proof_pending: no$' {p} && \
+        grep -Eq '^reason: .+$' {p} && \
+        grep -Eq '^next_action: .+$' {p} && \
+        grep -Eq '^completeness: ([6-9]|10)$' {p} && \
+        grep -Eq '^correctness: ([6-9]|10)$' {p} && \
+        grep -Eq '^convention: ([6-9]|10)$' {p} && \
+        grep -Eq '^test_quality: ([6-9]|10)$' {p}"
     )
 }
 
@@ -1616,6 +1643,9 @@ fn render_implementation_plan_prompt(
         }
     }
     output.push_str(
+        "\n\nSprint contract:\n- Read `.fabro-work/contract.md` — the contract stage wrote it before you. It lists the exact deliverables and acceptance criteria.\n- You MUST satisfy ALL acceptance criteria from the contract.\n- You MUST create ALL files listed in the contract's Deliverables section.\n- If the contract is missing or empty, write your own `.fabro-work/contract.md` before coding.\n",
+    );
+    output.push_str(
         "\n\nImplementation quality:\n- implement functionality completely — every function must do real work, not return defaults or skip the action\n- BEHAVIORAL STUBS ARE WORSE THAN COMPILATION FAILURES: a function that compiles but does not perform its stated purpose will be caught by the adversarial challenge stage and rejected\n- tests must verify behavioral outcomes (given X input, assert Y output), not just compilation or derive macros (Display, Clone, PartialEq)\n- include at least one FULL LIFECYCLE test that drives from initial state through multiple actions to terminal state\n- do not duplicate tests — one test per behavior, not five tests for the same Display output\n",
     );
     output.push_str(
@@ -1799,17 +1829,23 @@ fn render_implementation_review_prompt(
         "\nDeterministic evidence:\n- treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
     );
     output.push_str(
-        "\n\nWrite `.fabro-work/promotion.md` in this exact machine-readable form:\n\n\
+        "\n\nScore each dimension 0-10 and write `.fabro-work/promotion.md` in this exact form:\n\n\
 merge_ready: yes|no\n\
 manual_proof_pending: yes|no\n\
+completeness: <0-10>\n\
+correctness: <0-10>\n\
+convention: <0-10>\n\
+test_quality: <0-10>\n\
 reason: <one sentence>\n\
 next_action: <one sentence>\n\n\
-Only set `merge_ready: yes` when:\n\
-- `.fabro-work/quality.md` says `quality_ready: yes`\n\
-- automated proof is sufficient for this slice\n\
-- any required manual proof has actually been performed\n\
-- no unresolved warnings or stale failures undermine confidence\n\
-- the implementation and verification artifacts match the real code.\n",
+Scoring guide:\n\
+- completeness: 10=all deliverables present + all acceptance criteria met, 7=core present + 1-2 gaps, 4=missing deliverables, 0=skeleton\n\
+- correctness: 10=compiles + tests pass + edges handled, 7=tests pass + minor gaps, 4=some failures, 0=broken\n\
+- convention: 10=matches all project patterns, 7=minor deviations, 4=multiple violations, 0=ignores conventions\n\
+- test_quality: 10=tests import subject + verify all criteria, 7=most criteria tested, 4=structural only, 0=no tests\n\n\
+If `.fabro-work/contract.md` exists, verify EVERY acceptance criterion from it.\n\
+Any dimension below 6 = merge_ready: no.\n\
+If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.\n",
     );
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `.fabro-work/promotion.md` in this stage\n- read `.fabro-work/quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
@@ -6104,9 +6140,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(plan.contains("do not hand-author `.fabro-work/quality.md`"));
         assert!(review.contains("Review only the current slice"));
         assert!(review.contains("treat `.fabro-work/quality.md` as machine-generated truth"));
-        assert!(
-            review.contains("Write `.fabro-work/promotion.md` in this exact machine-readable form")
-        );
+        assert!(review.contains("Score each dimension 0-10 and write `.fabro-work/promotion.md`"));
         assert!(review.contains("Review stage ownership"));
         assert!(review.contains("Current slice"));
         assert!(polish.contains("# Gameplay TUI Implementation Lane — Fixup"));
