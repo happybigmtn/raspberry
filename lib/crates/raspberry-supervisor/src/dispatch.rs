@@ -151,12 +151,16 @@ pub fn execute_selected_lanes(
             let is_program_lane = child_manifest.is_some();
             let is_integration_lane = lane.lane_kind == LaneKind::Integration;
             let integration_request = if is_integration_lane {
-                Some(build_integration_request(
-                    manifest_path,
-                    &manifest,
-                    &state,
-                    &lane,
-                )?)
+                match build_integration_request(manifest_path, &manifest, &state, &lane) {
+                    Ok(request) => Some(request),
+                    Err(error) => {
+                        eprintln!(
+                            "Error: integration lane `{}` is invalid: {error}, skipping",
+                            lane.lane_key
+                        );
+                        continue;
+                    }
+                }
             } else {
                 None
             };

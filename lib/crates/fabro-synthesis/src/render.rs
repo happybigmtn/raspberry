@@ -2183,7 +2183,30 @@ fn default_verify_command(
     if parts.is_empty() {
         return "true".to_string();
     }
-    format!("set -e\n{}", parts.join("\n"))
+    // Guard commands that require a bootstrapped project (npm, npx, pip, etc.).
+    // On a fresh repo the agent hasn't scaffolded yet, so these tools won't
+    // exist. The verify gate passes as a no-op until the project has a
+    // package.json / node_modules / requirements.txt, letting the implement
+    // stage scaffold first.
+    let needs_node = parts
+        .iter()
+        .any(|p| p.starts_with("npx ") || p.starts_with("npm "));
+    let needs_python = parts
+        .iter()
+        .any(|p| p.starts_with("python") || p.starts_with("pip") || p.starts_with("pytest"));
+    let mut guards = Vec::new();
+    if needs_node {
+        guards.push("if [ ! -f package.json ]; then echo 'no package.json yet — skipping verify'; exit 0; fi");
+    }
+    if needs_python {
+        guards.push("if [ ! -f requirements.txt ] && [ ! -f pyproject.toml ] && [ ! -f setup.py ]; then echo 'no Python project manifest yet — skipping verify'; exit 0; fi");
+    }
+    let guard_block = if guards.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", guards.join("\n"))
+    };
+    format!("set -e\n{guard_block}{}", parts.join("\n"))
 }
 
 /// Replace `cargo test --workspace` with per-crate test commands derived from
