@@ -852,6 +852,10 @@ fn derive_registry_plan_intents(
             {
                 for scaffold_id in &scaffold_plan_ids {
                     if !enriched_deps.contains(scaffold_id) {
+                        eprintln!(
+                            "  injecting scaffold dep {} -> {}",
+                            plan.plan_id, scaffold_id
+                        );
                         enriched_deps.push(scaffold_id.clone());
                     }
                 }
