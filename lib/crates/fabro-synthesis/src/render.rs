@@ -1228,6 +1228,38 @@ fn implementation_quality_command(
     if surface_scan_lines.is_empty() {
         surface_scan_lines.push("true".to_string());
     }
+    // Missing owned surface check: if a source file (.rs/.ts/.py/.js/.go) is
+    // declared as an owned surface but doesn't exist after implementation,
+    // that's a quality failure — the agent didn't create the required file.
+    // scan_placeholder silently returns 0 for missing files, which masks this.
+    let source_exts = ["rs", "ts", "tsx", "js", "py", "go", "sol", "rb"];
+    let all_owned_surfaces = extract_owned_surfaces(&lane.goal);
+    let owned_source_surfaces: Vec<&str> = all_owned_surfaces
+        .iter()
+        .filter(|s| {
+            source_exts
+                .iter()
+                .any(|ext| s.ends_with(&format!(".{ext}")))
+        })
+        .map(String::as_str)
+        .collect();
+    let mut missing_surface_checks = Vec::new();
+    for surface in &owned_source_surfaces {
+        missing_surface_checks.push(format!(
+            "if [ ! -e {} ]; then missing_surfaces=\"$missing_surfaces\\n{}\"; fi",
+            shell_single_quote(surface),
+            surface
+        ));
+    }
+    if !missing_surface_checks.is_empty() {
+        let checks = missing_surface_checks.join("\n");
+        surface_scan_lines.push(format!(
+            "missing_surfaces=\"\"\n{checks}\n\
+            if [ -n \"$missing_surfaces\" ]; then\n  \
+                placeholder_hits=\"$placeholder_hits\\nMISSING OWNED SURFACES:$missing_surfaces\"\n\
+            fi"
+        ));
+    }
 
     format!(
         "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
