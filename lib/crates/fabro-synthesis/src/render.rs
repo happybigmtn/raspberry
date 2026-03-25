@@ -834,17 +834,18 @@ fn render_lane(
     let contract_check = "\n\
         if [ -f .fabro-work/contract.md ]; then\n  \
             contract_missing=\"\"\n  \
-            while IFS= read -r line; do\n    \
-                cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | xargs 2>/dev/null)\n    \
+            sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ' | while IFS= read -r line; do\n    \
+                cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | tr -d ' ')\n    \
                 if [ -n \"$cfile\" ] && echo \"$cfile\" | grep -qE '\\.(rs|ts|tsx|js|py|go|sol|rb|json|toml|yaml|yml)$'; then\n      \
                     if [ ! -e \"$cfile\" ]; then\n        \
-                        contract_missing=\"$contract_missing\\n$cfile\"\n      \
+                        echo \"$cfile\" >> .fabro-work/.contract-missing\n      \
                     fi\n    \
                 fi\n  \
-            done < <(sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ')\n  \
-            if [ -n \"$contract_missing\" ]; then\n    \
+            done\n  \
+            if [ -f .fabro-work/.contract-missing ]; then\n    \
                 echo '## Contract Deliverables Missing' >> \"$QUALITY_PATH\"\n    \
-                printf '%b\\n' \"$contract_missing\" >> \"$QUALITY_PATH\"\n    \
+                cat .fabro-work/.contract-missing >> \"$QUALITY_PATH\"\n    \
+                rm -f .fabro-work/.contract-missing\n    \
                 quality_ready=no\n  \
             fi\n\
         fi";
@@ -1034,7 +1035,7 @@ fn render_workflow_graph(
             let fallback_attr = profile_fallback_retry_target(profile);
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"Read the implementation plan carefully. Before writing any code, write .fabro-work/contract.md defining what DONE looks like for this lane.\\n\\nFormat:\\n\\n## Deliverables\\nList every file you will create or modify, one per line with backtick path.\\n\\n## Acceptance Criteria\\nList 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\\n\\n## Out of Scope\\nList what this lane will NOT implement.\\n\\nDo NOT write any source code. Only write the contract. Run `mkdir -p .fabro-work` first.\", reasoning_effort=\"medium\"]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"Read the implementation plan carefully. Before writing any code, write .fabro-work/contract.md defining what DONE looks like for this lane.\\n\\nFormat:\\n\\n## Deliverables\\nList every file you will create or modify, one per line with backtick path.\\n\\n## Acceptance Criteria\\nList 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\\n\\n## Out of Scope\\nList what this lane will NOT implement.\\n\\nDo NOT write any source code. Only write the contract. Run `mkdir -p .fabro-work` first.\", reasoning_effort=\"medium\", max_retries=2]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 fallback_attr,
