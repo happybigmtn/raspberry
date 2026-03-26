@@ -1,0 +1,23 @@
+diff --git a/lib/crates/raspberry-supervisor/src/dispatch.rs b/lib/crates/raspberry-supervisor/src/dispatch.rs
+index 2de47917..0cbaf80a 100644
+--- a/lib/crates/raspberry-supervisor/src/dispatch.rs
++++ b/lib/crates/raspberry-supervisor/src/dispatch.rs
+@@ -82,6 +82,8 @@ pub enum DispatchError {
+     MaintenanceMode { program: String, reason: String },
+     #[error("target repo is not current enough to dispatch new lanes: {message}")]
+     TargetRepoStale { message: String },
++    #[error("recursive program cycle detected: {cycle}")]
++    RecursiveProgramCycle { cycle: String },
+ }
+ 
+ pub fn execute_selected_lanes(
+@@ -483,6 +485,9 @@ fn run_program_lane(
+             stdout: format!("child_program={program} already_running pid={pid}"),
+             stderr: String::new(),
+         }),
++        Err(crate::autodev::AutodevError::RecursiveProgramCycle { cycle }) => {
++            Err(DispatchError::RecursiveProgramCycle { cycle })
++        }
+         Err(error) => Ok(DispatchOutcome {
+             lane_key: lane_key.to_string(),
+             exit_status: 1,
