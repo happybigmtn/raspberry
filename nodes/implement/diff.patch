@@ -1,0 +1,47 @@
+diff --git a/lib/crates/fabro-workflows/src/git.rs b/lib/crates/fabro-workflows/src/git.rs
+index d7dff4b3..0882fd5c 100644
+--- a/lib/crates/fabro-workflows/src/git.rs
++++ b/lib/crates/fabro-workflows/src/git.rs
+@@ -203,6 +203,10 @@ pub fn resolve_ssh_push_url(repo: &Path, remote: &str) -> Result<String> {
+     if let Some(ssh_url) = github_https_to_ssh(&url) {
+         return Ok(ssh_url);
+     }
++    // Accept file:// URLs for local bare-repo testing.
++    if url.starts_with("file://") {
++        return Ok(url);
++    }
+     Err(git_error(format!(
+         "remote `{remote}` must use SSH or be convertible from GitHub HTTPS, got `{url}`"
+     )))
+diff --git a/lib/crates/raspberry-supervisor/src/integration.rs b/lib/crates/raspberry-supervisor/src/integration.rs
+index 09d54de4..027790b1 100644
+--- a/lib/crates/raspberry-supervisor/src/integration.rs
++++ b/lib/crates/raspberry-supervisor/src/integration.rs
+@@ -183,15 +183,8 @@ mod tests {
+         fs::write(repo.join("README.md"), "base\n").expect("readme");
+         git(&repo, &["add", "README.md"]);
+         git(&repo, &["commit", "-m", "base"]);
+-        git(
+-            &repo,
+-            &[
+-                "remote",
+-                "add",
+-                "origin",
+-                remote.to_str().expect("remote path"),
+-            ],
+-        );
++        let remote_url = format!("file://{}", remote.display());
++        git(&repo, &["remote", "add", "origin", &remote_url]);
+         git(&repo, &["push", "-u", "origin", "main"]);
+         git(&repo, &["remote", "set-head", "origin", "main"]);
+ 
+@@ -267,6 +260,9 @@ mod tests {
+         )
+         .expect("integration succeeds");
+ 
++        // Populate the origin/* tracking refs after the integration push.
++        git(&repo, &["fetch", "origin", "main:refs/remotes/origin/main"]);
++
+         assert_eq!(outcome.exit_status, 0);
+         assert!(artifact.exists(), "integration artifact should be written");
+         assert_eq!(
