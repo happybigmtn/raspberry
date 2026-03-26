@@ -183,15 +183,8 @@ mod tests {
         fs::write(repo.join("README.md"), "base\n").expect("readme");
         git(&repo, &["add", "README.md"]);
         git(&repo, &["commit", "-m", "base"]);
-        git(
-            &repo,
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
+        let remote_url = format!("file://{}", remote.display());
+        git(&repo, &["remote", "add", "origin", &remote_url]);
         git(&repo, &["push", "-u", "origin", "main"]);
         git(&repo, &["remote", "set-head", "origin", "main"]);
 
@@ -266,6 +259,9 @@ mod tests {
             &runs_base,
         )
         .expect("integration succeeds");
+
+        // Populate the origin/* tracking refs after the integration push.
+        git(&repo, &["fetch", "origin", "main:refs/remotes/origin/main"]);
 
         assert_eq!(outcome.exit_status, 0);
         assert!(artifact.exists(), "integration artifact should be written");

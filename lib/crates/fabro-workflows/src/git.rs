@@ -203,6 +203,10 @@ pub fn resolve_ssh_push_url(repo: &Path, remote: &str) -> Result<String> {
     if let Some(ssh_url) = github_https_to_ssh(&url) {
         return Ok(ssh_url);
     }
+    // Accept file:// URLs for local bare-repo testing.
+    if url.starts_with("file://") {
+        return Ok(url);
+    }
     Err(git_error(format!(
         "remote `{remote}` must use SSH or be convertible from GitHub HTTPS, got `{url}`"
     )))
