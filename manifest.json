@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNT43GYMVY8GTY6W8T3043A",
+  "workflow_name": "ProviderPolicyStabilization",
+  "goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
+  "start_time": "2026-03-26T19:32:20.127952573Z",
+  "node_count": 6,
+  "edge_count": 6,
+  "run_branch": "fabro/run/01KMNT43GYMVY8GTY6W8T3043A",
+  "base_sha": "87c230ba6702fbbc79ab9bdc694c2dacd7656e21",
+  "base_branch": "main",
+  "workflow_slug": "provider-policy-stabilization",
+  "host_repo_path": "/home/r/coding/fabro"
+}
