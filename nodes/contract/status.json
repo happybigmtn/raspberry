@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Created [contract.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/.fabro-work/contract.md).\n\nIt’s scoped to the actual source-lane failure from run `01KMNTNRQ98FRA9RZ7BWYBQ6AQ`:",
+    "response.contract": "Created [contract.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/.fabro-work/contract.md).\n\nIt’s scoped to the actual source-lane failure from run `01KMNTNRQ98FRA9RZ7BWYBQ6AQ`: the quality gate tripping on repo-wide `lane_sizing_debt` against `render.rs`, plus verification overstating a 5-cycle smoke run as full live validation. No source code was changed.",
+    "last_stage": "contract"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 1725437,
+    "output_tokens": 16487,
+    "cost": 4.5608975
+  },
+  "duration_ms": 494320,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T22:43:40.266593105+00:00",
+  "updated_at": "2026-03-26T22:43:40.266609625+00:00"
+}
