@@ -1,0 +1,5 @@
+{
+  "command": "if cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- bootstrap_verify\nelse\n  cargo test -p fabro-synthesis -- bootstrap_verify\nfi",
+  "language": "shell",
+  "timeout_ms": null
+}

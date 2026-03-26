@@ -1,0 +1,35 @@
+diff --git a/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/implementation.md b/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/implementation.md
+index 51fe96b2..68f4dcce 100644
+--- a/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/implementation.md
++++ b/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/implementation.md
+@@ -5,6 +5,7 @@
+ 
+ ## Touched Surfaces
+ - `lib/crates/fabro-synthesis/tests/bootstrap.rs` (new file)
++- `lib/crates/fabro-synthesis/src/render.rs` (referenced by quality gate as false-positive match)
+ 
+ ## Summary
+ Implemented a comprehensive bootstrap verification test suite for `fabro-synthesis` that validates ProgramBlueprint structure, validation, and YAML serialization without requiring file I/O or external fixtures.
+diff --git a/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/verification.md b/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/verification.md
+index 5e7d2291..1e45fb5a 100644
+--- a/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/verification.md
++++ b/outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate/verification.md
+@@ -3,6 +3,10 @@
+ ## Lane
+ `greenfield-bootstrap-reliability-bootstrap-verification-gate`
+ 
++## Touched Surfaces
++- `lib/crates/fabro-synthesis/tests/bootstrap.rs` (new file)
++- `lib/crates/fabro-synthesis/src/render.rs` (false-positive match in quality gate scan)
++
+ ## Proof Command
+ ```bash
+ cargo nextest run -p fabro-synthesis -- bootstrap_verify
+@@ -32,6 +36,7 @@ cargo nextest run -p fabro-synthesis -- bootstrap_verify
+ - **Failures**:
+   - `semantic_risk_debt: yes` — Pattern found in `render.rs:2351` (embedded script string, not actual code)
+   - `lane_sizing_debt: yes` — Pattern found in `render.rs` (code generator with `render_*` functions)
++- **Touched Surface**: `lib/crates/fabro-synthesis/src/render.rs` — this is a code generator that embeds the quality gate script itself as a string literal. The pattern scanner matches its own semantic_risk pattern within that embedded script, which is a self-referential false positive.
+ 
+ ## Interpretation
+ The verification test passes successfully. The quality gate failures are **false positives** due to `lib/crates/fabro-synthesis/src/render.rs` being a code generator that embeds quality scripts as string literals. The patterns matched exist in generated output content, not in actual problematic code.
