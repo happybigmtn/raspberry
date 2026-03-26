@@ -5,8 +5,9 @@ use std::time::{Duration, SystemTime};
 use clap::{Args, Subcommand};
 use fabro_model::{automation_chain, AutomationProfile, Provider};
 use fabro_synthesis::{
-    author_blueprint_for_create_with_planning_root, import_existing_package, load_blueprint,
-    render_blueprint, save_blueprint, ImportRequest, RenderRequest,
+    author_blueprint_for_create_with_planning_root, author_blueprint_for_evolve,
+    import_existing_package, load_blueprint, reconcile_blueprint, render_blueprint, save_blueprint,
+    ImportRequest, ReconcileRequest, RenderRequest,
 };
 use fabro_workflows::backend::{parse_cli_response, select_automation_codex_home};
 use raspberry_supervisor::{
@@ -883,6 +884,12 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
     let autodev_summary = summarize_autodev_report(&args.target_repo, &program)?;
 
     if args.no_review {
+        let authored = author_blueprint_for_evolve(&args.target_repo, Some(&program))?;
+        let reconcile_report = reconcile_blueprint(ReconcileRequest {
+            blueprint: &authored.blueprint,
+            current_repo: &args.target_repo,
+            output_repo,
+        })?;
         write_deterministic_steering_report(
             &program,
             &manifest_path,
@@ -890,13 +897,26 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
             &recent_output_lines,
             &runtime_summary,
             &autodev_summary,
+            &reconcile_report.findings,
+            &reconcile_report.recommendations,
+            &reconcile_report.written_files,
         )?;
         println!("Program: {program}");
-        println!("Mode: evolve (deterministic steering report)");
+        println!("Mode: evolve (deterministic reconcile)");
         if args.preview_root.is_some() {
             println!("Preview root: {}", output_repo.display());
         }
         println!("Report: {}", report_path.display());
+        println!("Runtime summary: {runtime_summary}");
+        println!("Autodev summary: {autodev_summary}");
+        println!("Written files:");
+        if reconcile_report.written_files.is_empty() {
+            println!("  {}", report_path.display());
+        } else {
+            for path in &reconcile_report.written_files {
+                println!("  {}", path.display());
+            }
+        }
         return Ok(());
     }
 
@@ -1135,13 +1155,16 @@ fn deterministic_steering_report(
     recent_outputs: &[String],
     runtime_summary: &str,
     autodev_summary: &str,
+    findings: &[String],
+    recommendations: &[String],
+    written_files: &[PathBuf],
 ) -> String {
+    let findings = summarize_deterministic_findings(findings);
+    let recommendations = summarize_deterministic_recommendations(recommendations);
     let mut body = String::new();
     body.push_str(&format!("# Steering Review for {program}\n\n"));
     body.push_str("## Verdict\n\n");
-    body.push_str(
-        "Deterministic mode only. This report did not rewrite malinka and should be treated as advisory.\n\n",
-    );
+    body.push_str("Deterministic reconcile completed without automation review.\n\n");
     body.push_str("## Evidence\n\n");
     body.push_str(&format!(
         "- Program manifest: `{}`\n",
@@ -1157,12 +1180,183 @@ fn deterministic_steering_report(
         }
     }
     body.push_str("\n## Changes Made\n\n");
-    body.push_str("- None. Deterministic mode is advisory-only.\n");
+    if written_files.is_empty() {
+        body.push_str("- No malinka files changed during deterministic reconcile.\n");
+    } else {
+        for path in written_files {
+            body.push_str(&format!("- `{}`\n", path.display()));
+        }
+    }
+    body.push_str("\n## Findings\n\n");
+    if findings.is_empty() {
+        body.push_str("- No deterministic findings.\n");
+    } else {
+        for finding in findings {
+            body.push_str(&format!("- {finding}\n"));
+        }
+    }
+    body.push_str("\n## Recommendations\n\n");
+    if recommendations.is_empty() {
+        body.push_str("- No deterministic recommendations.\n");
+    } else {
+        for recommendation in recommendations {
+            body.push_str(&format!("- {recommendation}\n"));
+        }
+    }
     body.push_str("\n## Why These Changes Preserve Genesis Strategy\n\n");
-    body.push_str("- No malinka execution steer was rewritten in deterministic mode.\n");
+    body.push_str("- Deterministic reconcile rewrote malinka from the current package, repo doctrine, and runtime evidence without introducing LLM-only steering drift.\n");
     body.push_str("\n## Next Risks\n\n");
-    body.push_str("- This report may be stale unless followed by a reviewed steering pass.\n");
+    body.push_str("- Deterministic reconcile skips the adversarial steering review pass, so nuanced reprioritization may still benefit from a reviewed evolve run.\n");
     body
+}
+
+fn summarize_deterministic_findings(findings: &[String]) -> Vec<String> {
+    let mut doctrine_count = 0usize;
+    let mut evidence_count = 0usize;
+    let mut missing_artifacts = 0usize;
+    let mut runtime_missing = 0usize;
+    let mut ready_lanes = Vec::new();
+    let mut other = Vec::new();
+
+    for finding in findings {
+        if finding.starts_with("doctrine input found:") {
+            doctrine_count += 1;
+            continue;
+        }
+        if finding.starts_with("evidence input found:") {
+            evidence_count += 1;
+            continue;
+        }
+        if finding.starts_with("artifact missing:") {
+            missing_artifacts += 1;
+            continue;
+        }
+        if finding.starts_with("runtime state missing:") {
+            runtime_missing += 1;
+            continue;
+        }
+        if let Some(lane) = finding
+            .strip_prefix("lane `")
+            .and_then(|rest| rest.strip_suffix("` appears ready for execution"))
+        {
+            ready_lanes.push(lane.to_string());
+            continue;
+        }
+        other.push(finding.clone());
+    }
+
+    let mut summarized = Vec::new();
+    summarized.extend(other.into_iter().take(12));
+    let prioritized_ready = prioritize_lane_keys(ready_lanes);
+    if !prioritized_ready.is_empty() {
+        summarized.push(format!(
+            "ready lanes (highest priority first): {}",
+            summarize_lane_list(&prioritized_ready, 6)
+        ));
+    }
+    if doctrine_count > 0 {
+        summarized.push(format!("doctrine inputs attached: {doctrine_count}"));
+    }
+    if evidence_count > 0 {
+        summarized.push(format!("evidence inputs attached: {evidence_count}"));
+    }
+    if runtime_missing > 0 {
+        summarized.push("runtime state missing".to_string());
+    }
+    if missing_artifacts > 0 {
+        summarized.push(format!("missing expected artifacts: {missing_artifacts}"));
+    }
+    summarized
+}
+
+fn summarize_deterministic_recommendations(recommendations: &[String]) -> Vec<String> {
+    recommendations
+        .iter()
+        .map(|recommendation| {
+            if let Some(rest) =
+                recommendation.strip_prefix("execute the next ready bootstrap lane(s) first: ")
+            {
+                let lanes = rest.split(", ").map(str::to_string).collect::<Vec<_>>();
+                let prioritized = prioritize_lane_keys(lanes);
+                return format!(
+                    "execute the next ready lanes first: {}",
+                    summarize_lane_list(&prioritized, 6)
+                );
+            }
+            if let Some(rest) = recommendation.strip_prefix(
+                "leave the workflow package unchanged for now and execute the next ready lane(s): ",
+            ) {
+                let lanes = rest.split(", ").map(str::to_string).collect::<Vec<_>>();
+                let prioritized = prioritize_lane_keys(lanes);
+                return format!(
+                    "leave the workflow package unchanged and execute: {}",
+                    summarize_lane_list(&prioritized, 6)
+                );
+            }
+            recommendation.clone()
+        })
+        .take(10)
+        .collect()
+}
+
+fn lane_priority_score(lane: &str) -> i32 {
+    let unit = lane.split(':').next().unwrap_or(lane);
+    let mut score = 50;
+
+    if unit == "master" {
+        score -= 40;
+    }
+    if unit.starts_with("phase-") && unit.ends_with("-gate") {
+        score -= 30;
+    }
+    if unit.contains("-parent-") {
+        score -= 25;
+    }
+    if unit.contains("document") || unit.contains("release") || unit.ends_with("-retro") {
+        score -= 15;
+    }
+    if unit.contains("benchmark") {
+        score -= 10;
+    }
+
+    if unit.contains("autodev-efficiency")
+        || unit.contains("greenfield-bootstrap")
+        || unit.contains("provider-policy")
+        || unit.contains("test-coverage")
+    {
+        score += 40;
+    } else if unit.contains("error-handling") || unit.contains("workspace-integration") {
+        score += 30;
+    } else if unit.contains("sprint-contracts") || unit.contains("genesis-onboarding") {
+        score += 20;
+    }
+
+    if lane.contains("live-validation") || lane.contains("fresh-install-test") {
+        score += 10;
+    }
+
+    score
+}
+
+fn prioritize_lane_keys(mut lanes: Vec<String>) -> Vec<String> {
+    lanes.sort_by(|left, right| {
+        lane_priority_score(right)
+            .cmp(&lane_priority_score(left))
+            .then_with(|| left.cmp(right))
+    });
+    if lanes.iter().any(|lane| lane_priority_score(lane) >= 60) {
+        lanes.retain(|lane| lane_priority_score(lane) >= 30);
+    }
+    lanes.dedup();
+    lanes
+}
+
+fn summarize_lane_list(lanes: &[String], limit: usize) -> String {
+    if lanes.len() <= limit {
+        return lanes.join(", ");
+    }
+    let head = lanes.iter().take(limit).cloned().collect::<Vec<_>>();
+    format!("{} (+{} more)", head.join(", "), lanes.len() - limit)
 }
 
 fn write_deterministic_steering_report(
@@ -1172,6 +1366,9 @@ fn write_deterministic_steering_report(
     recent_outputs: &[String],
     runtime_summary: &str,
     autodev_summary: &str,
+    findings: &[String],
+    recommendations: &[String],
+    written_files: &[PathBuf],
 ) -> anyhow::Result<()> {
     let body = deterministic_steering_report(
         program,
@@ -1180,6 +1377,9 @@ fn write_deterministic_steering_report(
         recent_outputs,
         runtime_summary,
         autodev_summary,
+        findings,
+        recommendations,
+        written_files,
     );
     fabro_workflows::write_text_atomic(report_path, &body, "steering report")
         .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -1672,6 +1872,19 @@ fn infer_review_profile(child_id: &str, plan_lower: &str) -> &'static str {
 
 fn infer_lane_kind_from_child_id(child_id: &str) -> &'static str {
     let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("readme")
+        || id_lower.contains("changelog")
+        || id_lower.contains("runbook")
+        || id_lower.contains("architecture-guide")
+        || id_lower.contains("troubleshooting")
+        || id_lower.contains("operator-quickstart")
+        || id_lower.contains("command-reference")
+        || id_lower.contains("doc-freshness")
+        || id_lower.contains("version-bump")
+        || id_lower.contains("tag")
+    {
+        return "artifact";
+    }
     if id_lower.contains("integration")
         || id_lower.contains("e2e")
         || id_lower.contains("end-to-end")
@@ -2009,6 +2222,20 @@ fn mapping_snapshot_path(plan: &PlanRecord) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infer_lane_kind_marks_doc_guides_as_artifacts() {
+        assert_eq!(
+            infer_lane_kind_from_child_id(
+                "documentation-and-operator-runbook-architecture-guide-for-contributors"
+            ),
+            "artifact"
+        );
+        assert_eq!(
+            infer_lane_kind_from_child_id("release-preparation-readme-and-changelog"),
+            "artifact"
+        );
+    }
 
     #[test]
     fn batch_decomposition_prompt_requires_exact_plan_ids() {

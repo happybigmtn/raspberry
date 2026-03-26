@@ -527,13 +527,17 @@ pub fn orchestrate_program(
         } else {
             Vec::new()
         };
-        let replayable_failures = dispatchable_failed_lanes(&manifest, &program, evolved);
-        let ready_lanes = program
-            .lanes
-            .iter()
-            .filter(|lane| lane.status == LaneExecutionStatus::Ready)
-            .map(|lane| lane.lane_key.clone())
-            .collect::<Vec<_>>();
+        let replayable_failures = prioritized_failure_lane_keys(
+            &program,
+            dispatchable_failed_lanes(&manifest, &program, evolved),
+        );
+        let ready_lanes = prioritized_lane_keys(
+            program
+                .lanes
+                .iter()
+                .filter(|lane| lane.status == LaneExecutionStatus::Ready)
+                .collect::<Vec<_>>(),
+        );
         let current_running = program
             .lanes
             .iter()
@@ -928,10 +932,117 @@ fn should_trigger_evolve(
     if !should_evolve(last_evolve_at, evolve_every) {
         return false;
     }
+    if !frontier_progressed {
+        return false;
+    }
     if locally_settled {
         return true;
     }
     spare_capacity_trigger
+}
+
+fn prioritized_failure_lane_keys(
+    program: &crate::evaluate::EvaluatedProgram,
+    lane_keys: Vec<String>,
+) -> Vec<String> {
+    let lane_map = program
+        .lanes
+        .iter()
+        .map(|lane| (lane.lane_key.clone(), lane))
+        .collect::<BTreeMap<_, _>>();
+    let mut ordered = lane_keys;
+    ordered.sort_by(|left, right| {
+        let left_lane = lane_map.get(left);
+        let right_lane = lane_map.get(right);
+        lane_dispatch_priority_tuple(right_lane)
+            .cmp(&lane_dispatch_priority_tuple(left_lane))
+            .then_with(|| left.cmp(right))
+    });
+    ordered
+}
+
+fn prioritized_lane_keys(lanes: Vec<&crate::evaluate::EvaluatedLane>) -> Vec<String> {
+    let mut lanes = lanes;
+    lanes.sort_by(|left, right| {
+        lane_dispatch_priority_tuple(Some(right))
+            .cmp(&lane_dispatch_priority_tuple(Some(left)))
+            .then_with(|| left.lane_key.cmp(&right.lane_key))
+    });
+    let high_priority_present = lanes
+        .iter()
+        .any(|lane| lane_dispatch_priority_score(lane) >= 60);
+    if high_priority_present {
+        lanes.retain(|lane| lane_dispatch_priority_score(lane) >= 30);
+    }
+    lanes
+        .into_iter()
+        .map(|lane| lane.lane_key.clone())
+        .collect()
+}
+
+fn lane_dispatch_priority_tuple(
+    lane: Option<&&crate::evaluate::EvaluatedLane>,
+) -> (i32, i32, std::cmp::Reverse<String>) {
+    let Some(lane) = lane else {
+        return (0, 0, std::cmp::Reverse(String::new()));
+    };
+    (
+        lane_dispatch_priority_score(lane),
+        lane_kind_priority(&lane.lane_kind),
+        std::cmp::Reverse(lane.lane_key.clone()),
+    )
+}
+
+fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
+    let key = lane.lane_key.as_str();
+    let unit = lane.unit_id.as_str();
+    let mut score = 50;
+
+    if unit == "master" {
+        score -= 40;
+    }
+    if unit.starts_with("phase-") && unit.ends_with("-gate") {
+        score -= 30;
+    }
+    if unit.contains("-parent-") {
+        score -= 25;
+    }
+    if unit.contains("document") || unit.contains("release") || unit.ends_with("-retro") {
+        score -= 15;
+    }
+    if unit.contains("benchmark") {
+        score -= 10;
+    }
+
+    if unit.contains("autodev-efficiency")
+        || unit.contains("greenfield-bootstrap")
+        || unit.contains("provider-policy")
+        || unit.contains("test-coverage")
+    {
+        score += 40;
+    } else if unit.contains("error-handling") || unit.contains("workspace-integration") {
+        score += 30;
+    } else if unit.contains("sprint-contracts") || unit.contains("genesis-onboarding") {
+        score += 20;
+    }
+
+    if key.contains("live-validation") || key.contains("fresh-install-test") {
+        score += 10;
+    }
+
+    score
+}
+
+fn lane_kind_priority(kind: &crate::manifest::LaneKind) -> i32 {
+    match kind {
+        crate::manifest::LaneKind::Service => 6,
+        crate::manifest::LaneKind::Interface => 5,
+        crate::manifest::LaneKind::Integration => 4,
+        crate::manifest::LaneKind::Platform => 3,
+        crate::manifest::LaneKind::Artifact => 2,
+        crate::manifest::LaneKind::Orchestration => 1,
+        crate::manifest::LaneKind::Recurring => 0,
+    }
 }
 
 fn count_lanes_with_status(
@@ -2067,54 +2178,25 @@ fn rerender_program_package(
 ) -> Result<(), AutodevError> {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     let temp_dir = autodev_temp_dir(&manifest.program)?;
-
-    // Prefer the source blueprint (malinka/blueprints/<program>.yaml) if it exists.
-    // This ensures manual goal edits (failure history, required tests) and blueprint
-    // changes take effect on the next evolve cycle without requiring a manual
-    // `synth create` invocation.  Fall back to import from rendered package.
     let source_blueprint = manifest_path
         .parent()
         .unwrap_or(Path::new("."))
         .join(format!("blueprints/{}.yaml", manifest.program));
-    let blueprint_path = if source_blueprint.exists() {
+    if source_blueprint.exists() {
         let copied = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
         fs::copy(&source_blueprint, &copied).map_err(|source| AutodevError::Spawn {
             step: "copy source blueprint".to_string(),
             program: manifest.program.clone(),
             source,
         })?;
-        copied
-    } else {
-        let imported = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
-        let import = Command::new(fabro_bin)
-            .current_dir(&target_repo)
-            .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
-            .arg("--no-upgrade-check")
-            .arg("synth")
-            .arg("import")
-            .arg("--target-repo")
-            .arg(&target_repo)
-            .arg("--program")
-            .arg(&manifest.program)
-            .arg("--output")
-            .arg(&imported)
-            .output()
-            .map_err(|source| AutodevError::Spawn {
-                step: "synth import".to_string(),
-                program: manifest.program.clone(),
-                source,
-            })?;
-        ensure_success("synth import", &manifest.program, import)?;
-        imported
-    };
+        inject_inputs_into_blueprint(&copied, doctrine_files, evidence_paths)?;
+    }
 
-    inject_inputs_into_blueprint(&blueprint_path, doctrine_files, evidence_paths)?;
-
-    // Use synth create --no-review --no-decompose for deterministic re-rendering.
-    // This re-renders prompts, workflow graphs, and run configs from the blueprint,
-    // picking up any goal edits (failure history, required tests) or template changes.
-    let mut create = Command::new("timeout");
-    create
+    // Deterministic autodev steering should use the same CLI path operators use by
+    // hand: `synth evolve --no-review`. That keeps the runtime loop aligned with the
+    // direct end-to-end workflow instead of using a hidden import+create rerender path.
+    let mut evolve = Command::new("timeout");
+    evolve
         .arg("--signal=TERM")
         .arg(SYNTH_EVOLVE_TIMEOUT_SECS.to_string())
         .arg(fabro_bin)
@@ -2122,22 +2204,21 @@ fn rerender_program_package(
         .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
         .arg("--no-upgrade-check")
         .arg("synth")
-        .arg("create")
+        .arg("evolve")
         .arg("--no-review")
-        .arg("--no-decompose")
-        .arg("--blueprint")
-        .arg(&blueprint_path)
         .arg("--target-repo")
-        .arg(&target_repo);
+        .arg(&target_repo)
+        .arg("--program")
+        .arg(&manifest.program);
     if let Some(preview_root) = preview_evolve_root {
-        create.arg("--preview-root").arg(preview_root);
+        evolve.arg("--preview-root").arg(preview_root);
     }
-    let output = create.output().map_err(|source| AutodevError::Spawn {
-        step: "synth create".to_string(),
+    let output = evolve.output().map_err(|source| AutodevError::Spawn {
+        step: "synth evolve".to_string(),
         program: manifest.program.clone(),
         source,
     })?;
-    ensure_success("synth create", &manifest.program, output)?;
+    ensure_success("synth evolve", &manifest.program, output)?;
 
     let _ = fs::remove_dir_all(&temp_dir);
     Ok(())

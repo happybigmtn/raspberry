@@ -1,0 +1,38 @@
+mapping_source: heuristic
+plan_id: workspace-integration-verification
+title: Workspace Integration Verification
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: blueprintprotocol-and-contract-lane-generation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- protocol_contract
+  - cargo nextest run -p fabro-synthesis -- workspace_verify generation
+- id: consistency-challenge-prompts
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- consistency challenge
+- id: integration-proof-profile
+  archetype: integration_only
+  lane_kind: integration
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- profile integration
+- id: live-validation-on-rxmrbro
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: workspace-verify-lane-generation
+  archetype: verification_only
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- workspace_verify generation

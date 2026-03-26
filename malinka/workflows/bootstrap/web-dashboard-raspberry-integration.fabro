@@ -1,0 +1,23 @@
+digraph WebDashboardRaspberryIntegration {
+    graph [
+        goal="Web Dashboard Raspberry Integration\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Add Raspberry plan-matrix API endpoint to fabro-api\n- Add autodev status API endpoint to fabro-api\n- Build plan matrix component in fabro-web\n- Build lane detail component with review scores\n- Connect SSE event stream for live updates\n- Design review against DESIGN.md\n\nRequired durable artifacts:\n- `outputs/web-dashboard-raspberry-integration/spec.md`\n- `outputs/web-dashboard-raspberry-integration/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/web-dashboard-raspberry-integration/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/web-dashboard-raspberry-integration/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/web-dashboard-raspberry-integration/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

@@ -1,0 +1,45 @@
+mapping_source: heuristic
+plan_id: genesis-onboarding-flow
+title: Genesis Onboarding Flow
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: audit-genesis-implementation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-cli -- synth genesis detection
+  - cargo nextest run -p fabro-synthesis -- genesis validation
+- id: command-surface-and-runtime-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- genesis validation
+- id: operator-quickstart-documentation
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: repo-detection-and-adaptation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-cli -- synth genesis detection
+- id: test-on-unfamiliar-repo
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-cli -- synth genesis detection
+  - cargo nextest run -p fabro-synthesis -- genesis validation
+- id: validation-step
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- genesis validation

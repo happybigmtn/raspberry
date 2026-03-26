@@ -148,6 +148,20 @@ impl Transform for ModelResolutionTransform {
 /// contents are returned (inlined). Otherwise the original value is returned
 /// unchanged.
 pub fn resolve_file_ref(value: &str, base_dir: &Path, fallback_dir: Option<&Path>) -> String {
+    let mut fallback_dirs = Vec::new();
+    if let Some(fallback_dir) = fallback_dir {
+        fallback_dirs.push(fallback_dir);
+    }
+    resolve_file_ref_with_fallbacks(value, base_dir, &fallback_dirs)
+}
+
+/// Resolve a potential `@path` file reference against a base directory and
+/// zero or more fallback directories.
+pub fn resolve_file_ref_with_fallbacks(
+    value: &str,
+    base_dir: &Path,
+    fallback_dirs: &[&Path],
+) -> String {
     let path_str = match value.strip_prefix('@') {
         Some(p) => p,
         None => return value.to_string(),
@@ -169,8 +183,8 @@ pub fn resolve_file_ref(value: &str, base_dir: &Path, fallback_dir: Option<&Path
     let file_path = match expanded.canonicalize() {
         Ok(p) if p.is_file() => Some(p),
         _ if !is_tilde => {
-            // Try fallback_dir for relative (non-tilde) paths
-            fallback_dir.and_then(|fb| {
+            // Try fallback directories for relative (non-tilde) paths.
+            fallback_dirs.iter().find_map(|fb| {
                 let fallback_path = fb.join(path_str);
                 match fallback_path.canonicalize() {
                     Ok(p) if p.is_file() => Some(p),
@@ -197,27 +211,32 @@ pub fn resolve_file_ref(value: &str, base_dir: &Path, fallback_dir: Option<&Path
 /// Inlines `@file` references in node prompts and the graph-level goal.
 pub struct FileInliningTransform {
     base_dir: PathBuf,
-    fallback_dir: Option<PathBuf>,
+    fallback_dirs: Vec<PathBuf>,
 }
 
 impl FileInliningTransform {
     #[must_use]
-    pub fn new(base_dir: PathBuf, fallback_dir: Option<PathBuf>) -> Self {
+    pub fn new(base_dir: PathBuf, fallback_dirs: Vec<PathBuf>) -> Self {
         Self {
             base_dir,
-            fallback_dir,
+            fallback_dirs,
         }
     }
 }
 
 impl Transform for FileInliningTransform {
     fn apply(&self, graph: &mut Graph) {
-        let fallback = self.fallback_dir.as_deref();
+        let fallback_dirs = self
+            .fallback_dirs
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
 
         // Inline @file refs in node prompts
         for node in graph.nodes.values_mut() {
             if let Some(AttrValue::String(prompt)) = node.attrs.get("prompt") {
-                let resolved = resolve_file_ref(prompt, &self.base_dir, fallback);
+                let resolved =
+                    resolve_file_ref_with_fallbacks(prompt, &self.base_dir, &fallback_dirs);
                 if resolved != *prompt {
                     node.attrs
                         .insert("prompt".to_string(), AttrValue::String(resolved));
@@ -227,7 +246,7 @@ impl Transform for FileInliningTransform {
 
         // Inline @file refs in graph-level goal
         if let Some(AttrValue::String(goal)) = graph.attrs.get("goal") {
-            let resolved = resolve_file_ref(goal, &self.base_dir, fallback);
+            let resolved = resolve_file_ref_with_fallbacks(goal, &self.base_dir, &fallback_dirs);
             if resolved != *goal {
                 graph
                     .attrs
@@ -848,7 +867,7 @@ mod tests {
         );
         graph.nodes.insert("work".to_string(), node);
 
-        let transform = FileInliningTransform::new(dir.path().to_path_buf(), None);
+        let transform = FileInliningTransform::new(dir.path().to_path_buf(), Vec::new());
         transform.apply(&mut graph);
 
         assert_eq!(
@@ -959,7 +978,7 @@ mod tests {
 
         let transform = FileInliningTransform::new(
             base.path().to_path_buf(),
-            Some(fallback.path().to_path_buf()),
+            vec![fallback.path().to_path_buf()],
         );
         transform.apply(&mut graph);
 

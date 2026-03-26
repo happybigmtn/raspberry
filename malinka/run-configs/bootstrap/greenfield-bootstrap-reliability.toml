@@ -1,0 +1,49 @@
+version = 1
+graph = "../../workflows/bootstrap/greenfield-bootstrap-reliability.fabro"
+goal = '''
+Greenfield Bootstrap and Runtime Asset Reliability
+
+Bootstrap the first honest reviewed slice for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Verify scaffold-first ordering works in planning.rs
+- Add bootstrap verification gate to render.rs
+- Make generated prompt and workflow asset refs runtime-stable
+- Add type-aware quality checks for TypeScript projects
+- Validate on tonofcrap with 30-cycle autodev run
+- Validate on a fresh Rust project with scaffold dependency
+
+Required durable artifacts:
+- `outputs/greenfield-bootstrap-reliability/spec.md`
+- `outputs/greenfield-bootstrap-reliability/review.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

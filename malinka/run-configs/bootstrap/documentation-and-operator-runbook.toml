@@ -1,0 +1,49 @@
+version = 1
+graph = "../../workflows/bootstrap/documentation-and-operator-runbook.fabro"
+goal = '''
+Documentation and Operator Runbook
+
+Bootstrap the first honest reviewed slice for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Rewrite README to reflect Fabro/Raspberry reality
+- Write operator quickstart guide
+- Write Raspberry command reference
+- Write troubleshooting guide
+- Write architecture guide for contributors
+- Audit all existing docs for accuracy
+
+Required durable artifacts:
+- `outputs/documentation-and-operator-runbook/spec.md`
+- `outputs/documentation-and-operator-runbook/review.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

@@ -1,0 +1,44 @@
+version = 1
+graph = "../../workflows/implementation/test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github.fabro"
+goal = '''
+Minimal Coverage For Fabro Mcp And Fabro Github
+
+Child work item of plan: Test Coverage for Critical Paths
+
+Proof commands:
+- `cargo nextest run -p fabro-cli -- synth`
+- `cargo nextest run -p fabro-db`
+- `cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github`
+- `cargo nextest run -p fabro-synthesis -- render`
+- `cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed`
+
+Required durable artifacts:
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+- `integration.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../integration.md"

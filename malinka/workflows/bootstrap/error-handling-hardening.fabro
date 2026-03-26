@@ -1,0 +1,23 @@
+digraph ErrorHandlingHardening {
+    graph [
+        goal="Error Handling Hardening\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit the autodev critical path for unwrap() calls\n- Replace unwrap() calls in raspberry-supervisor\n- Replace unwrap() calls in fabro-workflows execution path\n- Replace unwrap() calls in fabro-synthesis render path\n- Add error context to the 50 most dangerous unwrap() sites\n- Run autodev for 100 cycles and confirm zero engine panics\n\nRequired durable artifacts:\n- `outputs/error-handling-hardening/spec.md`\n- `outputs/error-handling-hardening/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/error-handling-hardening/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/error-handling-hardening/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/error-handling-hardening/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

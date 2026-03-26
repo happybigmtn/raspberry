@@ -1,0 +1,45 @@
+mapping_source: heuristic
+plan_id: plan-completion-and-adversarial-review
+title: Plan Completion Detection and Adversarial Review
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: 3-step-adversarial-review-prompt
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- adversarial_review
+  - cargo nextest run -p fabro-synthesis -- meta_review
+  - cargo nextest run -p fabro-synthesis -- plan_review registry
+- id: live-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: meta-review-feedback-loop
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- adversarial_review
+  - cargo nextest run -p fabro-synthesis -- meta_review
+  - cargo nextest run -p fabro-synthesis -- plan_review registry
+- id: plan-completion-detection
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- plan_review registry
+  - cargo nextest run -p raspberry-supervisor -- autodev plan_completed
+- id: registry-driven-plan-review-generation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- adversarial_review
+  - cargo nextest run -p fabro-synthesis -- meta_review
+  - cargo nextest run -p fabro-synthesis -- plan_review registry
+  - cargo nextest run -p raspberry-supervisor -- autodev plan_completed

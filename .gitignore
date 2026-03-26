@@ -16,3 +16,13 @@ de_parser.py
 .ai/plans
 .ai/comments
 .ai/tmp
+
+# Fabro ephemeral workflow state
+.fabro-work/
+
+# Agent debris (heredoc artifacts, stray files)
+EOF
+ENDFILE
+ENDOFFILE
+REVIEW_EOF
+ENDOFPROMPT

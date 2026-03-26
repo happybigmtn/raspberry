@@ -13,7 +13,7 @@ use chrono::{Duration, Local, LocalResult, NaiveDateTime, NaiveTime, TimeZone};
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
 use fabro_model::{
-    FallbackTarget, Provider, automation_fallback_targets, automation_profile_for_target,
+    automation_fallback_targets, automation_profile_for_target, FallbackTarget, Provider,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -41,10 +41,9 @@ impl AgentCli {
             Provider::Anthropic => Self::Claude,
             Provider::Gemini => Self::Gemini,
             Provider::Minimax | Provider::Kimi => Self::Pi,
-            Provider::OpenAi
-            | Provider::Zai
-            | Provider::Inception
-            | Provider::OpenAiCompatible => Self::Codex,
+            Provider::OpenAi | Provider::Zai | Provider::Inception | Provider::OpenAiCompatible => {
+                Self::Codex
+            }
         }
     }
 
@@ -2180,7 +2179,10 @@ mod tests {
     #[test]
     fn build_launch_env_for_anthropic_strips_api_key() {
         let env = HashMap::from([
-            ("ANTHROPIC_API_KEY".to_string(), "test-anthropic-key".to_string()),
+            (
+                "ANTHROPIC_API_KEY".to_string(),
+                "test-anthropic-key".to_string(),
+            ),
             ("OTHER_VAR".to_string(), "keep-me".to_string()),
         ]);
 

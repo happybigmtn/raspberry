@@ -1,0 +1,41 @@
+version = 1
+graph = "../../workflows/implementation/workspace-integration-verification-blueprintprotocol-and-contract-lane-generation.fabro"
+goal = '''
+Blueprintprotocol And Contract Lane Generation
+
+Child work item of plan: Workspace Integration Verification
+
+Proof commands:
+- `cargo nextest run -p fabro-synthesis -- protocol_contract`
+- `cargo nextest run -p fabro-synthesis -- workspace_verify generation`
+
+Required durable artifacts:
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+- `integration.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../integration.md"

@@ -1,0 +1,44 @@
+mapping_source: heuristic
+plan_id: error-handling-hardening
+title: Error Handling Hardening
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: audit-autodev-critical-path
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: harden-fabro-synthesis-render-path
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \
+  - cargo nextest run -p fabro-synthesis
+  - cargo nextest run -p fabro-workflows -- backend cli agent
+- id: harden-fabro-workflows-execution-path
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \
+  - cargo nextest run -p fabro-synthesis
+  - cargo nextest run -p fabro-workflows -- backend cli agent
+- id: harden-raspberry-supervisor
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \
+  - cargo nextest run -p raspberry-supervisor
+- id: integration-validation
+  archetype: integration_only
+  lane_kind: integration
+  review_profile: standard
+- id: live-autodev-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard

@@ -1,0 +1,42 @@
+version = 1
+graph = "../../workflows/implementation/plan-completion-and-adversarial-review-meta-review-feedback-loop.fabro"
+goal = '''
+Meta Review Feedback Loop
+
+Child work item of plan: Plan Completion Detection and Adversarial Review
+
+Proof commands:
+- `cargo nextest run -p fabro-synthesis -- adversarial_review`
+- `cargo nextest run -p fabro-synthesis -- meta_review`
+- `cargo nextest run -p fabro-synthesis -- plan_review registry`
+
+Required durable artifacts:
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+- `integration.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../integration.md"

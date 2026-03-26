@@ -1256,15 +1256,7 @@ fn analyze_parent_plan_profile(child_units: &[&BlueprintUnit]) -> ParentPlanProf
     let lower = haystack.to_lowercase();
     ParentPlanProfile {
         ui_sensitive: [
-            "ui",
-            "tui",
-            "screen",
-            "frontend",
-            "visual",
-            "layout",
-            "design",
-            "render",
-            "widget",
+            "ui", "tui", "screen", "frontend", "visual", "layout", "design", "render", "widget",
             "view",
         ]
         .iter()
@@ -1332,7 +1324,9 @@ fn parent_preflight_verify_command(child_units: &[&BlueprintUnit]) -> Option<Str
                     .iter()
                     .any(|id| artifact.id == *id)
             })
-            .map(|artifact| join_relative(&unit.output_root, artifact.path.to_string_lossy().as_ref()))
+            .map(|artifact| {
+                join_relative(&unit.output_root, artifact.path.to_string_lossy().as_ref())
+            })
             .collect::<Vec<_>>();
         if !available.is_empty() {
             notes.push(format!(
@@ -1356,7 +1350,10 @@ fn parent_preflight_verify_command(child_units: &[&BlueprintUnit]) -> Option<Str
 fn parent_report_verify_command(paths: &[PathBuf]) -> String {
     let mut script = String::from("set -e\n");
     for path in paths {
-        script.push_str(&format!("test -f {}\n", shell_single_quote(&path.display().to_string())));
+        script.push_str(&format!(
+            "test -f {}\n",
+            shell_single_quote(&path.display().to_string())
+        ));
     }
     script
 }
@@ -2071,7 +2068,8 @@ fn recurring_report_primary_target_for_lane(lane: &BlueprintLane) -> Option<Mode
             model: "claude-opus-4-6",
         });
     }
-    if is_parent_holistic_review_adjudication_lane(lane) || is_post_completion_codex_review_lane(lane)
+    if is_parent_holistic_review_adjudication_lane(lane)
+        || is_post_completion_codex_review_lane(lane)
     {
         return Some(ModelTarget {
             provider: Provider::OpenAi,
@@ -2092,8 +2090,7 @@ fn custom_fallback_section_for_lane(lane: &BlueprintLane) -> Option<String> {
 }
 
 fn is_post_completion_codex_review_lane(lane: &BlueprintLane) -> bool {
-    lane.id.ends_with("-codex-review")
-        && lane.managed_milestone.ends_with("-codex-reviewed")
+    lane.id.ends_with("-codex-review") && lane.managed_milestone.ends_with("-codex-reviewed")
 }
 
 fn is_parent_holistic_review_minimax_lane(lane: &BlueprintLane) -> bool {
@@ -3384,15 +3381,7 @@ fn security_required_test_lines(lane: &BlueprintLane, context: &str) -> Vec<Stri
 fn lane_is_layout_sensitive(lane: &BlueprintLane, context: &str) -> bool {
     let lower = lane_security_haystack(lane, context);
     let domain_layout = [
-        "roulette",
-        "board",
-        "grid",
-        "layout",
-        "screen",
-        "table",
-        "column",
-        "wheel",
-        "render",
+        "roulette", "board", "grid", "layout", "screen", "table", "column", "wheel", "render",
     ]
     .iter()
     .any(|needle| lower.contains(needle));
@@ -8392,12 +8381,10 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         let deep_graph = render_workflow_graph(&deep_lane, "true", "true", "true", "true");
         let deep_run_config = render_run_config(&deep_lane, None, Path::new("."));
-        assert!(
-            deep_graph.contains("#review { backend: cli; model: claude-opus-4-6; provider: anthropic; }")
-        );
-        assert!(
-            deep_graph.contains("#polish { backend: cli; model: claude-opus-4-6; provider: anthropic; }")
-        );
+        assert!(deep_graph
+            .contains("#review { backend: cli; model: claude-opus-4-6; provider: anthropic; }"));
+        assert!(deep_graph
+            .contains("#polish { backend: cli; model: claude-opus-4-6; provider: anthropic; }"));
         assert!(deep_run_config.contains("provider = \"anthropic\""));
         assert!(deep_run_config.contains("model = \"claude-opus-4-6\""));
         assert!(deep_run_config.contains("[llm.fallbacks]"));

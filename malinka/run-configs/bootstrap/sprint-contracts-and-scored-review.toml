@@ -1,0 +1,49 @@
+version = 1
+graph = "../../workflows/bootstrap/sprint-contracts-and-scored-review.fabro"
+goal = '''
+Sprint Contracts and Scored Review
+
+Bootstrap the first honest reviewed slice for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Verify existing contract stage works end-to-end
+- Verify existing scored review produces valid scores
+- Add contract completeness metrics to autodev report
+- Add review score distribution to autodev report
+- Run A/B test: 10 lanes with challenge stage vs 10 without
+- Decide whether to keep or remove challenge stage based on data
+
+Required durable artifacts:
+- `outputs/sprint-contracts-and-scored-review/spec.md`
+- `outputs/sprint-contracts-and-scored-review/review.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

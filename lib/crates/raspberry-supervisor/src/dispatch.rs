@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::autodev::{
-    autoheal_generated_target_repo_for_dispatch, autodev_cargo_target_dir,
+    autodev_cargo_target_dir, autoheal_generated_target_repo_for_dispatch,
     ensure_target_repo_fresh_for_dispatch, orchestrate_program, AutodevSettings,
     TargetRepoFreshness,
 };

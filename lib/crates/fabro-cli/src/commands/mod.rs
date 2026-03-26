@@ -8,6 +8,9 @@ pub mod fork;
 pub mod graph;
 pub mod inspect;
 pub mod logs;
+// The Paperclip command surface is scaffolded ahead of full CLI wiring.
+// Suppress dead-code noise here so synthesis/autodev verification output stays actionable.
+#[allow(dead_code)]
 pub mod paperclip;
 pub mod parse;
 pub mod pr;

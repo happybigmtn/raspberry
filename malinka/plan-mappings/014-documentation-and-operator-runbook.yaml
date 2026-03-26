@@ -1,0 +1,33 @@
+mapping_source: heuristic
+plan_id: documentation-and-operator-runbook
+title: Documentation and Operator Runbook
+category: unknown
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: architecture-guide-for-contributors
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: doc-freshness-audit
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: operator-quickstart-guide
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: raspberry-command-reference
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: rewrite-readme
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: troubleshooting-guide
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard

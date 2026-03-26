@@ -1,0 +1,23 @@
+# performance-measurement-and-optimization Design Review — Plan
+
+Lane: `performance-measurement-and-optimization-design-review`
+
+Goal:
+- Parent-level design and interaction review for integrated plan `performance-measurement-and-optimization`.
+
+Review the whole integrated UI/TUI surface for spacing, hierarchy, consistency, awkward AI-generated patterns, and interaction quality.
+
+Required outputs:
+- `design-review.md`
+- `promotion.md`
+
+This lane is report-first. Do not claim browser-only evidence you did not actually gather.
+
+Context:
+- Required outputs:
+- design-review.md
+- promotion.md
+
+Write durable artifacts only to these exact lane-scoped paths:
+- `.raspberry/portfolio/performance-measurement-and-optimization-design-review/design-review.md`
+- `.raspberry/portfolio/performance-measurement-and-optimization-design-review/promotion.md`

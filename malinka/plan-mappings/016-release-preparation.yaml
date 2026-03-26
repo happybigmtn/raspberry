@@ -1,0 +1,40 @@
+mapping_source: heuristic
+plan_id: release-preparation
+title: Release Preparation
+category: unknown
+composite: true
+bootstrap_required: false
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: ci-hardening
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+- id: fresh-install-test
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run --workspace
+  - cargo nextest run --workspace && \
+- id: readme-and-changelog
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: security_sensitive
+- id: release-binary-build
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo build --release -p fabro-cli -p raspberry-cli
+  - cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local
+  - cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \
+- id: security-audit
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+- id: version-bump-and-tag
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: security_sensitive

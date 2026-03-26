@@ -1,0 +1,23 @@
+digraph WorkspaceIntegrationVerification {
+    graph [
+        goal="Workspace Integration Verification\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Add integration proof profile to render.rs\n- Generate workspace-verify lanes for multi-child units\n- Add BlueprintProtocol struct and protocol lane generation\n- Add consistency challenge prompts for integration profile\n- Validate on rXMRbro with workspace-verify lane\n\nRequired durable artifacts:\n- `outputs/workspace-integration-verification/spec.md`\n- `outputs/workspace-integration-verification/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/workspace-integration-verification/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/workspace-integration-verification/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/workspace-integration-verification/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

@@ -1,0 +1,4753 @@
+version: 1
+program: fabro
+target_repo: ../..
+state_path: ../../.raspberry/fabro-state.json
+max_parallel: 10
+units:
+- id: autodev-efficiency-and-dispatch
+  title: Autodev Execution Path and Dispatch Truth
+  output_root: ../../outputs/autodev-efficiency-and-dispatch
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: autodev-efficiency-and-dispatch
+    kind: platform
+    title: Autodev Execution Path and Dispatch Truth Lane
+    run_config: ../run-configs/bootstrap/autodev-efficiency-and-dispatch.toml
+    managed_milestone: reviewed
+    produces:
+    - spec
+    - review
+- id: autodev-efficiency-and-dispatch-add-dispatch-state-telemetry
+  title: Add Dispatch State Telemetry
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-add-dispatch-state-telemetry
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-add-dispatch-state-telemetry
+    kind: platform
+    title: Add Dispatch State Telemetry Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-add-dispatch-state-telemetry.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily
+  title: Decouple Evolve From Dispatch And Consume The Budget Greedily
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily
+    kind: platform
+    title: Decouple Evolve From Dispatch And Consume The Budget Greedily Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: autodev-efficiency-and-dispatch-freeze-the-current-failure-modes-into-reproducible-tests
+  title: Freeze The Current Failure Modes Into Reproducible Tests
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-freeze-the-current-failure-modes-into-reproducible-tests
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-freeze-the-current-failure-modes-into-reproducible-tests
+    kind: platform
+    title: Freeze The Current Failure Modes Into Reproducible Tests Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-freeze-the-current-failure-modes-into-reproducible-tests.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: autodev-efficiency-and-dispatch-live-validation
+  title: Live Validation
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-live-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-live-validation
+    kind: platform
+    title: Live Validation Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-live-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: autodev-efficiency-and-dispatch-make-autodev-runtime-paths-self-consistent
+  title: Make Autodev Runtime Paths Self Consistent
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-make-autodev-runtime-paths-self-consistent
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-make-autodev-runtime-paths-self-consistent
+    kind: platform
+    title: Make Autodev Runtime Paths Self Consistent Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-make-autodev-runtime-paths-self-consistent.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: autodev-efficiency-and-dispatch-reconcile-stale-running-and-failed-lane-truth
+  title: Reconcile Stale Running And Failed Lane Truth
+  output_root: ../../outputs/autodev-efficiency-and-dispatch-reconcile-stale-running-and-failed-lane-truth
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: autodev-efficiency-and-dispatch-reconcile-stale-running-and-failed-lane-truth
+    kind: platform
+    title: Reconcile Stale Running And Failed Lane Truth Lane
+    run_config: ../run-configs/implementation/autodev-efficiency-and-dispatch-reconcile-stale-running-and-failed-lane-truth.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook
+  title: Documentation and Operator Runbook
+  output_root: ../../outputs/documentation-and-operator-runbook
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: documentation-and-operator-runbook
+    kind: platform
+    title: Documentation and Operator Runbook Lane
+    run_config: ../run-configs/bootstrap/documentation-and-operator-runbook.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: documentation-and-operator-runbook-architecture-guide-for-contributors
+  title: Architecture Guide For Contributors
+  output_root: ../../outputs/documentation-and-operator-runbook-architecture-guide-for-contributors
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-architecture-guide-for-contributors
+    kind: artifact
+    title: Architecture Guide For Contributors Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-architecture-guide-for-contributors.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook-doc-freshness-audit
+  title: Doc Freshness Audit
+  output_root: ../../outputs/documentation-and-operator-runbook-doc-freshness-audit
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-doc-freshness-audit
+    kind: artifact
+    title: Doc Freshness Audit Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-doc-freshness-audit.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook-operator-quickstart-guide
+  title: Operator Quickstart Guide
+  output_root: ../../outputs/documentation-and-operator-runbook-operator-quickstart-guide
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-operator-quickstart-guide
+    kind: artifact
+    title: Operator Quickstart Guide Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-operator-quickstart-guide.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook-raspberry-command-reference
+  title: Raspberry Command Reference
+  output_root: ../../outputs/documentation-and-operator-runbook-raspberry-command-reference
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-raspberry-command-reference
+    kind: artifact
+    title: Raspberry Command Reference Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-raspberry-command-reference.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook-rewrite-readme
+  title: Rewrite Readme
+  output_root: ../../outputs/documentation-and-operator-runbook-rewrite-readme
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-rewrite-readme
+    kind: artifact
+    title: Rewrite Readme Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-rewrite-readme.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: documentation-and-operator-runbook-troubleshooting-guide
+  title: Troubleshooting Guide
+  output_root: ../../outputs/documentation-and-operator-runbook-troubleshooting-guide
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: documentation-and-operator-runbook-troubleshooting-guide
+    kind: artifact
+    title: Troubleshooting Guide Lane
+    run_config: ../run-configs/implementation/documentation-and-operator-runbook-troubleshooting-guide.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: error-handling-hardening
+  title: Error Handling Hardening
+  output_root: ../../outputs/error-handling-hardening
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: error-handling-hardening
+    kind: platform
+    title: Error Handling Hardening Lane
+    run_config: ../run-configs/bootstrap/error-handling-hardening.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: error-handling-hardening-audit-autodev-critical-path
+  title: Audit Autodev Critical Path
+  output_root: ../../outputs/error-handling-hardening-audit-autodev-critical-path
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: error-handling-hardening-audit-autodev-critical-path
+    kind: platform
+    title: Audit Autodev Critical Path Lane
+    run_config: ../run-configs/implementation/error-handling-hardening-audit-autodev-critical-path.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: error-handling-hardening-harden-fabro-synthesis-render-path
+  title: Harden Fabro Synthesis Render Path
+  output_root: ../../outputs/error-handling-hardening-harden-fabro-synthesis-render-path
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: error-handling-hardening-harden-fabro-synthesis-render-path
+    kind: platform
+    title: Harden Fabro Synthesis Render Path Lane
+    run_config: ../run-configs/implementation/error-handling-hardening-harden-fabro-synthesis-render-path.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: error-handling-hardening-harden-fabro-workflows-execution-path
+  title: Harden Fabro Workflows Execution Path
+  output_root: ../../outputs/error-handling-hardening-harden-fabro-workflows-execution-path
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: error-handling-hardening-harden-fabro-workflows-execution-path
+    kind: platform
+    title: Harden Fabro Workflows Execution Path Lane
+    run_config: ../run-configs/implementation/error-handling-hardening-harden-fabro-workflows-execution-path.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: error-handling-hardening-harden-raspberry-supervisor
+  title: Harden Raspberry Supervisor
+  output_root: ../../outputs/error-handling-hardening-harden-raspberry-supervisor
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: error-handling-hardening-harden-raspberry-supervisor
+    kind: platform
+    title: Harden Raspberry Supervisor Lane
+    run_config: ../run-configs/implementation/error-handling-hardening-harden-raspberry-supervisor.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: error-handling-hardening-integration-validation
+  title: Integration Validation
+  output_root: ../../outputs/error-handling-hardening-integration-validation
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: error-handling-hardening-integration-validation
+    kind: integration
+    title: Integration Validation Lane
+    run_config: ../run-configs/integration/error-handling-hardening-integration-validation.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - spec
+    - review
+    proof_profile: standard
+- id: error-handling-hardening-live-autodev-validation
+  title: Live Autodev Validation
+  output_root: ../../outputs/error-handling-hardening-live-autodev-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: error-handling-hardening-live-autodev-validation
+    kind: platform
+    title: Live Autodev Validation Lane
+    run_config: ../run-configs/implementation/error-handling-hardening-live-autodev-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow
+  title: Genesis Onboarding Flow
+  output_root: ../../outputs/genesis-onboarding-flow
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: genesis-onboarding-flow
+    kind: platform
+    title: Genesis Onboarding Flow Lane
+    run_config: ../run-configs/bootstrap/genesis-onboarding-flow.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: genesis-onboarding-flow-audit-genesis-implementation
+  title: Audit Genesis Implementation
+  output_root: ../../outputs/genesis-onboarding-flow-audit-genesis-implementation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-audit-genesis-implementation
+    kind: platform
+    title: Audit Genesis Implementation Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-audit-genesis-implementation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow-command-surface-and-runtime-validation
+  title: Command Surface And Runtime Validation
+  output_root: ../../outputs/genesis-onboarding-flow-command-surface-and-runtime-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-command-surface-and-runtime-validation
+    kind: platform
+    title: Command Surface And Runtime Validation Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-command-surface-and-runtime-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow-operator-quickstart-documentation
+  title: Operator Quickstart Documentation
+  output_root: ../../outputs/genesis-onboarding-flow-operator-quickstart-documentation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-operator-quickstart-documentation
+    kind: artifact
+    title: Operator Quickstart Documentation Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-operator-quickstart-documentation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow-repo-detection-and-adaptation
+  title: Repo Detection And Adaptation
+  output_root: ../../outputs/genesis-onboarding-flow-repo-detection-and-adaptation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-repo-detection-and-adaptation
+    kind: platform
+    title: Repo Detection And Adaptation Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-repo-detection-and-adaptation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow-test-on-unfamiliar-repo
+  title: Test On Unfamiliar Repo
+  output_root: ../../outputs/genesis-onboarding-flow-test-on-unfamiliar-repo
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-test-on-unfamiliar-repo
+    kind: platform
+    title: Test On Unfamiliar Repo Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-test-on-unfamiliar-repo.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: genesis-onboarding-flow-validation-step
+  title: Validation Step
+  output_root: ../../outputs/genesis-onboarding-flow-validation-step
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: genesis-onboarding-flow-validation-step
+    kind: platform
+    title: Validation Step Lane
+    run_config: ../run-configs/implementation/genesis-onboarding-flow-validation-step.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: genesis-onboarding-flow
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: greenfield-bootstrap-reliability
+  title: Greenfield Bootstrap and Runtime Asset Reliability
+  output_root: ../../outputs/greenfield-bootstrap-reliability
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: greenfield-bootstrap-reliability
+    kind: platform
+    title: Greenfield Bootstrap and Runtime Asset Reliability Lane
+    run_config: ../run-configs/bootstrap/greenfield-bootstrap-reliability.toml
+    managed_milestone: reviewed
+    produces:
+    - spec
+    - review
+- id: greenfield-bootstrap-reliability-bootstrap-verification-gate
+  title: Bootstrap Verification Gate
+  output_root: ../../outputs/greenfield-bootstrap-reliability-bootstrap-verification-gate
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-bootstrap-verification-gate
+    kind: platform
+    title: Bootstrap Verification Gate Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-bootstrap-verification-gate.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: hardened
+- id: greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock
+  title: Bootstrap Verification Gate Lane Codex Unblock
+  output_root: ../../.raspberry/portfolio/greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock
+  artifacts:
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock-done
+    requires:
+    - spec
+    - review
+    - verification
+    - quality
+    - promotion
+  lanes:
+  - id: greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock
+    kind: platform
+    title: Bootstrap Verification Gate Lane Codex Unblock
+    run_config: ../run-configs/codex-unblock/greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock.toml
+    managed_milestone: greenfield-bootstrap-reliability-bootstrap-verification-gate-codex-unblock-done
+    produces:
+    - spec
+    - review
+    - verification
+    - quality
+    - promotion
+    proof_profile: unblock
+    checks:
+    - label: greenfield_bootstrap_reliability_bootstrap_verification_gate_codex_unblock_dispatch_only
+      kind: precondition
+      scope: ready
+      type: file_exists
+      path: ../../.raspberry/codex-unblock-dispatch-only
+- id: greenfield-bootstrap-reliability-fresh-rust-project-validation
+  title: Fresh Rust Project Validation
+  output_root: ../../outputs/greenfield-bootstrap-reliability-fresh-rust-project-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-fresh-rust-project-validation
+    kind: platform
+    title: Fresh Rust Project Validation Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-fresh-rust-project-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: greenfield-bootstrap-reliability-live-tonofcrap-validation
+  title: Live Tonofcrap Validation
+  output_root: ../../outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-live-tonofcrap-validation
+    kind: platform
+    title: Live Tonofcrap Validation Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: greenfield-bootstrap-reliability-runtime-stable-asset-resolution
+  title: Runtime Stable Asset Resolution
+  output_root: ../../outputs/greenfield-bootstrap-reliability-runtime-stable-asset-resolution
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-runtime-stable-asset-resolution
+    kind: platform
+    title: Runtime Stable Asset Resolution Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-runtime-stable-asset-resolution.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: greenfield-bootstrap-reliability-type-aware-quality-for-typescript
+  title: Type Aware Quality For Typescript
+  output_root: ../../outputs/greenfield-bootstrap-reliability-type-aware-quality-for-typescript
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-type-aware-quality-for-typescript
+    kind: platform
+    title: Type Aware Quality For Typescript Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-type-aware-quality-for-typescript.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
+  title: Verify Scaffold First Ordering
+  output_root: ../../outputs/greenfield-bootstrap-reliability-verify-scaffold-first-ordering
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
+    kind: platform
+    title: Verify Scaffold First Ordering Lane
+    run_config: ../run-configs/implementation/greenfield-bootstrap-reliability-verify-scaffold-first-ordering.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: greenfield-bootstrap-reliability
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: hardened
+- id: greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock
+  title: Verify Scaffold First Ordering Lane Codex Unblock
+  output_root: ../../.raspberry/portfolio/greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock
+  artifacts:
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock-done
+    requires:
+    - spec
+    - review
+    - verification
+    - quality
+    - promotion
+  lanes:
+  - id: greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock
+    kind: platform
+    title: Verify Scaffold First Ordering Lane Codex Unblock
+    run_config: ../run-configs/codex-unblock/greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock.toml
+    managed_milestone: greenfield-bootstrap-reliability-verify-scaffold-first-ordering-codex-unblock-done
+    produces:
+    - spec
+    - review
+    - verification
+    - quality
+    - promotion
+    proof_profile: unblock
+    checks:
+    - label: greenfield_bootstrap_reliability_verify_scaffold_first_ordering_codex_unblock_dispatch_only
+      kind: precondition
+      scope: ready
+      type: file_exists
+      path: ../../.raspberry/codex-unblock-dispatch-only
+- id: master
+  title: 180-Day Turnaround Plan — Fabro / Raspberry
+  output_root: ../../outputs/master
+  artifacts:
+  - id: report
+    path: report.md
+  milestones:
+  - id: reported
+    requires:
+    - report
+  lanes:
+  - id: master
+    kind: recurring
+    title: 180-Day Turnaround Plan — Fabro / Raspberry Lane
+    run_config: ../run-configs/recurring_report/master.toml
+    managed_milestone: reported
+    produces:
+    - report
+- id: parent-review-gauntlet-rollout
+  title: Parent Review Gauntlet Live Rollout
+  output_root: ../../outputs/parent-review-gauntlet-rollout
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: parent-review-gauntlet-rollout
+    kind: platform
+    title: Parent Review Gauntlet Live Rollout Lane
+    run_config: ../run-configs/bootstrap/parent-review-gauntlet-rollout.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: parent-review-gauntlet-rollout-artifact-validation
+  title: Artifact Validation
+  output_root: ../../outputs/parent-review-gauntlet-rollout-artifact-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: parent-review-gauntlet-rollout-artifact-validation
+    kind: platform
+    title: Artifact Validation Lane
+    run_config: ../run-configs/implementation/parent-review-gauntlet-rollout-artifact-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: parent-review-gauntlet-rollout
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: parent-review-gauntlet-rollout-conditional-stage-trigger-validation
+  title: Conditional Stage Trigger Validation
+  output_root: ../../outputs/parent-review-gauntlet-rollout-conditional-stage-trigger-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: parent-review-gauntlet-rollout-conditional-stage-trigger-validation
+    kind: artifact
+    title: Conditional Stage Trigger Validation Lane
+    run_config: ../run-configs/implementation/parent-review-gauntlet-rollout-conditional-stage-trigger-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: parent-review-gauntlet-rollout
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: parent-review-gauntlet-rollout-live-gauntlet-execution
+  title: Live Gauntlet Execution
+  output_root: ../../outputs/parent-review-gauntlet-rollout-live-gauntlet-execution
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: parent-review-gauntlet-rollout-live-gauntlet-execution
+    kind: platform
+    title: Live Gauntlet Execution Lane
+    run_config: ../run-configs/implementation/parent-review-gauntlet-rollout-live-gauntlet-execution.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: parent-review-gauntlet-rollout
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: parent-review-gauntlet-rollout-ship-readiness-verdict
+  title: Ship Readiness Verdict
+  output_root: ../../outputs/parent-review-gauntlet-rollout-ship-readiness-verdict
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: parent-review-gauntlet-rollout-ship-readiness-verdict
+    kind: platform
+    title: Ship Readiness Verdict Lane
+    run_config: ../run-configs/implementation/parent-review-gauntlet-rollout-ship-readiness-verdict.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: parent-review-gauntlet-rollout
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+  title: Verify Gauntlet Lanes In Package
+  output_root: ../../outputs/parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+    kind: platform
+    title: Verify Gauntlet Lanes In Package Lane
+    run_config: ../run-configs/implementation/parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: parent-review-gauntlet-rollout
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: hardened
+- id: performance-measurement-and-optimization
+  title: Performance Measurement and Optimization
+  output_root: ../../outputs/performance-measurement-and-optimization
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: performance-measurement-and-optimization
+    kind: platform
+    title: Performance Measurement and Optimization Lane
+    run_config: ../run-configs/bootstrap/performance-measurement-and-optimization.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: performance-measurement-and-optimization-cost-estimation
+  title: Cost Estimation
+  output_root: ../../outputs/performance-measurement-and-optimization-cost-estimation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: performance-measurement-and-optimization-cost-estimation
+    kind: platform
+    title: Cost Estimation Lane
+    run_config: ../run-configs/implementation/performance-measurement-and-optimization-cost-estimation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: performance-measurement-and-optimization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: performance-measurement-and-optimization-define-kpis-and-instrument-cycle-timing
+  title: Define Kpis And Instrument Cycle Timing
+  output_root: ../../outputs/performance-measurement-and-optimization-define-kpis-and-instrument-cycle-timing
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: performance-measurement-and-optimization-define-kpis-and-instrument-cycle-timing
+    kind: platform
+    title: Define Kpis And Instrument Cycle Timing Lane
+    run_config: ../run-configs/implementation/performance-measurement-and-optimization-define-kpis-and-instrument-cycle-timing.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: performance-measurement-and-optimization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: performance-measurement-and-optimization-establish-baselines
+  title: Establish Baselines
+  output_root: ../../outputs/performance-measurement-and-optimization-establish-baselines
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: performance-measurement-and-optimization-establish-baselines
+    kind: platform
+    title: Establish Baselines Lane
+    run_config: ../run-configs/implementation/performance-measurement-and-optimization-establish-baselines.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: performance-measurement-and-optimization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: performance-measurement-and-optimization-failure-classification-metrics
+  title: Failure Classification Metrics
+  output_root: ../../outputs/performance-measurement-and-optimization-failure-classification-metrics
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: performance-measurement-and-optimization-failure-classification-metrics
+    kind: platform
+    title: Failure Classification Metrics Lane
+    run_config: ../run-configs/implementation/performance-measurement-and-optimization-failure-classification-metrics.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: performance-measurement-and-optimization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: performance-measurement-and-optimization-metrics-summary-in-status-output
+  title: Metrics Summary In Status Output
+  output_root: ../../outputs/performance-measurement-and-optimization-metrics-summary-in-status-output
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: performance-measurement-and-optimization-metrics-summary-in-status-output
+    kind: platform
+    title: Metrics Summary In Status Output Lane
+    run_config: ../run-configs/implementation/performance-measurement-and-optimization-metrics-summary-in-status-output.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: performance-measurement-and-optimization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: phase-0-gate
+  title: Phase 0 Gate
+  output_root: ../../outputs/phase-0-gate
+  artifacts:
+  - id: report
+    path: report.md
+  milestones:
+  - id: reported
+    requires:
+    - report
+  lanes:
+  - id: phase-0-gate
+    kind: recurring
+    title: Phase 0 Gate Lane
+    run_config: ../run-configs/recurring_report/phase-0-gate.toml
+    managed_milestone: reported
+    depends_on:
+    - unit: autodev-efficiency-and-dispatch-live-validation
+      lane: null
+      milestone: null
+    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
+      lane: null
+      milestone: null
+    - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
+      lane: null
+      milestone: null
+    - unit: provider-policy-stabilization-live-validation
+      lane: null
+      milestone: null
+    produces:
+    - report
+- id: phase-1-gate
+  title: Phase 1 Gate
+  output_root: ../../outputs/phase-1-gate
+  artifacts:
+  - id: report
+    path: report.md
+  milestones:
+  - id: reported
+    requires:
+    - report
+  lanes:
+  - id: phase-1-gate
+    kind: recurring
+    title: Phase 1 Gate Lane
+    run_config: ../run-configs/recurring_report/phase-1-gate.toml
+    managed_milestone: reported
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: error-handling-hardening-live-autodev-validation
+      lane: null
+      milestone: null
+    - unit: workspace-integration-verification-live-validation-on-rxmrbro
+      lane: null
+      milestone: null
+    - unit: sprint-contracts-and-scored-review-decision-and-implementation
+      lane: null
+      milestone: null
+    - unit: genesis-onboarding-flow-validation-step
+      lane: null
+      milestone: null
+    produces:
+    - report
+- id: phase-2-gate
+  title: Phase 2 Gate
+  output_root: ../../outputs/phase-2-gate
+  artifacts:
+  - id: report
+    path: report.md
+  milestones:
+  - id: reported
+    requires:
+    - report
+  lanes:
+  - id: phase-2-gate
+    kind: recurring
+    title: Phase 2 Gate Lane
+    run_config: ../run-configs/recurring_report/phase-2-gate.toml
+    managed_milestone: reported
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review-live-validation
+      lane: null
+      milestone: null
+    - unit: parent-review-gauntlet-rollout-ship-readiness-verdict
+      lane: null
+      milestone: null
+    - unit: settlement-hygiene-and-evidence-separation-live-validation
+      lane: null
+      milestone: null
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: null
+    produces:
+    - report
+- id: phase-3-gate
+  title: Phase 3 Gate
+  output_root: ../../outputs/phase-3-gate
+  artifacts:
+  - id: report
+    path: report.md
+  milestones:
+  - id: reported
+    requires:
+    - report
+  lanes:
+  - id: phase-3-gate
+    kind: recurring
+    title: Phase 3 Gate Lane
+    run_config: ../run-configs/recurring_report/phase-3-gate.toml
+    managed_milestone: reported
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    - unit: documentation-and-operator-runbook
+      lane: null
+      milestone: null
+    - unit: performance-measurement-and-optimization-establish-baselines
+      lane: null
+      milestone: null
+    - unit: release-preparation-fresh-install-test
+      lane: null
+      milestone: null
+    produces:
+    - report
+- id: plan-completion-and-adversarial-review
+  title: Plan Completion Detection and Adversarial Review
+  output_root: ../../outputs/plan-completion-and-adversarial-review
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: plan-completion-and-adversarial-review
+    kind: platform
+    title: Plan Completion Detection and Adversarial Review Lane
+    run_config: ../run-configs/bootstrap/plan-completion-and-adversarial-review.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: plan-completion-and-adversarial-review-3-step-adversarial-review-prompt
+  title: 3 Step Adversarial Review Prompt
+  output_root: ../../outputs/plan-completion-and-adversarial-review-3-step-adversarial-review-prompt
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: plan-completion-and-adversarial-review-3-step-adversarial-review-prompt
+    kind: platform
+    title: 3 Step Adversarial Review Prompt Lane
+    run_config: ../run-configs/implementation/plan-completion-and-adversarial-review-3-step-adversarial-review-prompt.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: plan-completion-and-adversarial-review-live-validation
+  title: Live Validation
+  output_root: ../../outputs/plan-completion-and-adversarial-review-live-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: plan-completion-and-adversarial-review-live-validation
+    kind: platform
+    title: Live Validation Lane
+    run_config: ../run-configs/implementation/plan-completion-and-adversarial-review-live-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: plan-completion-and-adversarial-review-meta-review-feedback-loop
+  title: Meta Review Feedback Loop
+  output_root: ../../outputs/plan-completion-and-adversarial-review-meta-review-feedback-loop
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: plan-completion-and-adversarial-review-meta-review-feedback-loop
+    kind: platform
+    title: Meta Review Feedback Loop Lane
+    run_config: ../run-configs/implementation/plan-completion-and-adversarial-review-meta-review-feedback-loop.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: plan-completion-and-adversarial-review-plan-completion-detection
+  title: Plan Completion Detection
+  output_root: ../../outputs/plan-completion-and-adversarial-review-plan-completion-detection
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: plan-completion-and-adversarial-review-plan-completion-detection
+    kind: platform
+    title: Plan Completion Detection Lane
+    run_config: ../run-configs/implementation/plan-completion-and-adversarial-review-plan-completion-detection.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: plan-completion-and-adversarial-review-registry-driven-plan-review-generation
+  title: Registry Driven Plan Review Generation
+  output_root: ../../outputs/plan-completion-and-adversarial-review-registry-driven-plan-review-generation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: plan-completion-and-adversarial-review-registry-driven-plan-review-generation
+    kind: platform
+    title: Registry Driven Plan Review Generation Lane
+    run_config: ../run-configs/implementation/plan-completion-and-adversarial-review-registry-driven-plan-review-generation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: plan-completion-and-adversarial-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: provider-policy-stabilization
+  title: Provider Policy Stabilization
+  output_root: ../../outputs/provider-policy-stabilization
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: provider-policy-stabilization
+    kind: platform
+    title: Provider Policy Stabilization Lane
+    run_config: ../run-configs/bootstrap/provider-policy-stabilization.toml
+    managed_milestone: reviewed
+    produces:
+    - spec
+    - review
+- id: provider-policy-stabilization-audit-model-selection-leaks
+  title: Audit Model Selection Leaks
+  output_root: ../../outputs/provider-policy-stabilization-audit-model-selection-leaks
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: provider-policy-stabilization-audit-model-selection-leaks
+    kind: platform
+    title: Audit Model Selection Leaks Lane
+    run_config: ../run-configs/implementation/provider-policy-stabilization-audit-model-selection-leaks.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: provider-policy-stabilization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: provider-policy-stabilization-live-validation
+  title: Live Validation
+  output_root: ../../outputs/provider-policy-stabilization-live-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: provider-policy-stabilization-live-validation
+    kind: platform
+    title: Live Validation Lane
+    run_config: ../run-configs/implementation/provider-policy-stabilization-live-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: provider-policy-stabilization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: provider-policy-stabilization-provider-health-in-status-output
+  title: Provider Health In Status Output
+  output_root: ../../outputs/provider-policy-stabilization-provider-health-in-status-output
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: provider-policy-stabilization-provider-health-in-status-output
+    kind: platform
+    title: Provider Health In Status Output Lane
+    run_config: ../run-configs/implementation/provider-policy-stabilization-provider-health-in-status-output.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: provider-policy-stabilization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: provider-policy-stabilization-quota-detection-and-graceful-fallback
+  title: Quota Detection And Graceful Fallback
+  output_root: ../../outputs/provider-policy-stabilization-quota-detection-and-graceful-fallback
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: provider-policy-stabilization-quota-detection-and-graceful-fallback
+    kind: platform
+    title: Quota Detection And Graceful Fallback Lane
+    run_config: ../run-configs/implementation/provider-policy-stabilization-quota-detection-and-graceful-fallback.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: provider-policy-stabilization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: provider-policy-stabilization-usage-tracking
+  title: Usage Tracking
+  output_root: ../../outputs/provider-policy-stabilization-usage-tracking
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: provider-policy-stabilization-usage-tracking
+    kind: platform
+    title: Usage Tracking Lane
+    run_config: ../run-configs/implementation/provider-policy-stabilization-usage-tracking.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: provider-policy-stabilization
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-ci-hardening
+  title: Ci Hardening
+  output_root: ../../outputs/release-preparation-ci-hardening
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-ci-hardening
+    kind: platform
+    title: Ci Hardening Lane
+    run_config: ../run-configs/implementation/release-preparation-ci-hardening.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-fresh-install-test
+  title: Fresh Install Test
+  output_root: ../../outputs/release-preparation-fresh-install-test
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-fresh-install-test
+    kind: platform
+    title: Fresh Install Test Lane
+    run_config: ../run-configs/implementation/release-preparation-fresh-install-test.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-readme-and-changelog
+  title: Readme And Changelog
+  output_root: ../../outputs/release-preparation-readme-and-changelog
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-readme-and-changelog
+    kind: artifact
+    title: Readme And Changelog Lane
+    run_config: ../run-configs/implementation/release-preparation-readme-and-changelog.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-release-binary-build
+  title: Release Binary Build
+  output_root: ../../outputs/release-preparation-release-binary-build
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-release-binary-build
+    kind: platform
+    title: Release Binary Build Lane
+    run_config: ../run-configs/implementation/release-preparation-release-binary-build.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-security-audit
+  title: Security Audit
+  output_root: ../../outputs/release-preparation-security-audit
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-security-audit
+    kind: platform
+    title: Security Audit Lane
+    run_config: ../run-configs/implementation/release-preparation-security-audit.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: release-preparation-version-bump-and-tag
+  title: Version Bump And Tag
+  output_root: ../../outputs/release-preparation-version-bump-and-tag
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: release-preparation-version-bump-and-tag
+    kind: artifact
+    title: Version Bump And Tag Lane
+    run_config: ../run-configs/implementation/release-preparation-version-bump-and-tag.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-2-gate
+      lane: null
+      milestone: reported
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: settlement-hygiene-and-evidence-separation
+  title: Settlement Hygiene and Evidence Separation
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation
+    kind: platform
+    title: Settlement Hygiene and Evidence Separation Lane
+    run_config: ../run-configs/bootstrap/settlement-hygiene-and-evidence-separation.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: settlement-hygiene-and-evidence-separation-allowed-path-metadata
+  title: Allowed Path Metadata
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation-allowed-path-metadata
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation-allowed-path-metadata
+    kind: platform
+    title: Allowed Path Metadata Lane
+    run_config: ../run-configs/implementation/settlement-hygiene-and-evidence-separation-allowed-path-metadata.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: settlement-hygiene-and-evidence-separation
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: settlement-hygiene-and-evidence-separation-ci-commit-hygiene-check
+  title: Ci Commit Hygiene Check
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation-ci-commit-hygiene-check
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation-ci-commit-hygiene-check
+    kind: platform
+    title: Ci Commit Hygiene Check Lane
+    run_config: ../run-configs/implementation/settlement-hygiene-and-evidence-separation-ci-commit-hygiene-check.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: settlement-hygiene-and-evidence-separation
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: settlement-hygiene-and-evidence-separation-evidence-publication-separation
+  title: Evidence Publication Separation
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation-evidence-publication-separation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation-evidence-publication-separation
+    kind: platform
+    title: Evidence Publication Separation Lane
+    run_config: ../run-configs/implementation/settlement-hygiene-and-evidence-separation-evidence-publication-separation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: settlement-hygiene-and-evidence-separation
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: settlement-hygiene-and-evidence-separation-live-validation
+  title: Live Validation
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation-live-validation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation-live-validation
+    kind: platform
+    title: Live Validation Lane
+    run_config: ../run-configs/implementation/settlement-hygiene-and-evidence-separation-live-validation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: settlement-hygiene-and-evidence-separation
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: settlement-hygiene-and-evidence-separation-verify-settlement-hygiene
+  title: Verify Settlement Hygiene
+  output_root: ../../outputs/settlement-hygiene-and-evidence-separation-verify-settlement-hygiene
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: settlement-hygiene-and-evidence-separation-verify-settlement-hygiene
+    kind: platform
+    title: Verify Settlement Hygiene Lane
+    run_config: ../run-configs/implementation/settlement-hygiene-and-evidence-separation-verify-settlement-hygiene.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: settlement-hygiene-and-evidence-separation
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: hardened
+- id: sprint-contracts-and-scored-review
+  title: Sprint Contracts and Scored Review
+  output_root: ../../outputs/sprint-contracts-and-scored-review
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: sprint-contracts-and-scored-review
+    kind: platform
+    title: Sprint Contracts and Scored Review Lane
+    run_config: ../run-configs/bootstrap/sprint-contracts-and-scored-review.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: sprint-contracts-and-scored-review-challenge-stage-a-b-assessment
+  title: Challenge Stage A B Assessment
+  output_root: ../../outputs/sprint-contracts-and-scored-review-challenge-stage-a-b-assessment
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-challenge-stage-a-b-assessment
+    kind: artifact
+    title: Challenge Stage A B Assessment Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-challenge-stage-a-b-assessment.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: sprint-contracts-and-scored-review-contract-completeness-metrics
+  title: Contract Completeness Metrics
+  output_root: ../../outputs/sprint-contracts-and-scored-review-contract-completeness-metrics
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-contract-completeness-metrics
+    kind: platform
+    title: Contract Completeness Metrics Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-contract-completeness-metrics.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: sprint-contracts-and-scored-review-decision-and-implementation
+  title: Decision And Implementation
+  output_root: ../../outputs/sprint-contracts-and-scored-review-decision-and-implementation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-decision-and-implementation
+    kind: platform
+    title: Decision And Implementation Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-decision-and-implementation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: sprint-contracts-and-scored-review-review-score-distribution
+  title: Review Score Distribution
+  output_root: ../../outputs/sprint-contracts-and-scored-review-review-score-distribution
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-review-score-distribution
+    kind: platform
+    title: Review Score Distribution Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-review-score-distribution.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: foundation
+- id: sprint-contracts-and-scored-review-validate-contract-stage
+  title: Validate Contract Stage
+  output_root: ../../outputs/sprint-contracts-and-scored-review-validate-contract-stage
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-validate-contract-stage
+    kind: artifact
+    title: Validate Contract Stage Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-validate-contract-stage.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: sprint-contracts-and-scored-review-validate-scored-review
+  title: Validate Scored Review
+  output_root: ../../outputs/sprint-contracts-and-scored-review-validate-scored-review
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: sprint-contracts-and-scored-review-validate-scored-review
+    kind: platform
+    title: Validate Scored Review Lane
+    run_config: ../run-configs/implementation/sprint-contracts-and-scored-review-validate-scored-review.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: sprint-contracts-and-scored-review
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: foundation
+- id: test-coverage-critical-paths-autodev-integration-test
+  title: Autodev Integration Test
+  output_root: ../../outputs/test-coverage-critical-paths-autodev-integration-test
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: test-coverage-critical-paths-autodev-integration-test
+    kind: integration
+    title: Autodev Integration Test Lane
+    run_config: ../run-configs/integration/test-coverage-critical-paths-autodev-integration-test.toml
+    managed_milestone: reviewed
+    produces:
+    - spec
+    - review
+    proof_profile: standard
+- id: test-coverage-critical-paths-ci-preservation-and-hardening
+  title: Ci Preservation And Hardening
+  output_root: ../../outputs/test-coverage-critical-paths-ci-preservation-and-hardening
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: test-coverage-critical-paths-ci-preservation-and-hardening
+    kind: platform
+    title: Ci Preservation And Hardening Lane
+    run_config: ../run-configs/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.toml
+    managed_milestone: integrated
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: test-coverage-critical-paths-fabro-db-baseline-tests
+  title: Fabro Db Baseline Tests
+  output_root: ../../outputs/test-coverage-critical-paths-fabro-db-baseline-tests
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: test-coverage-critical-paths-fabro-db-baseline-tests
+    kind: platform
+    title: Fabro Db Baseline Tests Lane
+    run_config: ../run-configs/implementation/test-coverage-critical-paths-fabro-db-baseline-tests.toml
+    managed_milestone: integrated
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github
+  title: Minimal Coverage For Fabro Mcp And Fabro Github
+  output_root: ../../outputs/test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github
+    kind: platform
+    title: Minimal Coverage For Fabro Mcp And Fabro Github Lane
+    run_config: ../run-configs/implementation/test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github.toml
+    managed_milestone: integrated
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: test-coverage-critical-paths-raspberry-supervisor-edge-case-tests
+  title: Raspberry Supervisor Edge Case Tests
+  output_root: ../../outputs/test-coverage-critical-paths-raspberry-supervisor-edge-case-tests
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: test-coverage-critical-paths-raspberry-supervisor-edge-case-tests
+    kind: platform
+    title: Raspberry Supervisor Edge Case Tests Lane
+    run_config: ../run-configs/implementation/test-coverage-critical-paths-raspberry-supervisor-edge-case-tests.toml
+    managed_milestone: integrated
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: test-coverage-critical-paths-synthesis-runtime-regression-tests
+  title: Synthesis Runtime Regression Tests
+  output_root: ../../outputs/test-coverage-critical-paths-synthesis-runtime-regression-tests
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: test-coverage-critical-paths-synthesis-runtime-regression-tests
+    kind: platform
+    title: Synthesis Runtime Regression Tests Lane
+    run_config: ../run-configs/implementation/test-coverage-critical-paths-synthesis-runtime-regression-tests.toml
+    managed_milestone: integrated
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration
+  title: Web Dashboard Raspberry Integration
+  output_root: ../../outputs/web-dashboard-raspberry-integration
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: web-dashboard-raspberry-integration
+    kind: interface
+    title: Web Dashboard Raspberry Integration Lane
+    run_config: ../run-configs/bootstrap/web-dashboard-raspberry-integration.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: web-dashboard-raspberry-integration-autodev-status-api-endpoint
+  title: Autodev Status Api Endpoint
+  output_root: ../../outputs/web-dashboard-raspberry-integration-autodev-status-api-endpoint
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-autodev-status-api-endpoint
+    kind: service
+    title: Autodev Status Api Endpoint Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-autodev-status-api-endpoint.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration-design-review
+  title: Design Review
+  output_root: ../../outputs/web-dashboard-raspberry-integration-design-review
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-design-review
+    kind: platform
+    title: Design Review Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-design-review.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration-lane-detail-component
+  title: Lane Detail Component
+  output_root: ../../outputs/web-dashboard-raspberry-integration-lane-detail-component
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-lane-detail-component
+    kind: platform
+    title: Lane Detail Component Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-lane-detail-component.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration-plan-matrix-api-endpoint
+  title: Plan Matrix Api Endpoint
+  output_root: ../../outputs/web-dashboard-raspberry-integration-plan-matrix-api-endpoint
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-plan-matrix-api-endpoint
+    kind: service
+    title: Plan Matrix Api Endpoint Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-plan-matrix-api-endpoint.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration-plan-matrix-react-component
+  title: Plan Matrix React Component
+  output_root: ../../outputs/web-dashboard-raspberry-integration-plan-matrix-react-component
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-plan-matrix-react-component
+    kind: platform
+    title: Plan Matrix React Component Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-plan-matrix-react-component.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: web-dashboard-raspberry-integration-sse-live-updates
+  title: Sse Live Updates
+  output_root: ../../outputs/web-dashboard-raspberry-integration-sse-live-updates
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: web-dashboard-raspberry-integration-sse-live-updates
+    kind: platform
+    title: Sse Live Updates Lane
+    run_config: ../run-configs/implementation/web-dashboard-raspberry-integration-sse-live-updates.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-1-gate
+      lane: null
+      milestone: reported
+    - unit: web-dashboard-raspberry-integration
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: workspace-integration-verification
+  title: Workspace Integration Verification
+  output_root: ../../outputs/workspace-integration-verification
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: workspace-integration-verification
+    kind: platform
+    title: Workspace Integration Verification Lane
+    run_config: ../run-configs/bootstrap/workspace-integration-verification.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    produces:
+    - spec
+    - review
+- id: workspace-integration-verification-blueprintprotocol-and-contract-lane-generation
+  title: Blueprintprotocol And Contract Lane Generation
+  output_root: ../../outputs/workspace-integration-verification-blueprintprotocol-and-contract-lane-generation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: workspace-integration-verification-blueprintprotocol-and-contract-lane-generation
+    kind: platform
+    title: Blueprintprotocol And Contract Lane Generation Lane
+    run_config: ../run-configs/implementation/workspace-integration-verification-blueprintprotocol-and-contract-lane-generation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: workspace-integration-verification
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: workspace-integration-verification-consistency-challenge-prompts
+  title: Consistency Challenge Prompts
+  output_root: ../../outputs/workspace-integration-verification-consistency-challenge-prompts
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: workspace-integration-verification-consistency-challenge-prompts
+    kind: platform
+    title: Consistency Challenge Prompts Lane
+    run_config: ../run-configs/implementation/workspace-integration-verification-consistency-challenge-prompts.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: workspace-integration-verification
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: workspace-integration-verification-integration-proof-profile
+  title: Integration Proof Profile
+  output_root: ../../outputs/workspace-integration-verification-integration-proof-profile
+  artifacts:
+  - id: review
+    path: review.md
+  - id: spec
+    path: spec.md
+  milestones:
+  - id: reviewed
+    requires:
+    - spec
+    - review
+  lanes:
+  - id: workspace-integration-verification-integration-proof-profile
+    kind: integration
+    title: Integration Proof Profile Lane
+    run_config: ../run-configs/integration/workspace-integration-verification-integration-proof-profile.toml
+    managed_milestone: reviewed
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: workspace-integration-verification
+      lane: null
+      milestone: reviewed
+    produces:
+    - spec
+    - review
+    proof_profile: standard
+- id: workspace-integration-verification-live-validation-on-rxmrbro
+  title: Live Validation On Rxmrbro
+  output_root: ../../outputs/workspace-integration-verification-live-validation-on-rxmrbro
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: workspace-integration-verification-live-validation-on-rxmrbro
+    kind: platform
+    title: Live Validation On Rxmrbro Lane
+    run_config: ../run-configs/implementation/workspace-integration-verification-live-validation-on-rxmrbro.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: workspace-integration-verification
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: standard
+- id: workspace-integration-verification-workspace-verify-lane-generation
+  title: Workspace Verify Lane Generation
+  output_root: ../../outputs/workspace-integration-verification-workspace-verify-lane-generation
+  artifacts:
+  - id: implementation
+    path: implementation.md
+  - id: integration
+    path: integration.md
+  - id: promotion
+    path: promotion.md
+  - id: quality
+    path: quality.md
+  - id: verification
+    path: verification.md
+  milestones:
+  - id: implemented
+    requires:
+    - implementation
+  - id: verified
+    requires:
+    - implementation
+    - verification
+    - quality
+  - id: merge_ready
+    requires:
+    - implementation
+    - verification
+    - quality
+    - promotion
+  - id: integrated
+    requires:
+    - integration
+  lanes:
+  - id: workspace-integration-verification-workspace-verify-lane-generation
+    kind: platform
+    title: Workspace Verify Lane Generation Lane
+    run_config: ../run-configs/implementation/workspace-integration-verification-workspace-verify-lane-generation.toml
+    managed_milestone: integrated
+    depends_on:
+    - unit: phase-0-gate
+      lane: null
+      milestone: reported
+    - unit: workspace-integration-verification
+      lane: null
+      milestone: reviewed
+    produces:
+    - implementation
+    - verification
+    - quality
+    - promotion
+    - integration
+    proof_profile: hardened

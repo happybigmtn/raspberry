@@ -1,0 +1,23 @@
+digraph SettlementHygieneAndEvidenceSeparation {
+    graph [
+        goal="Settlement Hygiene and Evidence Separation\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify settlement hygiene in direct_integration.rs works\n- Verify evidence stripping from staged settlement commits\n- Add explicit allowed-path metadata to integration lane configs\n- Live validation: 20-cycle autodev run with clean commits\n- Add commit hygiene check to CI\n\nRequired durable artifacts:\n- `outputs/settlement-hygiene-and-evidence-separation/spec.md`\n- `outputs/settlement-hygiene-and-evidence-separation/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/settlement-hygiene-and-evidence-separation/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/settlement-hygiene-and-evidence-separation/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/settlement-hygiene-and-evidence-separation/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

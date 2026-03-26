@@ -620,6 +620,29 @@ fn categorize_plan(path: &Path, title: &str, body: &str) -> PlanCategory {
     if stem.contains("master-plan") || title_lower.contains("master plan") {
         return PlanCategory::Meta;
     }
+    if stem.contains("dashboard")
+        || title_lower.contains("dashboard")
+        || stem.contains("web")
+        || title_lower.contains("web ui")
+        || title_lower.contains("browser")
+    {
+        return PlanCategory::Interface;
+    }
+    if stem.contains("documentation")
+        || stem.contains("runbook")
+        || stem.contains("readme")
+        || stem.contains("changelog")
+        || title_lower.contains("documentation")
+        || title_lower.contains("runbook")
+        || title_lower.contains("readme")
+        || title_lower.contains("changelog")
+        || title_lower.contains("troubleshooting")
+    {
+        return PlanCategory::Unknown;
+    }
+    if stem.contains("release-preparation") || title_lower.contains("release preparation") {
+        return PlanCategory::Unknown;
+    }
     if text.contains("provably fair")
         || text.contains("verification")
         || text.contains("proof")
@@ -958,6 +981,9 @@ fn declared_child_ids(body: &str) -> Vec<String> {
             continue;
         };
         let lower = rest.to_ascii_lowercase();
+        if lower == "milestones" {
+            continue;
+        }
         if !(lower.starts_with("milestone") || lower.contains("milestone")) {
             continue;
         }
@@ -1104,6 +1130,30 @@ mod tests {
                 "provably-fair".to_string(),
                 "tui".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn load_plan_registry_ignores_milestones_heading_as_child_id() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("plans")).expect("plans dir");
+        fs::write(
+            temp.path().join("plans/005-craps-game.md"),
+            concat!(
+                "# Craps Game\n\n",
+                "## Milestones\n\n",
+                "### Milestone 1: casino-core\n",
+                "### Milestone 2: provably-fair\n",
+            ),
+        )
+        .expect("craps plan");
+
+        let registry = load_plan_registry(temp.path()).expect("registry");
+        let craps = registry.plans.first().expect("craps record");
+
+        assert_eq!(
+            craps.declared_child_ids,
+            vec!["casino-core".to_string(), "provably-fair".to_string()]
         );
     }
 

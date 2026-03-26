@@ -1,0 +1,39 @@
+version = 1
+graph = "../../workflows/holistic-review-deep/web-dashboard-raspberry-integration-holistic-review-deep.fabro"
+goal = '''
+Deep synthesis pass for integrated parent plan `web-dashboard-raspberry-integration`.
+
+Integrated child units:
+- web-dashboard-raspberry-integration-autodev-status-api-endpoint, web-dashboard-raspberry-integration-design-review, web-dashboard-raspberry-integration-lane-detail-component, web-dashboard-raspberry-integration-sse-live-updates
+
+Re-read the full parent state after the Minimax pass.
+- collapse duplicates and sharpen weak evidence
+- identify systemic edge cases or cross-child interactions that the first pass may have missed
+- refine the remediation plan where the first pass was broad or ambiguous
+- preserve uncertainty explicitly when evidence is incomplete
+
+Required outputs:
+- `deep-review.md`
+- `finding-deltas.json`
+- `remediation-plan.md`
+- `promotion.md`
+
+This lane prefers Opus 4.6 and may fall back to Codex if needed.
+'''
+directory = "../../.."
+
+[llm]
+provider = "anthropic"
+model = "claude-opus-4-6"
+[llm.fallbacks]
+anthropic = ["gpt-5.4"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

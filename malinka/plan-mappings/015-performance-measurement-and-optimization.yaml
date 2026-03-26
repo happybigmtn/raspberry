@@ -1,0 +1,38 @@
+mapping_source: heuristic
+plan_id: performance-measurement-and-optimization
+title: Performance Measurement and Optimization
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: cost-estimation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev cost
+- id: define-kpis-and-instrument-cycle-timing
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev cycle_timing
+- id: establish-baselines
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: failure-classification-metrics
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-cli -- status metrics
+  - cargo nextest run -p raspberry-supervisor -- autodev failure_breakdown
+- id: metrics-summary-in-status-output
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-cli -- status metrics

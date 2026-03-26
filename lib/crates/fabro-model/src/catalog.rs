@@ -165,7 +165,11 @@ pub fn get_model_info(id: &str) -> Option<Model> {
 #[must_use]
 pub fn list_models(provider: Option<&str>) -> Vec<Model> {
     let provider = provider.and_then(|value| value.parse::<Provider>().ok());
-    Catalog::builtin().list(provider).into_iter().cloned().collect()
+    Catalog::builtin()
+        .list(provider)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 #[must_use]

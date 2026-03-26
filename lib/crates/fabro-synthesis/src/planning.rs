@@ -109,11 +109,12 @@ pub fn author_blueprint_for_create_with_planning_root(
         .unwrap_or_else(|| sanitize_identifier(&corpus.repo_name));
     let intents = derive_lane_intents(target_repo, &corpus, &program_id);
     let notes = build_authoring_notes(&corpus, &intents);
+    let max_parallel = resolve_program_max_parallel(target_repo, &program_id, &intents);
     let blueprint = ProgramBlueprint {
         version: 1,
         program: BlueprintProgram {
             id: program_id.clone(),
-            max_parallel: derive_max_parallel(&intents),
+            max_parallel,
             state_path: Some(PathBuf::from(format!(".raspberry/{program_id}-state.json"))),
             run_dir: None,
         },
@@ -132,6 +133,30 @@ pub fn author_blueprint_for_create_with_planning_root(
         active_plan: corpus.active_plan.map(|doc| doc.path),
         active_spec: corpus.active_spec.map(|doc| doc.path),
     })
+}
+
+fn resolve_program_max_parallel(
+    target_repo: &Path,
+    program_id: &str,
+    intents: &[LaneIntent],
+) -> usize {
+    let derived = derive_max_parallel(intents);
+    existing_program_max_parallel(target_repo, program_id)
+        .map(|existing| existing.max(derived))
+        .unwrap_or(derived)
+}
+
+fn existing_program_max_parallel(target_repo: &Path, program_id: &str) -> Option<usize> {
+    let manifest_path = target_repo
+        .join(crate::blueprint::DEFAULT_PACKAGE_DIR)
+        .join("programs")
+        .join(format!("{program_id}.yaml"));
+    let raw = fs::read_to_string(&manifest_path).ok()?;
+    let value = serde_yaml::from_str::<serde_yaml::Value>(&raw).ok()?;
+    value
+        .get("max_parallel")
+        .and_then(serde_yaml::Value::as_u64)
+        .map(|value| value as usize)
 }
 
 pub fn author_blueprint_for_evolve(
@@ -642,6 +667,7 @@ fn derive_registry_plan_intents(
     if registry.plans.is_empty() {
         return None;
     }
+    let phase_dependency_map = master_phase_dependency_map(corpus, &registry.plans);
 
     let workspace_tasks = corpus
         .active_plan
@@ -745,6 +771,16 @@ fn derive_registry_plan_intents(
         .collect();
 
     for plan in &registry.plans {
+        let mut plan_dependency_plan_ids = plan.dependency_plan_ids.clone();
+        if let Some(phase_dependencies) = phase_dependency_map.get(&plan.plan_id) {
+            for dependency_plan_id in phase_dependencies {
+                if dependency_plan_id != &plan.plan_id
+                    && !plan_dependency_plan_ids.contains(dependency_plan_id)
+                {
+                    plan_dependency_plan_ids.push(dependency_plan_id.clone());
+                }
+            }
+        }
         let family = registry_plan_family(&plan);
         let parent_id = plan.plan_id.clone();
         let child_count = if !plan.children.is_empty() {
@@ -774,7 +810,8 @@ fn derive_registry_plan_intents(
             );
             let prompt_context =
                 build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
-            let mut dependencies = registry_plan_dependencies(&plan);
+            let mut dependencies =
+                registry_plan_dependencies_from_ids(&plan_dependency_plan_ids, &registry.plans);
             // Inject scaffold dependencies for non-infrastructure parent intents
             if plan.category != PlanCategory::Infrastructure
                 && !scaffold_plan_ids.contains(&plan.plan_id)
@@ -846,7 +883,7 @@ fn derive_registry_plan_intents(
                 plan.children.clone()
             };
             // Inject scaffold plans as implicit dependencies for non-infrastructure plans.
-            let mut enriched_deps = plan.dependency_plan_ids.clone();
+            let mut enriched_deps = plan_dependency_plan_ids.clone();
             if plan.category != PlanCategory::Infrastructure
                 && !scaffold_plan_ids.contains(&plan.plan_id)
             {
@@ -1055,6 +1092,19 @@ fn infer_review_profile_from_child_id(
 
 fn infer_lane_kind_from_child_id(child_id: &str) -> LaneKind {
     let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("readme")
+        || id_lower.contains("changelog")
+        || id_lower.contains("runbook")
+        || id_lower.contains("architecture-guide")
+        || id_lower.contains("troubleshooting")
+        || id_lower.contains("operator-quickstart")
+        || id_lower.contains("command-reference")
+        || id_lower.contains("doc-freshness")
+        || id_lower.contains("version-bump")
+        || id_lower.contains("tag")
+    {
+        return LaneKind::Artifact;
+    }
     if id_lower.contains("integration")
         || id_lower.contains("e2e")
         || id_lower.contains("end-to-end")
@@ -1100,7 +1150,7 @@ fn infer_lane_kind_from_child_id(child_id: &str) -> LaneKind {
 
 fn infer_implementation_lane_kind_from_child_id(child_id: &str) -> LaneKind {
     match infer_lane_kind_from_child_id(child_id) {
-        LaneKind::Integration | LaneKind::Orchestration | LaneKind::Artifact => LaneKind::Platform,
+        LaneKind::Integration | LaneKind::Orchestration => LaneKind::Platform,
         kind => kind,
     }
 }
@@ -1112,12 +1162,7 @@ fn normalize_lane_kind_for_template(
 ) -> LaneKind {
     match template {
         WorkflowTemplate::Implementation => lane_kind
-            .filter(|kind| {
-                !matches!(
-                    kind,
-                    LaneKind::Integration | LaneKind::Orchestration | LaneKind::Artifact
-                )
-            })
+            .filter(|kind| !matches!(kind, LaneKind::Integration | LaneKind::Orchestration))
             .unwrap_or_else(|| infer_implementation_lane_kind_from_child_id(child_id)),
         WorkflowTemplate::Integration => LaneKind::Integration,
         WorkflowTemplate::Orchestration => LaneKind::Orchestration,
@@ -1248,15 +1293,192 @@ fn registry_plan_contract(
     }
 }
 
-fn registry_plan_dependencies(plan: &PlanRecord) -> Vec<LaneDependency> {
-    plan.dependency_plan_ids
+fn registry_plan_dependencies_from_ids(
+    plan_ids: &[String],
+    all_plans: &[PlanRecord],
+) -> Vec<LaneDependency> {
+    plan_ids
         .iter()
-        .map(|dependency| LaneDependency {
-            unit: dependency.clone(),
-            lane: None,
-            milestone: Some("reviewed".to_string()),
+        .map(|dependency| {
+            let resolved_child_id = all_plans
+                .iter()
+                .find(|plan| plan.plan_id == *dependency)
+                .and_then(|plan| {
+                    if !plan.composite {
+                        return None;
+                    }
+                    select_composite_dependency_child_id(plan).map(|child_id| {
+                        if child_id.starts_with(dependency) {
+                            child_id
+                        } else {
+                            format!("{dependency}-{child_id}")
+                        }
+                    })
+                });
+            let (resolved_unit, milestone) = match resolved_child_id {
+                Some(child_id) => {
+                    if child_id.starts_with(dependency) {
+                        (child_id, None)
+                    } else {
+                        (child_id, None)
+                    }
+                }
+                None => (dependency.clone(), Some("reviewed".to_string())),
+            };
+            LaneDependency {
+                unit: resolved_unit,
+                lane: None,
+                milestone,
+            }
         })
         .collect()
+}
+
+fn select_composite_dependency_child_id(plan: &PlanRecord) -> Option<String> {
+    let candidate_ids = if !plan.children.is_empty() {
+        plan.children
+            .iter()
+            .map(|child| child.child_id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        plan.declared_child_ids.clone()
+    };
+    if candidate_ids.is_empty() {
+        return None;
+    }
+    let score = |child_id: &str| -> i32 {
+        let lower = child_id.to_ascii_lowercase();
+        if lower.contains("live-validation") {
+            return 100;
+        }
+        if lower.contains("validation-step") || lower.contains("fresh-install-test") {
+            return 95;
+        }
+        if lower.contains("test-on-unfamiliar-repo") {
+            return 92;
+        }
+        if lower.contains("ship-readiness") || lower.contains("ship-readiness-verdict") {
+            return 90;
+        }
+        if lower.contains("decision-and-implementation") {
+            return 85;
+        }
+        if lower.contains("release-binary-build") || lower.contains("version-bump-and-tag") {
+            return 82;
+        }
+        if lower.contains("establish-baselines") {
+            return 80;
+        }
+        if lower.contains("synthesis-runtime-regression-tests") {
+            return 78;
+        }
+        if lower.contains("workspace-verify") || lower.contains("workspace-verification") {
+            return 76;
+        }
+        if lower.contains("quota-detection-and-graceful-fallback") {
+            return 74;
+        }
+        if lower.contains("verify") || lower.contains("validation") {
+            return 70;
+        }
+        0
+    };
+    candidate_ids
+        .into_iter()
+        .max_by_key(|child_id| (score(child_id), child_id.clone()))
+}
+
+fn numbered_plan_index(path: &Path) -> Option<usize> {
+    let stem = path.file_stem()?.to_str()?;
+    let prefix = stem.split('-').next()?;
+    if prefix.len() == 3 && prefix.chars().all(|ch| ch.is_ascii_digit()) {
+        return prefix.parse().ok();
+    }
+    None
+}
+
+fn master_phase_dependency_map(
+    corpus: &PlanningCorpus,
+    plans: &[PlanRecord],
+) -> BTreeMap<String, Vec<String>> {
+    let Some(active_plan) = &corpus.active_plan else {
+        return BTreeMap::new();
+    };
+    let active_plan_is_master = active_plan
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("master-plan"))
+        || active_plan
+            .title
+            .to_ascii_lowercase()
+            .contains("master plan");
+    if !active_plan_is_master {
+        return BTreeMap::new();
+    }
+
+    let plan_id_by_index = plans
+        .iter()
+        .filter_map(|plan| {
+            numbered_plan_index(&plan.path).map(|index| (index, plan.plan_id.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    if plan_id_by_index.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let mut phase_plan_ids = BTreeMap::<usize, Vec<String>>::new();
+    let mut current_phase = None::<usize>;
+    for line in active_plan.body.lines() {
+        let trimmed = line.trim();
+        if let Some(phase) = trimmed.strip_prefix("## ").and_then(parse_phase_heading) {
+            current_phase = Some(phase);
+            continue;
+        }
+        let Some(phase) = current_phase else {
+            continue;
+        };
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        let columns = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        let Some(number) = columns.first() else {
+            continue;
+        };
+        if number.len() != 3 || !number.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let index = number.parse::<usize>().ok();
+        let Some(plan_index) = index else {
+            continue;
+        };
+        let Some(plan_id) = plan_id_by_index.get(&plan_index) else {
+            continue;
+        };
+        let phase_entry = phase_plan_ids.entry(phase).or_default();
+        if !phase_entry.contains(plan_id) {
+            phase_entry.push(plan_id.clone());
+        }
+    }
+
+    let mut result = BTreeMap::<String, Vec<String>>::new();
+    let mut prior_phase_ids = Vec::<String>::new();
+    for (_phase, phase_ids) in phase_plan_ids {
+        for plan_id in &phase_ids {
+            result.insert(plan_id.clone(), prior_phase_ids.clone());
+        }
+        for plan_id in phase_ids {
+            if !prior_phase_ids.contains(&plan_id) {
+                prior_phase_ids.push(plan_id);
+            }
+        }
+    }
+    result
 }
 
 fn derive_child_intents(
@@ -1311,14 +1533,17 @@ fn derive_child_intents(
                 .filter_map(|dep_plan_id| {
                     let dep_plan = all_plans.iter().find(|p| p.plan_id == *dep_plan_id);
                     match dep_plan {
-                        Some(p) if p.composite && !p.children.is_empty() => {
-                            let last_child = p.children.last().expect("non-empty checked");
-                            let resolved_unit = if last_child.child_id.starts_with(&p.plan_id) {
-                                last_child.child_id.clone()
-                            } else {
-                                format!("{}-{}", p.plan_id, last_child.child_id)
-                            };
-                            Some(LaneDependency {
+                        Some(p) if p.composite => {
+                            let resolved_child_id = select_composite_dependency_child_id(p).map(
+                                |child_id| {
+                                    if child_id.starts_with(&p.plan_id) {
+                                        child_id
+                                    } else {
+                                        format!("{}-{}", p.plan_id, child_id)
+                                    }
+                                },
+                            );
+                            resolved_child_id.map(|resolved_unit| LaneDependency {
                                 unit: resolved_unit,
                                 lane: None,
                                 milestone: None,
@@ -2275,11 +2500,22 @@ fn derive_max_parallel(intents: &[LaneIntent]) -> usize {
     if intents.len() <= 1 {
         return 1;
     }
-    intents
+    let independent = intents
         .iter()
         .filter(|intent| intent.dependencies.is_empty())
-        .count()
-        .clamp(1, 3)
+        .count();
+    let executable = intents
+        .iter()
+        .filter(|intent| intent.family != WorkflowTemplate::RecurringReport)
+        .count();
+    let portfolio_target = match executable {
+        0..=7 => independent.max(2),
+        8..=14 => 4,
+        15..=29 => 6,
+        30..=59 => 8,
+        _ => 10,
+    };
+    independent.max(portfolio_target).clamp(1, 10)
 }
 
 fn select_family(target_repo: &Path, corpus: &PlanningCorpus) -> WorkflowTemplate {
@@ -3241,6 +3477,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn infer_lane_kind_marks_architecture_guides_as_artifacts() {
+        assert_eq!(
+            infer_lane_kind_from_child_id(
+                "documentation-and-operator-runbook-architecture-guide-for-contributors"
+            ),
+            LaneKind::Artifact
+        );
+    }
+
+    #[test]
+    fn create_authoring_preserves_existing_program_max_parallel() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# Fabro\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("genesis/plans")).expect("plans dir");
+        fs::create_dir_all(temp.path().join("malinka/programs")).expect("programs dir");
+        fs::write(
+            temp.path().join("genesis/plans/001-master-plan.md"),
+            "# Master Plan\n",
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path()
+                .join("genesis/plans/003-autodev-efficiency-and-dispatch.md"),
+            "# Autodev\n\n- [ ] keep runtime path stable\n",
+        )
+        .expect("plan");
+        fs::write(
+            temp.path().join("malinka/programs/fabro.yaml"),
+            concat!(
+                "version: 1\n",
+                "program: fabro\n",
+                "target_repo: ../..\n",
+                "state_path: ../../.raspberry/fabro-state.json\n",
+                "max_parallel: 10\n",
+                "units: []\n"
+            ),
+        )
+        .expect("program manifest");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("fabro")).expect("author blueprint");
+
+        assert_eq!(authored.blueprint.program.max_parallel, 10);
+    }
+
+    #[test]
     fn create_authoring_uses_repo_doctrine_and_latest_plan() {
         let temp = tempfile::tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "# Zend\n").expect("readme");
@@ -4177,5 +4460,63 @@ units:
                 "provably-fair".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn create_authoring_injects_prior_phase_dependencies_from_master_plan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join("README.md"), "# Fabro\n").expect("readme");
+        fs::write(temp.path().join("SPEC.md"), "# Root Spec\n").expect("spec");
+        fs::create_dir_all(temp.path().join("genesis/plans")).expect("plans dir");
+        fs::write(temp.path().join("genesis/SPEC.md"), "# Genesis Spec\n").expect("genesis spec");
+        fs::write(
+            temp.path().join("genesis/plans/001-master-plan.md"),
+            concat!(
+                "# Master Plan\n\n",
+                "## Phase 0: Stabilization\n\n",
+                "| # | Plan | Focus | Key Deliverable |\n",
+                "|---|------|-------|-----------------|\n",
+                "| 003 | Autodev | Dispatch | Runtime truth |\n",
+                "| 004 | Bootstrap | Reliability | Fresh repo works |\n\n",
+                "## Phase 1: Foundation\n\n",
+                "| # | Plan | Focus | Key Deliverable |\n",
+                "|---|------|-------|-----------------|\n",
+                "| 012 | Genesis Onboarding | Flow | New operator succeeds |\n",
+            ),
+        )
+        .expect("master plan");
+        fs::write(
+            temp.path().join("genesis/plans/003-autodev.md"),
+            "# Autodev\n\n## Progress\n- [ ] keep runtime path stable\n",
+        )
+        .expect("phase 0 plan");
+        fs::write(
+            temp.path().join("genesis/plans/004-bootstrap.md"),
+            "# Bootstrap\n\n## Progress\n- [ ] keep prompt refs stable\n",
+        )
+        .expect("phase 0 plan");
+        fs::write(
+            temp.path().join("genesis/plans/012-genesis-onboarding-flow.md"),
+            "# Genesis Onboarding Flow\n\n## Progress\n- [ ] validate onboarding on unfamiliar repo\n",
+        )
+        .expect("phase 1 plan");
+
+        let authored =
+            author_blueprint_for_create(temp.path(), Some("fabro")).expect("author blueprint");
+        let onboarding = authored
+            .blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "genesis-onboarding-flow")
+            .expect("onboarding unit");
+
+        let dependency_units = onboarding.lanes[0]
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.unit.clone())
+            .collect::<Vec<_>>();
+
+        assert!(dependency_units.contains(&"autodev".to_string()));
+        assert!(dependency_units.contains(&"bootstrap".to_string()));
     }
 }

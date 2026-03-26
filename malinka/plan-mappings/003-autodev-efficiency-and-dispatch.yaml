@@ -1,0 +1,47 @@
+mapping_source: heuristic
+plan_id: autodev-efficiency-and-dispatch
+title: Autodev Execution Path and Dispatch Truth
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: add-dispatch-state-telemetry
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- dispatch parallel autodev
+  - cargo nextest run -p raspberry-supervisor -- program_state running
+- id: decouple-evolve-from-dispatch-and-consume-the-budget-greedily
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- render
+  - cargo nextest run -p raspberry-supervisor -- dispatch parallel autodev
+- id: freeze-the-current-failure-modes-into-reproducible-tests
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- render
+- id: live-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: make-autodev-runtime-paths-self-consistent
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev
+  - cargo nextest run -p raspberry-supervisor -- autodev report
+  - cargo nextest run -p raspberry-supervisor -- dispatch parallel autodev
+- id: reconcile-stale-running-and-failed-lane-truth
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- program_state running

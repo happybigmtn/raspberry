@@ -1,0 +1,37 @@
+mapping_source: heuristic
+plan_id: provider-policy-stabilization
+title: Provider Policy Stabilization
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: audit-model-selection-leaks
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+- id: live-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+- id: provider-health-in-status-output
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-workflows -- provider_fallback quota
+  - cargo nextest run -p raspberry-supervisor -- status provider
+- id: quota-detection-and-graceful-fallback
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-llm -- quota_exhausted
+  - cargo nextest run -p fabro-workflows -- provider_fallback quota
+- id: usage-tracking
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- usage_tracking

@@ -1,0 +1,42 @@
+mapping_source: heuristic
+plan_id: sprint-contracts-and-scored-review
+title: Sprint Contracts and Scored Review
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: challenge-stage-a-b-assessment
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: contract-completeness-metrics
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev contract_metrics
+  - cargo nextest run -p raspberry-supervisor -- autodev review_metrics
+- id: decision-and-implementation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: review-score-distribution
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: shared_foundation
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev review_metrics
+- id: validate-contract-stage
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev contract_metrics
+- id: validate-scored-review
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: shared_foundation
+  proof_commands:
+  - cargo nextest run -p raspberry-supervisor -- autodev review_metrics

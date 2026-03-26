@@ -1,0 +1,38 @@
+mapping_source: heuristic
+plan_id: settlement-hygiene-and-evidence-separation
+title: Settlement Hygiene and Evidence Separation
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: allowed-path-metadata
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-config -- integration allowed_paths
+  - cargo nextest run -p fabro-workflows -- direct_integration allowed
+- id: ci-commit-hygiene-check
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-workflows -- direct_integration hygiene
+- id: evidence-publication-separation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-workflows -- direct_integration evidence
+- id: live-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: verify-settlement-hygiene
+  archetype: verification_only
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-workflows -- direct_integration hygiene

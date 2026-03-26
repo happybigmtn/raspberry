@@ -1,0 +1,41 @@
+version = 1
+graph = "../../workflows/implementation/provider-policy-stabilization-quota-detection-and-graceful-fallback.fabro"
+goal = '''
+Quota Detection And Graceful Fallback
+
+Child work item of plan: Provider Policy Stabilization
+
+Proof commands:
+- `cargo nextest run -p fabro-llm -- quota_exhausted`
+- `cargo nextest run -p fabro-workflows -- provider_fallback quota`
+
+Required durable artifacts:
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+- `integration.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../integration.md"

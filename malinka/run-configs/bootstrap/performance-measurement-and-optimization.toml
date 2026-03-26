@@ -1,0 +1,49 @@
+version = 1
+graph = "../../workflows/bootstrap/performance-measurement-and-optimization.fabro"
+goal = '''
+Performance Measurement and Optimization
+
+Bootstrap the first honest reviewed slice for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Define operational KPIs and baseline targets
+- Instrument autodev cycle with timing spans
+- Add cost estimation per provider per cycle
+- Add failure classification metrics
+- Build metrics summary in raspberry status output
+- Establish baselines from live rXMRbro runs
+
+Required durable artifacts:
+- `outputs/performance-measurement-and-optimization/spec.md`
+- `outputs/performance-measurement-and-optimization/review.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

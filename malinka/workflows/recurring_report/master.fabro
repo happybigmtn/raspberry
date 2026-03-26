@@ -1,0 +1,23 @@
+digraph Master {
+    graph [
+        goal="180-Day Turnaround Plan — Fabro / Raspberry\n\nProduce the recurring report artifact for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Phase 0 kickoff: stabilization sprint\n- Phase 1 kickoff: foundation hardening\n- Phase 2 kickoff: growth features\n- Phase 3 kickoff: polish and release\n\nRequired durable artifacts:\n- `outputs/master/report.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/recurring_report/master/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/recurring_report/master/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/recurring_report/master/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

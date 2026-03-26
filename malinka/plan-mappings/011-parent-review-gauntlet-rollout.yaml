@@ -1,0 +1,29 @@
+mapping_source: heuristic
+plan_id: parent-review-gauntlet-rollout
+title: Parent Review Gauntlet Live Rollout
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: artifact-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: conditional-stage-trigger-validation
+  archetype: implement_module
+  lane_kind: artifact
+  review_profile: standard
+- id: live-gauntlet-execution
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: ship-readiness-verdict
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: verify-gauntlet-lanes-in-package
+  archetype: verification_only
+  lane_kind: platform
+  review_profile: security_sensitive

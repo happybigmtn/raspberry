@@ -1,0 +1,42 @@
+mapping_source: heuristic
+plan_id: greenfield-bootstrap-reliability
+title: Greenfield Bootstrap and Runtime Asset Reliability
+category: verification
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: bootstrap-verification-gate
+  archetype: verification_only
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- bootstrap_verify
+- id: fresh-rust-project-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- greenfield_rust
+- id: live-tonofcrap-validation
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: runtime-stable-asset-resolution
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: type-aware-quality-for-typescript
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- quality typescript
+- id: verify-scaffold-first-ordering
+  archetype: verification_only
+  lane_kind: platform
+  review_profile: security_sensitive
+  proof_commands:
+  - cargo nextest run -p fabro-synthesis -- bootstrap_verify
+  - cargo nextest run -p fabro-synthesis -- scaffold_first

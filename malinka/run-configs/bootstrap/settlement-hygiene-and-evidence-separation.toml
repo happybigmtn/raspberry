@@ -1,0 +1,48 @@
+version = 1
+graph = "../../workflows/bootstrap/settlement-hygiene-and-evidence-separation.fabro"
+goal = '''
+Settlement Hygiene and Evidence Separation
+
+Bootstrap the first honest reviewed slice for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Verify settlement hygiene in direct_integration.rs works
+- Verify evidence stripping from staged settlement commits
+- Add explicit allowed-path metadata to integration lane configs
+- Live validation: 20-cycle autodev run with clean commits
+- Add commit hygiene check to CI
+
+Required durable artifacts:
+- `outputs/settlement-hygiene-and-evidence-separation/spec.md`
+- `outputs/settlement-hygiene-and-evidence-separation/review.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"

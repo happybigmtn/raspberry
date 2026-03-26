@@ -34,7 +34,7 @@ impl WorkflowBuilder {
     ///
     /// Returns an error if parsing or validation fails.
     pub fn prepare(&self, dot_source: &str) -> Result<(Graph, Vec<Diagnostic>), FabroError> {
-        self.prepare_inner(dot_source, None)
+        self.prepare_inner(dot_source, None, &[])
     }
 
     /// Prepare a workflow with file inlining: parse DOT, apply built-in transforms
@@ -48,13 +48,27 @@ impl WorkflowBuilder {
         dot_source: &str,
         base_dir: &Path,
     ) -> Result<(Graph, Vec<Diagnostic>), FabroError> {
-        self.prepare_inner(dot_source, Some(base_dir))
+        self.prepare_with_file_inlining_and_fallbacks(dot_source, base_dir, &[])
+    }
+
+    /// Prepare a workflow with file inlining and explicit fallback directories.
+    ///
+    /// Explicit fallbacks are checked after `base_dir`, then any inferred repo-root
+    /// fallback, then `~/.fabro`.
+    pub fn prepare_with_file_inlining_and_fallbacks(
+        &self,
+        dot_source: &str,
+        base_dir: &Path,
+        fallback_dirs: &[&Path],
+    ) -> Result<(Graph, Vec<Diagnostic>), FabroError> {
+        self.prepare_inner(dot_source, Some(base_dir), fallback_dirs)
     }
 
     fn prepare_inner(
         &self,
         dot_source: &str,
         base_dir: Option<&Path>,
+        fallback_dirs: &[&Path],
     ) -> Result<(Graph, Vec<Diagnostic>), FabroError> {
         let mut graph = fabro_graphviz::parser::parse(dot_source)?;
 
@@ -65,8 +79,8 @@ impl WorkflowBuilder {
 
         // File inlining when base_dir is provided
         if let Some(dir) = base_dir {
-            let fallback = dirs::home_dir().map(|h| h.join(".fabro"));
-            FileInliningTransform::new(dir.to_path_buf(), fallback).apply(&mut graph);
+            let resolved_fallbacks = workflow_file_fallback_dirs(dir, fallback_dirs);
+            FileInliningTransform::new(dir.to_path_buf(), resolved_fallbacks).apply(&mut graph);
         }
 
         // Custom transforms
@@ -94,7 +108,7 @@ pub fn prepare_from_file(path: &Path) -> Result<(Graph, Vec<Diagnostic>), FabroE
     let source = std::fs::read_to_string(path)
         .map_err(|e| FabroError::Parse(format!("Failed to read {}: {e}", path.display())))?;
     let dot_dir = path.parent().unwrap_or(Path::new("."));
-    WorkflowBuilder::new().prepare_with_file_inlining(&source, dot_dir)
+    WorkflowBuilder::new().prepare_with_file_inlining_and_fallbacks(&source, dot_dir, &[])
 }
 
 /// Convenience: parse DOT source (no file inlining), apply built-in transforms, validate.
@@ -108,6 +122,38 @@ pub fn prepare_from_source(dot_source: &str) -> Result<Graph, FabroError> {
     let (graph, diagnostics) = builder.prepare(dot_source)?;
     fabro_validate::raise_on_errors(&diagnostics)?;
     Ok(graph)
+}
+
+fn workflow_file_fallback_dirs(base_dir: &Path, explicit: &[&Path]) -> Vec<std::path::PathBuf> {
+    let mut fallbacks = Vec::new();
+    for dir in explicit {
+        if !fallbacks.iter().any(|existing| existing == dir) {
+            fallbacks.push((*dir).to_path_buf());
+        }
+    }
+    if let Some(repo_root) = infer_repo_root_fallback(base_dir) {
+        if !fallbacks.iter().any(|existing| existing == &repo_root) {
+            fallbacks.push(repo_root);
+        }
+    }
+    if let Some(home_fabro) = dirs::home_dir().map(|home| home.join(".fabro")) {
+        if !fallbacks.iter().any(|existing| existing == &home_fabro) {
+            fallbacks.push(home_fabro);
+        }
+    }
+    fallbacks
+}
+
+fn infer_repo_root_fallback(base_dir: &Path) -> Option<std::path::PathBuf> {
+    for ancestor in base_dir.ancestors() {
+        let has_package_layout = ancestor.join("prompts").is_dir()
+            && ancestor.join("workflows").is_dir()
+            && ancestor.join("run-configs").is_dir();
+        if has_package_layout {
+            return ancestor.parent().map(std::path::Path::to_path_buf);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -207,5 +253,39 @@ mod tests {
         let builder = WorkflowBuilder::default();
         let (graph, _) = builder.prepare(MINIMAL_DOT).unwrap();
         assert_eq!(graph.name, "Test");
+    }
+
+    #[test]
+    fn prepare_with_file_inlining_infers_repo_root_fallback_for_repo_relative_prompts() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_root = temp.path().join("malinka");
+        std::fs::create_dir_all(package_root.join("run-configs")).unwrap();
+        std::fs::create_dir_all(package_root.join("workflows/bootstrap")).unwrap();
+        std::fs::create_dir_all(package_root.join("prompts/bootstrap/demo")).unwrap();
+        std::fs::write(
+            package_root.join("prompts/bootstrap/demo/plan.md"),
+            "repo relative prompt",
+        )
+        .unwrap();
+
+        let dot = r#"digraph Demo {
+            graph [goal="Run demo"]
+            start [shape=Mdiamond]
+            plan  [prompt="@malinka/prompts/bootstrap/demo/plan.md"]
+            exit  [shape=Msquare]
+            start -> plan -> exit
+        }"#;
+
+        let workflow_dir = package_root.join("workflows/bootstrap");
+        let (graph, diagnostics) = WorkflowBuilder::new()
+            .prepare_with_file_inlining(dot, &workflow_dir)
+            .unwrap();
+        fabro_validate::raise_on_errors(&diagnostics).unwrap();
+        let prompt = graph.nodes["plan"]
+            .attrs
+            .get("prompt")
+            .and_then(AttrValue::as_str)
+            .unwrap();
+        assert_eq!(prompt, "repo relative prompt");
     }
 }

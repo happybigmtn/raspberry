@@ -1,0 +1,23 @@
+digraph GreenfieldBootstrapReliability {
+    graph [
+        goal="Greenfield Bootstrap and Runtime Asset Reliability\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify scaffold-first ordering works in planning.rs\n- Add bootstrap verification gate to render.rs\n- Make generated prompt and workflow asset refs runtime-stable\n- Add type-aware quality checks for TypeScript projects\n- Validate on tonofcrap with 30-cycle autodev run\n- Validate on a fresh Rust project with scaffold dependency\n\nRequired durable artifacts:\n- `outputs/greenfield-bootstrap-reliability/spec.md`\n- `outputs/greenfield-bootstrap-reliability/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/greenfield-bootstrap-reliability/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/greenfield-bootstrap-reliability/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/greenfield-bootstrap-reliability/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

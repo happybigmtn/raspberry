@@ -792,7 +792,11 @@ fn legacy_runtime_integrated(
     let integration_lanes = unit
         .lanes
         .iter()
-        .filter(|(_, lane)| lane.produces.iter().any(|artifact| artifact == "integration"))
+        .filter(|(_, lane)| {
+            lane.produces
+                .iter()
+                .any(|artifact| artifact == "integration")
+        })
         .collect::<Vec<_>>();
     if integration_lanes.is_empty() {
         return false;

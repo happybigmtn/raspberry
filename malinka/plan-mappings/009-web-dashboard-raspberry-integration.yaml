@@ -1,0 +1,41 @@
+mapping_source: heuristic
+plan_id: web-dashboard-raspberry-integration
+title: Web Dashboard Raspberry Integration
+category: interface
+composite: true
+bootstrap_required: true
+implementation_required: true
+dependency_plan_ids: []
+children:
+- id: autodev-status-api-endpoint
+  archetype: implement_module
+  lane_kind: service
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-api -- raspberry autodev
+  - cargo nextest run -p fabro-api -- raspberry plans
+- id: design-review
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: lane-detail-component
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+- id: plan-matrix-api-endpoint
+  archetype: implement_module
+  lane_kind: service
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-api -- raspberry autodev
+  - cargo nextest run -p fabro-api -- raspberry plans
+- id: plan-matrix-react-component
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard
+  proof_commands:
+  - cargo nextest run -p fabro-api -- raspberry plans
+- id: sse-live-updates
+  archetype: implement_module
+  lane_kind: platform
+  review_profile: standard

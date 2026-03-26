@@ -1,0 +1,41 @@
+version = 1
+graph = "../../workflows/recurring_report/master.fabro"
+goal = '''
+180-Day Turnaround Plan — Fabro / Raspberry
+
+Produce the recurring report artifact for this frontier.
+
+Inputs:
+- `README.md`
+- `SPEC.md`
+- `PLANS.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `genesis/plans/001-master-plan.md`
+
+Current frontier tasks:
+- Phase 0 kickoff: stabilization sprint
+- Phase 1 kickoff: foundation hardening
+- Phase 2 kickoff: growth features
+- Phase 3 kickoff: polish and release
+
+Required durable artifacts:
+- `outputs/master/report.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

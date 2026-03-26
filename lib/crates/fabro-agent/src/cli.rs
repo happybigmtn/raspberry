@@ -6,7 +6,7 @@ use crate::{
 };
 use clap::{Args, Parser};
 use fabro_llm::client::Client;
-use fabro_model::{Catalog, ModelRef, Provider, automation_primary_target, AutomationProfile};
+use fabro_model::{automation_primary_target, AutomationProfile, Catalog, ModelRef, Provider};
 use fabro_util::terminal::Styles;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -408,7 +408,11 @@ pub async fn run_with_args_and_client(
         } else {
             fabro_model::default_model_for_provider(provider.as_str())
                 .map(|m| m.id)
-                .or_else(|| Catalog::builtin().default_for_provider(provider).map(|m| m.id.clone()))
+                .or_else(|| {
+                    Catalog::builtin()
+                        .default_for_provider(provider)
+                        .map(|m| m.id.clone())
+                })
                 .unwrap_or_else(|| Catalog::builtin().default_from_env().id.clone())
         }
     });

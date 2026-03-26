@@ -1,0 +1,42 @@
+version = 1
+graph = "../../workflows/implementation/error-handling-hardening-harden-fabro-synthesis-render-path.fabro"
+goal = '''
+Harden Fabro Synthesis Render Path
+
+Child work item of plan: Error Handling Hardening
+
+Proof commands:
+- `cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \`
+- `cargo nextest run -p fabro-synthesis`
+- `cargo nextest run -p fabro-workflows -- backend cli agent`
+
+Required durable artifacts:
+- `implementation.md`
+- `verification.md`
+- `quality.md`
+- `promotion.md`
+- `integration.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+
+[integration]
+enabled = true
+strategy = "squash"
+target_branch = "origin/HEAD"
+artifact_path = "../../../integration.md"

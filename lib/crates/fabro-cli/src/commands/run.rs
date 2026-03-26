@@ -14,7 +14,9 @@ use fabro_agent::{
 use fabro_config::run::{RunDefaults, WorkflowRunConfig};
 use fabro_config::{project as project_config, run as run_config, sandbox as sandbox_config};
 use fabro_interview::{AutoApproveInterviewer, ConsoleInterviewer, FileInterviewer, Interviewer};
-use fabro_model::{Catalog, FallbackTarget, Provider, automation_primary_target, AutomationProfile};
+use fabro_model::{
+    automation_primary_target, AutomationProfile, Catalog, FallbackTarget, Provider,
+};
 use fabro_util::terminal::Styles;
 use fabro_validate::Severity;
 use fabro_workflows::backend::{AgentApiBackend, AgentCliBackend, BackendRouter};
@@ -37,7 +39,7 @@ use indicatif::HumanDuration;
 use std::time::Duration;
 use tracing::debug;
 
-use super::detached_support::{self, DetachedRunBootstrapGuard, DetachedRunCompletionGuard};
+use super::detached_support::{DetachedRunBootstrapGuard, DetachedRunCompletionGuard};
 use super::run_progress;
 use crate::commands::shared::{
     format_tokens_human, print_diagnostics, read_workflow_file, relative_path, tilde_path,
@@ -274,7 +276,10 @@ pub(crate) fn resolve_model_provider(
 
     // Resolve model alias through catalog and enforce provider compatibility.
     match Catalog::builtin().get(&model) {
-        Some(info) => (info.id.clone(), provider.or(Some(info.provider.to_string()))),
+        Some(info) => (
+            info.id.clone(),
+            provider.or(Some(info.provider.to_string())),
+        ),
         None => {
             let write_target = automation_primary_target(AutomationProfile::Write);
             let provider = if provider.is_none() && model == write_target.model {
@@ -603,6 +608,77 @@ pub(crate) fn local_sandbox_with_callback(
 pub(crate) const RUN_GRAPH_FILE: &str = "graph.fabro";
 pub(crate) const RUN_CONFIG_FILE: &str = "run.toml";
 
+fn extract_at_file_refs(source: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let bytes = source.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'@' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        while end < bytes.len() {
+            let byte = bytes[end];
+            if matches!(
+                byte,
+                b'"' | b'\'' | b'\n' | b'\r' | b' ' | b'\t' | b']' | b')' | b','
+            ) {
+                break;
+            }
+            end += 1;
+        }
+        if end > start {
+            let candidate = &source[start..end];
+            if !candidate.is_empty() && !refs.iter().any(|existing| existing == candidate) {
+                refs.push(candidate.to_string());
+            }
+        }
+        index = end;
+    }
+    refs
+}
+
+fn cache_workflow_file_refs(
+    source: &str,
+    base_dir: &Path,
+    run_dir: &Path,
+    fallback_dirs: &[&Path],
+) -> anyhow::Result<()> {
+    for file_ref in extract_at_file_refs(source) {
+        if file_ref.starts_with("~/") {
+            continue;
+        }
+        let resolved = fabro_workflows::transform::resolve_file_ref_with_fallbacks(
+            &format!("@{file_ref}"),
+            base_dir,
+            fallback_dirs,
+        );
+        if resolved == format!("@{file_ref}") {
+            continue;
+        }
+        let file_path = Path::new(&file_ref);
+        let mut source_candidates = Vec::new();
+        source_candidates.push(base_dir.join(file_path));
+        for fallback in fallback_dirs {
+            source_candidates.push(fallback.join(file_path));
+        }
+        let Some(source_path) = source_candidates
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+        else {
+            continue;
+        };
+        let destination = run_dir.join(file_path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source_path, destination)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn cached_graph_path(run_dir: &Path) -> PathBuf {
     run_dir.join(RUN_GRAPH_FILE)
 }
@@ -658,6 +734,7 @@ pub(crate) struct PreparedWorkflow {
     pub source: String,
     pub graph: fabro_graphviz::graph::Graph,
     pub run_cfg: Option<WorkflowRunConfig>,
+    pub source_base_dir: PathBuf,
     pub sandbox_provider: SandboxProvider,
     pub model: String,
     pub provider: Option<String>,
@@ -757,8 +834,9 @@ pub(crate) fn prepare_workflow_with_project_config(
         None => source,
     };
     let dot_dir = dot_path.parent().unwrap_or(std::path::Path::new("."));
-    let (mut graph, diagnostics) =
-        WorkflowBuilder::new().prepare_with_file_inlining(&source, dot_dir)?;
+    let explicit_fallbacks = [start_cwd.as_path()];
+    let (mut graph, diagnostics) = WorkflowBuilder::new()
+        .prepare_with_file_inlining_and_fallbacks(&source, dot_dir, &explicit_fallbacks)?;
     let cli_goal = resolve_cli_goal(&args.goal, &args.goal_file)?;
     let toml_goal = run_cfg.as_ref().and_then(|c| c.goal.as_deref());
     apply_goal_override(&mut graph, cli_goal.as_deref(), toml_goal);
@@ -766,8 +844,12 @@ pub(crate) fn prepare_workflow_with_project_config(
     // Inline @file references in the (possibly overridden) goal
     if let Some(fabro_graphviz::graph::AttrValue::String(goal)) = graph.attrs.get("goal") {
         let fallback = dirs::home_dir().map(|h| h.join(".fabro"));
+        let mut fallbacks = vec![start_cwd.as_path()];
+        if let Some(fallback) = fallback.as_deref() {
+            fallbacks.push(fallback);
+        }
         let resolved =
-            fabro_workflows::transform::resolve_file_ref(goal, dot_dir, fallback.as_deref());
+            fabro_workflows::transform::resolve_file_ref_with_fallbacks(goal, dot_dir, &fallbacks);
         if resolved != *goal {
             graph.attrs.insert(
                 "goal".to_string(),
@@ -830,6 +912,7 @@ pub(crate) fn prepare_workflow_with_project_config(
         source,
         graph,
         run_cfg,
+        source_base_dir: dot_dir.to_path_buf(),
         sandbox_provider,
         model,
         provider,
@@ -854,6 +937,7 @@ pub async fn run_command(
         source,
         graph,
         mut run_cfg,
+        source_base_dir,
         sandbox_provider,
         model,
         provider,
@@ -928,6 +1012,8 @@ pub async fn run_command(
     };
     fabro_util::run_log::activate(&run_dir.join("cli.log"))
         .context("Failed to activate per-run log")?;
+    let cache_fallbacks = [original_cwd.as_path()];
+    cache_workflow_file_refs(&source, &source_base_dir, &run_dir, &cache_fallbacks)?;
     tokio::fs::write(cached_graph_path(&run_dir), &source).await?;
     let mut status_guard = DetachedRunBootstrapGuard::arm(&run_dir)?;
 

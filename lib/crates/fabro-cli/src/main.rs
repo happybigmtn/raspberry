@@ -177,6 +177,11 @@ enum Command {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
+    /// Program synthesis operations
+    Synth {
+        #[command(subcommand)]
+        command: commands::synth::SynthCommand,
+    },
     /// Open the Discord community in the browser
     Discord,
     /// Open the docs website in the browser
@@ -541,6 +546,13 @@ async fn main_inner() -> (String, Result<()>) {
         Command::Workflow { command } => match command {
             WorkflowCommand::List(_) => "workflow list",
             WorkflowCommand::Create(_) => "workflow create",
+        },
+        Command::Synth { command } => match command {
+            commands::synth::SynthCommand::Import(_) => "synth import",
+            commands::synth::SynthCommand::Create(_) => "synth create",
+            commands::synth::SynthCommand::Evolve(_) => "synth evolve",
+            commands::synth::SynthCommand::Review(_) => "synth review",
+            commands::synth::SynthCommand::Genesis(_) => "synth genesis",
         },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
@@ -1010,6 +1022,23 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 WorkflowCommand::Create(args) => {
                     commands::workflow::create_command(&args)?;
+                }
+            },
+            Command::Synth { command } => match command {
+                commands::synth::SynthCommand::Import(args) => {
+                    commands::synth::import_command(&args)?;
+                }
+                commands::synth::SynthCommand::Create(args) => {
+                    commands::synth::create_command(&args)?;
+                }
+                commands::synth::SynthCommand::Evolve(args) => {
+                    commands::synth::evolve_command(&args)?;
+                }
+                commands::synth::SynthCommand::Review(args) => {
+                    commands::synth::review_command(&args)?;
+                }
+                commands::synth::SynthCommand::Genesis(args) => {
+                    commands::synth::genesis_command(&args)?;
                 }
             },
             Command::Skill { command } => match command {

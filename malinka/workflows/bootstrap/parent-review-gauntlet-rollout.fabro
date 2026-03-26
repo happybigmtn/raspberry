@@ -1,0 +1,23 @@
+digraph ParentReviewGauntletRollout {
+    graph [
+        goal="Parent Review Gauntlet Live Rollout\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Run autodev until at least one plan reaches parent gauntlet stages\n- Validate preflight, deep review, and adjudication produce real artifacts\n- Validate conditional stages (design-review, qa, cso) trigger correctly\n- Decide on dedicated parent workflow template vs recurring-report reuse\n- Ship-readiness gate produces go/no-go verdict\n\nRequired durable artifacts:\n- `outputs/parent-review-gauntlet-rollout/spec.md`\n- `outputs/parent-review-gauntlet-rollout/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/parent-review-gauntlet-rollout/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/parent-review-gauntlet-rollout/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/parent-review-gauntlet-rollout/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}
