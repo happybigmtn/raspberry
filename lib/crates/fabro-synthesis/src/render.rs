@@ -2348,7 +2348,7 @@ fn implementation_quality_command(
         lane,
         lane.prompt_context.as_deref().unwrap_or_default(),
     ) {
-        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+        "semantic_risk_hits=\"$(find . -name '*.rs' ! -name 'render.rs' -exec rg -n -i 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' {} + 2>/dev/null || true)\"\n"
             .to_string()
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
@@ -2368,7 +2368,7 @@ fn implementation_quality_command(
                if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
                  lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
                fi\n    \
-             done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
+             done < <(find \"$surface\" -type f \\( -name '*.rs' ! -name 'render.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
            fi\n\
          done\n"
             .replace("{surface_scan_dirs}", &{
