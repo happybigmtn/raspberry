@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.contract": "Contract written to `.fabro-work/contract.md`.\n\n**Summary:**\n\nIdentified gaps in existing test coverage:\n\n| Crate | Function | Gap |\n|-------|----------|-----|\n| fabro-mcp | `McpClient::new` | No tests for sandbox transport error |\n| fabro-mcp | `LoggingClientHandler` | No tests for notification handlers |\n| fabro-github | `embed_token_in_url` | 0 tests |\n| fabro-github | `create_pull_request` | 0 tests |\n| fabro-github | `enable_auto_merge` | 0 tests |\n| fabro-github | `resolve_clone_credentials` | 0 tests |\n\n**Planned additions:**\n- 4 new tests in `fabro-mcp` (client_handler + client error path)\n- 6+ new tests in `fabro-github` (embed_token, create_pr, enable_auto_merge, resolve_clone_credentials)\n- 1 optional new test file for HTTP transport (may skip if mocking impractical)",
+    "last_stage": "contract",
+    "last_response": "Contract written to `.fabro-work/contract.md`.\n\n**Summary:**\n\nIdentified gaps in existing test coverage:\n\n| Crate | Function | Gap |\n|-------|----------|-----|\n| fabro-mcp | `McpClient::new` | No test"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 28878,
+    "output_tokens": 227
+  },
+  "duration_ms": 227382,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:38:03.907029388+00:00",
+  "updated_at": "2026-03-26T19:38:03.907032360+00:00"
+}
