@@ -1,0 +1,5 @@
+{
+  "command": "set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- greenfield_rust\nelse\n  cargo test -p fabro-synthesis -- greenfield_rust\nfi\ntrue",
+  "language": "shell",
+  "timeout_ms": null
+}
