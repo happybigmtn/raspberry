@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-03-26T20:25:40.133259504Z",
+  "current_node": "plan",
+  "completed_nodes": [
+    "start",
+    "plan"
+  ],
+  "node_retries": {
+    "plan": 1,
+    "start": 1
+  },
+  "context_values": {
+    "internal.thread_id": "start",
+    "graph.goal": "Implement and validate a feature",
+    "failure_signature": "",
+    "current.preamble": "Goal: Implement and validate a feature\n",
+    "response.plan": "[Simulated] Response for stage: plan",
+    "internal.fidelity": "compact",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX59A05XXVEVR66GNKE7TC/worktree",
+    "last_stage": "plan",
+    "current_node": "plan",
+    "internal.node_visit_count": 1,
+    "internal.run_id": "01KMNX59A05XXVEVR66GNKE7TC",
+    "outcome": "success",
+    "internal.retry_count.plan": 1,
+    "last_response": "[Simulated] Response for stage: plan",
+    "graph.rankdir": "LR",
+    "failure_class": "",
+    "internal.retry_count.start": 1,
+    "thread.start.current_node": "plan"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "plan": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "plan",
+        "response.plan": "[Simulated] Response for stage: plan",
+        "last_response": "[Simulated] Response for stage: plan"
+      },
+      "notes": "[Simulated] plan",
+      "duration_ms": 0
+    },
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "implement",
+  "node_visits": {
+    "plan": 1,
+    "start": 1
+  }
+}
