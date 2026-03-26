@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNPED2462E3SCW1CQCBHRA4",
+  "workflow_name": "TestCoverageCriticalPathsCiPreservationAndHardening",
+  "goal": "Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-26T18:27:58.513949712Z",
+  "node_count": 11,
+  "edge_count": 15,
+  "run_branch": "fabro/run/01KMNPED2462E3SCW1CQCBHRA4",
+  "base_sha": "a29161d9c51b394fa989042769505ff4934223d1",
+  "base_branch": "main",
+  "workflow_slug": "test-coverage-critical-paths-ci-preservation-and-hardening",
+  "host_repo_path": "/home/r/coding/fabro"
+}
