@@ -26,9 +26,16 @@ Focus on:
 Deterministic evidence:
 - treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk
 - if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready
+- if `.fabro-work/quality.md` is missing, treat that as a workflow-artifact failure and set `merge_ready: no`
 
 
-Score each dimension 0-10 and write `.fabro-work/promotion.md` in this exact form:
+Write `.fabro-work/review.md` with a short review summary that covers:
+- whether the first proof gate is green
+- whether the blocker is inside or outside the lane-owned surface
+- which automated proof commands ran and what they returned
+- the next replay risk, if any
+
+Then score each dimension 0-10 and write `.fabro-work/promotion.md` in this exact form:
 
 merge_ready: yes|no
 manual_proof_pending: yes|no
@@ -50,6 +57,7 @@ Any dimension below 6 = merge_ready: no.
 If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.
 
 Review stage ownership:
+- you must write `.fabro-work/review.md` in this stage so the audit step can persist a durable review artifact
 - you may write or replace `.fabro-work/promotion.md` in this stage
 - read `.fabro-work/quality.md` before deciding `merge_ready`
 - when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review
