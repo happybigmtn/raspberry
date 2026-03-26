@@ -2,9 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fabro_synthesis::{
-    import_existing_package, load_blueprint, reconcile_blueprint, render_blueprint, ImportRequest,
-    ReconcileRequest, RenderRequest,
+    bootstrap_verify_command, import_existing_package, load_blueprint, reconcile_blueprint,
+    render_blueprint, render_workflow_graph, ImportRequest, ReconcileRequest, RenderRequest,
 };
+use raspberry_supervisor::manifest::LaneKind;
 
 fn fixture(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -261,4 +262,175 @@ fn reconcile_blueprint_does_not_clobber_files_when_reusing_same_repo() {
     assert!(workflow_after.contains("test -f ./outputs/games/poker/spec.md"));
     assert!(run_config_after.contains("model = \"MiniMax-M2.7\""));
     assert!(run_config_after.contains("graph = \"../../workflows/bootstrap/poker.fabro\""));
+}
+
+#[test]
+fn bootstrap_verify_command_checks_language_markers() {
+    let cmd = bootstrap_verify_command();
+
+    // Rust detection
+    assert!(cmd.contains("Cargo.toml"));
+    assert!(cmd.contains("cargo metadata"));
+
+    // Python detection
+    assert!(cmd.contains("pyproject.toml"));
+    assert!(cmd.contains("requirements.txt"));
+
+    // TypeScript detection
+    assert!(cmd.contains("package.json"));
+    assert!(cmd.contains("tsconfig.json"));
+
+    // Error messages present
+    assert!(cmd.contains("ERROR:"));
+    assert!(cmd.contains("Detected:"));
+    assert!(cmd.contains("BOOTSTRAP_STATUS"));
+}
+
+#[test]
+fn bootstrap_verify_injects_health_node_for_scaffold_lanes() {
+    // Bootstrap template lane
+    let bootstrap_lane = fabro_synthesis::BlueprintLane {
+        id: "craps-bootstrap".to_string(),
+        kind: LaneKind::Platform,
+        title: "Craps Bootstrap".to_string(),
+        family: "bootstrap".to_string(),
+        workflow_family: Some("bootstrap".to_string()),
+        slug: Some("craps-bootstrap".to_string()),
+        template: fabro_synthesis::WorkflowTemplate::Bootstrap,
+        goal: "Bootstrap the craps gameplay lane.".to_string(),
+        managed_milestone: "reviewed".to_string(),
+        dependencies: Vec::new(),
+        produces: Vec::new(),
+        proof_profile: None,
+        proof_state_path: None,
+        program_manifest: None,
+        service_state_path: None,
+        orchestration_state_path: None,
+        checks: Vec::new(),
+        run_dir: None,
+        prompt_context: None,
+        verify_command: None,
+        health_command: None,
+    };
+
+    let graph = render_workflow_graph(
+        &bootstrap_lane,
+        "test -f spec.md && test -f review.md",
+        "true",
+        "true",
+        "true",
+    );
+
+    // Bootstrap health node should be present
+    assert!(graph.contains(r#"label="Bootstrap Health""#));
+    assert!(graph.contains(r#"shape=parallelogram"#));
+    assert!(graph.contains(r#"goal_gate=true"#));
+
+    // Bootstrap health should come before specify
+    assert!(graph.contains("start -> bootstrap_health"));
+    assert!(graph.contains("bootstrap_health -> specify"));
+
+    // Verify the bootstrap verify command is embedded in the script
+    // (the bootstrap_health node script contains these markers)
+    assert!(graph.contains("Cargo.toml"));
+    assert!(graph.contains("package.json"));
+    assert!(graph.contains("pyproject.toml"));
+
+    // ServiceBootstrap template lane
+    let service_lane = fabro_synthesis::BlueprintLane {
+        id: "miner-service-bootstrap".to_string(),
+        kind: LaneKind::Service,
+        title: "Miner Service Bootstrap".to_string(),
+        family: "service_bootstrap".to_string(),
+        workflow_family: Some("service_bootstrap".to_string()),
+        slug: Some("miner-service-bootstrap".to_string()),
+        template: fabro_synthesis::WorkflowTemplate::ServiceBootstrap,
+        goal: "Bootstrap the miner service.".to_string(),
+        managed_milestone: "reviewed".to_string(),
+        dependencies: Vec::new(),
+        produces: Vec::new(),
+        proof_profile: None,
+        proof_state_path: None,
+        program_manifest: None,
+        service_state_path: None,
+        orchestration_state_path: None,
+        checks: Vec::new(),
+        run_dir: None,
+        prompt_context: None,
+        verify_command: None,
+        health_command: None,
+    };
+
+    let service_graph = render_workflow_graph(
+        &service_lane,
+        "test -f inventory.md && test -f review.md",
+        "true",
+        "true",
+        "true",
+    );
+
+    // Bootstrap health node should be present for service bootstrap too
+    assert!(service_graph.contains(r#"label="Bootstrap Health""#));
+    assert!(service_graph.contains("start -> bootstrap_health"));
+    assert!(service_graph.contains("bootstrap_health -> inventory"));
+}
+
+#[test]
+fn bootstrap_verify_is_idempotent_on_empty_repo() {
+    let cmd = bootstrap_verify_command();
+
+    // The command should not fail on empty repos - it warns but proceeds
+    assert!(cmd.contains("WARNING: No recognized project manifest found"));
+    assert!(cmd.contains("Proceeding: empty repo or unrecognized project type"));
+    // Command exits with status from BOOTSTRAP_STATUS variable
+    assert!(cmd.contains("exit $BOOTSTRAP_STATUS"));
+}
+
+#[test]
+fn bootstrap_verify_fails_on_partial_typescript_setup() {
+    let cmd = bootstrap_verify_command();
+
+    // Should detect package.json but complain about missing tsconfig.json
+    assert!(cmd.contains("ERROR: package.json exists but tsconfig.json is missing"));
+}
+
+#[test]
+fn bootstrap_verify_graphviz_output_is_valid() {
+    let lane = fabro_synthesis::BlueprintLane {
+        id: "test-bootstrap".to_string(),
+        kind: LaneKind::Platform,
+        title: "Test Bootstrap".to_string(),
+        family: "bootstrap".to_string(),
+        workflow_family: Some("bootstrap".to_string()),
+        slug: Some("test-bootstrap".to_string()),
+        template: fabro_synthesis::WorkflowTemplate::Bootstrap,
+        goal: "Test bootstrap verification.".to_string(),
+        managed_milestone: "reviewed".to_string(),
+        dependencies: Vec::new(),
+        produces: Vec::new(),
+        proof_profile: None,
+        proof_state_path: None,
+        program_manifest: None,
+        service_state_path: None,
+        orchestration_state_path: None,
+        checks: Vec::new(),
+        run_dir: None,
+        prompt_context: None,
+        verify_command: None,
+        health_command: None,
+    };
+
+    let graph = render_workflow_graph(&lane, "test -f spec.md", "true", "true", "true");
+
+    // Should be a valid digraph
+    assert!(graph.starts_with("digraph TestBootstrap {"));
+    assert!(graph.contains("}"));
+
+    // All edges should have valid node references
+    assert!(graph.contains("start -> bootstrap_health"));
+    assert!(graph.contains("bootstrap_health -> specify"));
+    assert!(graph.contains("specify -> review"));
+    assert!(graph.contains("review -> polish"));
+    assert!(graph.contains("polish -> verify"));
+    assert!(graph.contains("verify -> exit"));
 }

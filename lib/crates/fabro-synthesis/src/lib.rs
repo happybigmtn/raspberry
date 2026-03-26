@@ -14,6 +14,7 @@ pub use planning::{
     author_blueprint_for_evolve, AuthoredBlueprint,
 };
 pub use render::{
-    cleanup_obsolete_package_files, reconcile_blueprint, render_blueprint, ImportRequest,
-    ReconcileReport, ReconcileRequest, RenderReport, RenderRequest,
+    bootstrap_verify_command, cleanup_obsolete_package_files, reconcile_blueprint,
+    render_blueprint, render_workflow_graph, ImportRequest, ReconcileReport, ReconcileRequest,
+    RenderReport, RenderRequest,
 };

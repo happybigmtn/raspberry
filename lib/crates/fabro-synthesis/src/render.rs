@@ -1890,7 +1890,7 @@ fn write_manifest(
     Ok(manifest_path)
 }
 
-fn render_workflow_graph(
+pub fn render_workflow_graph(
     lane: &BlueprintLane,
     verify_command: &str,
     health_command: &str,
@@ -1913,32 +1913,40 @@ fn render_workflow_graph(
     let goal = escape_graph_attr(&lane.goal);
 
     match lane.template {
-        WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> specify -> review -> polish -> verify\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
+        WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => {
+            let bootstrap_verify = bootstrap_verify_command();
+            format!(
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    bootstrap_health [label=\"Bootstrap Health\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"specify\", max_retries=0]\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> bootstrap_health -> specify -> review -> polish -> verify\n    bootstrap_health -> specify [condition=\"outcome=success\"]\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
             graph_name(lane),
             goal,
             review_target.model,
             review_target.provider.as_str(),
             write_target.model,
             write_target.provider.as_str(),
+            escape_graph_attr(&bootstrap_verify),
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
             escape_graph_attr(verify_command),
-        ),
-        WorkflowTemplate::ServiceBootstrap => format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
+        )
+        }
+        WorkflowTemplate::ServiceBootstrap => {
+            let bootstrap_verify = bootstrap_verify_command();
+            format!(
+            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    bootstrap_health [label=\"Bootstrap Health\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"inventory\", max_retries=0]\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> bootstrap_health -> inventory -> review -> polish -> verify_outputs\n    bootstrap_health -> inventory [condition=\"outcome=success\"]\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
             graph_name(lane),
             goal,
             review_target.model,
             review_target.provider.as_str(),
             write_target.model,
             write_target.provider.as_str(),
+            escape_graph_attr(&bootstrap_verify),
             prompt_path("plan"),
             prompt_path("review"),
             prompt_path("polish"),
             escape_graph_attr(verify_command),
-        ),
+        )
+        }
         WorkflowTemplate::Implementation => {
             let profile = lane.proof_profile.as_deref().unwrap_or("standard");
             let max_visits = profile_max_visits(profile);
@@ -9353,6 +9361,55 @@ fn escape_graph_attr(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+/// Bootstrap verification command that checks language-specific project health markers.
+/// Detects the project language and verifies required markers exist.
+/// Returns 0 if project is properly bootstrapped, 1 otherwise.
+/// Idempotent: passes on already-scaffolded repos.
+pub fn bootstrap_verify_command() -> String {
+    r#"set -e
+# Bootstrap verification: detect language and check project health markers
+BOOTSTRAP_STATUS=0
+
+if [ -f Cargo.toml ]; then
+    echo "[bootstrap] Detected: Rust project"
+    # Rust: manifest exists, cargo can parse it
+    if ! cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
+        echo "[bootstrap] ERROR: Cargo.toml is invalid or cannot be parsed"
+        BOOTSTRAP_STATUS=1
+    else
+        echo "[bootstrap] OK: Rust project is valid"
+    fi
+
+elif [ -f pyproject.toml ]; then
+    echo "[bootstrap] Detected: Python project (pyproject.toml)"
+    # Python with pyproject.toml: manifest exists
+    echo "[bootstrap] OK: Python project (pyproject.toml) is valid"
+
+elif [ -f requirements.txt ]; then
+    echo "[bootstrap] Detected: Python project (requirements.txt)"
+    # Python with requirements.txt: manifest exists
+    echo "[bootstrap] OK: Python project (requirements.txt) is valid"
+
+elif [ -f package.json ]; then
+    echo "[bootstrap] Detected: Node.js/TypeScript project"
+    if [ ! -f tsconfig.json ]; then
+        echo "[bootstrap] ERROR: package.json exists but tsconfig.json is missing"
+        BOOTSTRAP_STATUS=1
+    else
+        echo "[bootstrap] OK: TypeScript project has tsconfig.json"
+    fi
+
+else
+    echo "[bootstrap] WARNING: No recognized project manifest found"
+    echo "[bootstrap] Supported: Cargo.toml, pyproject.toml, requirements.txt, package.json"
+    # Don't fail on empty repos — scaffold lane will create the initial structure
+    echo "[bootstrap] Proceeding: empty repo or unrecognized project type"
+fi
+
+exit $BOOTSTRAP_STATUS"#
+        .to_string()
 }
 
 struct PackageLayout<'a> {
