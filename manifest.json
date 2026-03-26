@@ -1,0 +1,13 @@
+{
+  "run_id": "new-smoke-run-123",
+  "workflow_name": "Smoke",
+  "goal": "Verify the sandbox can lint and test the project",
+  "start_time": "2026-03-26T19:01:52.322959280Z",
+  "node_count": 3,
+  "edge_count": 2,
+  "run_branch": "fabro/run/new-smoke-run-123",
+  "base_sha": "a502eb77435bca83ac75cdd2e81c709fa6950ee0",
+  "base_branch": "fabro/run/01KMNPED23FTNQCCKZ0Z7GCPCJ",
+  "workflow_slug": "smoke",
+  "host_repo_path": "/home/r/.fabro/runs/20260326-01KMNPED23FTNQCCKZ0Z7GCPCJ/worktree/lib/crates/fabro-cli"
+}
