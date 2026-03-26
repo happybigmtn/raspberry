@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNTNRQ98FRA9RZ7BWYBQ6AQ",
+  "workflow_name": "GreenfieldBootstrapReliabilityLiveTonofcrapValidation",
+  "goal": "Live Tonofcrap Validation\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-26T19:42:36.026805014Z",
+  "node_count": 11,
+  "edge_count": 15,
+  "run_branch": "fabro/run/01KMNTNRQ98FRA9RZ7BWYBQ6AQ",
+  "base_sha": "87c230ba6702fbbc79ab9bdc694c2dacd7656e21",
+  "base_branch": "main",
+  "workflow_slug": "greenfield-bootstrap-reliability-live-tonofcrap-validation",
+  "host_repo_path": "/home/r/coding/fabro"
+}
