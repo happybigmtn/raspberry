@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -11,7 +11,6 @@ use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::autodev::sync_autodev_report_with_program;
 use crate::failure::{FailureKind, FailureRecoveryAction};
 use crate::manifest::{
     LaneCheck, LaneCheckKind, LaneCheckProbe, LaneCheckScope, LaneDependency, LaneKind,
@@ -27,6 +26,12 @@ thread_local! {
 }
 
 const CHECK_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+struct CommandProbeOutput {
+    success: bool,
+    stdout: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -221,7 +226,6 @@ pub(crate) fn evaluate_program_internal(
     if sync_program_state_with_evaluated(&mut program_state, &program) {
         program_state.save(&state_path)?;
     }
-    let _ = sync_autodev_report_with_program(&manifest_path, &manifest, &program);
     // Expose the autodev controller's runtime max_parallel for display purposes
     // only (e.g. `raspberry status`).  Do NOT override program.max_parallel — the
     // manifest is the source of truth for scheduling, not a stale report from a
@@ -320,6 +324,7 @@ pub fn evaluate_with_state(
     let runtime_records = runtime_record_map(program_state);
     let unit_statuses = build_unit_statuses(manifest_path, manifest);
     let satisfied = satisfied_milestones(manifest_path, manifest, &runtime_records, &unit_statuses);
+    let mut command_probe_cache = HashMap::new();
     let mut lanes = Vec::new();
 
     for (unit_id, unit) in &manifest.units {
@@ -334,6 +339,7 @@ pub fn evaluate_with_state(
                     .get(unit_id)
                     .expect("unit status should exist for every unit"),
                 runtime_records.get(&lane_key(unit_id, lane_id)).copied(),
+                &mut command_probe_cache,
             ));
         }
     }
@@ -623,6 +629,7 @@ fn evaluate_lane(
     satisfied: &BTreeSet<String>,
     unit_status: &UnitStatus,
     runtime_record: Option<&LaneRuntimeRecord>,
+    command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
 ) -> EvaluatedLane {
     let unit = &manifest.units[unit_id];
     let lane = &unit.lanes[lane_id];
@@ -642,7 +649,7 @@ fn evaluate_lane(
     } else {
         RunSnapshot::default()
     };
-    let check_result = evaluate_lane_checks(manifest_path, manifest, lane);
+    let check_result = evaluate_lane_checks(manifest_path, manifest, lane, command_probe_cache);
     let orchestration_state = lane_orchestration_state(manifest_path, lane);
     let child_program = summarize_child_program(manifest_path, lane);
 
@@ -1394,10 +1401,11 @@ fn evaluate_lane_checks(
     manifest_path: &Path,
     manifest: &ProgramManifest,
     lane: &crate::manifest::LaneManifest,
+    command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
 ) -> LaneCheckResult {
     let mut result = LaneCheckResult::default();
     for check in &lane.checks {
-        let passed = evaluate_check(manifest_path, manifest, check);
+        let passed = evaluate_check(manifest_path, manifest, check, command_probe_cache);
         match (check.scope, passed) {
             (LaneCheckScope::Ready, true) => {
                 result.ready_passing.push(check.label.clone());
@@ -1526,14 +1534,20 @@ fn read_state_contract(manifest_path: &Path, path: &Path) -> Option<serde_json::
     serde_json::from_str(&raw).ok()
 }
 
-fn evaluate_check(manifest_path: &Path, manifest: &ProgramManifest, check: &LaneCheck) -> bool {
-    evaluate_probe(manifest_path, manifest, &check.probe)
+fn evaluate_check(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    check: &LaneCheck,
+    command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
+) -> bool {
+    evaluate_probe(manifest_path, manifest, &check.probe, command_probe_cache)
 }
 
 fn evaluate_probe(
     manifest_path: &Path,
     manifest: &ProgramManifest,
     probe: &LaneCheckProbe,
+    command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
 ) -> bool {
     match probe {
         LaneCheckProbe::FileExists { path } => resolve_check_path(manifest_path, path).is_file(),
@@ -1555,22 +1569,19 @@ fn evaluate_probe(
             found == equals
         }
         LaneCheckProbe::CommandSucceeds { command } => {
-            run_check_command(manifest_path, manifest, command)
-                .map(|output| output.status.success())
+            run_check_command_cached(manifest_path, manifest, command, command_probe_cache)
+                .map(|output| output.success)
                 .unwrap_or(false)
         }
         LaneCheckProbe::CommandStdoutContains { command, contains } => {
-            run_check_command(manifest_path, manifest, command)
-                .map(|output| {
-                    output.status.success()
-                        && String::from_utf8_lossy(&output.stdout).contains(contains)
-                })
+            run_check_command_cached(manifest_path, manifest, command, command_probe_cache)
+                .map(|output| output.success && output.stdout.contains(contains))
                 .unwrap_or(false)
         }
     }
 }
 
-fn run_check_command(
+fn run_check_command_uncached(
     manifest_path: &Path,
     manifest: &ProgramManifest,
     command: &str,
@@ -1599,6 +1610,25 @@ fn run_check_command(
             Err(_) => return None,
         }
     }
+}
+
+fn run_check_command_cached(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    command: &str,
+    command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
+) -> Option<CommandProbeOutput> {
+    if let Some(cached) = command_probe_cache.get(command) {
+        return cached.clone();
+    }
+    let output = run_check_command_uncached(manifest_path, manifest, command).map(|output| {
+        CommandProbeOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        }
+    });
+    command_probe_cache.insert(command.to_string(), output.clone());
+    output
 }
 
 fn resolve_check_path(manifest_path: &Path, path: &Path) -> PathBuf {
@@ -1993,7 +2023,9 @@ units:
             &manifest.resolved_target_repo(&manifest_path),
             unit,
         );
-        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let mut command_probe_cache = HashMap::new();
+        let check_result =
+            evaluate_lane_checks(&manifest_path, &manifest, lane, &mut command_probe_cache);
         let status = classify_lane(
             "complete:program",
             lane,
@@ -2038,6 +2070,9 @@ units:
         let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
         let unit = &manifest.units["ops"];
         let lane = &unit.lanes["program"];
+        let mut command_probe_cache = HashMap::new();
+        let check_result =
+            evaluate_lane_checks(&manifest_path, &manifest, lane, &mut command_probe_cache);
         let status = classify_lane(
             "ops:program",
             lane,
@@ -2048,7 +2083,7 @@ units:
             },
             None,
             &RunSnapshot::default(),
-            &evaluate_lane_checks(&manifest_path, &manifest, lane),
+            &check_result,
             lane_orchestration_state(&manifest_path, lane),
             None,
         );
@@ -2059,7 +2094,7 @@ units:
                 "ops:program",
                 lane,
                 &BTreeSet::new(),
-                &evaluate_lane_checks(&manifest_path, &manifest, lane),
+                &check_result,
                 lane_orchestration_state(&manifest_path, lane),
             ),
             "orchestration lane missing child program manifest"
@@ -2095,7 +2130,9 @@ units:
         let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
         let unit = &manifest.units["ops"];
         let lane = &unit.lanes["deploy"];
-        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let mut command_probe_cache = HashMap::new();
+        let check_result =
+            evaluate_lane_checks(&manifest_path, &manifest, lane, &mut command_probe_cache);
         let status = classify_lane(
             "ops:deploy",
             lane,
@@ -2213,7 +2250,9 @@ units:
             &manifest.resolved_target_repo(&manifest_path),
             unit,
         );
-        let check_result = evaluate_lane_checks(&manifest_path, &manifest, lane);
+        let mut command_probe_cache = HashMap::new();
+        let check_result =
+            evaluate_lane_checks(&manifest_path, &manifest, lane, &mut command_probe_cache);
         let satisfied = satisfied_milestones(
             &manifest_path,
             &manifest,

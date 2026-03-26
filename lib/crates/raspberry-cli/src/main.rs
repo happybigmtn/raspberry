@@ -301,6 +301,7 @@ fn run_autodev(args: AutodevArgs) -> Result<()> {
         println!("  complete_after: {}", cycle.complete_after);
     }
     let stop_reason = match report.stop_reason {
+        AutodevStopReason::InProgress => "in_progress",
         AutodevStopReason::Settled => "settled",
         AutodevStopReason::CycleLimit => "cycle_limit",
         AutodevStopReason::Maintenance => "maintenance",

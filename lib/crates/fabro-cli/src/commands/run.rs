@@ -1597,6 +1597,7 @@ pub async fn run_command(
                         .with_env(sandbox_env.clone())
                         .with_mcp_servers(mcp_servers.clone());
                 let cli = AgentCliBackend::new(model.clone(), provider_enum)
+                    .with_fallback_chain(fallback_chain.clone())
                     .with_env(sandbox_env.clone());
                 Some(Box::new(BackendRouter::new(Box::new(api), cli)))
             }
@@ -2398,7 +2399,8 @@ async fn run_from_branch(
             None
         } else {
             let api = AgentApiBackend::new(model.clone(), provider_enum, fallback_chain.clone());
-            let cli = AgentCliBackend::new(model.clone(), provider_enum);
+            let cli = AgentCliBackend::new(model.clone(), provider_enum)
+                .with_fallback_chain(fallback_chain.clone());
             Some(Box::new(BackendRouter::new(Box::new(api), cli)))
         }
     });

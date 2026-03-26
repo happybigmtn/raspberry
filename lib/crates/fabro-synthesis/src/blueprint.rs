@@ -156,13 +156,15 @@ pub fn load_blueprint(path: &Path) -> Result<ProgramBlueprint, BlueprintError> {
             path: path.to_path_buf(),
             source,
         })?;
+    let blueprint = normalize_loaded_blueprint(blueprint);
     validate_blueprint(path, &blueprint)?;
     Ok(blueprint)
 }
 
 pub fn save_blueprint(path: &Path, blueprint: &ProgramBlueprint) -> Result<(), BlueprintError> {
-    validate_blueprint(path, blueprint)?;
-    let yaml = serde_yaml::to_string(blueprint).map_err(|source| BlueprintError::Parse {
+    let blueprint = normalize_loaded_blueprint(blueprint.clone());
+    validate_blueprint(path, &blueprint)?;
+    let yaml = serde_yaml::to_string(&blueprint).map_err(|source| BlueprintError::Parse {
         path: path.to_path_buf(),
         source,
     })?;
@@ -173,6 +175,104 @@ pub fn save_blueprint(path: &Path, blueprint: &ProgramBlueprint) -> Result<(), B
             source: std::io::Error::other(source.to_string()),
         }
     })
+}
+
+fn normalize_loaded_blueprint(mut blueprint: ProgramBlueprint) -> ProgramBlueprint {
+    for unit in &mut blueprint.units {
+        normalize_legacy_integration_lane(unit);
+        upgrade_implementation_unit(unit);
+    }
+    blueprint
+}
+
+fn normalize_legacy_integration_lane(unit: &mut BlueprintUnit) {
+    let has_real_integration_lane = unit.lanes.iter().any(|lane| {
+        lane.template == WorkflowTemplate::Integration
+            && lane.kind == LaneKind::Integration
+            && lane
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.lane.is_some())
+            && lane.managed_milestone == "integrated"
+    });
+    if has_real_integration_lane {
+        return;
+    }
+
+    for lane in &mut unit.lanes {
+        if lane.template != WorkflowTemplate::Integration {
+            continue;
+        }
+        lane.template = WorkflowTemplate::Implementation;
+        if lane.kind == LaneKind::Integration {
+            lane.kind = LaneKind::Platform;
+        }
+        if lane.family == "integration" {
+            lane.family = "implementation".to_string();
+        }
+        if lane.workflow_family.as_deref() == Some("integration") {
+            lane.workflow_family = Some("implementation".to_string());
+        }
+        lane.managed_milestone = "integrated".to_string();
+        lane.produces = vec![
+            "implementation".to_string(),
+            "verification".to_string(),
+            "quality".to_string(),
+            "promotion".to_string(),
+            "integration".to_string(),
+        ];
+    }
+
+    let required_artifacts = [
+        ("implementation", "implementation.md"),
+        ("verification", "verification.md"),
+        ("quality", "quality.md"),
+        ("promotion", "promotion.md"),
+        ("integration", "integration.md"),
+    ];
+    for (artifact_id, path) in required_artifacts {
+        if !unit
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == artifact_id)
+        {
+            unit.artifacts.push(BlueprintArtifact {
+                id: artifact_id.to_string(),
+                path: PathBuf::from(path),
+            });
+        }
+    }
+    for milestone in [
+        MilestoneManifest {
+            id: "implemented".to_string(),
+            requires: vec!["implementation".to_string()],
+        },
+        MilestoneManifest {
+            id: "verified".to_string(),
+            requires: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+        },
+        MilestoneManifest {
+            id: "merge_ready".to_string(),
+            requires: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+            ],
+        },
+        MilestoneManifest {
+            id: "integrated".to_string(),
+            requires: vec!["integration".to_string()],
+        },
+    ] {
+        if !unit.milestones.iter().any(|entry| entry.id == milestone.id) {
+            unit.milestones.push(milestone);
+        }
+    }
 }
 
 pub fn validate_blueprint(path: &Path, blueprint: &ProgramBlueprint) -> Result<(), BlueprintError> {
@@ -1124,6 +1224,95 @@ units:
             blueprint.units[0].lanes[0].verify_command.as_deref(),
             Some("cargo test -p demo")
         );
+    }
+
+    #[test]
+    fn load_blueprint_normalizes_legacy_integration_template_without_lane_dependency() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let blueprint_path = temp.path().join("legacy.yaml");
+        std::fs::write(
+            &blueprint_path,
+            r#"
+version: 1
+program:
+  id: legacy
+  max_parallel: 1
+units:
+  - id: provably-fair
+    title: Provably Fair
+    output_root: outputs/provably-fair
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: provably-fair
+        kind: platform
+        title: Provably Fair Lane
+        family: bootstrap
+        workflow_family: bootstrap
+        template: bootstrap
+        goal: Bootstrap provably fair
+        managed_milestone: reviewed
+        produces: [spec, review]
+  - id: provably-fair-integration-tests
+    title: Cross-crate integration tests
+    output_root: outputs/provably-fair-integration-tests
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [spec, review]
+    lanes:
+      - id: provably-fair-integration-tests
+        kind: platform
+        title: Cross-crate integration tests Lane
+        family: integration
+        workflow_family: integration
+        template: integration
+        goal: Cross-crate integration tests
+        managed_milestone: reviewed
+        dependencies:
+          - unit: provably-fair
+            lane: null
+            milestone: reviewed
+        produces: [spec, review]
+"#,
+        )
+        .expect("blueprint");
+
+        let blueprint = load_blueprint(&blueprint_path).expect("normalized load");
+        let unit = blueprint
+            .units
+            .iter()
+            .find(|unit| unit.id == "provably-fair-integration-tests")
+            .expect("normalized unit");
+        let lane = &unit.lanes[0];
+
+        assert_eq!(lane.template, WorkflowTemplate::Implementation);
+        assert_eq!(lane.family, "implementation");
+        assert_eq!(lane.workflow_family(), "implementation");
+        assert_eq!(lane.kind, LaneKind::Platform);
+        assert_eq!(lane.managed_milestone, "integrated");
+        assert!(lane
+            .produces
+            .iter()
+            .any(|artifact| artifact == "integration"));
+        assert!(unit
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == "implementation"));
+        assert!(unit
+            .milestones
+            .iter()
+            .any(|milestone| milestone.id == "integrated"));
     }
 
     #[test]

@@ -487,6 +487,48 @@ pub fn refresh_program_state(
                 None
             };
             let Some(mut progress) = progress else {
+                if record.status == LaneExecutionStatus::Running {
+                    let finished_at = Utc::now();
+                    if record.status != LaneExecutionStatus::Failed {
+                        record.status = LaneExecutionStatus::Failed;
+                        lane_changed = true;
+                    }
+                    if record.last_error.as_deref()
+                        != Some("tracked run could not be found during state refresh")
+                    {
+                        record.last_error =
+                            Some("tracked run could not be found during state refresh".to_string());
+                        lane_changed = true;
+                    }
+                    if record.failure_kind != Some(FailureKind::TransientLaunchFailure) {
+                        record.failure_kind = Some(FailureKind::TransientLaunchFailure);
+                        lane_changed = true;
+                    }
+                    if record.recovery_action != Some(FailureRecoveryAction::BackoffRetry) {
+                        record.recovery_action = Some(FailureRecoveryAction::BackoffRetry);
+                        lane_changed = true;
+                    }
+                    if record.last_finished_at != Some(finished_at) {
+                        record.last_finished_at = Some(finished_at);
+                        lane_changed = true;
+                    }
+                    if record.last_exit_status != Some(1) {
+                        record.last_exit_status = Some(1);
+                        lane_changed = true;
+                    }
+                    if record.current_stage_label.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
+                    if record.current_fabro_run_id.take().is_some() {
+                        lane_changed = true;
+                    }
+                }
+                if lane_changed {
+                    changed = true;
+                }
                 continue;
             };
             lane_changed |= assign_opt(
@@ -1094,8 +1136,12 @@ fn tracked_run_id(record: &LaneRuntimeRecord) -> Option<&str> {
     record
         .current_fabro_run_id
         .as_deref()
-        .or(record.last_run_id.as_deref())
         .or(record.current_run_id.as_deref())
+        .or_else(|| {
+            (record.status == LaneExecutionStatus::Running && record.last_finished_at.is_none())
+                .then_some(record.last_run_id.as_deref())
+                .flatten()
+        })
 }
 
 fn is_orchestration_stub_run_config(run_config: &Path) -> bool {
@@ -1864,6 +1910,96 @@ mod tests {
     }
 
     #[test]
+    fn refresh_program_state_marks_missing_running_run_as_stale_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::write(
+            &manifest_path,
+            concat!(
+                "program: stale-demo\n",
+                "target_repo: .\n",
+                "state_path: .raspberry/program-state.json\n",
+                "max_parallel: 1\n",
+                "units:\n",
+                "  consensus:\n",
+                "    title: Consensus\n",
+                "    output_root: outputs/consensus\n",
+                "    artifacts:\n",
+                "      review: review.md\n",
+                "    milestones:\n",
+                "      - id: reviewed\n",
+                "        requires: [review]\n",
+                "    lanes:\n",
+                "      chapter:\n",
+                "        title: Consensus Chapter\n",
+                "        run_config: run-configs/consensus-chapter.toml\n",
+                "        managed_milestone: reviewed\n",
+            ),
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(temp.path().join("run-configs")).expect("run-config dir");
+        std::fs::write(
+            temp.path().join("run-configs/consensus-chapter.toml"),
+            "# stale fixture\n",
+        )
+        .expect("write run config");
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let mut state = ProgramRuntimeState::new("raspberry-demo");
+        state.lanes.insert(
+            "consensus:chapter".to_string(),
+            LaneRuntimeRecord {
+                lane_key: "consensus:chapter".to_string(),
+                status: LaneExecutionStatus::Running,
+                run_config: Some(PathBuf::from("run-configs/consensus-chapter.toml")),
+                current_run_id: Some("01MISSINGRUN000000000000000".to_string()),
+                current_fabro_run_id: Some("01MISSINGRUN000000000000000".to_string()),
+                current_stage_label: Some("Implement".to_string()),
+                last_run_id: Some("01MISSINGRUN000000000000000".to_string()),
+                last_started_at: Some(Utc::now()),
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                failure_kind: None,
+                recovery_action: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                consecutive_failures: 0,
+            },
+        );
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        assert!(changed);
+        let record = state
+            .lanes
+            .get("consensus:chapter")
+            .expect("consensus record exists");
+        assert_eq!(record.status, LaneExecutionStatus::Failed);
+        assert_eq!(record.last_exit_status, Some(1));
+        assert_eq!(
+            record.last_error.as_deref(),
+            Some("tracked run could not be found during state refresh")
+        );
+        assert_eq!(
+            record.failure_kind,
+            Some(FailureKind::TransientLaunchFailure)
+        );
+        assert_eq!(
+            record.recovery_action,
+            Some(FailureRecoveryAction::BackoffRetry)
+        );
+        assert!(record.current_run_id.is_none());
+        assert!(record.current_fabro_run_id.is_none());
+        assert!(record.current_stage_label.is_none());
+    }
+
+    #[test]
     fn refresh_program_state_propagates_child_running_runtime_details() {
         let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../test/fixtures/raspberry-supervisor");
@@ -2482,6 +2618,35 @@ units:
             &progress,
             Some(Utc::now() - chrono::Duration::seconds(STALE_RUNNING_GRACE_SECS + 1)),
         ));
+    }
+
+    #[test]
+    fn tracked_run_id_ignores_last_run_for_settled_lane() {
+        let record = LaneRuntimeRecord {
+            lane_key: "demo:lane".to_string(),
+            status: LaneExecutionStatus::Complete,
+            run_config: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage_label: None,
+            last_run_id: Some("01SETTLEDRUN00000000000000".to_string()),
+            last_started_at: Some(Utc::now()),
+            last_finished_at: Some(Utc::now()),
+            last_exit_status: Some(0),
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            consecutive_failures: 0,
+        };
+
+        assert!(tracked_run_id(&record).is_none());
     }
 
     #[test]

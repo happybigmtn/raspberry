@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::thread;
 
+use crate::controller_lease::ControllerLeaseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -414,6 +415,15 @@ fn run_program_lane(
                 report.stop_reason,
                 report.cycles.len()
             ),
+            stderr: String::new(),
+        }),
+        Err(crate::autodev::AutodevError::ControllerLease(
+            ControllerLeaseError::AlreadyRunning { program, pid, .. },
+        )) => Ok(DispatchOutcome {
+            lane_key: lane_key.to_string(),
+            exit_status: 0,
+            fabro_run_id: None,
+            stdout: format!("child_program={program} already_running pid={pid}"),
             stderr: String::new(),
         }),
         Err(error) => Ok(DispatchOutcome {

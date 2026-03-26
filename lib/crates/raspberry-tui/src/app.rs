@@ -1734,6 +1734,7 @@ fn status_badge(status: LaneExecutionStatus) -> &'static str {
 
 fn autodev_stop_reason(reason: AutodevStopReason) -> &'static str {
     match reason {
+        AutodevStopReason::InProgress => "in_progress",
         AutodevStopReason::Settled => "settled",
         AutodevStopReason::CycleLimit => "cycle_limit",
         AutodevStopReason::Maintenance => "maintenance",

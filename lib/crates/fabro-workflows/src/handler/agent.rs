@@ -70,14 +70,52 @@ impl AgentHandler {
     }
 }
 
-/// Expand `$variable` placeholders in text using graph attributes.
-///
-/// Known variables are built from graph attributes (e.g. `$goal`). Any
-/// `$identifier` not in the map produces an error, catching typos like
-/// `$gaol` at runtime.
+/// Expand runtime prompt variables without touching unrelated shell/code `$name`
+/// tokens that may appear in inlined prompt files.
 pub(crate) fn expand_variables(text: &str, graph: &Graph) -> Result<String, FabroError> {
     let vars = HashMap::from([("goal".to_string(), graph.goal().to_string())]);
-    crate::vars::expand_vars(text, &vars).map_err(|e| FabroError::Validation(e.to_string()))
+    let mut result = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] != b'$' {
+            let ch = text[i..].chars().next().ok_or_else(|| {
+                FabroError::Validation("invalid prompt while expanding variables".to_string())
+            })?;
+            result.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        let start = i + 1;
+        if start < len && bytes[start] == b'$' {
+            result.push('$');
+            i = start + 1;
+            continue;
+        }
+
+        if start < len && (bytes[start].is_ascii_alphabetic() || bytes[start] == b'_') {
+            let mut end = start + 1;
+            while end < len && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            let name = &text[start..end];
+            if let Some(value) = vars.get(name) {
+                result.push_str(value);
+            } else {
+                result.push_str(&text[i..end]);
+            }
+            i = end;
+            continue;
+        }
+
+        result.push('$');
+        i = start;
+    }
+
+    Ok(result)
 }
 
 /// Status fields that indicate a JSON object contains routing directives.
@@ -438,33 +476,21 @@ impl Handler for AgentHandler {
             serde_json::json!(&response_text),
         );
 
-        // 7b. Parse routing directives from response text, falling back to
-        //     status.json written by the agent into the sandbox CWD, then to
-        //     the last file the agent wrote.
+        // 7b. Parse routing directives from response text, then fall back only
+        //     to the last file the agent wrote. Avoid reading a repo-root
+        //     `status.json`, which can leak stale routing state across retries.
         let found_in_response = extract_status_fields(&response_text, &mut outcome);
         if !found_in_response {
-            let mut found_in_status_json = false;
-            if let Ok(result) = services
-                .sandbox
-                .exec_command("cat status.json", 5_000, None, None, None)
-                .await
-            {
-                if result.exit_code == 0 {
-                    found_in_status_json = extract_status_fields(&result.stdout, &mut outcome);
-                }
-            }
-            if !found_in_status_json {
-                if let Some(ref path) = last_file_touched {
-                    let quoted = shlex::try_quote(path).unwrap_or_else(|_| path.into());
-                    let cmd = format!("cat {quoted}");
-                    if let Ok(result) = services
-                        .sandbox
-                        .exec_command(&cmd, 5_000, None, None, None)
-                        .await
-                    {
-                        if result.exit_code == 0 {
-                            extract_status_fields(&result.stdout, &mut outcome);
-                        }
+            if let Some(ref path) = last_file_touched {
+                let quoted = shlex::try_quote(path).unwrap_or_else(|_| path.into());
+                let cmd = format!("cat {quoted}");
+                if let Ok(result) = services
+                    .sandbox
+                    .exec_command(&cmd, 5_000, None, None, None)
+                    .await
+                {
+                    if result.exit_code == 0 {
+                        extract_status_fields(&result.stdout, &mut outcome);
                     }
                 }
             }
@@ -759,13 +785,10 @@ mod tests {
     }
 
     #[test]
-    fn expand_variables_errors_on_unknown_variable() {
+    fn expand_variables_leaves_unknown_variable_untouched() {
         let graph = Graph::new("test");
-        let err = expand_variables("Do $foo now", &graph).unwrap_err();
-        assert!(
-            err.to_string().contains("Undefined variable: $foo"),
-            "unexpected error: {err}"
-        );
+        let result = expand_variables("Do $foo now", &graph).unwrap();
+        assert_eq!(result, "Do $foo now");
     }
 
     #[test]
@@ -780,6 +803,16 @@ mod tests {
         let graph = Graph::new("test");
         let result = expand_variables("just a $ sign", &graph).unwrap();
         assert_eq!(result, "just a $ sign");
+    }
+
+    #[test]
+    fn expand_variables_preserves_shell_style_tokens() {
+        let mut graph = Graph::new("test");
+        graph
+            .attrs
+            .insert("goal".to_string(), AttrValue::String("ship it".to_string()));
+        let result = expand_variables("Goal: $goal\nsurface=\"$surface\"", &graph).unwrap();
+        assert_eq!(result, "Goal: ship it\nsurface=\"$surface\"");
     }
 
     #[test]

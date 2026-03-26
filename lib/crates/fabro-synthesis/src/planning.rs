@@ -1098,6 +1098,36 @@ fn infer_lane_kind_from_child_id(child_id: &str) -> LaneKind {
     LaneKind::Platform
 }
 
+fn infer_implementation_lane_kind_from_child_id(child_id: &str) -> LaneKind {
+    match infer_lane_kind_from_child_id(child_id) {
+        LaneKind::Integration | LaneKind::Orchestration | LaneKind::Artifact => LaneKind::Platform,
+        kind => kind,
+    }
+}
+
+fn normalize_lane_kind_for_template(
+    template: WorkflowTemplate,
+    lane_kind: Option<LaneKind>,
+    child_id: &str,
+) -> LaneKind {
+    match template {
+        WorkflowTemplate::Implementation => lane_kind
+            .filter(|kind| {
+                !matches!(
+                    kind,
+                    LaneKind::Integration | LaneKind::Orchestration | LaneKind::Artifact
+                )
+            })
+            .unwrap_or_else(|| infer_implementation_lane_kind_from_child_id(child_id)),
+        WorkflowTemplate::Integration => LaneKind::Integration,
+        WorkflowTemplate::Orchestration => LaneKind::Orchestration,
+        WorkflowTemplate::RecurringReport => LaneKind::Artifact,
+        WorkflowTemplate::Bootstrap | WorkflowTemplate::ServiceBootstrap => {
+            lane_kind.unwrap_or_else(|| infer_implementation_lane_kind_from_child_id(child_id))
+        }
+    }
+}
+
 fn infer_proof_commands_from_plan(child_id: &str, plan_body: &str) -> Vec<String> {
     let mut commands = Vec::new();
     let child_parts: Vec<&str> = child_id.split('-').filter(|part| part.len() >= 3).collect();
@@ -1252,9 +1282,7 @@ fn derive_child_intents(
                 .unwrap_or_else(|| humanize_slug(&child.child_id));
             let family = archetype_to_template(child.archetype);
             let output_root = PathBuf::from("outputs").join(&child_unit_id);
-            let kind = child
-                .lane_kind
-                .unwrap_or_else(|| infer_lane_kind_from_child_id(&child.child_id));
+            let kind = normalize_lane_kind_for_template(family, child.lane_kind, &child.child_id);
             let verify_command = if !child.proof_commands.is_empty() {
                 Some(child.proof_commands.join(" && "))
             } else {
@@ -3937,6 +3965,17 @@ units:
         );
         assert_eq!(client.lanes[0].kind, LaneKind::Interface);
         assert_eq!(client.lanes[0].proof_profile.as_deref(), Some("ux"));
+    }
+
+    #[test]
+    fn create_authoring_coerces_invalid_integration_lane_kind_for_implement_children() {
+        let kind = normalize_lane_kind_for_template(
+            WorkflowTemplate::Implementation,
+            Some(LaneKind::Integration),
+            "school-bot-command",
+        );
+
+        assert_eq!(kind, LaneKind::Platform);
     }
 
     #[test]

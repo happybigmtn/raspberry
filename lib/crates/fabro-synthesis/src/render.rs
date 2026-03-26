@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use fabro_model::{automation_fallback_map, automation_primary_target, AutomationProfile};
+use fabro_model::{
+    automation_fallback_map, automation_primary_target, AutomationProfile, ModelTarget, Provider,
+};
 use git2::Repository;
 use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
 use serde::Serialize;
@@ -44,23 +46,45 @@ pub struct ReconcileReport {
 }
 
 pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderError> {
-    validate_blueprint(Path::new("<render>"), req.blueprint)?;
+    let normalized = normalize_blueprint_lane_kinds(req.blueprint.clone());
+    validate_blueprint(Path::new("<render>"), &normalized)?;
     // Inject auto-generated workspace-verify lanes for units with enough children
-    let augmented = inject_workspace_verify_lanes(req.blueprint);
+    let augmented = inject_workspace_verify_lanes(&normalized);
     let blueprint = &augmented;
     let layout = PackageLayout::new(blueprint, req.target_repo);
     let mut written_files = Vec::new();
+    let mut current_package = None;
     if layout.manifest_path().exists() {
         if let Ok(current) = crate::blueprint::import_existing_package(ImportRequest {
             target_repo: req.target_repo,
             program: &blueprint.program.id,
         }) {
             remove_obsolete_lane_files(&current, blueprint, req.target_repo)?;
+            current_package = Some(current);
         }
     }
+    let current_units = current_package
+        .as_ref()
+        .map(|current| {
+            current
+                .units
+                .iter()
+                .map(|unit| (&unit.id, unit))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     for unit in &blueprint.units {
         for lane in &unit.lanes {
+            let current_lane = current_units.get(&unit.id).and_then(|current_unit| {
+                current_unit
+                    .lanes
+                    .iter()
+                    .find(|candidate| candidate.id == lane.id)
+            });
+            if current_lane.is_some_and(|current_lane| lane_equivalent(current_lane, lane)) {
+                continue;
+            }
             let files = render_lane(blueprint, &layout, &unit.id, lane)?;
             written_files.extend(files);
         }
@@ -69,6 +93,42 @@ pub fn render_blueprint(req: RenderRequest<'_>) -> Result<RenderReport, RenderEr
     written_files.push(write_manifest(blueprint, &layout)?);
     ensure_gitignore_has_fabro_work(req.target_repo);
     Ok(RenderReport { written_files })
+}
+
+fn normalize_blueprint_lane_kinds(mut blueprint: ProgramBlueprint) -> ProgramBlueprint {
+    for unit in &mut blueprint.units {
+        for lane in &mut unit.lanes {
+            lane.kind = normalize_lane_kind_for_template(lane.template, lane.kind);
+        }
+    }
+    blueprint
+}
+
+fn normalize_lane_kind_for_template(
+    template: WorkflowTemplate,
+    kind: raspberry_supervisor::manifest::LaneKind,
+) -> raspberry_supervisor::manifest::LaneKind {
+    use raspberry_supervisor::manifest::LaneKind;
+
+    match template {
+        WorkflowTemplate::Implementation => match kind {
+            LaneKind::Integration | LaneKind::Orchestration | LaneKind::Artifact => {
+                LaneKind::Platform
+            }
+            other => other,
+        },
+        WorkflowTemplate::Integration => LaneKind::Integration,
+        WorkflowTemplate::Orchestration => LaneKind::Orchestration,
+        WorkflowTemplate::Bootstrap
+        | WorkflowTemplate::ServiceBootstrap
+        | WorkflowTemplate::RecurringReport => match kind {
+            LaneKind::Integration | LaneKind::Orchestration => LaneKind::Platform,
+            LaneKind::Artifact if template != WorkflowTemplate::RecurringReport => {
+                LaneKind::Platform
+            }
+            other => other,
+        },
+    }
 }
 
 /// Ensure the target repo's .gitignore includes `.fabro-work/` and common agent junk.
@@ -356,23 +416,28 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
         let Some(host_id) = host_unit_id else {
             continue;
         };
+        // Depend on all implementor and consumer units via explicit milestones
+        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = protocol
+            .implementor_units
+            .iter()
+            .chain(protocol.consumer_units.iter())
+            .filter_map(|unit_id| {
+                augmented
+                    .units
+                    .iter()
+                    .find(|unit| unit.id == *unit_id)
+                    .map(plan_review_dependency_for_unit)
+            })
+            .collect();
+        if deps.len() != protocol.implementor_units.len() + protocol.consumer_units.len() {
+            continue;
+        }
         let Some(host_unit) = augmented.units.iter_mut().find(|u| u.id == *host_id) else {
             continue;
         };
         if host_unit.lanes.iter().any(|l| l.id == lane_id) {
             continue;
         }
-        // Depend on all implementor and consumer units
-        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = protocol
-            .implementor_units
-            .iter()
-            .chain(protocol.consumer_units.iter())
-            .map(|unit_id| raspberry_supervisor::manifest::LaneDependency {
-                unit: unit_id.clone(),
-                lane: None,
-                milestone: None,
-            })
-            .collect();
         let verify_cmd = protocol
             .verification_command
             .clone()
@@ -381,10 +446,10 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
             id: lane_id,
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
             title: format!("{} Contract Verification", protocol.trait_name),
-            family: "implementation".to_string(),
-            workflow_family: Some("implementation".to_string()),
+            family: "contract-verify".to_string(),
+            workflow_family: Some("recurring_report".to_string()),
             slug: Some(format!("{}-contract-verify", protocol.id)),
-            template: WorkflowTemplate::Implementation,
+            template: WorkflowTemplate::RecurringReport,
             goal: format!(
                 "Verify that all `{trait_name}` implementors satisfy the contract \
                  expected by consumers.\n\n\
@@ -407,7 +472,7 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
             managed_milestone: format!("{}-contract-verified", protocol.id),
             dependencies: deps,
             produces: vec!["spec".to_string(), "review".to_string()],
-            proof_profile: Some("integration".to_string()),
+            proof_profile: None,
             proof_state_path: None,
             program_manifest: None,
             service_state_path: None,
@@ -430,32 +495,28 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
     // child lanes of a plan complete. Groups units by plan prefix, creates a
     // review lane that depends on all children and runs the 3-step process.
     const MIN_PLAN_CHILDREN: usize = 2;
+    let plan_candidates = augmented
+        .units
+        .iter()
+        .filter(|unit| {
+            unit.lanes
+                .iter()
+                .filter(|l| l.template == WorkflowTemplate::Implementation)
+                .any(|l| {
+                    !l.id.contains("workspace-verify")
+                        && !l.id.contains("contract-verify")
+                        && !l.id.contains("plan-review")
+                })
+        })
+        .map(|unit| unit.id.clone())
+        .collect::<Vec<_>>();
     let mut plan_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for unit in &augmented.units {
-        let impl_lanes: Vec<_> = unit
-            .lanes
-            .iter()
-            .filter(|l| l.template == WorkflowTemplate::Implementation)
-            .filter(|l| {
-                !l.id.contains("workspace-verify")
-                    && !l.id.contains("contract-verify")
-                    && !l.id.contains("plan-review")
-            })
-            .collect();
-        if impl_lanes.is_empty() {
-            continue;
-        }
-        // Derive plan prefix: unit IDs are "{plan}-{child}" — take everything
-        // before the last "-" that produces a shared prefix with at least 2 units.
-        // Heuristic: find the longest common prefix among units sharing a dash-prefix.
-        let parts: Vec<&str> = unit.id.split('-').collect();
-        if parts.len() >= 2 {
-            // Try progressively shorter prefixes
-            for prefix_len in (1..parts.len()).rev() {
-                let prefix = parts[..prefix_len].join("-");
-                plan_groups.entry(prefix).or_default().push(unit.id.clone());
-                break;
-            }
+    for unit_id in &plan_candidates {
+        if let Some(plan_prefix) = infer_plan_group(unit_id, &plan_candidates, MIN_PLAN_CHILDREN) {
+            plan_groups
+                .entry(plan_prefix)
+                .or_default()
+                .push(unit_id.clone());
         }
     }
     // Only create plan-review for groups with enough children
@@ -475,21 +536,21 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
         // Depend on all child units completing
         let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = child_unit_ids
             .iter()
-            .map(|uid| raspberry_supervisor::manifest::LaneDependency {
-                unit: uid.clone(),
-                lane: None,
-                milestone: None,
+            .filter_map(|uid| {
+                augmented
+                    .units
+                    .iter()
+                    .find(|unit| unit.id == *uid)
+                    .map(plan_review_dependency_for_unit)
             })
             .collect();
-        // Host the review lane in a new unit (or first child unit)
-        let host_id = child_unit_ids.first().expect("non-empty").clone();
-        let Some(host_unit) = augmented.units.iter_mut().find(|u| u.id == host_id) else {
+        if deps.len() != child_unit_ids.len() {
             continue;
-        };
+        }
         let review_goal = format!(
             "Adversarial bug review for plan `{plan_prefix}` ({n} child units).\n\n\
              All implementation lanes for this plan have completed and their code is on trunk.\n\
-             Execute this 6-step process IN ORDER:\n\n\
+             Execute this 5-step process IN ORDER:\n\n\
              **Step 1 — Bug Finder:** Search the codebase for ALL potential bugs in code \
              written by child lanes. Be thorough and aggressive. Score: +1 low, +5 medium, \
              +10 critical. Maximize score. Report anything that *could* be a bug.\n\n\
@@ -507,55 +568,361 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
              - Prompt improvement (wording change in plan/review/challenge prompts)\n\
              - Convention check (regex pattern to add to the quality gate)\n\
              Format each proposal as: PATTERN: ..., PROPOSED CHANGE: ..., \
-             EXPECTED IMPACT: prevents N bugs per M plans, RISK: false positive rate.\n\n\
-             **Step 6 — Implement Meta-Review:** For each proposal in the meta-review, \
-             evaluate: will this change prevent >2 bugs per 10 plans? Is the false positive \
-             rate < 10%? Could it break existing passing lanes? \
-             APPROVED proposals: implement them NOW. Edit the quality gate scripts, prompts, \
-             or convention checks in the codebase. Run tests to verify. \
-             REJECTED proposals: note why in the meta-review file.\n\n\
+             EXPECTED IMPACT: prevents N bugs per M plans, RISK: false positive rate.\n\
+             This step is REPORT-ONLY for Fabro harness changes: do NOT modify the Fabro \
+             harness itself from this lane. Summarize which proposals deserve operator follow-up \
+             in `review.md`.\n\n\
              Child units: {children}\n\n\
              Proof commands:\n\
-             - `cargo check --workspace || npm run build --if-present || true`\n\
-             - `cargo test --workspace || npm test --if-present || true`\n\n\
+             - `if [ -f Cargo.toml ]; then cargo check --workspace; elif [ -f package.json ]; then npm run build --if-present; else echo no workspace build proof available >&2; exit 1; fi`\n\
+             - `if [ -f Cargo.toml ]; then cargo test --workspace; elif [ -f package.json ]; then npm test --if-present; else echo no workspace test proof available >&2; exit 1; fi`\n\n\
              Required durable artifacts:\n\
-             - `spec.md` (bug review report with all 6 steps)\n\
-             - `review.md` (summary: bugs found/fixed, meta-proposals approved/rejected)",
+             - `spec.md` (bug review report with all 5 steps)\n\
+             - `review.md` (summary: bugs found/fixed, meta-proposals recommended for Fabro follow-up)\n\
+             - `implementation.md` (concrete fixes applied in this plan-review lane)\n\
+             - `verification.md` (proof command results and residual risk)\n\
+             - `quality.md` (machine-generated quality gate output)\n\
+             - `promotion.md` (merge-ready judgment for the plan-review changes)\n\
+             - `integration.md` (integration record for landed plan-review fixes)",
             n = child_unit_ids.len(),
             children = child_unit_ids.join(", "),
         );
-        host_unit.lanes.push(BlueprintLane {
+        augmented.units.push(BlueprintUnit {
             id: review_id.clone(),
-            kind: raspberry_supervisor::manifest::LaneKind::Platform,
             title: format!("{plan_prefix} Plan Review"),
-            family: "implementation".to_string(),
-            workflow_family: Some("implementation".to_string()),
-            slug: Some(review_id.clone()),
-            template: WorkflowTemplate::Implementation,
-            goal: review_goal,
-            managed_milestone: format!("{plan_prefix}-plan-reviewed"),
-            dependencies: deps,
-            produces: vec!["spec".to_string(), "review".to_string()],
-            proof_profile: Some("integration".to_string()),
-            proof_state_path: None,
-            program_manifest: None,
-            service_state_path: None,
-            orchestration_state_path: None,
-            checks: Vec::new(),
-            run_dir: None,
-            prompt_context: None,
-            verify_command: Some("cargo check --workspace 2>/dev/null || npm run build --if-present 2>/dev/null || true".to_string()),
-            health_command: None,
-        });
-        host_unit
-            .milestones
-            .push(raspberry_supervisor::manifest::MilestoneManifest {
+            output_root: PathBuf::from(format!(".raspberry/portfolio/{review_id}")),
+            artifacts: vec![
+                crate::blueprint::BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "promotion".to_string(),
+                    path: PathBuf::from("promotion.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: PathBuf::from("integration.md"),
+                },
+            ],
+            milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
                 id: format!("{plan_prefix}-plan-reviewed"),
+                requires: vec![
+                    "spec".to_string(),
+                    "review".to_string(),
+                    "implementation".to_string(),
+                    "verification".to_string(),
+                    "quality".to_string(),
+                    "promotion".to_string(),
+                    "integration".to_string(),
+                ],
+            }],
+            lanes: vec![BlueprintLane {
+                id: review_id.clone(),
+                kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                title: format!("{plan_prefix} Plan Review"),
+                family: "plan-review".to_string(),
+                workflow_family: Some("implementation".to_string()),
+                slug: Some(review_id.clone()),
+                template: WorkflowTemplate::Implementation,
+                goal: review_goal,
+                managed_milestone: format!("{plan_prefix}-plan-reviewed"),
+                dependencies: deps,
+                produces: vec![
+                    "spec".to_string(),
+                    "review".to_string(),
+                    "implementation".to_string(),
+                    "verification".to_string(),
+                    "quality".to_string(),
+                    "promotion".to_string(),
+                    "integration".to_string(),
+                ],
+                proof_profile: Some("integration".to_string()),
+                proof_state_path: None,
+                program_manifest: None,
+                service_state_path: None,
+                orchestration_state_path: None,
+                checks: Vec::new(),
+                run_dir: None,
+                prompt_context: None,
+                verify_command: Some(
+                    "if [ -f Cargo.toml ]; then cargo check --workspace; elif [ -f package.json ]; then npm run build --if-present; else echo no workspace build proof available >&2; exit 1; fi".to_string(),
+                ),
+                health_command: None,
+            }],
+        });
+
+        let codex_review_id = format!("{plan_prefix}-codex-review");
+        if augmented
+            .units
+            .iter()
+            .any(|unit| unit.id == codex_review_id)
+        {
+            continue;
+        }
+        let codex_goal = format!(
+            "Final Codex review for completed plan `{plan_prefix}`.\n\n\
+             Preconditions:\n\
+             - Every child lane for this plan already completed execution, review, and integration.\n\
+             - The Kimi-driven `{review_id}` lane already completed.\n\n\
+             This is a POST-COMPLETION review pass. Do not repeat the child workflow. \
+             Do not reopen implementation unless you find a concrete confirmed issue.\n\n\
+             Your job:\n\
+             1. Read the landed code and the artifacts from the completed plan-review lane.\n\
+             2. Look for residual bugs, review blind spots, or harness/prompt quality gaps.\n\
+             3. Write a concise final assessment in `spec.md`.\n\
+             4. Write `review.md` with only:\n\
+             - confirmed residual issues still worth remediation\n\
+             - proposed Fabro harness improvements\n\
+             - a clear ship/no-ship recommendation for this completed plan\n\n\
+             This lane is report-first. Avoid modifying product code unless a specific \
+             residual issue is confirmed and trivially fixable.\n",
+        );
+        augmented.units.push(BlueprintUnit {
+            id: codex_review_id.clone(),
+            title: format!("{plan_prefix} Codex Review"),
+            output_root: PathBuf::from(format!(".raspberry/portfolio/{codex_review_id}")),
+            artifacts: vec![
+                crate::blueprint::BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+            ],
+            milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                id: format!("{plan_prefix}-codex-reviewed"),
                 requires: vec!["spec".to_string(), "review".to_string()],
+            }],
+            lanes: vec![BlueprintLane {
+                id: codex_review_id.clone(),
+                kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                title: format!("{plan_prefix} Codex Review"),
+                family: "codex-review".to_string(),
+                workflow_family: Some("recurring_report".to_string()),
+                slug: Some(codex_review_id.clone()),
+                template: WorkflowTemplate::RecurringReport,
+                goal: codex_goal,
+                managed_milestone: format!("{plan_prefix}-codex-reviewed"),
+                dependencies: vec![raspberry_supervisor::manifest::LaneDependency {
+                    unit: review_id.clone(),
+                    lane: None,
+                    milestone: Some(format!("{plan_prefix}-plan-reviewed")),
+                }],
+                produces: vec!["spec".to_string(), "review".to_string()],
+                proof_profile: None,
+                proof_state_path: None,
+                program_manifest: None,
+                service_state_path: None,
+                orchestration_state_path: None,
+                checks: Vec::new(),
+                run_dir: None,
+                prompt_context: None,
+                verify_command: Some("true".to_string()),
+                health_command: None,
+            }],
+        });
+    }
+
+    // Phase 4: generate dedicated Codex unblock lanes for implementation
+    // slices. These stay blocked under normal scheduling and are dispatched
+    // explicitly by the supervisor only when the source lane becomes
+    // surface-blocked.
+    for unit in blueprint.units.iter() {
+        for lane in &unit.lanes {
+            if lane.template != WorkflowTemplate::Implementation {
+                continue;
+            }
+            if lane.id.contains("workspace-verify")
+                || lane.id.contains("contract-verify")
+                || lane.id.contains("plan-review")
+                || lane.id.contains("codex-unblock")
+            {
+                continue;
+            }
+            let unblock_id = codex_unblock_id(&unit.id, &lane.id);
+            if augmented
+                .units
+                .iter()
+                .any(|candidate| candidate.id == unblock_id)
+            {
+                continue;
+            }
+            let source_lane_key = lane_key(&unit.id, &lane.id);
+            let output_root = PathBuf::from(format!(".raspberry/portfolio/{unblock_id}"));
+            let verify_command = lane
+                .verify_command
+                .clone()
+                .unwrap_or_else(|| "cargo check --workspace".to_string());
+            let prompt_context = format!(
+                "Target blocked lane: `{source_lane_key}`.\n\
+                 Recovery objective: unblock the source lane so it can be replayed successfully.\n\
+                 This lane is dispatched only after the source lane is marked `surface_blocked`.\n\
+                 Focus on minimal, high-confidence changes that remove the blocker.\n\
+                 Read the target lane's latest artifacts and remediation notes before editing.\n\
+                 If the owned proof gate is already green and the only remaining blocker is outside the owned surface, do not invent more code changes. Write the unblock artifacts truthfully, explain the external blocker, and stop.\n\
+                 Keep the scope narrow: fix the blocker, verify, integrate, and stop.\n\
+                 This lane is distinct from the post-completion `*-codex-review` path."
+            );
+            augmented.units.push(BlueprintUnit {
+                id: unblock_id.clone(),
+                title: format!("{} Codex Unblock", lane.title),
+                output_root,
+                artifacts: vec![
+                    crate::blueprint::BlueprintArtifact {
+                        id: "spec".to_string(),
+                        path: PathBuf::from("spec.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "review".to_string(),
+                        path: PathBuf::from("review.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    crate::blueprint::BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                    id: format!("{unblock_id}-done"),
+                    requires: vec![
+                        "spec".to_string(),
+                        "review".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                }],
+                lanes: vec![BlueprintLane {
+                    id: unblock_id.clone(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: format!("{} Codex Unblock", lane.title),
+                    family: "codex-unblock".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some(unblock_id.clone()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: format!(
+                        "Use Codex to unblock implementation lane `{source_lane_key}`.\n\n\
+                         Inspect the source lane's most recent failure/remediation context and \
+                         apply the minimal code or harness changes needed so the source lane can \
+                         pass its next replay.\n\n\
+                         Proof commands:\n- `{verify_command}`"
+                    ),
+                    managed_milestone: format!("{unblock_id}-done"),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "spec".to_string(),
+                        "review".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: Some("unblock".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: vec![LaneCheck {
+                        label: format!("{}_dispatch_only", unblock_id.replace('-', "_")),
+                        kind: raspberry_supervisor::manifest::LaneCheckKind::Precondition,
+                        scope: raspberry_supervisor::manifest::LaneCheckScope::Ready,
+                        probe: LaneCheckProbe::FileExists {
+                            path: PathBuf::from(".raspberry/codex-unblock-dispatch-only"),
+                        },
+                    }],
+                    run_dir: None,
+                    prompt_context: Some(prompt_context),
+                    verify_command: Some(verify_command),
+                    health_command: None,
+                }],
             });
+        }
     }
 
     augmented
+}
+
+fn plan_review_dependency_for_unit(
+    unit: &BlueprintUnit,
+) -> raspberry_supervisor::manifest::LaneDependency {
+    let milestone = if unit.milestones.iter().any(|entry| entry.id == "integrated") {
+        "integrated".to_string()
+    } else if unit
+        .milestones
+        .iter()
+        .any(|entry| entry.id == "merge_ready")
+    {
+        "merge_ready".to_string()
+    } else if unit.milestones.iter().any(|entry| entry.id == "reviewed") {
+        "reviewed".to_string()
+    } else {
+        unit.lanes
+            .iter()
+            .find(|lane| lane.template == WorkflowTemplate::Implementation)
+            .map(|lane| lane.managed_milestone.clone())
+            .unwrap_or_else(|| "reviewed".to_string())
+    };
+    raspberry_supervisor::manifest::LaneDependency {
+        unit: unit.id.clone(),
+        lane: None,
+        milestone: Some(milestone),
+    }
+}
+
+fn infer_plan_group(unit_id: &str, candidates: &[String], min_children: usize) -> Option<String> {
+    let parts = unit_id.split('-').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    for prefix_len in (1..parts.len()).rev() {
+        let prefix = parts[..prefix_len].join("-");
+        let count = candidates
+            .iter()
+            .filter(|candidate| {
+                **candidate == prefix
+                    || candidate
+                        .strip_prefix(&prefix)
+                        .is_some_and(|suffix| suffix.starts_with('-'))
+            })
+            .count();
+        if count >= min_children {
+            return Some(prefix);
+        }
+    }
+    None
+}
+
+fn codex_unblock_id(unit_id: &str, lane_id: &str) -> String {
+    if unit_id == lane_id {
+        format!("{unit_id}-codex-unblock")
+    } else {
+        format!("{unit_id}-{lane_id}-codex-unblock")
+    }
 }
 
 fn refine_blueprint_from_evidence(
@@ -735,8 +1102,6 @@ fn render_evolved_blueprint(
                 .and_then(|unit| unit.lanes.iter().find(|candidate| candidate.id == lane.id));
             if let Some(current_lane) = current_lane {
                 if lane_equivalent(current_lane, lane) {
-                    let files = render_lane(desired, &layout, &unit.id, lane)?;
-                    written_files.extend(files);
                     continue;
                 }
             }
@@ -1080,6 +1445,9 @@ fn write_manifest(
         })?;
     let trimmed = yaml.trim_start_matches("---\n");
     ensure_parent(&manifest_path)?;
+    if std::fs::read_to_string(&manifest_path).ok().as_deref() == Some(trimmed) {
+        return Ok(manifest_path);
+    }
     fabro_workflows::write_text_atomic(&manifest_path, trimmed, "manifest").map_err(|source| {
         RenderError::Write {
             path: manifest_path.clone(),
@@ -1097,7 +1465,10 @@ fn render_workflow_graph(
     quality_command: &str,
 ) -> String {
     let write_target = automation_primary_target(AutomationProfile::Write);
-    let review_target = automation_primary_target(AutomationProfile::Review);
+    let challenge_target = challenge_target_for_lane(lane);
+    let review_target = review_target_for_lane(lane);
+    let deep_review_target = deep_review_target_for_lane(lane);
+    let escalation_target = escalation_target_for_lane(lane);
     let prompt_path = |name: &str| -> String {
         format!(
             "@../../prompts/{}/{}/{}.md",
@@ -1168,14 +1539,14 @@ fn render_workflow_graph(
                 graph_name(lane),
                 goal,
                 fallback_attr,
+                challenge_target.model,
+                challenge_target.provider.as_str(),
                 review_target.model,
                 review_target.provider.as_str(),
-                review_target.model,
-                review_target.provider.as_str(),
-                review_target.model,
-                review_target.provider.as_str(),
-                review_target.model,
-                review_target.provider.as_str(),
+                deep_review_target.model,
+                deep_review_target.provider.as_str(),
+                escalation_target.model,
+                escalation_target.provider.as_str(),
                 escape_graph_attr(&preflight_command(verify_command)),
                 prompt_path("plan"),
                 escape_graph_attr(verify_command),
@@ -1202,6 +1573,42 @@ fn render_workflow_graph(
             goal,
         ),
     }
+}
+
+fn challenge_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
+    if is_post_completion_codex_review_lane(lane) || is_codex_unblock_lane(lane) {
+        return ModelTarget {
+            provider: Provider::OpenAi,
+            model: "gpt-5.4",
+        };
+    }
+    automation_primary_target(AutomationProfile::Write)
+}
+
+fn review_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
+    if is_post_completion_codex_review_lane(lane) || is_codex_unblock_lane(lane) {
+        return ModelTarget {
+            provider: Provider::OpenAi,
+            model: "gpt-5.4",
+        };
+    }
+    automation_primary_target(AutomationProfile::Review)
+}
+
+fn deep_review_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
+    challenge_target_for_lane(lane)
+}
+
+fn escalation_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
+    review_target_for_lane(lane)
+}
+
+fn is_post_completion_codex_review_lane(lane: &BlueprintLane) -> bool {
+    lane.id.ends_with("-codex-review") && lane.managed_milestone.ends_with("-codex-reviewed")
+}
+
+fn is_codex_unblock_lane(lane: &BlueprintLane) -> bool {
+    lane.id.ends_with("-codex-unblock") && lane.managed_milestone.ends_with("-done")
 }
 
 fn profile_max_visits(profile: &str) -> u32 {
@@ -1253,11 +1660,11 @@ fn profile_extra_graph_elements(
         }
         "unblock" => {
             // Extended retry budget for lanes known to hit pre-existing
-            // blockers.  The fixup prompt already has authority to fix issues
-            // outside the lane's surfaces.  This profile gives it more
-            // attempts and adds a dedicated deep-review pass.
+            // blockers. The fixup prompt already has authority to fix issues
+            // outside the lane's surfaces. This profile gives it more attempts
+            // and adds a dedicated deep-review pass.
             let nodes = format!(
-                "    deep_review [label=\"Deep Review\", prompt=\"The verify gate has failed repeatedly. Analyze the failure output, identify whether the root cause is inside or outside this lane's owned surfaces, and write a concrete fix plan to deep-review-findings.md. If the issue is pre-existing external code (linter warnings, dependency issues), explicitly instruct the fixup stage to fix it.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
+                "    deep_review [label=\"Deep Review\", prompt=\"The verify gate has failed repeatedly. Analyze the failure output, identify whether the root cause is inside or outside this lane's owned surfaces, and write a concrete fix plan to .fabro-work/deep-review-findings.md. If the issue is pre-existing external code (linter warnings, dependency issues), explicitly instruct the fixup stage to fix it. If the owned proof gate is already green and only external blockers remain, say that explicitly and avoid inventing more code edits.\", reasoning_effort=\"high\"]\n    recheck [label=\"Recheck\", shape=parallelogram, script=\"{verify}\", goal_gate=true, retry_target=\"fixup\"]\n",
                 verify = escape_graph_attr(verify_command),
             );
             let edges = "    challenge -> deep_review [condition=\"outcome=success\"]\n    deep_review -> recheck [condition=\"outcome=success\"]\n    deep_review -> fixup\n    recheck -> review [condition=\"outcome=success\"]\n    recheck -> fixup\n".to_string();
@@ -1418,12 +1825,31 @@ fn implementation_quality_command(
         ));
     }
 
+    let external_only_blocker_script = if is_codex_unblock_lane(lane) {
+        "external_blocker_only=no\n\
+         if rg -q -i 'inside lane-owned surface: no remaining blocker found|outside lane-owned surface: yes|outside the lane-owned surface: yes' .fabro-work/deep-review-findings.md 2>/dev/null; then\n  \
+           external_blocker_only=yes\n\
+         fi\n"
+            .to_string()
+    } else {
+        "external_blocker_only=no\n".to_string()
+    };
+    let root_artifact_shadow_script = "root_artifact_hits=\"\"\n\
+        for shadow in spec.md review.md implementation.md verification.md quality.md promotion.md integration.md; do\n  \
+          if [ -f \"$shadow\" ]; then\n    \
+            root_artifact_hits=\"$root_artifact_hits\\n$shadow\"\n  \
+          fi\n\
+        done\n"
+        .to_string();
+
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\n[ -n \"$warning_hits\" ] && warning_debt=yes\n[ -n \"$artifact_hits\" ] && artifact_mismatch_risk=yes\n[ -n \"$manual_hits\" ] && manual_followup_required=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
         surface_scan = surface_scan_lines.join("\n"),
+        external_only_blocker_script = external_only_blocker_script,
+        root_artifact_shadow_script = root_artifact_shadow_script,
         touched_surface_section = touched_surface_section,
         surface_scan_dirs = {
             let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
@@ -1506,6 +1932,14 @@ fn render_run_config(
     } else {
         "clean"
     };
+    let llm_target = if is_codex_unblock_lane(lane) {
+        ModelTarget {
+            provider: Provider::OpenAi,
+            model: "gpt-5.4",
+        }
+    } else {
+        automation_primary_target(AutomationProfile::Write)
+    };
     let llm_config = if matches!(
         lane.template,
         WorkflowTemplate::Bootstrap
@@ -1513,12 +1947,15 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        let write_target = automation_primary_target(AutomationProfile::Write);
-        let fallback_section = render_fallback_section(AutomationProfile::Write);
+        let fallback_section = if is_codex_unblock_lane(lane) {
+            String::new()
+        } else {
+            render_fallback_section(AutomationProfile::Write)
+        };
         format!(
             "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n{}\n",
-            write_target.provider.as_str(),
-            write_target.model,
+            llm_target.provider.as_str(),
+            llm_target.model,
             fallback_section
         )
     } else {
@@ -1531,7 +1968,13 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\nKIMI_API_KEY = \"${env.KIMI_API_KEY}\"\n".to_string()
+        let mut env =
+            "\n[sandbox.env]\nMINIMAX_API_KEY = \"${env.MINIMAX_API_KEY}\"\nKIMI_API_KEY = \"${env.KIMI_API_KEY}\"\n"
+                .to_string();
+        if is_codex_unblock_lane(lane) {
+            env.push_str("FABRO_STRICT_PROVIDER = \"1\"\n");
+        }
+        env
     } else {
         String::new()
     };
@@ -1543,19 +1986,21 @@ fn render_run_config(
         worktree_mode,
         sandbox_env,
     );
-    if let Some(target_branch) = template_supports_direct_integration(lane.template)
-        .then(|| direct_integration_target_branch(target_repo))
-        .flatten()
-    {
-        config.push_str(&format!(
-            "\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"{}\"\n",
-            target_branch
-        ));
-        if let Some(path) = integration_artifact_path {
+    if !is_codex_unblock_lane(lane) {
+        if let Some(target_branch) = template_supports_direct_integration(lane.template)
+            .then(|| direct_integration_target_branch(target_repo))
+            .flatten()
+        {
             config.push_str(&format!(
-                "artifact_path = \"{}\"\n",
-                run_config_relative_string(path)
+                "\n[integration]\nenabled = true\nstrategy = \"squash\"\ntarget_branch = \"{}\"\n",
+                target_branch
             ));
+            if let Some(path) = integration_artifact_path {
+                config.push_str(&format!(
+                    "artifact_path = \"{}\"\n",
+                    run_config_relative_string(path)
+                ));
+            }
         }
     }
     config
@@ -3699,6 +4144,10 @@ fn implementation_audit_command(
     lane: &BlueprintLane,
     promotion_command: &str,
 ) -> String {
+    let unit = blueprint
+        .units
+        .iter()
+        .find(|candidate| candidate.id == unit_id);
     let paths = lane_artifact_paths_relative(blueprint, unit_id, lane);
     if paths.is_empty() {
         return "true".to_string();
@@ -3716,8 +4165,32 @@ fn implementation_audit_command(
     // Language-agnostic noop guard: require at least one source file changed.
     // Accepts any common source/config extension rather than hardcoding Rust,
     // preventing agents from creating fake files to satisfy the check.
-    let noop_guard = "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
-        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )";
+    let noop_guard = if is_codex_unblock_lane(lane) {
+        let review_path = unit
+            .and_then(|unit| {
+                lane_named_artifact_path_relative(blueprint, unit_id, lane, "review")
+                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+            })
+            .unwrap_or_else(|| PathBuf::from("review.md"));
+        let verification_path = unit
+            .and_then(|unit| {
+                lane_named_artifact_path_relative(blueprint, unit_id, lane, "verification")
+                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+            })
+            .unwrap_or_else(|| PathBuf::from("verification.md"));
+        format!(
+            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+             changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
+             test \"$changed_count\" -gt 0 || \
+             rg -q -i 'no code changes were needed|outside lane-owned surface: yes|outside the lane-owned surface: yes|owned proof gate is already green|proof gate was already green' {} {} .fabro-work/deep-review-findings.md 2>/dev/null )",
+            shell_single_quote(&review_path.display().to_string()),
+            shell_single_quote(&verification_path.display().to_string()),
+        )
+    } else {
+        "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )"
+            .to_string()
+    };
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
     // Agents must not modify files outside their declared scope — this prevents
@@ -3758,9 +4231,6 @@ fn implementation_audit_command(
         // Always allow output artifacts (these are safe literal patterns)
         allowed.push("outputs/".to_string());
         allowed.push("\\.fabro-work/".to_string());
-        allowed.push("spec\\.md".to_string());
-        allowed.push("review\\.md".to_string());
-        allowed.push("implementation\\.md".to_string());
 
         let pattern = allowed.join("|");
         // Use merge-base to scope to this run's commits — the worktree inherits
@@ -3787,10 +4257,7 @@ fn implementation_audit_command(
 
     // Lane memory: on any audit failure, capture findings to remediation.md
     // in the output directory so the next run attempt sees what went wrong.
-    let output_dir = blueprint
-        .units
-        .iter()
-        .find(|u| u.id == unit_id)
+    let output_dir = unit
         .map(|u| u.output_root.display().to_string())
         .unwrap_or_else(|| format!("outputs/{unit_id}"));
     let remediation_path = format!("{output_dir}/remediation.md");
@@ -3801,16 +4268,16 @@ fn implementation_audit_command(
                 echo '# Remediation Notes (auto-captured from failed audit)'\n    \
                 echo ''\n    \
                 echo '## Quality Gate'\n    \
-                cat .fabro-work/quality.md 2>/dev/null || cat quality.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/quality.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Verification Findings'\n    \
-                cat .fabro-work/verification.md 2>/dev/null || cat verification.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/verification.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Deep Review Findings'\n    \
-                cat .fabro-work/deep-review-findings.md 2>/dev/null || cat deep-review-findings.md 2>/dev/null || echo '(not found)'\n    \
+                cat .fabro-work/deep-review-findings.md 2>/dev/null || echo '(not found)'\n    \
                 echo ''\n    \
                 echo '## Promotion Decision'\n    \
-                cat .fabro-work/promotion.md 2>/dev/null || cat promotion.md 2>/dev/null || echo '(not found)'\n  \
+                cat .fabro-work/promotion.md 2>/dev/null || echo '(not found)'\n  \
             }} > '{remediation_path}'\n\
         }}"
     );
@@ -5211,14 +5678,15 @@ mod tests {
         first_code_surface_from_markdown, first_health_gate_from_markdown,
         first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
         first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
-        implementation_blueprint_for_candidate, implementation_candidates, implementation_goal,
-        implementation_quality_command, implementation_verify_command, inline_proof_command,
-        looks_like_shell_command, manual_notes_from_markdown, observability_notes_from_markdown,
-        prompt_context_block, proof_commands_from_markdown, raw_lane_refs, render_prompt,
-        render_run_config, render_workflow_graph, review_blocker_lane_refs,
-        review_stage_requirements, setup_notes_from_markdown, slice_notes_from_markdown,
-        smoke_commands_from_markdown, trim_list_prefix, ImplementationEvidence, LaneCatalogEntry,
-        ReviewStageRequirement,
+        implementation_audit_command, implementation_blueprint_for_candidate,
+        implementation_candidates, implementation_goal, implementation_quality_command,
+        implementation_verify_command, infer_plan_group, inject_workspace_verify_lanes,
+        inline_proof_command, looks_like_shell_command, manual_notes_from_markdown,
+        normalize_blueprint_lane_kinds, observability_notes_from_markdown, prompt_context_block,
+        proof_commands_from_markdown, raw_lane_refs, render_prompt, render_run_config,
+        render_workflow_graph, review_blocker_lane_refs, review_stage_requirements,
+        setup_notes_from_markdown, slice_notes_from_markdown, smoke_commands_from_markdown,
+        trim_list_prefix, ImplementationEvidence, LaneCatalogEntry, ReviewStageRequirement,
     };
 
     #[test]
@@ -5524,6 +5992,423 @@ Required before validator:oracle implementation-family workflow:
             .units
             .iter()
             .any(|unit| unit.id == "private-control-plane-implementation"));
+    }
+
+    #[test]
+    fn inject_workspace_verify_lanes_makes_plan_review_wait_for_integrated_children() {
+        let implementation_lane = |id: &str| BlueprintLane {
+            id: id.to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{id} Implementation Lane"),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some(id.to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: format!("Implement {id}."),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+                "integration".to_string(),
+            ],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let implementation_unit = |id: &str| BlueprintUnit {
+            id: id.to_string(),
+            title: id.to_string(),
+            output_root: PathBuf::from(format!("outputs/{id}")),
+            artifacts: vec![
+                crate::blueprint::BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: PathBuf::from("integration.md"),
+                },
+            ],
+            milestones: vec![
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "reviewed".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "merge_ready".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "integrated".to_string(),
+                    requires: vec!["integration".to_string()],
+                },
+            ],
+            lanes: vec![implementation_lane(id)],
+        };
+
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "casino".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![
+                implementation_unit("roulette-core"),
+                implementation_unit("roulette-ui"),
+            ],
+        };
+
+        let evolved = inject_workspace_verify_lanes(&blueprint);
+        let host_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-plan-review")
+            .expect("host unit exists");
+        let plan_review = host_unit.lanes.first().expect("plan review lane exists");
+
+        assert_eq!(plan_review.family, "plan-review");
+        assert_eq!(plan_review.dependencies.len(), 2);
+        for dependency in &plan_review.dependencies {
+            assert_eq!(dependency.lane, None);
+            assert_eq!(dependency.milestone.as_deref(), Some("integrated"));
+        }
+    }
+
+    #[test]
+    fn infer_plan_group_handles_multi_hyphen_children() {
+        let candidates = vec![
+            "provably-fair-clean-docs".to_string(),
+            "provably-fair-integration-tests".to_string(),
+            "wallet-status".to_string(),
+        ];
+
+        let group = infer_plan_group("provably-fair-clean-docs", &candidates, 2);
+
+        assert_eq!(group.as_deref(), Some("provably-fair"));
+    }
+
+    #[test]
+    fn inject_workspace_verify_lanes_contract_verify_uses_explicit_milestones() {
+        let implementation_lane = |id: &str| BlueprintLane {
+            id: id.to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{id} Implementation Lane"),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some(id.to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: format!("Implement {id}."),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string()],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let implementation_unit = |id: &str| BlueprintUnit {
+            id: id.to_string(),
+            title: id.to_string(),
+            output_root: PathBuf::from(format!("outputs/{id}")),
+            artifacts: vec![crate::blueprint::BlueprintArtifact {
+                id: "integration".to_string(),
+                path: PathBuf::from("integration.md"),
+            }],
+            milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                id: "integrated".to_string(),
+                requires: vec!["integration".to_string()],
+            }],
+            lanes: vec![implementation_lane(id)],
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "casino".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![crate::blueprint::BlueprintProtocol {
+                id: "dice-contract".to_string(),
+                trait_name: "DiceGame".to_string(),
+                implementor_units: vec!["dice-engine".to_string()],
+                consumer_units: vec!["dice-ui".to_string()],
+                verification_command: None,
+            }],
+            units: vec![
+                implementation_unit("dice-engine"),
+                implementation_unit("dice-ui"),
+            ],
+        };
+
+        let evolved = inject_workspace_verify_lanes(&blueprint);
+        let host_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "dice-ui")
+            .expect("host unit exists");
+        let lane = host_unit
+            .lanes
+            .iter()
+            .find(|lane| lane.id == "dice-contract-contract-verify")
+            .expect("contract verify lane exists");
+
+        assert_eq!(lane.template, WorkflowTemplate::RecurringReport);
+        assert_eq!(lane.dependencies.len(), 2);
+        for dependency in &lane.dependencies {
+            assert_eq!(dependency.lane, None);
+            assert_eq!(dependency.milestone.as_deref(), Some("integrated"));
+        }
+    }
+
+    #[test]
+    fn inject_workspace_verify_lanes_adds_codex_review_after_plan_review() {
+        let implementation_lane = |id: &str| BlueprintLane {
+            id: id.to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{id} Implementation Lane"),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some(id.to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: format!("Implement {id}."),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+                "integration".to_string(),
+            ],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let implementation_unit = |id: &str| BlueprintUnit {
+            id: id.to_string(),
+            title: id.to_string(),
+            output_root: PathBuf::from(format!("outputs/{id}")),
+            artifacts: vec![
+                crate::blueprint::BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: PathBuf::from("integration.md"),
+                },
+            ],
+            milestones: vec![
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "reviewed".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "merge_ready".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "integrated".to_string(),
+                    requires: vec!["integration".to_string()],
+                },
+            ],
+            lanes: vec![implementation_lane(id)],
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "casino".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![
+                implementation_unit("roulette-core"),
+                implementation_unit("roulette-ui"),
+            ],
+        };
+
+        let evolved = inject_workspace_verify_lanes(&blueprint);
+        let codex_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-codex-review")
+            .expect("codex review unit exists");
+        let codex_lane = codex_unit.lanes.first().expect("codex lane exists");
+
+        assert_eq!(codex_lane.family, "codex-review");
+        assert_eq!(codex_lane.template, WorkflowTemplate::RecurringReport);
+        assert_eq!(codex_lane.dependencies.len(), 1);
+        assert_eq!(codex_lane.dependencies[0].unit, "roulette-plan-review");
+        assert_eq!(
+            codex_lane.dependencies[0].milestone.as_deref(),
+            Some("roulette-plan-reviewed")
+        );
+    }
+
+    #[test]
+    fn inject_workspace_verify_lanes_plan_review_uses_full_implementation_artifacts() {
+        let implementation_lane = |id: &str| BlueprintLane {
+            id: id.to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: format!("{id} Implementation Lane"),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some(id.to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: format!("Implement {id}."),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+                "integration".to_string(),
+            ],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let implementation_unit = |id: &str| BlueprintUnit {
+            id: id.to_string(),
+            title: id.to_string(),
+            output_root: PathBuf::from(format!("outputs/{id}")),
+            artifacts: vec![
+                crate::blueprint::BlueprintArtifact {
+                    id: "spec".to_string(),
+                    path: PathBuf::from("spec.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "review".to_string(),
+                    path: PathBuf::from("review.md"),
+                },
+                crate::blueprint::BlueprintArtifact {
+                    id: "integration".to_string(),
+                    path: PathBuf::from("integration.md"),
+                },
+            ],
+            milestones: vec![
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "reviewed".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "merge_ready".to_string(),
+                    requires: vec!["spec".to_string(), "review".to_string()],
+                },
+                raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "integrated".to_string(),
+                    requires: vec!["integration".to_string()],
+                },
+            ],
+            lanes: vec![implementation_lane(id)],
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "casino".to_string(),
+                max_parallel: 2,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![
+                implementation_unit("roulette-core"),
+                implementation_unit("roulette-ui"),
+            ],
+        };
+
+        let evolved = inject_workspace_verify_lanes(&blueprint);
+        let review_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-plan-review")
+            .expect("review unit exists");
+        let review_lane = review_unit.lanes.first().expect("review lane exists");
+
+        for artifact in [
+            "spec",
+            "review",
+            "implementation",
+            "verification",
+            "quality",
+            "promotion",
+            "integration",
+        ] {
+            assert!(review_unit
+                .artifacts
+                .iter()
+                .any(|entry| entry.id == artifact));
+            assert!(review_lane.produces.iter().any(|entry| entry == artifact));
+        }
+        let milestone = review_unit
+            .milestones
+            .iter()
+            .find(|entry| entry.id == "roulette-plan-reviewed")
+            .expect("plan-reviewed milestone exists");
+        for artifact in [
+            "spec",
+            "review",
+            "implementation",
+            "verification",
+            "quality",
+            "promotion",
+            "integration",
+        ] {
+            assert!(milestone.requires.iter().any(|entry| entry == artifact));
+        }
     }
 
     #[test]
@@ -6411,6 +7296,463 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn plan_review_workflow_uses_kimi_for_in_band_review() {
+        let lane = BlueprintLane {
+            id: "roulette-plan-review".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Roulette Plan Review".to_string(),
+            family: "plan-review".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("roulette-plan-review".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Review all landed roulette child work.".to_string(),
+            managed_milestone: "roulette-plan-reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: Some("integration".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(&lane, "cargo test --workspace", "true", "true", "true");
+
+        assert!(graph.contains(
+            "#challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
+        ));
+        assert!(graph.contains("#review      { backend: cli; model: kimi-k2.5; provider: kimi; }"));
+        assert!(graph.contains(
+            "#deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
+        ));
+        assert!(graph.contains("#escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }"));
+    }
+
+    #[test]
+    fn post_completion_codex_review_uses_openai_only_after_plan_review() {
+        let lane = BlueprintLane {
+            id: "roulette-codex-review".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Roulette Codex Review".to_string(),
+            family: "codex-review".to_string(),
+            workflow_family: Some("recurring_report".to_string()),
+            slug: Some("roulette-codex-review".to_string()),
+            template: WorkflowTemplate::RecurringReport,
+            goal: "Final Codex review for completed roulette plan.".to_string(),
+            managed_milestone: "roulette-codex-reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+
+        assert!(graph.contains("#review { backend: cli; model: gpt-5.4; provider: openai; }"));
+    }
+
+    #[test]
+    fn codex_unblock_run_config_uses_openai_with_strict_provider() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lane = BlueprintLane {
+            id: "poker-tui-screen-codex-unblock".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Poker TUI Screen Codex Unblock".to_string(),
+            family: "codex-unblock".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("poker-tui-screen-codex-unblock".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Use Codex to unblock poker-tui-screen.".to_string(),
+            managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string()],
+            proof_profile: Some("unblock".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo check --workspace".to_string()),
+            health_command: None,
+        };
+
+        let run_config = render_run_config(&lane, None, temp.path());
+
+        assert!(run_config.contains("provider = \"openai\""));
+        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("FABRO_STRICT_PROVIDER = \"1\""));
+    }
+
+    #[test]
+    fn codex_unblock_workflow_keeps_codex_for_review_stages() {
+        let lane = BlueprintLane {
+            id: "poker-tui-screen-codex-unblock".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Poker TUI Screen Codex Unblock".to_string(),
+            family: "codex-unblock".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("poker-tui-screen-codex-unblock".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Use Codex to unblock poker-tui-screen.".to_string(),
+            managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string()],
+            proof_profile: Some("unblock".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo check --workspace".to_string()),
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(&lane, "cargo check --workspace", "true", "true", "true");
+
+        assert!(graph.contains("#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#review      { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#deep_review { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#escalation  { backend: cli; model: gpt-5.4; provider: openai; }"));
+    }
+
+    #[test]
+    fn inject_workspace_verify_lanes_codex_unblock_uses_review_artifacts_only() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "poker-tui-screen".to_string(),
+                title: "Poker TUI Screen".to_string(),
+                output_root: PathBuf::from("outputs/poker-tui-screen"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from("implementation.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "integration".to_string(),
+                        path: PathBuf::from("integration.md"),
+                    },
+                ],
+                milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+                    id: "merge_ready".to_string(),
+                    requires: vec!["implementation".to_string()],
+                }],
+                lanes: vec![BlueprintLane {
+                    id: "poker-tui-screen".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Interface,
+                    title: "Poker TUI Screen".to_string(),
+                    family: "implement".to_string(),
+                    workflow_family: Some("implement".to_string()),
+                    slug: Some("poker-tui-screen".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Implement poker screen.".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                        "integration".to_string(),
+                    ],
+                    proof_profile: Some("integration".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p tui -- poker".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let evolved = inject_workspace_verify_lanes(&blueprint);
+        let unblock_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "poker-tui-screen-codex-unblock")
+            .expect("codex unblock unit exists");
+        let artifact_ids = unblock_unit
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_ids,
+            vec!["spec", "review", "verification", "quality", "promotion"]
+        );
+        let milestone = unblock_unit
+            .milestones
+            .iter()
+            .find(|milestone| milestone.id == "poker-tui-screen-codex-unblock-done")
+            .expect("unblock milestone exists");
+        assert_eq!(
+            milestone.requires,
+            vec![
+                "spec".to_string(),
+                "review".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn implementation_audit_command_uses_lane_scoped_artifact_sources_only() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "demo".to_string(),
+                title: "Demo".to_string(),
+                output_root: PathBuf::from("outputs/demo"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from("implementation.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "demo".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Demo".to_string(),
+                    family: "implement".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("demo".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Owned surfaces:\n- `src/demo.rs`".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: Some("integration".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p demo".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+        let lane = &blueprint.units[0].lanes[0];
+        let command = implementation_audit_command(&blueprint, "demo", lane, "true");
+
+        assert!(!command.contains("cat quality.md 2>/dev/null"));
+        assert!(!command.contains("cat verification.md 2>/dev/null"));
+        assert!(!command.contains("cat promotion.md 2>/dev/null"));
+        assert!(!command.contains("spec\\.md"));
+        assert!(!command.contains("review\\.md"));
+        assert!(!command.contains("implementation\\.md"));
+    }
+
+    #[test]
+    fn implementation_audit_command_allows_external_only_codex_unblock_without_source_diff() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "poker-tui-screen-codex-unblock".to_string(),
+                title: "Poker TUI Screen Codex Unblock".to_string(),
+                output_root: PathBuf::from(".raspberry/portfolio/poker-tui-screen-codex-unblock"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "spec".to_string(),
+                        path: PathBuf::from("spec.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "review".to_string(),
+                        path: PathBuf::from("review.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "poker-tui-screen-codex-unblock".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Poker TUI Screen Codex Unblock".to_string(),
+                    family: "codex-unblock".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("poker-tui-screen-codex-unblock".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Use Codex to unblock poker-tui-screen.".to_string(),
+                    managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "spec".to_string(),
+                        "review".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: Some("unblock".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p tui -- poker".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+        let lane = &blueprint.units[0].lanes[0];
+        let command = implementation_audit_command(
+            &blueprint,
+            "poker-tui-screen-codex-unblock",
+            lane,
+            "true",
+        );
+
+        assert!(command.contains("no code changes were needed"));
+        assert!(command.contains("outside lane-owned surface: yes"));
+        assert!(command.contains(".fabro-work/deep-review-findings.md"));
+    }
+
+    #[test]
+    fn normalize_blueprint_lane_kinds_downgrades_invalid_implementation_integration_kind() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "demo-unit".to_string(),
+                title: "Demo".to_string(),
+                output_root: PathBuf::from("outputs/demo"),
+                artifacts: vec![],
+                milestones: vec![],
+                lanes: vec![BlueprintLane {
+                    id: "bad-lane".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Integration,
+                    title: "Bad Lane".to_string(),
+                    family: "implementation".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("bad-lane".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Implement demo".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        let normalized = normalize_blueprint_lane_kinds(blueprint);
+        assert_eq!(
+            normalized.units[0].lanes[0].kind,
+            raspberry_supervisor::manifest::LaneKind::Platform
+        );
+    }
+
+    #[test]
     fn bootstrap_workflow_retries_verify_via_polish() {
         let lane = BlueprintLane {
             id: "private-control-plane".to_string(),
@@ -6793,6 +8135,9 @@ fn write_file(
     written_files: &mut Vec<PathBuf>,
 ) -> Result<(), RenderError> {
     ensure_parent(path)?;
+    if std::fs::read_to_string(path).ok().as_deref() == Some(contents) {
+        return Ok(());
+    }
     fabro_workflows::write_text_atomic(path, contents, "rendered file").map_err(|source| {
         RenderError::Write {
             path: path.to_path_buf(),

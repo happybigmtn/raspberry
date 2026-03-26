@@ -110,12 +110,15 @@ pub struct AutodevCycleReport {
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
 const BACKOFF_RETRY_MIN_SECS: i64 = 300;
 const TRANSIENT_LAUNCH_RETRY_MIN_SECS: i64 = 15;
+const ENVIRONMENT_COLLISION_RETRY_MIN_SECS: i64 = 15;
 const REFRESH_FROM_TRUNK_MIN_SECS: i64 = 30;
 const SURFACE_BLOCKED_RETRY_MIN_SECS: i64 = 900;
+const CODEX_UNBLOCK_RETRY_MIN_SECS: i64 = 30;
 const MAX_SURFACE_BLOCKED_RETRIES: u32 = 10;
 const REGENERATE_SPARE_CAPACITY_RETRY_SECS: u64 = 15;
 const PAPERCLIP_REFRESH_MIN_SECS: u64 = 15;
 const SYNTH_EVOLVE_TIMEOUT_SECS: u64 = 120;
+const TARGET_REPO_SYNC_COOLDOWN_SECS: i64 = 30;
 const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "README.md",
     "SPEC.md",
@@ -138,6 +141,7 @@ fn autodev_debug_step(program: &str, cycle: usize, message: &str) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutodevStopReason {
+    InProgress,
     Settled,
     CycleLimit,
     Maintenance,
@@ -343,9 +347,10 @@ pub fn orchestrate_program(
     let mut last_evolve_at = None::<Instant>;
     let mut last_evolve_frontier = None::<FrontierSignature>;
     let mut last_paperclip_refresh_at = None::<Instant>;
+    let mut last_repo_sync_at = None::<DateTime<Utc>>;
     let mut report = AutodevReport {
         program: initial_manifest.program.clone(),
-        stop_reason: AutodevStopReason::CycleLimit,
+        stop_reason: AutodevStopReason::InProgress,
         updated_at: Utc::now(),
         provenance,
         current: None,
@@ -369,7 +374,7 @@ pub fn orchestrate_program(
         // (first cycle, or after a dispatch/evolve that could trigger integration).
         // This avoids running git fetch+reset every 5s poll cycle.
         if last_complete_count.is_none() {
-            sync_target_repo_to_origin(&manifest, &manifest_path);
+            maybe_sync_target_repo_to_origin(&manifest, &manifest_path, &mut last_repo_sync_at);
         }
         let program_before = evaluate_program(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "program-before-evaluated");
@@ -571,7 +576,7 @@ pub fn orchestrate_program(
         // After dispatch, sync the target repo if integrations may have landed.
         // This ensures evaluate sees freshly-pushed artifacts for milestone checks.
         if !dispatched.is_empty() || evolved {
-            sync_target_repo_to_origin(&manifest, &manifest_path);
+            maybe_sync_target_repo_to_origin(&manifest, &manifest_path, &mut last_repo_sync_at);
         }
 
         // Skip redundant evaluation when nothing changed (no dispatch, no evolve).
@@ -1191,6 +1196,17 @@ fn repo_relative_or_absolute(target_repo: &Path, path: &Path) -> PathBuf {
 /// milestones are never satisfied and lanes re-dispatch indefinitely.
 fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) {
     let target_repo = manifest.resolved_target_repo(manifest_path);
+    let has_origin = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["remote", "get-url", "origin"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()
+        .is_some_and(|status| status.success());
+    if !has_origin {
+        return;
+    }
     let fetch = Command::new("git")
         .current_dir(&target_repo)
         .args(["fetch", "origin", "--quiet"])
@@ -1211,7 +1227,9 @@ fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) 
             return;
         }
     }
-    // Only reset if we're on the main branch to avoid clobbering user work.
+    // Only fast-forward when the checked-out branch matches the remote default
+    // branch and the worktree is clean. This keeps artifact truth fresh without
+    // clobbering local operator changes.
     let head_branch = Command::new("git")
         .current_dir(&target_repo)
         .args(["symbolic-ref", "--short", "HEAD"])
@@ -1219,17 +1237,67 @@ fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) 
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    if head_branch.as_deref() == Some("main") {
-        let reset = Command::new("git")
+    let origin_head_branch = Command::new("git")
+        .current_dir(&target_repo)
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .and_then(|branch| branch.strip_prefix("origin/").map(str::to_string));
+    let is_clean = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| o.stdout.is_empty());
+    if is_clean
+        && head_branch.is_some()
+        && head_branch == origin_head_branch
+        && origin_head_branch.is_some()
+    {
+        let remote_ref = format!("origin/{}", origin_head_branch.as_deref().unwrap_or("main"));
+        let merge = Command::new("git")
             .current_dir(&target_repo)
-            .args(["reset", "--hard", "origin/main"])
+            .args(["merge", "--ff-only", &remote_ref])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-        if let Err(e) = reset {
-            eprintln!("[autodev] git reset --hard origin/main failed: {e}");
+        match merge {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                eprintln!(
+                    "[autodev] git merge --ff-only {} failed (exit {})",
+                    remote_ref,
+                    status.code().unwrap_or(-1)
+                );
+            }
+            Err(e) => {
+                eprintln!("[autodev] git merge --ff-only {} failed: {e}", remote_ref);
+            }
         }
     }
+}
+
+fn maybe_sync_target_repo_to_origin(
+    manifest: &ProgramManifest,
+    manifest_path: &Path,
+    last_repo_sync_at: &mut Option<DateTime<Utc>>,
+) {
+    let now = Utc::now();
+    if last_repo_sync_at.as_ref().is_some_and(|last| {
+        now.signed_duration_since(*last).num_seconds() < TARGET_REPO_SYNC_COOLDOWN_SECS
+    }) {
+        return;
+    }
+    sync_target_repo_to_origin(manifest, manifest_path);
+    *last_repo_sync_at = Some(now);
 }
 
 pub(crate) fn autodev_cargo_target_dir(target_repo: &Path) -> PathBuf {
@@ -1252,18 +1320,7 @@ pub fn load_optional_autodev_report(
         path: path.clone(),
         source,
     })?;
-    let mut report = deserialize_autodev_report(&path, manifest, &raw)?;
-    let program = evaluate_program(manifest_path)?;
-    let preserved_max_parallel = report
-        .current
-        .as_ref()
-        .and_then(|current| current.max_parallel);
-    let next_snapshot = current_snapshot(&program, preserved_max_parallel);
-    if report.current.as_ref() != Some(&next_snapshot) {
-        report.current = Some(next_snapshot);
-        report.updated_at = Utc::now();
-        save_autodev_report(manifest_path, manifest, &report)?;
-    }
+    let report = deserialize_autodev_report(&path, manifest, &raw)?;
     Ok(Some(report))
 }
 
@@ -1290,8 +1347,8 @@ pub fn sync_autodev_report_with_program(
         return Ok(());
     }
     report.current = Some(next_snapshot);
-    report.updated_at = Utc::now();
-    save_autodev_report(manifest_path, manifest, &report)
+    save_autodev_report(manifest_path, manifest, &report)?;
+    Ok(())
 }
 
 fn save_autodev_report(
@@ -1325,7 +1382,7 @@ fn deserialize_autodev_report(
     serde_json::from_str(raw).or_else(|_source| {
         Ok(AutodevReport {
             program: manifest.program.clone(),
-            stop_reason: AutodevStopReason::CycleLimit,
+            stop_reason: AutodevStopReason::InProgress,
             updated_at: Utc::now(),
             provenance: None,
             current: None,
@@ -1560,7 +1617,7 @@ fn dispatchable_failed_lanes(
                 LaneExecutionStatus::Blocked | LaneExecutionStatus::Failed
             )
         })
-        .filter_map(|lane| replay_target_lane(manifest, lane, now, allow_regenerate))
+        .filter_map(|lane| replay_target_lane(manifest, program, lane, now, allow_regenerate))
         .collect::<Vec<_>>();
     lanes.sort();
     lanes.dedup();
@@ -1590,15 +1647,19 @@ fn failure_kind_for_lane(lane: &crate::evaluate::EvaluatedLane) -> Option<Failur
 
 fn replay_target_lane(
     manifest: &ProgramManifest,
+    program: &crate::evaluate::EvaluatedProgram,
     lane: &crate::evaluate::EvaluatedLane,
     now: DateTime<Utc>,
     allow_regenerate: bool,
 ) -> Option<String> {
     let kind = failure_kind_for_lane(lane)?;
+    let action = lane
+        .recovery_action
+        .unwrap_or_else(|| default_recovery_action(kind));
     if is_verify_gate_miss_without_retry(lane) {
         return allow_regenerate.then(|| lane.lane_key.clone());
     }
-    match default_recovery_action(kind) {
+    match action {
         FailureRecoveryAction::ReplaySourceLane => {
             integration_source_lane_key(manifest, lane).or_else(|| Some(lane.lane_key.clone()))
         }
@@ -1612,6 +1673,8 @@ fn replay_target_lane(
         FailureRecoveryAction::BackoffRetry => {
             let cooldown = if kind == FailureKind::TransientLaunchFailure {
                 TRANSIENT_LAUNCH_RETRY_MIN_SECS
+            } else if kind == FailureKind::EnvironmentCollision {
+                ENVIRONMENT_COLLISION_RETRY_MIN_SECS
             } else {
                 BACKOFF_RETRY_MIN_SECS
             };
@@ -1625,6 +1688,9 @@ fn replay_target_lane(
             }
         }
         FailureRecoveryAction::SurfaceBlocked => {
+            if let Some(target) = codex_unblock_recovery_target(program, lane, kind, now) {
+                return Some(target);
+            }
             if lane.consecutive_failures >= MAX_SURFACE_BLOCKED_RETRIES {
                 return None;
             }
@@ -1635,6 +1701,77 @@ fn replay_target_lane(
                 lane.lane_key.clone(),
             )
         }
+    }
+}
+
+fn codex_unblock_recovery_target(
+    program: &crate::evaluate::EvaluatedProgram,
+    lane: &crate::evaluate::EvaluatedLane,
+    kind: FailureKind,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    if lane.lane_id.ends_with("-codex-unblock") || !should_use_codex_unblock(kind) {
+        return None;
+    }
+    let unblock_lane_key = codex_unblock_lane_key(&lane.unit_id, &lane.lane_id);
+    let unblock = program
+        .lanes
+        .iter()
+        .find(|candidate| candidate.lane_key == unblock_lane_key)?;
+    match unblock.status {
+        LaneExecutionStatus::Running => None,
+        LaneExecutionStatus::Complete => {
+            if unblock_finished_after_source_failure(unblock, lane) {
+                Some(lane.lane_key.clone())
+            } else {
+                retry_after_cooldown(
+                    lane,
+                    now,
+                    CODEX_UNBLOCK_RETRY_MIN_SECS,
+                    unblock.lane_key.clone(),
+                )
+            }
+        }
+        LaneExecutionStatus::Blocked | LaneExecutionStatus::Ready => retry_after_cooldown(
+            lane,
+            now,
+            CODEX_UNBLOCK_RETRY_MIN_SECS,
+            unblock.lane_key.clone(),
+        ),
+        LaneExecutionStatus::Failed => None,
+    }
+}
+
+fn should_use_codex_unblock(kind: FailureKind) -> bool {
+    matches!(
+        kind,
+        FailureKind::RegenerateNoop
+            | FailureKind::ProviderPolicyMismatch
+            | FailureKind::DeterministicVerifyCycle
+            | FailureKind::ProofScriptFailure
+    )
+}
+
+fn codex_unblock_lane_key(unit_id: &str, lane_id: &str) -> String {
+    let base = if unit_id == lane_id {
+        format!("{unit_id}-codex-unblock")
+    } else {
+        format!("{unit_id}-{lane_id}-codex-unblock")
+    };
+    format!("{base}:{base}")
+}
+
+fn unblock_finished_after_source_failure(
+    unblock: &crate::evaluate::EvaluatedLane,
+    source: &crate::evaluate::EvaluatedLane,
+) -> bool {
+    match (
+        unblock.last_finished_at.or(unblock.last_started_at),
+        source.last_finished_at.or(source.last_started_at),
+    ) {
+        (Some(unblock_time), Some(source_time)) => unblock_time > source_time,
+        (Some(_), None) => true,
+        _ => false,
     }
 }
 
@@ -1662,8 +1799,10 @@ fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<
                 return Some(lane.lane_key.clone());
             }
             let kind = failure_kind_for_lane(lane)?;
-            (default_recovery_action(kind) == FailureRecoveryAction::RegenerateLane)
-                .then(|| lane.lane_key.clone())
+            let action = lane
+                .recovery_action
+                .unwrap_or_else(|| default_recovery_action(kind));
+            (action == FailureRecoveryAction::RegenerateLane).then(|| lane.lane_key.clone())
         })
         .collect::<Vec<_>>();
     lanes.sort();
@@ -2508,7 +2647,18 @@ units:
             consecutive_failures: 0,
         };
 
-        let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
+        let target = replay_target_lane(
+            &manifest,
+            &crate::evaluate::EvaluatedProgram {
+                program: manifest.program.clone(),
+                max_parallel: manifest.max_parallel,
+                runtime_max_parallel: None,
+                lanes: vec![lane.clone()],
+            },
+            &lane,
+            Utc::now(),
+            false,
+        );
 
         assert_eq!(target.as_deref(), Some("play:tui-implement"));
     }
@@ -2684,6 +2834,82 @@ units:
     }
 
     #[test]
+    fn replayable_failed_lanes_dispatch_codex_unblock_for_regenerate_noop() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut source = failed_lane(
+            "poker-tui-screen:poker-tui-screen",
+            "synth evolve did not materially change run config or graph",
+        );
+        source.unit_id = "poker-tui-screen".to_string();
+        source.lane_id = "poker-tui-screen".to_string();
+        source.status = LaneExecutionStatus::Failed;
+        source.failure_kind = Some(FailureKind::RegenerateNoop);
+        source.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        source.last_started_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        source.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(2));
+
+        let unblock = EvaluatedLane {
+            lane_key: "poker-tui-screen-codex-unblock:poker-tui-screen-codex-unblock".to_string(),
+            unit_id: "poker-tui-screen-codex-unblock".to_string(),
+            unit_title: "Poker TUI Screen Codex Unblock".to_string(),
+            lane_id: "poker-tui-screen-codex-unblock".to_string(),
+            lane_title: "Poker TUI Screen Codex Unblock".to_string(),
+            lane_kind: LaneKind::Platform,
+            status: LaneExecutionStatus::Blocked,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: String::new(),
+            managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+            proof_profile: Some("unblock".to_string()),
+            run_config: PathBuf::from(
+                "run-configs/codex-unblock/poker-tui-screen-codex-unblock.toml",
+            ),
+            run_id: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage: None,
+            last_run_id: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        };
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![source, unblock],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(
+            lanes,
+            vec!["poker-tui-screen-codex-unblock:poker-tui-screen-codex-unblock".to_string()]
+        );
+    }
+
+    #[test]
     fn replayed_lanes_can_fill_available_capacity_before_ready_work() {
         let ready_lane = EvaluatedLane {
             lane_key: "ready:lane".to_string(),
@@ -2789,13 +3015,24 @@ units:
             consecutive_failures: 0,
         };
 
-        let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
+        let target = replay_target_lane(
+            &manifest,
+            &crate::evaluate::EvaluatedProgram {
+                program: manifest.program.clone(),
+                max_parallel: manifest.max_parallel,
+                runtime_max_parallel: None,
+                lanes: vec![lane.clone()],
+            },
+            &lane,
+            Utc::now(),
+            false,
+        );
 
         assert_eq!(target.as_deref(), Some("demo:integrate"));
     }
 
     #[test]
-    fn backoff_retry_waits_for_cooldown() {
+    fn environment_collision_retry_waits_for_short_cooldown() {
         let manifest = ProgramManifest::load(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
@@ -2822,8 +3059,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: Some("01KMTEST".to_string()),
-            last_started_at: Some(Utc::now() - chrono::Duration::minutes(1)),
-            last_finished_at: Some(Utc::now() - chrono::Duration::seconds(30)),
+            last_started_at: Some(Utc::now() - chrono::Duration::seconds(20)),
+            last_finished_at: Some(Utc::now() - chrono::Duration::seconds(10)),
             last_exit_status: Some(1),
             last_error: Some("OSError: [Errno 98] Address already in use".to_string()),
             failure_kind: Some(FailureKind::EnvironmentCollision),
@@ -2842,9 +3079,40 @@ units:
             consecutive_failures: 0,
         };
 
-        let target = replay_target_lane(&manifest, &lane, Utc::now(), false);
+        let target = replay_target_lane(
+            &manifest,
+            &crate::evaluate::EvaluatedProgram {
+                program: manifest.program.clone(),
+                max_parallel: manifest.max_parallel,
+                runtime_max_parallel: None,
+                lanes: vec![lane.clone()],
+            },
+            &lane,
+            Utc::now(),
+            false,
+        );
 
         assert!(target.is_none());
+
+        let ready_lane = EvaluatedLane {
+            last_started_at: Some(Utc::now() - chrono::Duration::seconds(40)),
+            last_finished_at: Some(Utc::now() - chrono::Duration::seconds(20)),
+            ..lane
+        };
+        let target = replay_target_lane(
+            &manifest,
+            &crate::evaluate::EvaluatedProgram {
+                program: manifest.program.clone(),
+                max_parallel: manifest.max_parallel,
+                runtime_max_parallel: None,
+                lanes: vec![ready_lane.clone()],
+            },
+            &ready_lane,
+            Utc::now(),
+            false,
+        );
+
+        assert_eq!(target.as_deref(), Some("demo:service"));
     }
 
     #[test]

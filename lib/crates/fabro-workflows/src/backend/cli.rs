@@ -1,12 +1,21 @@
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use chrono::{Duration, Local, LocalResult, NaiveDateTime, NaiveTime, TimeZone};
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
-use fabro_model::{automation_fallback_targets, automation_profile_for_target, Provider};
+use fabro_model::{
+    automation_fallback_targets, automation_profile_for_target, FallbackTarget, Provider,
+};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
@@ -59,6 +68,10 @@ fn inherit_host_provider_credentials(cli: AgentCli) -> bool {
     !matches!(cli, AgentCli::Codex | AgentCli::Claude)
 }
 
+const FABRO_MANAGED_CLI_PREFIX: &str = "$HOME/.fabro/npm-global";
+const FABRO_MANAGED_CLI_BIN_PATH: &str = "$HOME/.fabro/npm-global/bin:$HOME/.local/bin:$PATH";
+const FABRO_MANAGED_NPM_LOCK: &str = "/tmp/.fabro-cli-locks/npm-global.lock";
+
 /// Ensure the CLI tool for the given provider is installed in the sandbox.
 ///
 /// Checks if the CLI binary exists; if not, installs Node.js (if missing) and
@@ -81,7 +94,7 @@ async fn ensure_cli(
     // Check if the CLI is already installed (include ~/.local/bin for npm-installed CLIs)
     let version_check = sandbox
         .exec_command(
-            &format!("PATH=\"$HOME/.local/bin:$PATH\" {cli_name} --version"),
+            &format!("PATH=\"{FABRO_MANAGED_CLI_BIN_PATH}\" {cli_name} --version"),
             30_000,
             None,
             None,
@@ -105,13 +118,15 @@ async fn ensure_cli(
     // Install Node.js (if needed) and the CLI in a single shell so PATH persists.
     // File lock prevents concurrent npm install -g races (ENOTEMPTY on rename).
     let install_cmd = format!(
-        "export PATH=\"$HOME/.local/bin:$PATH\" && \
+        "export FABRO_CLI_PREFIX=\"{FABRO_MANAGED_CLI_PREFIX}\" && \
+         export PATH=\"{FABRO_MANAGED_CLI_BIN_PATH}\" && \
          (node --version >/dev/null 2>&1 || \
           (mkdir -p ~/.local && curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C ~/.local)) && \
-         mkdir -p /tmp/.fabro-cli-locks && \
-         (flock -w 120 9 && npm install -g {pkg}) 9>/tmp/.fabro-cli-locks/{name}.lock",
+         mkdir -p \"$FABRO_CLI_PREFIX\" /tmp/.fabro-cli-locks && \
+         (flock -w 120 9 && \
+          ({cli_name} --version >/dev/null 2>&1 || npm install -g --prefix \"$FABRO_CLI_PREFIX\" {pkg})) \
+          9>{FABRO_MANAGED_NPM_LOCK}",
         pkg = cli.npm_package(),
-        name = cli_name,
     );
     let install_result = sandbox
         .exec_command(&install_cmd, 180_000, None, None, None)
@@ -181,19 +196,19 @@ fn is_readonly_stage(node_id: &str) -> bool {
 fn stage_system_prompt(node_id: &str) -> Option<&'static str> {
     match node_id {
         "implement" | "specify" => Some(
-            "You are executing the IMPLEMENT stage of an automated pipeline. RULES: (1) Read existing code before implementing. (2) Implement functionality COMPLETELY. Code that compiles but does nothing is worse than code that fails to compile — the review will catch hollow implementations. (3) Every public function must have real logic, not a stub that returns a default or immediately transitions state without doing work. (4) Write tests that exercise BEHAVIORAL outcomes: given specific input, assert specific output. Tests for Display, Clone, PartialEq derive macros do not count. (5) Include at least one full lifecycle test that drives the system from initial state to terminal state through multiple actions. (6) Run the proof commands from your goal to verify changes work. (7) Write required durable artifacts (spec.md, review.md) BEFORE finishing — the audit gate will reject if these are missing. Write spec.md with your implementation plan and review.md with your self-assessment. Do this in this stage, not later. ANTI-PATTERNS TO AVOID: returning hardcoded values, marking state as complete without performing the action (e.g. Hit without drawing a card), writing tests that only cover the happy path. The challenge stage will specifically look for functions that compile but do nothing meaningful. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. The audit gate rejects changes outside your scope."
+            "You are executing the IMPLEMENT stage of an automated pipeline. RULES: (1) Read existing code before implementing. (2) Implement functionality COMPLETELY. Code that compiles but does nothing is worse than code that fails to compile — the review will catch hollow implementations. (3) Every public function must have real logic, not a stub that returns a default or immediately transitions state without doing work. (4) Write tests that exercise BEHAVIORAL outcomes: given specific input, assert specific output. Tests for Display, Clone, PartialEq derive macros do not count. (5) Include at least one full lifecycle test that drives the system from initial state to terminal state through multiple actions. (6) Run the proof commands from your goal to verify changes work. (7) Write required durable artifacts to the lane-scoped artifact paths described in the prompt context and keep ephemeral workflow files under `.fabro-work/`. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. ANTI-PATTERNS TO AVOID: returning hardcoded values, marking state as complete without performing the action (e.g. Hit without drawing a card), writing tests that only cover the happy path. The challenge stage will specifically look for functions that compile but do nothing meaningful. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. The audit gate rejects changes outside your scope."
         ),
         "fixup" | "polish" => Some(
-            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. Your #2 priority: ensure required durable artifacts (spec.md, review.md) exist in the outputs directory — the audit gate will reject if they are missing. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, IGNORE them and focus on your owned files only. Do not delete, modify, or rewrite files outside your scope."
+            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. Your #2 priority: keep the lane-scoped durable artifacts truthful and complete while keeping ephemeral workflow files under `.fabro-work/`. Never create or rely on repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, IGNORE them and focus on your owned files only. Do not delete, modify, or rewrite files outside your scope."
         ),
         "challenge" => Some(
             "You are executing an ADVERSARIAL CHALLENGE. SPECIFICALLY CHECK: (1) Functions that compile but do nothing meaningful — e.g. a Hit action that does not draw a card, a settle function that returns hardcoded values. Read every match arm and verify it performs real work. (2) Tests that only verify derive macros (Display, Clone, PartialEq) — count how many tests exercise actual business logic vs formatting. (3) State machines that never reach their terminal state through normal gameplay. Run through the lifecycle mentally: can a user actually play the game from start to finish? (4) Duplicate tests that inflate coverage without testing new behavior. (5) DESIGN PATTERN CONFORMANCE: Read AGENTS.md and verify the code follows the mandatory conventions — especially settlement arithmetic (must widen to i32, no bare f64-to-i16 casts), error types (must use shared GameError/VerifyError), and state machine patterns ({Game}Phase enum, is_terminal()). Flag every issue with file:line. Write findings to verification.md. Do NOT approve."
         ),
         "review" => Some(
-            "You are executing the REVIEW stage with merge authority. Read quality.md (machine-generated). Read the implementation and verification artifacts. Read AGENTS.md for the mandatory design conventions. Write promotion.md with merge_ready: yes|no. Only approve when proof gates pass, tests verify real behavior, no stubs or placeholders remain, AND the code follows the project's design conventions (settlement arithmetic uses i32 widening, error types from shared error.rs, state machine patterns). CRITICAL: run `git diff --stat HEAD` to verify actual code changes exist. If no files were changed, set merge_ready: no with reason explaining what implementation is missing."
+            "You are executing the REVIEW stage with merge authority. Read `.fabro-work/quality.md` (machine-generated truth) plus the lane-scoped implementation and verification artifacts named in the prompt. Read AGENTS.md for the mandatory design conventions. Write `.fabro-work/promotion.md` with merge_ready: yes|no unless the prompt explicitly names a different path. Only approve when proof gates pass, tests verify real behavior, no stubs or placeholders remain, AND the code follows the project's design conventions (settlement arithmetic uses i32 widening, error types from shared error.rs, state machine patterns). CRITICAL: run `git diff --stat HEAD` to verify actual code changes exist. If no files were changed, set merge_ready: no unless the lane explicitly documents an external-only unblock where the owned proof gate is already green."
         ),
         "deep_review" => Some(
-            "You are executing an ADVERSARIAL DEEP REVIEW in an automated pipeline. Challenge every trust boundary, input validation, and error path. Verify that tests exercise real behavioral outcomes, not trivial assertions. Check for placeholder debt (todo!, unimplemented!, stub comments). Write your findings to deep-review-findings.md with specific file paths and line numbers."
+            "You are executing an ADVERSARIAL DEEP REVIEW in an automated pipeline. Challenge every trust boundary, input validation, and error path. Verify that tests exercise real behavioral outcomes, not trivial assertions. Check for placeholder debt (todo!, unimplemented!, stub comments). Write your findings to `.fabro-work/deep-review-findings.md` unless the prompt explicitly names a different path. If the owned proof gate is already green and the remaining blocker is external, say that plainly instead of inventing more code churn."
         ),
         "escalation" => Some(
             "You are executing an ESCALATION REVIEW for code that modifies shared foundation infrastructure. Verify backward compatibility: all downstream consumers must continue to compile and pass tests. Check that public API changes are additive, not breaking. Approve only if all existing tests pass and new interfaces are documented. Write escalation-verdict.md."
@@ -534,6 +549,33 @@ fn shell_quote(val: &str) -> String {
     format!("'{}'", shell_escape(val))
 }
 
+async fn cleanup_cli_scratch(
+    sandbox: &Arc<dyn Sandbox>,
+    scratch_dir: &str,
+    script_path: &str,
+    pid: Option<&str>,
+) {
+    if let Some(pid) = pid.filter(|pid| !pid.trim().is_empty()) {
+        let terminate = format!(
+            "kill -TERM -- -{pid} 2>/dev/null || kill -TERM {pid} 2>/dev/null || true; \
+             sleep 1; \
+             kill -KILL -- -{pid} 2>/dev/null || kill -KILL {pid} 2>/dev/null || true"
+        );
+        let _ = sandbox
+            .exec_command(&terminate, 10_000, None, None, None)
+            .await;
+    }
+
+    let cleanup = format!(
+        "rm -f {} && rm -rf {}",
+        shell_quote(script_path),
+        shell_quote(scratch_dir)
+    );
+    let _ = sandbox
+        .exec_command(&cleanup, 30_000, None, None, None)
+        .await;
+}
+
 struct ProviderUsedJson<'a> {
     requested_provider: Provider,
     requested_model: &'a str,
@@ -630,13 +672,64 @@ struct CodexSlotSelection {
     cooldown_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexSlotReservation {
+    slot_name: String,
+    pid: u32,
+    process_start_ticks: Option<u64>,
+    reserved_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexRotatorStateLock {
+    pid: u32,
+    process_start_ticks: Option<u64>,
+    acquired_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CodexSlotFailure {
+    reason: String,
+    cooldown_until_ms: Option<u64>,
+}
+
 fn resolve_cli_target(
     requested_provider: Provider,
     requested_model: &str,
-    _default_model: &str,
-    _launch_env: &HashMap<String, String>,
-    _codex_slots_available: bool,
+    default_model: &str,
+    launch_env: &HashMap<String, String>,
+    codex_slots_available: bool,
 ) -> (Provider, String, Option<String>) {
+    if requested_provider != Provider::OpenAi {
+        return (requested_provider, requested_model.to_string(), None);
+    }
+
+    let strict_provider = launch_env
+        .get("FABRO_STRICT_PROVIDER")
+        .is_some_and(|value| value != "0" && !value.is_empty());
+    let has_openai_key = launch_env
+        .get("OPENAI_API_KEY")
+        .is_some_and(|value| !value.trim().is_empty());
+    if strict_provider || has_openai_key || codex_slots_available {
+        return (requested_provider, requested_model.to_string(), None);
+    }
+
+    if launch_env
+        .get("ANTHROPIC_API_KEY")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return (
+            Provider::Anthropic,
+            default_model.to_string(),
+            Some(
+                "provider=openai requested but no dedicated Codex slot or API key is available"
+                    .to_string(),
+            ),
+        );
+    }
+
     (requested_provider, requested_model.to_string(), None)
 }
 
@@ -651,20 +744,37 @@ fn build_cli_attempt_targets(
     requested_provider: Provider,
     requested_model: &str,
     default_model: &str,
+    launch_env: &HashMap<String, String>,
+    codex_slots_available: bool,
+    configured_fallback_chain: &[FallbackTarget],
 ) -> Vec<CliAttemptTarget> {
     let initial = resolve_cli_target(
         requested_provider,
         requested_model,
         default_model,
-        &HashMap::new(),
-        load_codex_rotator().is_some() || fallback_codex_slot_selection().is_some(),
+        launch_env,
+        codex_slots_available,
     );
     let mut targets = vec![CliAttemptTarget {
         provider: initial.0,
         model: initial.1.clone(),
         fallback_reason: initial.2,
     }];
-    for (provider, model) in central_policy_fallback_targets(initial.0, &initial.1) {
+    let fallback_targets = if configured_fallback_chain.is_empty() {
+        central_policy_fallback_targets(initial.0, &initial.1)
+    } else {
+        configured_fallback_chain
+            .iter()
+            .filter_map(|target| {
+                target
+                    .provider
+                    .parse::<Provider>()
+                    .ok()
+                    .map(|provider| (provider, target.model.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    for (provider, model) in fallback_targets {
         targets.push(CliAttemptTarget {
             provider,
             model,
@@ -698,6 +808,14 @@ fn cli_failure_is_retryable_for_fallback(detail: &str) -> bool {
         || lower.contains("usage limit has been reached")
         || lower.contains("rate_limit")
         || lower.contains("401 unauthorized")
+        || lower.contains("timed out")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("network")
+        || lower.contains("websocket")
+        || lower.contains("econn")
+        || lower.contains("zero tokens")
 }
 
 fn build_launch_env_for_provider(
@@ -722,6 +840,16 @@ fn build_launch_env_for_provider(
     // Kimi routes through pi CLI (kimi-coding provider) which reads
     // KIMI_API_KEY from the environment or ~/.pi/agent/auth.json.
     launch_env
+}
+
+async fn codex_home_accessible_in_sandbox(sandbox: &Arc<dyn Sandbox>, codex_home: &Path) -> bool {
+    let quoted = shell_quote(&codex_home.display().to_string());
+    let command = format!("test -d {quoted} && test -f {quoted}/auth.json");
+    sandbox
+        .exec_command(&command, 5_000, None, None, None)
+        .await
+        .map(|result| result.exit_code == 0)
+        .unwrap_or(false)
 }
 
 fn tail_chars(value: &str, limit: usize) -> String {
@@ -867,6 +995,7 @@ fn choose_codex_slot(rotator: &CodexRotator) -> Option<CodexSlotSelection> {
         .iter()
         .filter(|slot| automation_codex_home_allowed(&slot.codex_home))
         .filter(|slot| slot.codex_home.join("auth.json").exists())
+        .filter(|slot| !codex_slot_has_active_reservation(&rotator.state_path, &slot.name))
         .collect::<Vec<_>>();
     if healthy_slots.is_empty() {
         return None;
@@ -981,22 +1110,266 @@ fn save_codex_rotator_state(path: &Path, state: &CodexRotatorState) {
     let _ = std::fs::write(path, json);
 }
 
+fn codex_rotator_state_lock_path(state_path: &Path) -> PathBuf {
+    let parent = state_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    parent.join("codex-rotator-state.lock")
+}
+
+fn codex_rotator_state_lock_owner_active(lock: &CodexRotatorStateLock) -> bool {
+    let proc_path = PathBuf::from("/proc").join(lock.pid.to_string());
+    if !proc_path.exists() {
+        return false;
+    }
+    let Some(expected_ticks) = lock.process_start_ticks else {
+        return true;
+    };
+    process_start_ticks_for_pid(lock.pid) == Some(expected_ticks)
+}
+
+fn acquire_codex_rotator_state_lock(state_path: &Path) -> Option<PathBuf> {
+    let path = codex_rotator_state_lock_path(state_path);
+    let lock = CodexRotatorStateLock {
+        pid: process::id(),
+        process_start_ticks: current_process_start_ticks(),
+        acquired_at_ms: now_ms(),
+    };
+    let json = serde_json::to_string_pretty(&lock).ok()?;
+    for _ in 0..200 {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if file.write_all(json.as_bytes()).is_ok() {
+                    return Some(path);
+                }
+                let _ = fs::remove_file(&path);
+                return None;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let Ok(raw) = fs::read_to_string(&path) else {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                };
+                let Ok(existing) = serde_json::from_str::<CodexRotatorStateLock>(&raw) else {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                };
+                if !codex_rotator_state_lock_owner_active(&existing) {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn release_codex_rotator_state_lock(lock_path: &Path) {
+    let Ok(raw) = fs::read_to_string(lock_path) else {
+        return;
+    };
+    let Ok(lock) = serde_json::from_str::<CodexRotatorStateLock>(&raw) else {
+        let _ = fs::remove_file(lock_path);
+        return;
+    };
+    if lock.pid == process::id() && lock.process_start_ticks == current_process_start_ticks() {
+        let _ = fs::remove_file(lock_path);
+    }
+}
+
+fn update_codex_rotator_state(state_path: &Path, mutator: impl FnOnce(&mut CodexRotatorState)) {
+    let Some(lock_path) = acquire_codex_rotator_state_lock(state_path) else {
+        return;
+    };
+    let mut state = std::fs::read_to_string(state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
+        .unwrap_or_default();
+    mutator(&mut state);
+    save_codex_rotator_state(state_path, &state);
+    release_codex_rotator_state_lock(&lock_path);
+}
+
+fn codex_slot_reservation_path(state_path: &Path, slot_name: &str) -> PathBuf {
+    let slot_name = slot_key(slot_name);
+    let parent = state_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    parent.join(format!("codex-slot-{slot_name}.lock"))
+}
+
+fn codex_slot_has_active_reservation(state_path: &Path, slot_name: &str) -> bool {
+    let path = codex_slot_reservation_path(state_path, slot_name);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(reservation) = serde_json::from_str::<CodexSlotReservation>(&raw) else {
+        let _ = fs::remove_file(&path);
+        return false;
+    };
+    if codex_slot_reservation_owner_active(&reservation) {
+        return true;
+    }
+    let _ = fs::remove_file(&path);
+    false
+}
+
+fn reserve_codex_slot(selection: &CodexSlotSelection) -> bool {
+    if selection.config_path == Path::new("<fallback>") {
+        return true;
+    }
+    let path = codex_slot_reservation_path(&selection.state_path, &selection.slot_name);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let reservation = CodexSlotReservation {
+        slot_name: selection.slot_name.clone(),
+        pid: process::id(),
+        process_start_ticks: current_process_start_ticks(),
+        reserved_at_ms: now_ms(),
+    };
+    let Ok(json) = serde_json::to_string_pretty(&reservation) else {
+        return false;
+    };
+    match fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(mut file) => file.write_all(json.as_bytes()).is_ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !codex_slot_has_active_reservation(&selection.state_path, &selection.slot_name) {
+                match fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&path)
+                {
+                    Ok(mut file) => file.write_all(json.as_bytes()).is_ok(),
+                    Err(_) => false,
+                }
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+fn release_codex_slot(selection: &CodexSlotSelection) {
+    if selection.config_path == Path::new("<fallback>") {
+        return;
+    }
+    let path = codex_slot_reservation_path(&selection.state_path, &selection.slot_name);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(reservation) = serde_json::from_str::<CodexSlotReservation>(&raw) else {
+        let _ = fs::remove_file(&path);
+        return;
+    };
+    if reservation.pid == process::id()
+        && reservation.process_start_ticks == current_process_start_ticks()
+    {
+        let _ = fs::remove_file(&path);
+    }
+}
+
+fn codex_slot_reservation_owner_active(reservation: &CodexSlotReservation) -> bool {
+    let proc_path = PathBuf::from("/proc").join(reservation.pid.to_string());
+    if !proc_path.exists() {
+        return false;
+    }
+    let Some(expected_ticks) = reservation.process_start_ticks else {
+        return true;
+    };
+    process_start_ticks_for_pid(reservation.pid) == Some(expected_ticks)
+}
+
+fn current_process_start_ticks() -> Option<u64> {
+    process_start_ticks_for_pid(process::id())
+}
+
+fn process_start_ticks_for_pid(pid: u32) -> Option<u64> {
+    let path = PathBuf::from("/proc").join(pid.to_string()).join("stat");
+    let raw = fs::read_to_string(path).ok()?;
+    let close_paren = raw.rfind(')')?;
+    let rest = raw.get(close_paren + 1..)?.trim();
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
 fn mark_codex_slot_selected(selection: &CodexSlotSelection) {
     if selection.config_path == Path::new("<fallback>") {
         return;
     }
-    let mut state = std::fs::read_to_string(&selection.state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
-        .unwrap_or_default();
     let now = now_ms();
-    state.selected_slot = Some(selection.slot_name.clone());
-    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
-    entry.last_selected_at_ms = now;
-    save_codex_rotator_state(&selection.state_path, &state);
+    update_codex_rotator_state(&selection.state_path, |state| {
+        state.selected_slot = Some(selection.slot_name.clone());
+        let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+        entry.last_selected_at_ms = now;
+    });
 }
 
-fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<String> {
+fn codex_retry_at_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(
+            r"(?i)try again at (?P<when>(?:[A-Za-z]{3} \d{1,2}(?:st|nd|rd|th)?, \d{4} )?\d{1,2}:\d{2} [AP]M)",
+        )
+        .expect("valid codex retry-at regex")
+    })
+}
+
+fn sanitize_retry_at_timestamp(value: &str) -> String {
+    static ORDINAL_SUFFIX_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = ORDINAL_SUFFIX_REGEX.get_or_init(|| {
+        Regex::new(r"(?i)(\d{1,2})(st|nd|rd|th)").expect("valid ordinal suffix regex")
+    });
+    regex.replace_all(value.trim(), "$1").into_owned()
+}
+
+fn local_datetime_to_ms(datetime: NaiveDateTime) -> Option<u64> {
+    let local = match Local.from_local_datetime(&datetime) {
+        LocalResult::Single(value) => value,
+        LocalResult::Ambiguous(earliest, _) => earliest,
+        LocalResult::None => return None,
+    };
+    u64::try_from(local.timestamp_millis()).ok()
+}
+
+fn parse_codex_retry_after_ms(stderr: &str, stdout: &str) -> Option<u64> {
+    let combined = format!("{stderr}\n{stdout}");
+    let captures = codex_retry_at_regex().captures(&combined)?;
+    let raw = captures.name("when")?.as_str();
+    let when = sanitize_retry_at_timestamp(raw);
+    let now = Local::now();
+    if let Ok(datetime) = NaiveDateTime::parse_from_str(&when, "%b %e, %Y %I:%M %p") {
+        return local_datetime_to_ms(datetime);
+    }
+    let Ok(time) = NaiveTime::parse_from_str(&when, "%I:%M %p") else {
+        return None;
+    };
+    let mut date = now.date_naive();
+    let mut candidate = local_datetime_to_ms(date.and_time(time))?;
+    let now_ms_local = u64::try_from(now.timestamp_millis()).ok()?;
+    if candidate <= now_ms_local {
+        date = date.checked_add_signed(Duration::days(1))?;
+        candidate = local_datetime_to_ms(date.and_time(time))?;
+    }
+    Some(candidate)
+}
+
+fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<CodexSlotFailure> {
     let combined = format!("{stderr}\n{stdout}").to_ascii_lowercase();
     let patterns = [
         "429",
@@ -1012,7 +1385,10 @@ fn classify_codex_slot_failure(stderr: &str, stdout: &str) -> Option<String> {
     patterns
         .iter()
         .find(|pattern| combined.contains(**pattern))
-        .map(|pattern| format!("output matched `{pattern}`"))
+        .map(|pattern| CodexSlotFailure {
+            reason: format!("output matched `{pattern}`"),
+            cooldown_until_ms: parse_codex_retry_after_ms(stderr, stdout),
+        })
 }
 
 fn should_rotate_away_from_failed_slot(reason: &str) -> bool {
@@ -1020,52 +1396,52 @@ fn should_rotate_away_from_failed_slot(reason: &str) -> bool {
     reason.contains("429")
         || reason.contains("rate limit")
         || reason.contains("quota")
+        || reason.contains("usage limit")
+        || reason.contains("try again at")
         || reason.contains("limit_reached")
         || reason.contains("insufficient permissions")
         || reason.contains("api.responses.write")
         || reason.contains("401 unauthorized")
 }
 
-fn mark_codex_slot_failed(selection: &CodexSlotSelection, reason: &str) {
+fn mark_codex_slot_failed(selection: &CodexSlotSelection, failure: &CodexSlotFailure) {
     if selection.config_path == Path::new("<fallback>") {
         return;
     }
-    let mut state = std::fs::read_to_string(&selection.state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
-        .unwrap_or_default();
     let now = now_ms();
-    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
-    entry.last_failure_reason = Some(reason.to_string());
-    entry.last_failure_at_ms = Some(now);
-    entry.cooldown_until_ms = now.saturating_add(selection.cooldown_seconds.saturating_mul(1000));
-    if should_rotate_away_from_failed_slot(reason)
-        && state.selected_slot.as_deref() == Some(selection.slot_name.as_str())
-    {
-        state.selected_slot = None;
-    }
-    save_codex_rotator_state(&selection.state_path, &state);
+    let cooldown_until_ms = failure
+        .cooldown_until_ms
+        .unwrap_or_else(|| now.saturating_add(selection.cooldown_seconds.saturating_mul(1000)));
+    update_codex_rotator_state(&selection.state_path, |state| {
+        let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+        entry.last_failure_reason = Some(failure.reason.clone());
+        entry.last_failure_at_ms = Some(now);
+        entry.cooldown_until_ms = cooldown_until_ms.max(now);
+        if should_rotate_away_from_failed_slot(&failure.reason)
+            && state.selected_slot.as_deref() == Some(selection.slot_name.as_str())
+        {
+            state.selected_slot = None;
+        }
+    });
 }
 
 fn mark_codex_slot_succeeded(selection: &CodexSlotSelection) {
     if selection.config_path == Path::new("<fallback>") {
         return;
     }
-    let mut state = std::fs::read_to_string(&selection.state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<CodexRotatorState>(&raw).ok())
-        .unwrap_or_default();
-    let entry = state.slots.entry(selection.slot_name.clone()).or_default();
-    entry.cooldown_until_ms = 0;
-    entry.last_failure_reason = None;
-    entry.last_failure_at_ms = None;
-    save_codex_rotator_state(&selection.state_path, &state);
+    update_codex_rotator_state(&selection.state_path, |state| {
+        let entry = state.slots.entry(selection.slot_name.clone()).or_default();
+        entry.cooldown_until_ms = 0;
+        entry.last_failure_reason = None;
+        entry.last_failure_at_ms = None;
+    });
 }
 
 /// CLI backend that invokes external CLI tools (claude, codex, gemini) via `exec_command()`.
 pub struct AgentCliBackend {
     model: String,
     provider: Provider,
+    fallback_chain: Vec<FallbackTarget>,
     env: HashMap<String, String>,
     poll_interval: std::time::Duration,
 }
@@ -1076,9 +1452,16 @@ impl AgentCliBackend {
         Self {
             model,
             provider,
+            fallback_chain: Vec::new(),
             env: HashMap::new(),
             poll_interval: std::time::Duration::from_secs(5),
         }
+    }
+
+    #[must_use]
+    pub fn with_fallback_chain(mut self, fallback_chain: Vec<FallbackTarget>) -> Self {
+        self.fallback_chain = fallback_chain;
+        self
     }
 
     #[must_use]
@@ -1183,8 +1566,22 @@ impl CodergenBackend for AgentCliBackend {
         if let Err(e) = sandbox.set_autostop_interval(0).await {
             tracing::warn!("Failed to disable sandbox auto-stop: {e}");
         }
-        let attempt_targets =
-            build_cli_attempt_targets(requested_provider, &requested_model, &self.model);
+        let codex_slots_available = if requested_provider == Provider::OpenAi {
+            load_codex_rotator()
+                .and_then(|rotator| choose_codex_slot(&rotator))
+                .or_else(fallback_codex_slot_selection)
+                .is_some()
+        } else {
+            false
+        };
+        let attempt_targets = build_cli_attempt_targets(
+            requested_provider,
+            &requested_model,
+            &self.model,
+            &self.env,
+            codex_slots_available,
+            &self.fallback_chain,
+        );
         let stdout_path_quoted = shell_quote(&stdout_path);
         let stderr_path_quoted = shell_quote(&stderr_path);
         let exit_code_path_quoted = shell_quote(&exit_code_path);
@@ -1192,6 +1589,9 @@ impl CodergenBackend for AgentCliBackend {
             "[ -f {exit_code_path_quoted} ] && cat {exit_code_path_quoted} || echo running"
         );
         let poll_interval = self.poll_interval;
+        let attempt_timeout = node
+            .timeout()
+            .unwrap_or(std::time::Duration::from_secs(1800));
         let mut attempt_failures = Vec::new();
         let mut chosen_model = requested_model.clone();
         let mut parsed = None;
@@ -1201,13 +1601,19 @@ impl CodergenBackend for AgentCliBackend {
             let model = attempt.model.clone();
             let fallback_reason = attempt.fallback_reason.clone();
             let mut launch_env = build_launch_env_for_provider(provider, &self.env);
-            let codex_slot = if provider == Provider::OpenAi {
+            let mut codex_slot = if provider == Provider::OpenAi {
                 load_codex_rotator()
                     .and_then(|rotator| choose_codex_slot(&rotator))
                     .or_else(fallback_codex_slot_selection)
             } else {
                 None
             };
+
+            if let Some(selection) = codex_slot.as_ref() {
+                if !codex_home_accessible_in_sandbox(sandbox, &selection.codex_home).await {
+                    codex_slot = None;
+                }
+            }
 
             if provider == Provider::OpenAi && codex_slot.is_none() {
                 let detail = "no dedicated OAuth-backed Codex slot is available";
@@ -1225,6 +1631,21 @@ impl CodergenBackend for AgentCliBackend {
             }
 
             if let Some(selection) = codex_slot.as_ref() {
+                if !reserve_codex_slot(selection) {
+                    if index + 1 < attempt_targets.len() {
+                        attempt_failures.push(format!(
+                            "{}:{} failed: codex slot `{}` is already reserved",
+                            provider.as_str(),
+                            model,
+                            selection.slot_name
+                        ));
+                        continue;
+                    }
+                    return Err(FabroError::handler(format!(
+                        "requested provider=openai but codex slot `{}` is already reserved",
+                        selection.slot_name
+                    )));
+                }
                 launch_env.insert(
                     "CODEX_HOME".to_string(),
                     selection.codex_home.display().to_string(),
@@ -1233,7 +1654,12 @@ impl CodergenBackend for AgentCliBackend {
             }
 
             let cli = AgentCli::for_provider(provider);
-            ensure_cli(cli, provider, sandbox, emitter).await?;
+            if let Err(error) = ensure_cli(cli, provider, sandbox, emitter).await {
+                if let Some(selection) = codex_slot.as_ref() {
+                    release_codex_slot(selection);
+                }
+                return Err(error);
+            }
             let reasoning = node.reasoning_effort();
             let readonly = is_readonly_stage(&node.id);
             let sys_prompt = stage_system_prompt(&node.id);
@@ -1270,7 +1696,9 @@ impl CodergenBackend for AgentCliBackend {
                 );
             }
 
-            let inner_command = format!("export PATH=\"$HOME/.local/bin:$PATH\" && {command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}");
+            let inner_command = format!(
+                "export PATH=\"{FABRO_MANAGED_CLI_BIN_PATH}\" && {command} > {stdout_path_quoted} 2>{stderr_path_quoted}; echo $? > {exit_code_path_quoted}"
+            );
             let script_path = format!("{exit_code_path}.sh");
             let bg_command = format!(
                 "cat > {script_path} << 'FABRO_SCRIPT_EOF'\n{inner_command}\nFABRO_SCRIPT_EOF\nSID=$(command -v setsid || true)\n$SID sh {script_path} </dev/null >/dev/null 2>&1 &\necho $!"
@@ -1293,7 +1721,13 @@ impl CodergenBackend for AgentCliBackend {
                 "CLI process launched in background"
             );
 
+            let mut timed_out = false;
             let exit_code: i32 = loop {
+                if launch_start.elapsed() > attempt_timeout {
+                    timed_out = true;
+                    cleanup_cli_scratch(sandbox, &scratch_dir, &script_path, Some(pid)).await;
+                    break -1;
+                }
                 tokio::time::sleep(poll_interval).await;
                 emitter.touch();
                 let poll_result = sandbox
@@ -1350,18 +1784,19 @@ impl CodergenBackend for AgentCliBackend {
                 stdout: stdout_result.stdout,
                 stderr: stderr_result.stdout,
                 exit_code,
-                timed_out: false,
+                timed_out,
                 duration_ms,
             };
 
             if let Some(selection) = codex_slot.as_ref() {
                 if result.exit_code == 0 {
                     mark_codex_slot_succeeded(selection);
-                } else if let Some(reason) =
+                } else if let Some(failure) =
                     classify_codex_slot_failure(&result.stderr, &result.stdout)
                 {
-                    mark_codex_slot_failed(selection, &reason);
+                    mark_codex_slot_failed(selection, &failure);
                 }
+                release_codex_slot(selection);
             }
 
             if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
@@ -1376,8 +1811,15 @@ impl CodergenBackend for AgentCliBackend {
             if result.exit_code != 0 {
                 let _ = tokio::fs::write(stage_dir.join("cli_stdout.log"), &result.stdout).await;
                 let _ = tokio::fs::write(stage_dir.join("cli_stderr.log"), &result.stderr).await;
-                let detail =
-                    format_cli_failure_detail(provider, &result.stdout, &result.stderr, &command);
+                let detail = if result.timed_out {
+                    format!(
+                        "CLI command timed out after {}s: {}",
+                        attempt_timeout.as_secs(),
+                        command
+                    )
+                } else {
+                    format_cli_failure_detail(provider, &result.stdout, &result.stderr, &command)
+                };
                 let can_fallback = index + 1 < attempt_targets.len()
                     && cli_failure_is_retryable_for_fallback(&detail);
                 if can_fallback {
@@ -1396,17 +1838,10 @@ impl CodergenBackend for AgentCliBackend {
                         model,
                         detail
                     ));
+                    cleanup_cli_scratch(sandbox, &scratch_dir, &script_path, Some(pid)).await;
                     continue;
                 }
-                let _ = sandbox
-                    .exec_command(
-                        &format!("rm -rf {}", shell_quote(&scratch_dir)),
-                        30_000,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await;
+                cleanup_cli_scratch(sandbox, &scratch_dir, &script_path, Some(pid)).await;
                 if !attempt_failures.is_empty() {
                     return Err(FabroError::handler(format!(
                         "CLI command exited with code {}: {}\nPrevious attempts:\n{}",
@@ -1449,8 +1884,10 @@ impl CodergenBackend for AgentCliBackend {
                         provider.as_str(),
                         model
                     ));
+                    cleanup_cli_scratch(sandbox, &scratch_dir, &script_path, Some(pid)).await;
                     continue;
                 }
+                cleanup_cli_scratch(sandbox, &scratch_dir, &script_path, Some(pid)).await;
                 return Err(FabroError::handler(format!(
                     "CLI command produced empty response: {detail}"
                 )));
@@ -1482,15 +1919,7 @@ impl CodergenBackend for AgentCliBackend {
             break;
         }
 
-        let _ = sandbox
-            .exec_command(
-                &format!("rm -rf {}", shell_quote(&scratch_dir)),
-                30_000,
-                None,
-                None,
-                None,
-            )
-            .await;
+        cleanup_cli_scratch(sandbox, &scratch_dir, &format!("{exit_code_path}.sh"), None).await;
 
         let Some(parsed) = parsed else {
             return Err(FabroError::handler(format!(
@@ -1758,6 +2187,32 @@ mod tests {
     }
 
     #[test]
+    fn build_cli_attempt_targets_prefers_configured_fallback_chain() {
+        let targets = build_cli_attempt_targets(
+            Provider::Anthropic,
+            "claude-opus-4-6",
+            "claude-opus-4-6",
+            &HashMap::new(),
+            false,
+            &[FallbackTarget {
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+            }],
+        );
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[1].provider, Provider::OpenAi);
+        assert_eq!(targets[1].model, "gpt-5.4");
+    }
+
+    #[test]
+    fn cli_failure_is_retryable_for_timeout() {
+        assert!(cli_failure_is_retryable_for_fallback(
+            "CLI command timed out after 1800s",
+        ));
+    }
+
+    #[test]
     fn choose_codex_slot_prefers_sticky_selected_slot_when_healthy() {
         let temp = tempfile::tempdir().expect("tempdir");
         let home1 = temp.path().join("slot1");
@@ -1939,24 +2394,43 @@ mod tests {
 
     #[test]
     fn classify_codex_slot_failure_detects_scope_error() {
-        let reason = classify_codex_slot_failure(
+        let failure = classify_codex_slot_failure(
             "unexpected status 401 Unauthorized: Missing scopes: api.responses.write",
             "",
         )
         .expect("retryable reason");
 
-        assert!(reason.contains("api.responses.write"));
+        assert!(failure.reason.contains("api.responses.write"));
     }
 
     #[test]
     fn classify_codex_slot_failure_detects_usage_limit_error() {
-        let reason = classify_codex_slot_failure(
+        let failure = classify_codex_slot_failure(
             "",
             "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:31 PM.",
         )
         .expect("retryable reason");
 
-        assert!(reason.contains("usage limit"));
+        assert!(failure.reason.contains("usage limit"));
+        assert!(failure.cooldown_until_ms.is_some());
+    }
+
+    #[test]
+    fn parse_codex_retry_after_ms_parses_absolute_reset_time() {
+        let cooldown_until_ms = parse_codex_retry_after_ms(
+            "",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 28th, 2026 8:01 PM.",
+        )
+        .expect("absolute retry time");
+
+        let expected = Local
+            .with_ymd_and_hms(2026, 3, 28, 20, 1, 0)
+            .single()
+            .expect("local datetime");
+        assert_eq!(
+            cooldown_until_ms,
+            u64::try_from(expected.timestamp_millis()).expect("timestamp")
+        );
     }
 
     #[test]
@@ -1993,7 +2467,13 @@ mod tests {
             cooldown_seconds: 900,
         };
 
-        mark_codex_slot_failed(&selection, "output matched `quota`");
+        mark_codex_slot_failed(
+            &selection,
+            &CodexSlotFailure {
+                reason: "output matched `usage limit`".to_string(),
+                cooldown_until_ms: Some(now_ms().saturating_add(3_600_000)),
+            },
+        );
 
         let state = std::fs::read_to_string(state_path)
             .ok()
@@ -2003,7 +2483,7 @@ mod tests {
         assert!(state
             .slots
             .get("slot1")
-            .is_some_and(|slot| slot.cooldown_until_ms > 0));
+            .is_some_and(|slot| slot.cooldown_until_ms > now_ms()));
     }
 
     // -- ensure_cli --
@@ -2167,7 +2647,8 @@ mod tests {
         let mock = sandbox.as_ref() as *const dyn Sandbox as *const CliMockSandbox;
         let commands = unsafe { &*mock }.commands();
         assert_eq!(commands.len(), 2);
-        assert!(commands[1].contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(commands[1].contains("npm install -g --prefix"));
+        assert!(commands[1].contains("@anthropic-ai/claude-code"));
     }
 
     #[tokio::test]

@@ -2,13 +2,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process;
 
 use chrono::{DateTime, Utc};
 use fabro_config::run::resolve_graph_path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const RESOURCE_LEASE_SCHEMA_VERSION: &str = "raspberry.resource-lease.v1";
+const RESOURCE_LEASE_SCHEMA_VERSION: &str = "raspberry.resource-lease.v2";
 const ZEND_DAEMON_PORT_START: u16 = 18080;
 const ZEND_DAEMON_PORT_END: u16 = 18129;
 
@@ -66,6 +67,10 @@ struct ResourceLease {
     resource: String,
     lane_key: String,
     port: u16,
+    #[serde(default)]
+    owner_pid: Option<u32>,
+    #[serde(default)]
+    owner_process_start_ticks: Option<u64>,
     acquired_at: DateTime<Utc>,
 }
 
@@ -157,7 +162,7 @@ pub fn cleanup_leases(
             continue;
         }
         let lease = load_lease(&path)?;
-        if running_lane_keys.contains(&lease.lane_key) {
+        if running_lane_keys.contains(&lease.lane_key) && resource_lease_owner_active(&lease) {
             continue;
         }
         fs::remove_file(&path).map_err(|source| ResourceLeaseError::WriteLease {
@@ -186,18 +191,28 @@ fn acquire_zend_daemon_lease(
             continue;
         }
         let lease = load_lease(&path)?;
-        if lease.lane_key == lane_key {
+        if lease.lane_key == lane_key && resource_lease_owner_active(&lease) {
             return Ok(lease);
         }
+        remove_stale_lease_if_needed(&path, &lease)?;
     }
 
     for port in ZEND_DAEMON_PORT_START..=ZEND_DAEMON_PORT_END {
         let path = lease_path(&root, port);
+        if path.exists() {
+            let lease = load_lease(&path)?;
+            remove_stale_lease_if_needed(&path, &lease)?;
+            if path.exists() {
+                continue;
+            }
+        }
         let lease = ResourceLease {
             schema_version: RESOURCE_LEASE_SCHEMA_VERSION.to_string(),
             resource: "zend_daemon_port".to_string(),
             lane_key: lane_key.to_string(),
             port,
+            owner_pid: Some(process::id()),
+            owner_process_start_ticks: current_process_start_ticks(),
             acquired_at: Utc::now(),
         };
         if try_write_lease(&path, &lease)? {
@@ -303,6 +318,45 @@ fn lease_path(root: &Path, port: u16) -> PathBuf {
     root.join(format!("zend-daemon-port-{port}.json"))
 }
 
+fn remove_stale_lease_if_needed(
+    path: &Path,
+    lease: &ResourceLease,
+) -> Result<(), ResourceLeaseError> {
+    if resource_lease_owner_active(lease) {
+        return Ok(());
+    }
+    fs::remove_file(path).map_err(|source| ResourceLeaseError::WriteLease {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn resource_lease_owner_active(lease: &ResourceLease) -> bool {
+    let Some(pid) = lease.owner_pid else {
+        return false;
+    };
+    let proc_path = PathBuf::from("/proc").join(pid.to_string());
+    if !proc_path.exists() {
+        return false;
+    }
+    let Some(expected_ticks) = lease.owner_process_start_ticks else {
+        return true;
+    };
+    process_start_ticks_for_pid(pid) == Some(expected_ticks)
+}
+
+fn current_process_start_ticks() -> Option<u64> {
+    process_start_ticks_for_pid(process::id())
+}
+
+fn process_start_ticks_for_pid(pid: u32) -> Option<u64> {
+    let path = PathBuf::from("/proc").join(pid.to_string()).join("stat");
+    let raw = fs::read_to_string(path).ok()?;
+    let close_paren = raw.rfind(')')?;
+    let rest = raw.get(close_paren + 1..)?.trim();
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +441,8 @@ mod tests {
             resource: "zend_daemon_port".to_string(),
             lane_key: "demo:lane".to_string(),
             port: ZEND_DAEMON_PORT_START,
+            owner_pid: Some(process::id()),
+            owner_process_start_ticks: current_process_start_ticks(),
             acquired_at: Utc::now(),
         };
         fs::write(&path, serde_json::to_string_pretty(&lease).expect("json")).expect("write lease");
@@ -408,6 +464,8 @@ mod tests {
             resource: "zend_daemon_port".to_string(),
             lane_key: "demo:lane".to_string(),
             port: ZEND_DAEMON_PORT_START,
+            owner_pid: Some(process::id()),
+            owner_process_start_ticks: current_process_start_ticks(),
             acquired_at: Utc::now(),
         };
         fs::write(&path, serde_json::to_string_pretty(&lease).expect("json")).expect("write lease");
@@ -416,5 +474,53 @@ mod tests {
 
         assert!(changed);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn cleanup_leases_reclaims_dead_owner_even_when_lane_looks_running() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = lease_root(temp.path());
+        fs::create_dir_all(&root).expect("lease dir");
+        let path = lease_path(&root, ZEND_DAEMON_PORT_START);
+        let lease = ResourceLease {
+            schema_version: RESOURCE_LEASE_SCHEMA_VERSION.to_string(),
+            resource: "zend_daemon_port".to_string(),
+            lane_key: "demo:lane".to_string(),
+            port: ZEND_DAEMON_PORT_START,
+            owner_pid: Some(u32::MAX),
+            owner_process_start_ticks: Some(u64::MAX),
+            acquired_at: Utc::now(),
+        };
+        fs::write(&path, serde_json::to_string_pretty(&lease).expect("json")).expect("write lease");
+
+        let changed = cleanup_leases(temp.path(), &BTreeSet::from(["demo:lane".to_string()]))
+            .expect("cleanup");
+
+        assert!(changed);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn acquire_zend_daemon_lease_reclaims_stale_owner() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = lease_root(temp.path());
+        fs::create_dir_all(&root).expect("lease dir");
+        let path = lease_path(&root, ZEND_DAEMON_PORT_START);
+        let stale = ResourceLease {
+            schema_version: "raspberry.resource-lease.v1".to_string(),
+            resource: "zend_daemon_port".to_string(),
+            lane_key: "old:lane".to_string(),
+            port: ZEND_DAEMON_PORT_START,
+            owner_pid: None,
+            owner_process_start_ticks: None,
+            acquired_at: Utc::now(),
+        };
+        fs::write(&path, serde_json::to_string_pretty(&stale).expect("json")).expect("write lease");
+
+        let lease = acquire_zend_daemon_lease(temp.path(), "demo:lane").expect("lease");
+
+        assert_eq!(lease.port, ZEND_DAEMON_PORT_START);
+        assert_eq!(lease.lane_key, "demo:lane");
+        assert_eq!(lease.owner_pid, Some(process::id()));
     }
 }
