@@ -1,27 +1,33 @@
 {
-  "timestamp": "2026-03-26T19:14:45.938280542Z",
-  "current_node": "fork",
+  "timestamp": "2026-03-26T19:14:46.170979756Z",
+  "current_node": "merge",
   "completed_nodes": [
     "start",
-    "fork"
+    "fork",
+    "merge"
   ],
   "node_retries": {
+    "merge": 1,
     "start": 1,
     "fork": 1
   },
   "context_values": {
+    "parallel.fan_in.best_id": "branch1",
     "internal.run_id": "01KMNS428QBQDRA24CK1C5VHPZ",
     "internal.retry_count.start": 1,
+    "parallel.fan_in.best_outcome": "success",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNS428QBQDRA24CK1C5VHPZ/worktree",
     "failure_class": "",
     "internal.fidelity": "compact",
     "thread.start.current_node": "fork",
-    "internal.thread_id": "start",
-    "current.preamble": "Goal: Test parallel and fan-in execution\n",
+    "internal.thread_id": "fork",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
     "outcome": "success",
+    "thread.fork.current_node": "merge",
+    "internal.retry_count.merge": 1,
     "parallel.branch_count": 2,
     "graph.goal": "Test parallel and fan-in execution",
-    "current_node": "fork",
+    "current_node": "merge",
     "internal.node_visit_count": 1,
     "failure_signature": "",
     "parallel.results": [
@@ -38,6 +44,15 @@
   },
   "logs": [],
   "node_outcomes": {
+    "merge": {
+      "status": "success",
+      "context_updates": {
+        "parallel.fan_in.best_id": "branch1",
+        "parallel.fan_in.best_outcome": "success"
+      },
+      "notes": "[Simulated] Selected best candidate: branch1",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
@@ -50,8 +65,9 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "merge",
+  "next_node_id": "review",
   "node_visits": {
+    "merge": 1,
     "start": 1,
     "fork": 1
   }
