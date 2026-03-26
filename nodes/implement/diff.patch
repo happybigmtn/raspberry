@@ -1,0 +1,178 @@
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index 72fb59ac..de3c9e0c 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -713,7 +713,7 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         if child_unit_ids.len() < MIN_PLAN_CHILDREN {
+             continue;
+         }
+-        let preflight_id = format!("{plan_prefix}-parent-holistic-preflight");
++        let preflight_id = format!("{plan_prefix}-holistic-preflight");
+         if blueprint.units.iter().any(|unit| unit.id == preflight_id) {
+             continue;
+         }
+@@ -738,7 +738,7 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+                 unit_id: preflight_id.clone(),
+                 title: format!("{plan_prefix} Holistic Preflight"),
+                 family: "holistic-preflight".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-holistic-preflight-verified"),
++                milestone_id: format!("{plan_prefix}-holistic-preflight-verified"),
+                 goal: format!(
+                     "Preflight the integrated parent plan `{plan_prefix}` before holistic review.\n\n\
+                      Integrated child units:\n\
+@@ -768,10 +768,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         let minimax_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-holistic-review-minimax"),
++                unit_id: format!("{plan_prefix}-holistic-review-minimax"),
+                 title: format!("{plan_prefix} Holistic Review Minimax"),
+                 family: "holistic-review-minimax".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-holistic-review-minimax-reviewed"),
++                milestone_id: format!("{plan_prefix}-holistic-review-minimax-reviewed"),
+                 goal: format!(
+                     "First-pass holistic parent review for integrated plan `{plan_prefix}`.\n\n\
+                      Integrated child units:\n\
+@@ -801,10 +801,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         let deep_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-holistic-review-deep"),
++                unit_id: format!("{plan_prefix}-holistic-review-deep"),
+                 title: format!("{plan_prefix} Holistic Deep Review"),
+                 family: "holistic-review-deep".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-holistic-review-deep-reviewed"),
++                milestone_id: format!("{plan_prefix}-holistic-review-deep-reviewed"),
+                 goal: format!(
+                     "Deep synthesis pass for integrated parent plan `{plan_prefix}`.\n\n\
+                      Integrated child units:\n\
+@@ -838,10 +838,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         let mut current_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-holistic-review-adjudication"),
++                unit_id: format!("{plan_prefix}-holistic-review-adjudication"),
+                 title: format!("{plan_prefix} Holistic Adjudication"),
+                 family: "holistic-review-adjudication".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-holistic-review-adjudicated"),
++                milestone_id: format!("{plan_prefix}-holistic-review-adjudicated"),
+                 goal: format!(
+                     "Final parent adjudication pass for integrated plan `{plan_prefix}`.\n\n\
+                      Integrated child units:\n\
+@@ -885,10 +885,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+             current_ref = append_parent_report_unit(
+                 blueprint,
+                 ParentReportSpec {
+-                    unit_id: format!("{plan_prefix}-parent-investigate"),
++                    unit_id: format!("{plan_prefix}-investigate"),
+                     title: format!("{plan_prefix} Investigate"),
+                     family: "investigate".to_string(),
+-                    milestone_id: format!("{plan_prefix}-parent-investigated"),
++                    milestone_id: format!("{plan_prefix}-investigated"),
+                     goal: format!(
+                         "Root-cause investigation for integrated parent plan `{plan_prefix}`.\n\n\
+                          Run this lane as the non-interactive `/investigate` stage for plans whose risk profile or review findings justify deeper causal analysis.\n\
+@@ -915,10 +915,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+             current_ref = append_parent_report_unit(
+                 blueprint,
+                 ParentReportSpec {
+-                    unit_id: format!("{plan_prefix}-parent-design-review"),
++                    unit_id: format!("{plan_prefix}-design-review"),
+                     title: format!("{plan_prefix} Design Review"),
+                     family: "design-review".to_string(),
+-                    milestone_id: format!("{plan_prefix}-parent-design-reviewed"),
++                    milestone_id: format!("{plan_prefix}-design-reviewed"),
+                     goal: format!(
+                         "Parent-level design and interaction review for integrated plan `{plan_prefix}`.\n\n\
+                          Review the whole integrated UI/TUI surface for spacing, hierarchy, consistency, awkward AI-generated patterns, and interaction quality.\n\n\
+@@ -943,10 +943,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         current_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-qa"),
++                unit_id: format!("{plan_prefix}-qa"),
+                 title: format!("{plan_prefix} QA"),
+                 family: "qa".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-qa-reviewed"),
++                milestone_id: format!("{plan_prefix}-qa-reviewed"),
+                 goal: format!(
+                     "Integrated QA pass for parent plan `{plan_prefix}`.\n\n\
+                      Exercise the end-to-end parent flow as far as this repo can support non-interactively. Focus on integrated regressions, broken workflows, missing validation, and ship-risk.\n\n\
+@@ -971,10 +971,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+             current_ref = append_parent_report_unit(
+                 blueprint,
+                 ParentReportSpec {
+-                    unit_id: format!("{plan_prefix}-parent-cso"),
++                    unit_id: format!("{plan_prefix}-cso"),
+                     title: format!("{plan_prefix} CSO"),
+                     family: "cso".to_string(),
+-                    milestone_id: format!("{plan_prefix}-parent-cso-reviewed"),
++                    milestone_id: format!("{plan_prefix}-cso-reviewed"),
+                     goal: format!(
+                         "Security and control-plane review for parent plan `{plan_prefix}`.\n\n\
+                          Review secrets handling, dependency and control-plane risk, trust boundaries, CI/deploy exposure, and residual attack surface at the integrated parent level.\n\n\
+@@ -1000,10 +1000,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+             current_ref = append_parent_report_unit(
+                 blueprint,
+                 ParentReportSpec {
+-                    unit_id: format!("{plan_prefix}-parent-benchmark"),
++                    unit_id: format!("{plan_prefix}-benchmark"),
+                     title: format!("{plan_prefix} Benchmark"),
+                     family: "benchmark".to_string(),
+-                    milestone_id: format!("{plan_prefix}-parent-benchmarked"),
++                    milestone_id: format!("{plan_prefix}-benchmarked"),
+                     goal: format!(
+                         "Performance review for parent plan `{plan_prefix}`.\n\n\
+                          Check for regressions, missing baselines, or obvious throughput / latency / polling inefficiencies introduced by the integrated parent work.\n\n\
+@@ -1027,10 +1027,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         current_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-ship-readiness"),
++                unit_id: format!("{plan_prefix}-ship-readiness"),
+                 title: format!("{plan_prefix} Ship Readiness"),
+                 family: "ship-readiness".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-ship-ready"),
++                milestone_id: format!("{plan_prefix}-ship-ready"),
+                 goal: format!(
+                     "Explicit ship-readiness gate for parent plan `{plan_prefix}`.\n\n\
+                      Decide whether the integrated parent implementation is actually ready to ship after holistic review, QA, security, and performance checks.\n\n\
+@@ -1055,10 +1055,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+             current_ref = append_parent_report_unit(
+                 blueprint,
+                 ParentReportSpec {
+-                    unit_id: format!("{plan_prefix}-parent-land-and-deploy"),
++                    unit_id: format!("{plan_prefix}-land-and-deploy"),
+                     title: format!("{plan_prefix} Land And Deploy"),
+                     family: "land-and-deploy".to_string(),
+-                    milestone_id: format!("{plan_prefix}-parent-deploy-verified"),
++                    milestone_id: format!("{plan_prefix}-deploy-verified"),
+                     goal: format!(
+                         "Deploy-aware verification for parent plan `{plan_prefix}`.\n\n\
+                          This lane exists only for plans whose integrated surface suggests deploy or service exposure. Record what would be landed, what health evidence exists, and any canary or rollout blockers.\n\n\
+@@ -1086,10 +1086,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         current_ref = append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-document-release"),
++                unit_id: format!("{plan_prefix}-document-release"),
+                 title: format!("{plan_prefix} Document Release"),
+                 family: "document-release".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-docs-released"),
++                milestone_id: format!("{plan_prefix}-docs-released"),
+                 goal: format!(
+                     "Documentation sync gate for parent plan `{plan_prefix}`.\n\n\
+                      Bring release-facing documentation back into alignment with what actually shipped or is ready to ship at the integrated parent level.\n\n\
+@@ -1113,10 +1113,10 @@ fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+         append_parent_report_unit(
+             blueprint,
+             ParentReportSpec {
+-                unit_id: format!("{plan_prefix}-parent-retro"),
++                unit_id: format!("{plan_prefix}-retro"),
+                 title: format!("{plan_prefix} Retro"),
+                 family: "retro".to_string(),
+-                milestone_id: format!("{plan_prefix}-parent-retro-complete"),
++                milestone_id: format!("{plan_prefix}-retro-complete"),
+                 goal: format!(
+                     "Retrospective tail for parent plan `{plan_prefix}`.\n\n\
+                      Summarize what shipped, what slowed the work down, which findings were most valuable, and what Fabro or workflow-level improvements would most reduce repeat failures.\n\n\
