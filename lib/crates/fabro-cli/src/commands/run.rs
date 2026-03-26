@@ -3435,7 +3435,7 @@ include = ["*.md"]
         let defaults = RunDefaults::default();
         let (model, provider) = resolve_model_provider(None, None, None, &defaults, &graph);
         assert_eq!(model, "MiniMax-M2.7-highspeed");
-        assert_eq!(provider, Some("anthropic".to_string()));
+        assert_eq!(provider, Some("minimax".to_string()));
     }
 
     #[test]

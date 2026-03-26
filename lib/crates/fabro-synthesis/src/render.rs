@@ -31,6 +31,10 @@ pub struct ReconcileRequest<'a> {
     pub blueprint: &'a ProgramBlueprint,
     pub current_repo: &'a Path,
     pub output_repo: &'a Path,
+    /// When true, skip writing implementation follow-ons to output_repo.
+    /// Used by `synth evolve --preview-root` to keep the preview bounded to
+    /// the manifest and steering report without extra generated programs.
+    pub preview_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +205,13 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
         program: &req.blueprint.program.id,
     })?;
     let evolved = refine_blueprint_from_evidence(req.blueprint, req.current_repo);
-    let evolved = augment_with_implementation_follow_on_units(evolved, req.current_repo)?;
+    // In preview mode, skip augmentation so the preview stays bounded to the
+    // current manifest without extra implementation follow-on units.
+    let evolved = if req.preview_mode {
+        evolved
+    } else {
+        augment_with_implementation_follow_on_units(evolved, req.current_repo)?
+    };
 
     let mut findings = diff_blueprints(&current, &evolved);
     findings.extend(input_findings(&evolved, req.current_repo));
@@ -221,13 +231,17 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
 
     let recommendations = evolve_recommendations(&evolved, req.current_repo, &findings);
     let mut report = render_evolved_blueprint(&evolved, &current, req.output_repo)?;
-    report
-        .written_files
-        .extend(render_implementation_follow_ons(
-            &evolved,
-            req.current_repo,
-            req.output_repo,
-        )?);
+    // In preview mode, skip rendering implementation follow-ons so the preview
+    // only contains the manifest and steering report.
+    if !req.preview_mode {
+        report
+            .written_files
+            .extend(render_implementation_follow_ons(
+                &evolved,
+                req.current_repo,
+                req.output_repo,
+            )?);
+    }
     Ok(ReconcileReport {
         findings,
         recommendations,
@@ -1536,6 +1550,7 @@ fn render_evolved_blueprint(
         .map(|unit| (&unit.id, unit))
         .collect::<BTreeMap<_, _>>();
 
+    let mut any_lane_changed = false;
     for unit in &desired.units {
         let current_unit = current_units.get(&unit.id);
         for lane in &unit.lanes {
@@ -1546,13 +1561,19 @@ fn render_evolved_blueprint(
                     continue;
                 }
             }
+            any_lane_changed = true;
 
             let files = render_lane(desired, &layout, &unit.id, lane)?;
             written_files.extend(files);
         }
     }
 
-    written_files.push(write_manifest(desired, &layout)?);
+    // Only write the manifest if something actually changed.
+    // This keeps preview roots bounded to the seeded content when
+    // no reconciliation differences exist.
+    if any_lane_changed {
+        written_files.push(write_manifest(desired, &layout)?);
+    }
     Ok(RenderReport { written_files })
 }
 

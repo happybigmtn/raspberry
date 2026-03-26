@@ -889,6 +889,7 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
             blueprint: &authored.blueprint,
             current_repo: &args.target_repo,
             output_repo,
+            preview_mode: args.preview_root.is_some(),
         })?;
         write_deterministic_steering_report(
             &program,
