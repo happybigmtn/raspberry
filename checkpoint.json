@@ -1,18 +1,20 @@
 {
-  "timestamp": "2026-03-26T20:14:31.704545946Z",
-  "current_node": "verify",
+  "timestamp": "2026-03-26T20:14:34.551438176Z",
+  "current_node": "quality",
   "completed_nodes": [
     "start",
     "preflight",
     "contract",
     "implement",
-    "verify"
+    "verify",
+    "quality"
   ],
   "node_retries": {
     "contract": 1,
     "preflight": 1,
     "verify": 1,
     "implement": 1,
+    "quality": 1,
     "start": 1
   },
   "context_values": {
@@ -24,18 +26,19 @@
     "internal.retry_count.contract": 1,
     "graph.goal": "Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
     "internal.fidelity": "compact",
-    "current_node": "verify",
-    "outcome": "success",
-    "failure_class": "",
+    "current_node": "quality",
+    "outcome": "fail",
+    "failure_class": "deterministic",
     "command.output": "",
     "internal.retry_count.start": 1,
     "thread.contract.current_node": "implement",
     "internal.retry_count.preflight": 1,
-    "current.preamble": "Goal: Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\ntrue\ntrue`\n  - Stdout: (empty)\n  - Stderr: (empty)\n- **contract**: success\n  - Model: MiniMax-M2.7-highspeed, 22.7k tokens in / 362 out\n- **implement**: success\n  - Model: MiniMax-M2.7-highspeed, 21.7k tokens in / 609 out\n  - Files: test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json, test/fixtures/raspberry-supervisor/.raspberry/program-state.json\n",
-    "failure_signature": "",
+    "current.preamble": "Goal: Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\ntrue\ntrue`\n  - Stdout: (empty)\n  - Stderr: (empty)\n- **contract**: success\n  - Model: MiniMax-M2.7-highspeed, 22.7k tokens in / 362 out\n- **implement**: success\n  - Model: MiniMax-M2.7-highspeed, 21.7k tokens in / 609 out\n  - Files: test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json, test/fixtures/raspberry-supervisor/.raspberry/program-state.json\n- **verify**: success\n  - Script: `true`\n  - Stdout: (empty)\n  - Stderr: (empty)\n",
+    "failure_signature": "quality|deterministic|script failed with exit code: <n>",
     "command.stderr": "",
     "graph.rankdir": "LR",
-    "internal.thread_id": "implement",
+    "thread.verify.current_node": "quality",
+    "internal.thread_id": "verify",
     "internal.run_id": "01KMNVAPQXRC9CGMA8B4YCSWJ8",
     "internal.retry_count.verify": 1,
     "internal.retry_count.implement": 1,
@@ -43,6 +46,7 @@
     "response.contract": "Contract written to `.fabro-work/contract.md`. The contract defines:\n\n**Deliverables:**\n- CI workflow verification and updates if needed\n- Test crates verified running: fabro-db, raspberry-supervisor, fabro-mcp, fabro-github\n\n**Acceptance Criteria (8 verifiable conditions):**\n1. `cargo fmt --check --all` passes\n2. `cargo clippy --workspace -- -D warnings` passes\n3. `cargo nextest run -p fabro-db` shows ≥5 tests passing\n4. `cargo nextest run -p raspberry-supervisor` passes with edge case tests\n5. `cargo nextest run -p fabro-mcp` shows ≥10 tests passing\n6. `cargo nextest run -p fabro-github` shows ≥7 tests passing\n7. CI workflow runs `cargo nextest run --workspace` covering all tests\n8. No `--exclude` flags in CI test job\n\n**Out of Scope:**\n- Adding new tests (other lanes)\n- Test infrastructure changes\n- CI matrix expansion\n- Workspace configuration changes",
     "last_stage": "implement",
     "thread.implement.current_node": "verify",
+    "internal.retry_count.quality": 1,
     "internal.node_visit_count": 1
   },
   "logs": [],
@@ -106,12 +110,28 @@
         "test/fixtures/raspberry-supervisor/.raspberry/program-state.json"
       ],
       "duration_ms": 1193344
+    },
+    "quality": {
+      "status": "fail",
+      "context_updates": {
+        "command.stderr": "",
+        "command.output": ""
+      },
+      "failure": {
+        "message": "Script failed with exit code: 1",
+        "failure_class": "deterministic"
+      },
+      "duration_ms": 1150
     }
   },
-  "next_node_id": "quality",
+  "next_node_id": "fixup",
+  "loop_failure_signatures": {
+    "quality|deterministic|script failed with exit code: <n>": 1
+  },
   "node_visits": {
     "implement": 1,
     "verify": 1,
+    "quality": 1,
     "preflight": 1,
     "start": 1,
     "contract": 1
