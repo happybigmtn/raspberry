@@ -1,20 +1,23 @@
 {
-  "timestamp": "2026-03-26T19:01:54.981650124Z",
-  "current_node": "merge",
+  "timestamp": "2026-03-26T19:01:55.011165296Z",
+  "current_node": "review",
   "completed_nodes": [
     "start",
     "fork",
-    "merge"
+    "merge",
+    "review"
   ],
   "node_retries": {
     "fork": 1,
+    "start": 1,
     "merge": 1,
-    "start": 1
+    "review": 1
   },
   "context_values": {
+    "last_stage": "review",
     "internal.retry_count.fork": 1,
     "parallel.fan_in.best_id": "branch1",
-    "current_node": "merge",
+    "current_node": "review",
     "parallel.branch_count": 2,
     "internal.run_id": "01KMNRAQEW32N93EGTCVKYDK1M",
     "internal.node_visit_count": 1,
@@ -22,13 +25,15 @@
     "internal.retry_count.start": 1,
     "graph.goal": "Test parallel and fan-in execution",
     "internal.retry_count.merge": 1,
-    "internal.thread_id": "fork",
+    "internal.thread_id": "merge",
     "internal.fidelity": "compact",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNRAQEW32N93EGTCVKYDK1M/worktree",
-    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n- **merge**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.fan_in.best_id: branch1\n- parallel.fan_in.best_outcome: success\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
     "failure_signature": "",
     "thread.fork.current_node": "merge",
     "parallel.fan_in.best_outcome": "success",
+    "internal.retry_count.review": 1,
+    "response.review": "[Simulated] Response for stage: review",
     "outcome": "success",
     "parallel.results": [
       {
@@ -40,10 +45,22 @@
         "status": "success"
       }
     ],
-    "failure_class": ""
+    "thread.merge.current_node": "review",
+    "failure_class": "",
+    "last_response": "[Simulated] Response for stage: review"
   },
   "logs": [],
   "node_outcomes": {
+    "review": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "[Simulated] Response for stage: review",
+        "response.review": "[Simulated] Response for stage: review",
+        "last_stage": "review"
+      },
+      "notes": "[Simulated] review",
+      "duration_ms": 0
+    },
     "merge": {
       "status": "success",
       "context_updates": {
@@ -65,10 +82,11 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "review",
+  "next_node_id": "exit",
   "node_visits": {
-    "start": 1,
     "fork": 1,
-    "merge": 1
+    "review": 1,
+    "merge": 1,
+    "start": 1
   }
 }
