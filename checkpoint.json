@@ -1,17 +1,21 @@
 {
-  "timestamp": "2026-03-26T20:38:28.527095532Z",
-  "current_node": "preflight",
+  "timestamp": "2026-03-26T20:39:26.304959375Z",
+  "current_node": "contract",
   "completed_nodes": [
     "start",
-    "preflight"
+    "preflight",
+    "contract"
   ],
   "node_retries": {
     "preflight": 1,
+    "contract": 1,
     "start": 1
   },
   "context_values": {
     "failure_signature": "",
+    "response.contract": "Contract written to `.fabro-work/contract.md`. Here's the summary:\n\n## Contract Summary\n\n**Goal:** Write `bootstrap_verify` — a nextest test that proves `render_blueprint` produces the correct package structure for a greenfield bootstrap lane, including all five durable artifacts.\n\n**What changes:**\n\n1. **`Cargo.toml`** — add `fabro-workflows` dev-dependency (needed for `write_text_atomic`)\n2. **`blueprint.rs`** — add `BOOTSTRAP_REQUIRED_ARTIFACTS` constant, a unit accessor, and a lane helper (`is_bootstrap()`)\n3. **`render.rs`** — extend lane rendering to write the five `.md` placeholder files\n4. **`tests/bootstrap_verify.rs`** — new test that renders a minimal blueprint with one bootstrap lane and asserts all outputs exist\n5. **`tests/fixtures/bootstrap-verify/blueprint.yaml`** — minimal fixture\n\n**What does NOT change:** No workflow execution, no planning/authoring, no reconcile logic, no multi-unit complexity.",
     "command.output": "",
+    "last_response": "Contract written to `.fabro-work/contract.md`. Here's the summary:\n\n## Contract Summary\n\n**Goal:** Write `bootstrap_verify` — a nextest test that proves `render_blueprint` produces the correct packa",
     "thread.start.current_node": "preflight",
     "internal.retry_count.preflight": 1,
     "failure_class": "",
@@ -23,15 +27,33 @@
     "internal.fidelity": "compact",
     "command.stderr": "   Compiling fabro-util v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-util)\n   Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-model)\n   Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-github)\n   Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-config)\n   Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-llm)\n   Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-sandbox)\n   Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-mcp)\n   Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-agent)\n   Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-graphviz)\n   Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-validate)\n   Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-git-storage)\n   Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-devcontainer)\n   Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-hooks)\n   Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-retro)\n   Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-interview)\n   Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-workflows)\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/raspberry-supervisor)\n   Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-synthesis)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.60s\n────────────\n Nextest run ID 881ea9ad-ff2d-45cf-9227-41f8f3c15920 with nextest profile: default\n    Starting 0 tests across 2 binaries (95 tests skipped)\n────────────\n     Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\nerror: no tests to run\n(hint: use `--no-tests` to customize)\n",
     "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
-    "current_node": "preflight",
+    "current_node": "contract",
     "graph.goal": "Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
-    "current.preamble": "Goal: Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
-    "internal.thread_id": "start",
+    "current.preamble": "Goal: Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- bootstrap_verify\nelse\n  cargo test -p fabro-synthesis -- bootstrap_verify\nfi\ntrue`\n  - Stdout: (empty)\n  - Stderr:\n    ```\n    (1 lines omitted)\n       Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-model)\n       Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-github)\n       Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-config)\n       Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-llm)\n       Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-sandbox)\n       Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-mcp)\n       Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-agent)\n       Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-graphviz)\n       Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-validate)\n       Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-git-storage)\n       Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-devcontainer)\n       Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-hooks)\n       Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-retro)\n       Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-interview)\n       Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-workflows)\n       Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/raspberry-supervisor)\n       Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMNXWBQTRHGV0EFMV8GG538N/worktree/lib/crates/fabro-synthesis)\n        Finished `test` profile [unoptimized + debuginfo] target(s) in 32.60s\n    ────────────\n     Nextest run ID 881ea9ad-ff2d-45cf-9227-41f8f3c15920 with nextest profile: default\n        Starting 0 tests across 2 binaries (95 tests skipped)\n    ────────────\n         Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\n    error: no tests to run\n    (hint: use `--no-tests` to customize)\n    ```\n",
+    "last_stage": "contract",
+    "internal.thread_id": "preflight",
     "internal.node_visit_count": 1,
-    "outcome": "success"
+    "outcome": "success",
+    "thread.preflight.current_node": "contract",
+    "internal.retry_count.contract": 1
   },
   "logs": [],
   "node_outcomes": {
+    "contract": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "Contract written to `.fabro-work/contract.md`. Here's the summary:\n\n## Contract Summary\n\n**Goal:** Write `bootstrap_verify` — a nextest test that proves `render_blueprint` produces the correct packa",
+        "last_stage": "contract",
+        "response.contract": "Contract written to `.fabro-work/contract.md`. Here's the summary:\n\n## Contract Summary\n\n**Goal:** Write `bootstrap_verify` — a nextest test that proves `render_blueprint` produces the correct package structure for a greenfield bootstrap lane, including all five durable artifacts.\n\n**What changes:**\n\n1. **`Cargo.toml`** — add `fabro-workflows` dev-dependency (needed for `write_text_atomic`)\n2. **`blueprint.rs`** — add `BOOTSTRAP_REQUIRED_ARTIFACTS` constant, a unit accessor, and a lane helper (`is_bootstrap()`)\n3. **`render.rs`** — extend lane rendering to write the five `.md` placeholder files\n4. **`tests/bootstrap_verify.rs`** — new test that renders a minimal blueprint with one bootstrap lane and asserts all outputs exist\n5. **`tests/fixtures/bootstrap-verify/blueprint.yaml`** — minimal fixture\n\n**What does NOT change:** No workflow execution, no planning/authoring, no reconcile logic, no multi-unit complexity."
+      },
+      "notes": "Stage completed: contract",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 40358,
+        "output_tokens": 230
+      },
+      "duration_ms": 56349
+    },
     "preflight": {
       "status": "success",
       "context_updates": {
@@ -46,9 +68,10 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "contract",
+  "next_node_id": "implement",
   "node_visits": {
     "start": 1,
-    "preflight": 1
+    "preflight": 1,
+    "contract": 1
   }
 }
