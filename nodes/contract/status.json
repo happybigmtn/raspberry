@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "last_response": "Contract written to `.fabro-work/contract.md`. Here's a summary:\n\n## Summary\n\n**Root Cause**: The failing test `integrate_lane_squash_merges_run_branch_into_trunk` creates a local file path as a git r",
+    "response.contract": "Contract written to `.fabro-work/contract.md`. Here's a summary:\n\n## Summary\n\n**Root Cause**: The failing test `integrate_lane_squash_merges_run_branch_into_trunk` creates a local file path as a git remote, but the `fabro-workflows` direct integration code correctly requires SSH or GitHub HTTPS URLs (per `resolve_ssh_push_url` in `git.rs:207`).\n\n**Fix Required**: The test needs to use a mock SSH/HTTPS-compatible remote setup instead of a local file path. This is purely a test infrastructure fix—no production code changes.\n\n**Deliverables**:\n1. Fix `lib/crates/raspberry-supervisor/src/integration.rs` - make the integration test use a valid remote URL format\n2. Create `docs/rpi-edge-case-tests.md` - document the edge cases\n\n**Acceptance Criteria**:\n- Both proof commands pass (exit 0)\n- No regressions in other tests\n- Tests use mockable remote configurations (no network dependencies)"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 44508,
+    "output_tokens": 230
+  },
+  "duration_ms": 229304,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T22:40:31.677593769+00:00",
+  "updated_at": "2026-03-26T22:40:31.677604985+00:00"
+}
