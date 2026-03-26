@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 2455,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:42:25.908237613+00:00",
+  "updated_at": "2026-03-26T20:42:25.908239212+00:00",
+  "notes": "Script completed: if cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p raspberry-supervisor -- integration autodev_cycle && cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nelse\n  cargo test -p raspberry-supervisor -- integration autodev_cycle && cargo test -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nfi"
+}
