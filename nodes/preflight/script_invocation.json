@@ -1,0 +1,5 @@
+{
+  "command": "set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p raspberry-supervisor -- integration autodev_cycle && cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nelse\n  cargo test -p raspberry-supervisor -- integration autodev_cycle && cargo test -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nfi\ntrue",
+  "language": "shell",
+  "timeout_ms": null
+}
