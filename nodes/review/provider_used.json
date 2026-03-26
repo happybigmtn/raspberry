@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "kimi",
+  "requested_model": "kimi-k2.5",
+  "provider": "kimi",
+  "model": "kimi-k2.5",
+  "served_model": "k2p5",
+  "fallback_reason": null,
+  "codex_slot": null,
+  "command": "prompt=\"$(cat '/home/r/.fabro/cli/run.V3d7Ki/prompt.txt')\" && pi --provider kimi-coding --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,grep,find,ls --model k2p5 --thinking high --append-system-prompt 'You are executing the REVIEW stage. Read the prompt and the lane-scoped durable artifacts named there. Write only to the exact review or promotion paths named in the prompt context. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. If this lane is report-only, review truthfully and record missing evidence or blockers without inventing code changes. If this lane is implementation-facing, evaluate correctness, proof status, conventions, and remaining blockers before approving.' \"$prompt\""
+}

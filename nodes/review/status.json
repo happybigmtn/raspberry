@@ -1,0 +1,25 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.review": "## Review Complete\n\n### Artifacts Written\n- `outputs/provider-policy-stabilization/review.md` — Comprehensive nemesis-style security review\n\n### Key Findings\n\n| Finding | Severity | Location |\n|---------|----------|----------|\n| **Hardcoded model selection** | Critical | `fabro-synthesis/src/render.rs:2058-2079` |\n| CLI quota detection gap | Medium | `fabro-workflows/src/backend/cli.rs:799-817` |\n| Missing provider health in status | Medium | `raspberry-supervisor/src/autodev.rs` |\n| Missing usage tracking | Medium | `raspberry-supervisor/src/autodev.rs` |\n\n### Verified Invariants\n- ✅ **API path correctly handles quota** — Uses `sdk_err.failover_eligible()` which returns true for `QuotaExceeded`\n- ✅ **Policy.rs chains are well-structured** — `WRITE_CHAIN`, `REVIEW_CHAIN`, `SYNTH_CHAIN` properly defined\n- ✅ **CLI backend uses central policy for fallback chains** — `central_policy_fallback_targets()` called correctly\n- ✅ **Process cleanup safe** — `cleanup_cli_scratch()` called before fallback attempts\n\n### Security Review Summary\n\n**Pass 1 (Trust Boundaries):**\n- Authority drift identified: synthesis layer bypassing policy layer for model selection\n- Error message text is not a stable interface for quota detection\n- No cryptographic provider attestation (acceptable for Phase 0)\n\n**Pass 2 (Coupled State):**\n- **Split-brain risk:** `render.rs` hardcoded MiniMax for holistic review lanes vs. REVIEW_CHAIN ordering (Kimi first)\n- Quota state must not consume retry budget when triggering fallback\n- Missing per-lane provider context prevents debugging provider-specific failures\n\n### Verdict\n**Spec is sound.** Implementation work is appropriately scoped for Phase 0. The critical blocker (hardcoded model selection) is clearly identified and fixable by replacing direct `ModelTarget` construction with `automation_primary_target()` calls.",
+    "last_response": "## Review Complete\n\n### Artifacts Written\n- `outputs/provider-policy-stabilization/review.md` — Comprehensive nemesis-style security review\n\n### Key Findings\n\n| Finding | Severity | Location |\n|----",
+    "last_stage": "review"
+  },
+  "notes": "Stage completed: review",
+  "usage": {
+    "model": "k2p5",
+    "input_tokens": 903,
+    "output_tokens": 434
+  },
+  "files_written": [
+    "outputs/provider-policy-stabilization/review.md"
+  ],
+  "files_touched": [
+    "outputs/provider-policy-stabilization/review.md"
+  ],
+  "duration_ms": 424634,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T18:37:20.206219043+00:00",
+  "updated_at": "2026-03-26T18:37:20.206222894+00:00"
+}
