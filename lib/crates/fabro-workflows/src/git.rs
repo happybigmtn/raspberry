@@ -207,6 +207,10 @@ pub fn resolve_ssh_push_url(repo: &Path, remote: &str) -> Result<String> {
     if url.starts_with("file://") {
         return Ok(url);
     }
+    // Accept absolute paths as local file:// URLs (git clone of file:// URL stores path only).
+    if url.starts_with('/') || url.starts_with("~") {
+        return Ok(format!("file://{url}"));
+    }
     Err(git_error(format!(
         "remote `{remote}` must use SSH or be convertible from GitHub HTTPS, got `{url}`"
     )))

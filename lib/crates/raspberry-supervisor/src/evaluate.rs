@@ -189,6 +189,8 @@ pub enum EvaluateError {
     Manifest(#[from] crate::manifest::ManifestError),
     #[error(transparent)]
     ProgramState(#[from] ProgramStateError),
+    #[error("recursive evaluation cycle detected at {manifest}")]
+    RecursiveEvaluationCycle { manifest: std::path::PathBuf },
 }
 
 pub fn evaluate_program(manifest_path: &Path) -> Result<EvaluatedProgram, EvaluateError> {
@@ -205,14 +207,9 @@ pub(crate) fn evaluate_program_internal(
 ) -> Result<EvaluatedProgram, EvaluateError> {
     let manifest_path = normalize_path(manifest_path);
     if evaluation_stack_contains(&manifest_path) {
-        let manifest = ProgramManifest::load(&manifest_path)?;
-        let state_path = manifest.resolved_state_path(&manifest_path);
-        let program_state = ProgramRuntimeState::load_optional(&state_path)?;
-        return Ok(evaluate_with_state(
-            &manifest_path,
-            &manifest,
-            program_state.as_ref(),
-        ));
+        return Err(EvaluateError::RecursiveEvaluationCycle {
+            manifest: manifest_path,
+        });
     }
     let _guard = enter_evaluation_scope(&manifest_path);
     let manifest = ProgramManifest::load(&manifest_path)?;
@@ -301,6 +298,14 @@ pub(crate) fn refresh_parent_programs(
     manifests.sort();
 
     for candidate in manifests {
+        // Check if candidate is already on the evaluation stack BEFORE other checks.
+        // This catches cycles where the candidate is the same as or references back to
+        // a manifest already on the stack.
+        if evaluation_stack_contains(&candidate) {
+            return Err(EvaluateError::RecursiveEvaluationCycle {
+                manifest: candidate.clone(),
+            });
+        }
         if same_manifest_path(&candidate, manifest_path) {
             continue;
         }
