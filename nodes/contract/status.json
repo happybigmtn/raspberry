@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "response.contract": "## Contract Created: `.fabro-work/contract.md`\n\n**Problem**: Duplicate field initializers in `raspberry-tui/src/app.rs` cause build failure.\n\n**Fix Required**: Remove the second occurrence of `failure_kind: None,` and `recovery_action: None,` at lines 1277-1278 (keep the first occurrence at lines 1264-1265).\n\n### Deliverables\n- `lib/crates/raspberry-tui/src/app.rs` — remove duplicate fields\n\n### Acceptance Criteria\n1. `cargo check -p raspberry-tui` succeeds\n2. `cargo nextest run --workspace` completes without compilation errors  \n3. Duplicate fields removed (appear exactly once)\n4. All proof commands pass",
+    "last_response": "## Contract Created: `.fabro-work/contract.md`\n\n**Problem**: Duplicate field initializers in `raspberry-tui/src/app.rs` cause build failure.\n\n**Fix Required**: Remove the second occurrence of `failure"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 2376,
+    "output_tokens": 222
+  },
+  "duration_ms": 43687,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:36:48.738403176+00:00",
+  "updated_at": "2026-03-26T19:36:48.738405056+00:00"
+}
