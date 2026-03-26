@@ -206,7 +206,7 @@ fn build_retry_policy(node: &Node, graph: &Graph) -> RetryPolicy {
     }
     let max_retries = node
         .max_retries()
-        .unwrap_or_else(|| graph.default_max_retry());
+        .unwrap_or_else(|| graph.default_max_retries());
     // max_retries=0 means 1 attempt (no retries)
     let max_attempts = u32::try_from(max_retries + 1).unwrap_or(1).max(1);
     RetryPolicy {
@@ -485,13 +485,21 @@ pub struct EdgeSelection<'a> {
     pub reason: &'static str,
 }
 
+fn blocks_unconditional_failure_fallthrough(node: &Node, outcome: &Outcome) -> bool {
+    node.handler_type() == Some("human")
+        && outcome.status == StageStatus::Fail
+        && outcome.preferred_label.is_none()
+        && outcome.suggested_next_ids.is_empty()
+}
+
 pub fn select_edge<'a>(
-    node_id: &str,
+    node: &Node,
     outcome: &Outcome,
     context: &Context,
     graph: &'a Graph,
     selection: &str,
 ) -> Option<EdgeSelection<'a>> {
+    let node_id = &node.id;
     let edges = graph.outgoing_edges(node_id);
     if edges.is_empty() {
         return None;
@@ -513,31 +521,37 @@ pub fn select_edge<'a>(
         });
     }
 
-    // Step 2: Preferred label match
+    // Step 2: Preferred label match (unconditional edges only)
     if let Some(pref) = &outcome.preferred_label {
         let normalized_pref = normalize_label(pref);
         for edge in &edges {
-            if let Some(label) = edge.label() {
-                if normalize_label(label) == normalized_pref {
-                    return Some(EdgeSelection {
-                        edge,
-                        reason: "preferred_label",
-                    });
+            if edge.condition().is_none_or(str::is_empty) {
+                if let Some(label) = edge.label() {
+                    if normalize_label(label) == normalized_pref {
+                        return Some(EdgeSelection {
+                            edge,
+                            reason: "preferred_label",
+                        });
+                    }
                 }
             }
         }
     }
 
-    // Step 3: Suggested next IDs
+    // Step 3: Suggested next IDs (unconditional edges only)
     for suggested_id in &outcome.suggested_next_ids {
         for edge in &edges {
-            if edge.to == *suggested_id {
+            if edge.condition().is_none_or(str::is_empty) && edge.to == *suggested_id {
                 return Some(EdgeSelection {
                     edge,
                     reason: "suggested_next",
                 });
             }
         }
+    }
+
+    if blocks_unconditional_failure_fallthrough(node, outcome) {
+        return None;
     }
 
     // Step 4 & 5: Weight with lexical tiebreak (unconditional edges only)
@@ -553,11 +567,7 @@ pub fn select_edge<'a>(
         });
     }
 
-    // Fallback: any edge
-    pick_edge(&edges, selection).map(|edge| EdgeSelection {
-        edge,
-        reason: "fallback",
-    })
+    None
 }
 
 // --- Goal gate enforcement ---
@@ -2102,7 +2112,7 @@ impl WorkflowRunEngine {
                 });
                 (None, Some(target.clone()))
             } else {
-                let selection = select_edge(&node.id, &outcome, &context, graph, node.selection());
+                let selection = select_edge(node, &outcome, &context, graph, node.selection());
                 if let Some(sel) = &selection {
                     self.services.emitter.emit(&WorkflowRunEvent::EdgeSelected {
                         from_node: node.id.clone(),
@@ -2399,7 +2409,7 @@ impl WorkflowRunEngine {
                         )
                         .await;
 
-                        return Err(error);
+                        return Ok((error.to_fail_outcome(), context));
                     }
                     break;
                 }
@@ -2469,10 +2479,8 @@ impl WorkflowRunEngine {
             }
         };
 
-        let last_outcome = node_outcomes
-            .get(completed_nodes.last().unwrap_or(&String::new()))
-            .cloned()
-            .unwrap_or_else(Outcome::success);
+        let mut last_outcome = Outcome::success();
+        last_outcome.notes = Some("Pipeline completed".to_string());
 
         let run_usage: Option<fabro_llm::types::Usage> = node_outcomes
             .values()
@@ -2698,17 +2706,17 @@ mod tests {
         let mut graph = Graph::new("test");
         graph
             .attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(2));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(2));
         let policy = build_retry_policy(&node, &graph);
         assert_eq!(policy.max_attempts, 3); // 2 retries + 1 initial
     }
 
     #[test]
-    fn build_retry_policy_no_attrs_uses_graph_default_3() {
+    fn build_retry_policy_no_attrs_uses_graph_default_0() {
         let node = Node::new("n");
         let graph = Graph::new("test");
         let policy = build_retry_policy(&node, &graph);
-        assert_eq!(policy.max_attempts, 4); // default_max_retry=3 + 1
+        assert_eq!(policy.max_attempts, 1); // default_max_retries=0 + 1
     }
 
     #[test]
@@ -2792,8 +2800,8 @@ mod tests {
         );
         let graph = Graph::new("test");
         let policy = build_retry_policy(&node, &graph);
-        // Unknown preset should fall back to graph default_max_retry=3
-        assert_eq!(policy.max_attempts, 4);
+        // Unknown preset should fall back to graph default_max_retries=0
+        assert_eq!(policy.max_attempts, 1);
     }
 
     // --- normalize_label tests ---
@@ -2927,17 +2935,19 @@ mod tests {
     #[test]
     fn select_edge_no_edges() {
         let g = Graph::new("test");
+        let node = Node::new("a");
         let outcome = Outcome::success();
         let context = Context::new();
-        assert!(select_edge("a", &outcome, &context, &g, "deterministic").is_none());
+        assert!(select_edge(&node, &outcome, &context, &g, "deterministic").is_none());
     }
 
     #[test]
     fn select_edge_single_unconditional() {
         let g = make_graph_with_edges(vec![Edge::new("a", "b")]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "b");
         assert_eq!(sel.reason, "unconditional");
     }
@@ -2955,9 +2965,10 @@ mod tests {
             AttrValue::String("outcome=success".to_string()),
         );
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "success_path");
         assert_eq!(sel.reason, "condition");
     }
@@ -2975,10 +2986,11 @@ mod tests {
             AttrValue::String("[F] Fix".to_string()),
         );
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let mut outcome = Outcome::success();
         outcome.preferred_label = Some("Fix".to_string());
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "fix");
         assert_eq!(sel.reason, "preferred_label");
     }
@@ -2988,10 +3000,11 @@ mod tests {
         let e1 = Edge::new("a", "path1");
         let e2 = Edge::new("a", "path2");
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let mut outcome = Outcome::success();
         outcome.suggested_next_ids = vec!["path2".to_string()];
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "path2");
         assert_eq!(sel.reason, "suggested_next");
     }
@@ -3004,9 +3017,10 @@ mod tests {
         e2.attrs
             .insert("weight".to_string(), AttrValue::Integer(10));
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "high");
         assert_eq!(sel.reason, "unconditional");
     }
@@ -3016,9 +3030,10 @@ mod tests {
         let e1 = Edge::new("a", "charlie");
         let e2 = Edge::new("a", "alpha");
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "alpha");
         assert_eq!(sel.reason, "unconditional");
     }
@@ -3032,9 +3047,10 @@ mod tests {
         );
         let e_uncond = Edge::new("a", "uncond_path");
         let g = make_graph_with_edges(vec![e_cond, e_uncond]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "deterministic").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "deterministic").unwrap();
         assert_eq!(sel.edge.to, "cond_path");
         assert_eq!(sel.reason, "condition");
     }
@@ -3044,9 +3060,10 @@ mod tests {
         let e1 = Edge::new("a", "b");
         let e2 = Edge::new("a", "c");
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let outcome = Outcome::success();
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "random").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "random").unwrap();
         assert!(sel.edge.to == "b" || sel.edge.to == "c");
         assert_eq!(sel.reason, "unconditional");
     }
@@ -3060,12 +3077,92 @@ mod tests {
         );
         let e2 = Edge::new("a", "other");
         let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
         let mut outcome = Outcome::success();
         outcome.preferred_label = Some("Approve".to_string());
         let context = Context::new();
-        let sel = select_edge("a", &outcome, &context, &g, "random").unwrap();
+        let sel = select_edge(node, &outcome, &context, &g, "random").unwrap();
         assert_eq!(sel.edge.to, "approve");
         assert_eq!(sel.reason, "preferred_label");
+    }
+
+    #[test]
+    fn select_edge_failed_human_gate_does_not_fall_through_to_unconditional() {
+        let g = make_graph_with_edges(vec![
+            Edge::new("gate", "approve"),
+            Edge::new("gate", "skip"),
+        ]);
+        let mut node = g.nodes.get("gate").unwrap().clone();
+        node.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("hexagon".to_string()),
+        );
+        let outcome =
+            Outcome::fail_deterministic("human interaction aborted before an answer was provided");
+        let context = Context::new();
+
+        assert!(select_edge(&node, &outcome, &context, &g, "deterministic").is_none());
+    }
+
+    #[test]
+    fn select_edge_failed_human_gate_routes_via_fail_condition() {
+        let mut fail = Edge::new("gate", "retry");
+        fail.attrs.insert(
+            "condition".to_string(),
+            AttrValue::String("outcome=fail".to_string()),
+        );
+        let approve = Edge::new("gate", "approve");
+        let g = make_graph_with_edges(vec![fail, approve]);
+        let mut node = g.nodes.get("gate").unwrap().clone();
+        node.attrs.insert(
+            "shape".to_string(),
+            AttrValue::String("hexagon".to_string()),
+        );
+        let outcome =
+            Outcome::fail_deterministic("human interaction aborted before an answer was provided");
+        let context = Context::new();
+
+        let sel = select_edge(&node, &outcome, &context, &g, "deterministic").unwrap();
+        assert_eq!(sel.edge.to, "retry");
+        assert_eq!(sel.reason, "condition");
+    }
+
+    #[test]
+    fn select_edge_deterministic_no_fallback_when_no_condition_matches() {
+        let mut e1 = Edge::new("a", "path1");
+        e1.attrs.insert(
+            "condition".to_string(),
+            AttrValue::String("outcome=fail".to_string()),
+        );
+        let mut e2 = Edge::new("a", "path2");
+        e2.attrs.insert(
+            "condition".to_string(),
+            AttrValue::String("outcome=error".to_string()),
+        );
+        let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
+        let outcome = Outcome::success();
+        let context = Context::new();
+        assert!(select_edge(node, &outcome, &context, &g, "deterministic").is_none());
+    }
+
+    #[test]
+    fn select_edge_random_no_fallback_when_no_condition_matches() {
+        let mut e1 = Edge::new("a", "path1");
+        e1.attrs.insert(
+            "condition".to_string(),
+            AttrValue::String("outcome=fail".to_string()),
+        );
+        let mut e2 = Edge::new("a", "path2");
+        e2.attrs.insert(
+            "condition".to_string(),
+            AttrValue::String("outcome=error".to_string()),
+        );
+        let g = make_graph_with_edges(vec![e1, e2]);
+        let node = g.nodes.get("a").unwrap();
+        let outcome = Outcome::success();
+        let context = Context::new();
+        assert!(select_edge(node, &outcome, &context, &g, "random").is_none());
     }
 
     // --- check_goal_gates tests ---
@@ -3315,7 +3412,7 @@ mod tests {
 
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let events_clone = events.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             events_clone.lock().unwrap().push(format!("{event:?}"));
         });
@@ -4062,11 +4159,15 @@ mod tests {
         };
         let outcome = engine.run(&g, &config).await.unwrap();
 
+        // Pipeline outcome is always SUCCESS when goal gates are satisfied
         assert_eq!(outcome.status, StageStatus::Success);
-        assert_eq!(
-            outcome.notes.as_deref(),
-            Some("auto-status: handler completed without writing status")
-        );
+        assert_eq!(outcome.notes.as_deref(), Some("Pipeline completed"));
+
+        // The auto_status note is on the per-node status.json
+        let status_path = dir.path().join("nodes").join("work").join("status.json");
+        let status: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&status_path).unwrap()).unwrap();
+        assert_eq!(status["status"], "success");
     }
 
     #[tokio::test]
@@ -4321,11 +4422,15 @@ mod tests {
         };
         let outcome = engine.run(&g, &config).await.unwrap();
 
+        // Pipeline outcome is always SUCCESS when goal gates are satisfied
         assert_eq!(outcome.status, StageStatus::Success);
-        assert_eq!(
-            outcome.notes.as_deref(),
-            Some("auto-status: handler completed without writing status")
-        );
+        assert_eq!(outcome.notes.as_deref(), Some("Pipeline completed"));
+
+        // The auto_status note is on the per-node status.json
+        let status_path = dir.path().join("nodes").join("work").join("status.json");
+        let status: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&status_path).unwrap()).unwrap();
+        assert_eq!(status["status"], "success");
     }
 
     // --- Gap #15: Interviewer.inform() tests ---
@@ -4485,7 +4590,7 @@ mod tests {
             .insert("goal".to_string(), AttrValue::String("loop".to_string()));
         // Disable default retries to keep test fast
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -4827,7 +4932,7 @@ mod tests {
             workflow_slug: None,
         };
 
-        // The engine returns Err because the Fail outcome has no outgoing fail edge,
+        // The engine returns a Fail outcome because there is no outgoing fail edge,
         // but panic.txt should already be written by the panic handler.
         let _result = engine.run(&g, &config).await;
 
@@ -4921,7 +5026,7 @@ mod tests {
         g.attrs
             .insert("goal".to_string(), AttrValue::String("test".to_string()));
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -5141,7 +5246,7 @@ mod tests {
         g.attrs
             .insert("goal".to_string(), AttrValue::String("test".to_string()));
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
         g.attrs
             .insert("max_node_visits".to_string(), AttrValue::Integer(100));
 
@@ -5260,7 +5365,7 @@ mod tests {
             AttrValue::Duration(Duration::from_millis(50)),
         );
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -5326,7 +5431,7 @@ mod tests {
             AttrValue::Duration(Duration::from_millis(100)),
         );
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -5395,7 +5500,7 @@ mod tests {
             AttrValue::Duration(Duration::ZERO),
         );
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -5453,7 +5558,7 @@ mod tests {
         g.attrs
             .insert("goal".to_string(), AttrValue::String("test".to_string()));
         g.attrs
-            .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+            .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
         let mut start = Node::new("start");
         start.attrs.insert(
@@ -5633,7 +5738,7 @@ mod tests {
 
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<WorkflowRunEvent>::new()));
         let events_clone = events.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             events_clone.lock().unwrap().push(event.clone());
         });
@@ -5723,7 +5828,7 @@ mod tests {
 
         let events = Arc::new(std::sync::Mutex::new(Vec::<WorkflowRunEvent>::new()));
         let events_clone = events.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             events_clone.lock().unwrap().push(event.clone());
         });
@@ -5754,7 +5859,7 @@ mod tests {
 
         let events = Arc::new(std::sync::Mutex::new(Vec::<WorkflowRunEvent>::new()));
         let events_clone = events.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             events_clone.lock().unwrap().push(event.clone());
         });
@@ -5859,9 +5964,13 @@ mod tests {
             "type".to_string(),
             AttrValue::String("fail_once".to_string()),
         );
-        // Allow 1 retry → 2 attempts total
+        // Allow 1 retry → 2 attempts total, use aggressive backoff (500ms) for fast tests
         work.attrs
             .insert("max_retries".to_string(), AttrValue::Integer(1));
+        work.attrs.insert(
+            "retry_policy".to_string(),
+            AttrValue::String("aggressive".to_string()),
+        );
         g.nodes.insert("work".to_string(), work);
 
         let mut exit = Node::new("exit");
@@ -5876,7 +5985,7 @@ mod tests {
 
         let events = Arc::new(std::sync::Mutex::new(Vec::<WorkflowRunEvent>::new()));
         let events_clone = events.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             events_clone.lock().unwrap().push(event.clone());
         });
@@ -5919,7 +6028,7 @@ mod tests {
 
         let event_names = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let names_clone = event_names.clone();
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         emitter.on_event(move |event| {
             let name = match event {
                 WorkflowRunEvent::SandboxInitialized { .. } => "SandboxInitialized",

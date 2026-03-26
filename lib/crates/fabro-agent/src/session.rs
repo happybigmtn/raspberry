@@ -1,3 +1,4 @@
+use crate::agent_profile::AgentProfile;
 use crate::config::SessionConfig;
 use crate::error::{AbortReason, AgentError};
 use crate::event::EventEmitter;
@@ -6,7 +7,6 @@ use crate::history::History;
 use crate::loop_detection::detect_loop;
 use crate::memory::discover_memory;
 use crate::profiles::EnvContext;
-use crate::provider_profile::ProviderProfile;
 use crate::sandbox::Sandbox;
 use crate::skills::{
     default_skill_dirs, discover_skills, expand_skill, make_use_skill_tool, Skill,
@@ -32,7 +32,7 @@ pub struct Session {
     event_emitter: EventEmitter,
     state: SessionState,
     llm_client: Client,
-    provider_profile: Arc<dyn ProviderProfile>,
+    provider_profile: Arc<dyn AgentProfile>,
     sandbox: Arc<dyn Sandbox>,
     steering_queue: Arc<Mutex<VecDeque<String>>>,
     followup_queue: Arc<Mutex<VecDeque<String>>>,
@@ -44,15 +44,17 @@ pub struct Session {
     system_prompt: String,
     file_tracker: FileTracker,
     tool_env: Option<std::collections::HashMap<String, String>>,
+    subagent_manager: Option<Arc<tokio::sync::Mutex<crate::subagent::SubAgentManager>>>,
 }
 
 impl Session {
     #[must_use]
     pub fn new(
         llm_client: Client,
-        provider_profile: Arc<dyn ProviderProfile>,
+        provider_profile: Arc<dyn AgentProfile>,
         sandbox: Arc<dyn Sandbox>,
         config: SessionConfig,
+        subagent_manager: Option<Arc<tokio::sync::Mutex<crate::subagent::SubAgentManager>>>,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -73,6 +75,7 @@ impl Session {
             system_prompt: String::new(),
             file_tracker: FileTracker::default(),
             tool_env: None,
+            subagent_manager,
         }
     }
 
@@ -332,7 +335,7 @@ impl Session {
             is_git_repo,
             current_date: today,
             model: model_name,
-            knowledge_cutoff: self.provider_profile.knowledge_cutoff().to_string(),
+            knowledge_cutoff: self.provider_profile.knowledge_cutoff().unwrap_or_default(),
             git_status_short,
             git_recent_commits,
         }
@@ -398,7 +401,7 @@ impl Session {
             },
         );
         if is_auth_error(&err) {
-            self.state = SessionState::Closed;
+            self.transition(SessionState::Closed);
         }
         AgentError::Llm(err)
     }
@@ -447,15 +450,55 @@ impl Session {
         })
     }
 
-    pub fn close(&mut self) {
-        if self.state != SessionState::Closed {
-            self.state = SessionState::Closed;
+    /// Transition the session state machine, emitting events and running
+    /// cleanup as appropriate for each transition.
+    ///
+    /// Valid transitions (matches the Attractor spec):
+    /// - Idle → Processing
+    /// - Processing → Idle  (emits ProcessingEnd)
+    /// - Processing → Closed (emits SessionEnded)
+    /// - Idle → Closed (emits SessionEnded)
+    /// - any → Closed (abort/error — emits SessionEnded)
+    fn transition(&mut self, to: SessionState) {
+        let from = self.state;
+        if from == to {
+            return;
+        }
+
+        debug_assert!(
+            matches!(
+                (from, to),
+                (SessionState::Idle, SessionState::Processing)
+                    | (SessionState::Processing, SessionState::Idle)
+                    | (_, SessionState::Closed)
+            ),
+            "Invalid session state transition: {from:?} -> {to:?}"
+        );
+
+        if to == SessionState::Closed && from != SessionState::Closed {
+            // Clean up subagents before emitting SessionEnded
+            if let Some(ref manager) = self.subagent_manager {
+                if let Ok(mut mgr) = manager.try_lock() {
+                    mgr.close_all();
+                }
+            }
             self.event_emitter
                 .emit(self.id.clone(), AgentEvent::SessionEnded);
         }
+
+        if from == SessionState::Processing && to == SessionState::Idle {
+            self.event_emitter
+                .emit(self.id.clone(), AgentEvent::ProcessingEnd);
+        }
+
+        self.state = to;
     }
 
-    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+    pub fn close(&mut self) {
+        self.transition(SessionState::Closed);
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: Option<fabro_llm::types::ReasoningEffort>) {
         self.config.reasoning_effort = effort;
     }
 
@@ -523,7 +566,7 @@ impl Session {
 
         // Only transition to Idle if the session wasn't closed by an error
         if self.state != SessionState::Closed {
-            self.state = SessionState::Idle;
+            self.transition(SessionState::Idle);
         }
 
         result
@@ -534,7 +577,7 @@ impl Session {
             return Err(AgentError::SessionClosed);
         }
 
-        self.state = SessionState::Processing;
+        self.transition(SessionState::Processing);
 
         // Expand skill references in input
         let expanded = if self.skills.is_empty() {
@@ -574,7 +617,9 @@ impl Session {
 
         loop {
             // Check max_tool_rounds_per_input
-            if round_count >= self.config.max_tool_rounds_per_input {
+            if self.config.max_tool_rounds_per_input > 0
+                && round_count >= self.config.max_tool_rounds_per_input
+            {
                 self.event_emitter.emit(
                     self.id.clone(),
                     AgentEvent::TurnLimitReached {
@@ -725,6 +770,7 @@ impl Session {
                 None => {
                     return Err(self.emit_llm_error(SdkError::Stream {
                         message: "Stream ended without a Finish event (after retries)".into(),
+                        source: None,
                     }))
                 }
             };
@@ -780,7 +826,7 @@ impl Session {
             // Execute tool calls (parallel or sequential based on provider)
             let results = crate::tool_execution::execute_tool_calls(
                 &tool_calls,
-                self.provider_profile.supports_parallel_tool_calls(),
+                true,
                 self.provider_profile.tool_registry(),
                 self.sandbox.clone(),
                 self.config.tool_hooks.as_ref(),
@@ -905,14 +951,15 @@ impl Session {
             temperature: None,
             top_p: None,
             max_tokens: self.config.max_tokens.or_else(|| {
-                fabro_model::get_model_info(self.provider_profile.model())
-                    .and_then(|m| m.limits.max_output)
+                fabro_model::Catalog::builtin()
+                    .get(self.provider_profile.model())
+                    .and_then(fabro_model::Model::max_output)
             }),
             stop_sequences: None,
-            reasoning_effort: self.config.reasoning_effort.clone(),
+            reasoning_effort: self.config.reasoning_effort,
             speed: self.config.speed.clone(),
             metadata: None,
-            provider_options: self.provider_profile.provider_options(),
+            provider_options: None,
         }
     }
 }
@@ -992,6 +1039,7 @@ mod tests {
         async fn complete(&self, _request: &Request) -> Result<Response, SdkError> {
             Err(SdkError::Configuration {
                 message: "ScriptedStreamProvider does not implement complete()".into(),
+                source: None,
             })
         }
 
@@ -1014,10 +1062,23 @@ mod tests {
     }
 
     async fn make_session_with_provider(provider: Arc<dyn ProviderAdapter>) -> Session {
+        make_session_with_provider_and_manager(provider, None).await
+    }
+
+    async fn make_session_with_provider_and_manager(
+        provider: Arc<dyn ProviderAdapter>,
+        subagent_manager: Option<Arc<tokio::sync::Mutex<crate::subagent::SubAgentManager>>>,
+    ) -> Session {
         let client = make_client(provider).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        Session::new(client, profile, env, SessionConfig::default())
+        Session::new(
+            client,
+            profile,
+            env,
+            SessionConfig::default(),
+            subagent_manager,
+        )
     }
 
     // --- Tests ---
@@ -1381,7 +1442,7 @@ mod tests {
             enable_loop_detection: false,
             ..Default::default()
         };
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
 
         // Wire the session's cancel_token to our shared one
         session.cancel_token = cancel_token;
@@ -1412,7 +1473,7 @@ mod tests {
         let client = make_client(error_provider).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
 
         let result = session.process_input("Hello").await;
         assert!(result.is_err());
@@ -1489,9 +1550,9 @@ mod tests {
 
         let provider = Arc::new(MockLlmProvider::new(responses));
         let client = make_client(provider).await;
-        let profile = Arc::new(TestProfile::parallel(registry));
+        let profile = Arc::new(TestProfile::with_tools(registry));
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
         let mut rx = session.subscribe();
 
         session.process_input("Use echo three times").await.unwrap();
@@ -1540,22 +1601,18 @@ mod tests {
         let provider = Arc::new(MockLlmProvider::new(responses));
         let client = make_client(provider).await;
         let registry = ToolRegistry::new();
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 100));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 100));
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
         let mut rx = session.subscribe();
 
         session.process_input(&large_input).await.unwrap();
 
         let mut found_warning = false;
         while let Ok(event) = rx.try_recv() {
-            if let AgentEvent::ContextWindowWarning {
-                context_window_size,
-                ..
-            } = &event.event
-            {
+            if let AgentEvent::Warning { details, .. } = &event.event {
                 found_warning = true;
-                assert_eq!(*context_window_size, 100);
+                assert_eq!(details["context_window_size"], 100);
             }
         }
         assert!(found_warning);
@@ -1568,17 +1625,20 @@ mod tests {
         let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
 
         // Default reasoning_effort is None
-        session.set_reasoning_effort(Some("high".to_string()));
+        session.set_reasoning_effort(Some(fabro_llm::types::ReasoningEffort::High));
         session.process_input("test").await.unwrap();
 
         let captured = provider_ref.captured_request.lock().unwrap();
         let request = captured
             .as_ref()
             .expect("request should have been captured");
-        assert_eq!(request.reasoning_effort, Some("high".to_string()));
+        assert_eq!(
+            request.reasoning_effort,
+            Some(fabro_llm::types::ReasoningEffort::High)
+        );
     }
 
     #[tokio::test]
@@ -1589,16 +1649,16 @@ mod tests {
         let client = make_client(provider).await;
         let registry = ToolRegistry::new();
         // Large context window so short input stays well under 80%
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 200_000));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 200_000));
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
         let mut rx = session.subscribe();
 
         session.process_input("Hi").await.unwrap();
 
         let mut found_warning = false;
         while let Ok(event) = rx.try_recv() {
-            if matches!(event.event, AgentEvent::ContextWindowWarning { .. }) {
+            if matches!(event.event, AgentEvent::Warning { .. }) {
                 found_warning = true;
             }
         }
@@ -1724,7 +1784,7 @@ mod tests {
             user_instructions: Some("Always use TDD".into()),
             ..Default::default()
         };
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
         session.initialize().await;
         session.process_input("test").await.unwrap();
 
@@ -1748,7 +1808,7 @@ mod tests {
         let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
 
         // Intentionally skip initialize(): system prompt remains empty.
         session.process_input("test").await.unwrap();
@@ -1974,12 +2034,13 @@ mod tests {
             partial_text: "partial".into(),
             error: SdkError::Stream {
                 message: "connection reset".into(),
+                source: None,
             },
         });
         let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, SessionConfig::default());
+        let mut session = Session::new(client, profile, env, SessionConfig::default(), None);
 
         let result = session.process_input("Hello").await;
         assert!(matches!(
@@ -2150,14 +2211,14 @@ mod tests {
         let provider = Arc::new(MockLlmProvider::new(responses));
         let client = make_client(provider).await;
         let registry = ToolRegistry::new();
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 100));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 100));
         let env = Arc::new(MockSandbox::default());
         let config = SessionConfig {
             enable_context_compaction: true,
             compaction_preserve_turns: 1,
             ..Default::default()
         };
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
         let mut rx = session.subscribe();
 
         session.process_input(&large_input).await.unwrap();
@@ -2193,13 +2254,13 @@ mod tests {
         let provider = Arc::new(MockLlmProvider::new(responses));
         let client = make_client(provider).await;
         let registry = ToolRegistry::new();
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 100));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 100));
         let env = Arc::new(MockSandbox::default());
         let config = SessionConfig {
             enable_context_compaction: false,
             ..Default::default()
         };
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
         let mut rx = session.subscribe();
 
         session.process_input(&large_input).await.unwrap();
@@ -2235,6 +2296,7 @@ mod tests {
             async fn complete(&self, _request: &Request) -> Result<Response, SdkError> {
                 Err(SdkError::Stream {
                     message: "summarization failed".into(),
+                    source: None,
                 })
             }
 
@@ -2276,14 +2338,14 @@ mod tests {
         });
         let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
         let registry = ToolRegistry::new();
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 100));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 100));
         let env = Arc::new(MockSandbox::default());
         let config = SessionConfig {
             enable_context_compaction: true,
             compaction_preserve_turns: 1,
             ..Default::default()
         };
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
         let mut rx = session.subscribe();
 
         // Should not return an error even though compaction fails
@@ -2380,7 +2442,7 @@ mod tests {
 
         let client = make_client(provider.clone() as Arc<dyn ProviderAdapter>).await;
         // Tiny context window to force compaction
-        let profile = Arc::new(TestProfile::parallel_with_context_window(registry, 100));
+        let profile = Arc::new(TestProfile::with_context_window(registry, 100));
         let env = Arc::new(MockSandbox::default());
         let config = SessionConfig {
             enable_context_compaction: true,
@@ -2388,7 +2450,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
         let mut rx = session.subscribe();
 
         // First call: tool call executes, files get tracked, no compaction yet
@@ -2479,10 +2541,9 @@ mod tests {
 
         let provider = Arc::new(MockLlmProvider::new(responses));
         let client = make_client(provider).await;
-        let profile: Arc<dyn crate::provider_profile::ProviderProfile> =
-            Arc::new(TestProfile::new());
+        let profile: Arc<dyn crate::agent_profile::AgentProfile> = Arc::new(TestProfile::new());
         let env: Arc<dyn crate::sandbox::Sandbox> = Arc::new(MockSandbox::default());
-        let mut session = Session::new(client, profile, env, config);
+        let mut session = Session::new(client, profile, env, config, None);
 
         // Subscribe to events before initialize
         let mut rx = session.subscribe();
@@ -2624,5 +2685,81 @@ mod tests {
         let turns = session.history().turns();
         assert_eq!(turns.len(), 2);
         assert!(matches!(&turns[1], Turn::Assistant { content, .. } if content == "Fast response"));
+    }
+
+    #[tokio::test]
+    async fn close_cleans_up_subagents_before_emitting_session_ended() {
+        use crate::subagent::SubAgentManager;
+
+        let manager = Arc::new(tokio::sync::Mutex::new(SubAgentManager::new(3)));
+
+        let provider = Arc::new(ScriptedStreamProvider::new(vec![
+            ScriptedStreamCall::Response(text_response("done")),
+        ]));
+        let mut session =
+            make_session_with_provider_and_manager(provider, Some(manager.clone())).await;
+
+        // Wire the manager's event callback to the session's emitter
+        manager
+            .lock()
+            .await
+            .set_event_callback(session.event_callback());
+
+        // Spawn a subagent
+        let child = make_session(vec![text_response("child done")]).await;
+        let agent_id = manager.lock().await.spawn(child, "task".into(), 0).unwrap();
+
+        // Collect events
+        let mut rx = session.subscribe();
+        session.close();
+
+        // The subagent should have been closed
+        assert!(matches!(
+            manager.lock().await.status(&agent_id),
+            Some(crate::subagent::SubAgentStatus::Closed)
+        ));
+
+        // Verify event ordering: SubAgentClosed before SessionEnded
+        let mut events = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            events.push(envelope.event);
+        }
+        let closed_idx = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::SubAgentClosed { .. }));
+        let ended_idx = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::SessionEnded));
+        assert!(
+            closed_idx.is_some(),
+            "SubAgentClosed event should be emitted"
+        );
+        assert!(ended_idx.is_some(), "SessionEnded event should be emitted");
+        assert!(
+            closed_idx.unwrap() < ended_idx.unwrap(),
+            "SubAgentClosed must come before SessionEnded"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_input_emits_processing_end_on_idle_transition() {
+        let mut session = make_session(vec![text_response("Hello")]).await;
+        session.initialize().await;
+
+        let mut rx = session.subscribe();
+        session.process_input("Hi").await.unwrap();
+
+        assert_eq!(session.state(), SessionState::Idle);
+
+        let mut events = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            events.push(envelope.event);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ProcessingEnd)),
+            "ProcessingEnd event should be emitted when returning to Idle"
+        );
     }
 }

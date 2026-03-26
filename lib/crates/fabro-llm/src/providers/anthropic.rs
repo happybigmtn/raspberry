@@ -75,6 +75,7 @@ impl Adapter {
 
         response.ok_or_else(|| SdkError::Stream {
             message: "complete_via_stream: stream ended without a Finish event".to_string(),
+            source: None,
         })
     }
 }
@@ -596,10 +597,13 @@ fn apply_cache_control_to_conversation_prefix(messages: &mut [ApiMessage]) {
 
 /// Collect beta headers from `provider_options` and merge with the caching header
 /// when auto-caching is active.
+const CONTEXT_1M_BETA_HEADER: &str = "context-1m-2025-08-07";
+
 fn build_beta_header(
     provider_options: Option<&serde_json::Value>,
     include_cache_header: bool,
     include_fast_mode_header: bool,
+    include_1m_context: bool,
 ) -> Option<String> {
     let mut headers: Vec<String> = Vec::new();
 
@@ -625,6 +629,11 @@ fn build_beta_header(
     // Add fast-mode header if speed=fast and not already present
     if include_fast_mode_header && !headers.iter().any(|h| h == FAST_MODE_BETA_HEADER) {
         headers.push(FAST_MODE_BETA_HEADER.to_string());
+    }
+
+    // Add 1M context header for models with >= 1M context window
+    if include_1m_context && !headers.iter().any(|h| h == CONTEXT_1M_BETA_HEADER) {
+        headers.push(CONTEXT_1M_BETA_HEADER.to_string());
     }
 
     if headers.is_empty() {
@@ -1104,24 +1113,24 @@ fn build_api_request(
     // Check whether this model supports the `output_config.effort` parameter.
     // Older reasoning models (e.g. claude-sonnet-4-5) need `thinking` with
     // `budget_tokens` instead.
-    let model_info = fabro_model::get_model_info(&request.model);
-    let supports_effort = model_info.as_ref().is_none_or(|m| m.features.effort);
+    let model_info = fabro_model::Catalog::builtin().get(&request.model);
+    let supports_effort = model_info.is_none_or(|m| m.features.effort);
 
     let mut resolved_max_tokens = request
         .max_tokens
-        .or_else(|| model_info.as_ref().and_then(|m| m.limits.max_output))
+        .or_else(|| model_info.and_then(|m| m.limits.max_output))
         .unwrap_or(65536);
 
     let (thinking, output_config) = if let Some(effort) = &request.reasoning_effort {
         if supports_effort {
             (
                 explicit_thinking,
-                Some(serde_json::json!({"effort": effort})),
+                Some(serde_json::json!({"effort": effort.as_str()})),
             )
         } else if explicit_thinking.is_none() {
             // Convert effort level to a thinking budget for models that don't
             // support the effort parameter (e.g. claude-sonnet-4-5).
-            let budget = effort_to_budget_tokens(effort, resolved_max_tokens);
+            let budget = effort_to_budget_tokens(effort.as_str(), resolved_max_tokens);
             if resolved_max_tokens <= budget {
                 resolved_max_tokens = budget + 1024;
             }
@@ -1134,7 +1143,16 @@ fn build_api_request(
             (explicit_thinking, None)
         }
     } else {
-        (explicit_thinking, None)
+        // Auto-set adaptive thinking for known effort-capable models when no
+        // explicit thinking config or reasoning_effort is provided.
+        let thinking = explicit_thinking.or_else(|| {
+            if model_info.is_some_and(|m| m.features.effort) {
+                Some(serde_json::json!({"type": "adaptive"}))
+            } else {
+                None
+            }
+        });
+        (thinking, None)
     };
 
     let is_fast = request.speed.as_deref() == Some("fast");
@@ -1168,9 +1186,13 @@ fn build_api_request(
             .header("x-api-key", &adapter.http.api_key)
             .header("anthropic-version", "2023-06-01");
 
-        if let Some(beta_str) =
-            build_beta_header(request.provider_options.as_ref(), auto_cache, is_fast)
-        {
+        let include_1m_context = model_info.is_some_and(|m| m.context_window() >= 1_000_000);
+        if let Some(beta_str) = build_beta_header(
+            request.provider_options.as_ref(),
+            auto_cache,
+            is_fast,
+            include_1m_context,
+        ) {
             req_builder = req_builder.header("anthropic-beta", beta_str);
         }
     } else {
@@ -1209,8 +1231,11 @@ impl ProviderAdapter for Adapter {
         }
         let (body, headers) = send_and_read_response(req, &self.provider_name, "type").await?;
 
-        let api_resp: ApiResponse = serde_json::from_str(&body).map_err(|e| SdkError::Network {
-            message: format!("failed to parse {} response: {e}", self.provider_name),
+        let api_resp: ApiResponse = serde_json::from_str(&body).map_err(|e| {
+            SdkError::network(
+                format!("failed to parse {} response: {e}", self.provider_name),
+                e,
+            )
         })?;
 
         let content_parts: Vec<ContentPart> = api_resp
@@ -1269,16 +1294,18 @@ impl ProviderAdapter for Adapter {
         }
         let (_api_request, req_builder) = build_api_request(self, request, true);
 
-        let http_resp = req_builder.send().await.map_err(|e| SdkError::Network {
-            message: e.to_string(),
-        })?;
+        let http_resp = req_builder
+            .send()
+            .await
+            .map_err(|e| SdkError::network(e.to_string(), e))?;
 
         let status = http_resp.status();
         if !status.is_success() {
             let retry_after = parse_retry_after(http_resp.headers());
-            let body = http_resp.text().await.map_err(|e| SdkError::Network {
-                message: e.to_string(),
-            })?;
+            let body = http_resp
+                .text()
+                .await
+                .map_err(|e| SdkError::network(e.to_string(), e))?;
             let (msg, code, raw) = parse_error_body(&body, "type");
             return Err(crate::error::error_from_status_code(
                 status.as_u16(),
@@ -1315,9 +1342,10 @@ impl ProviderAdapter for Adapter {
                                 Ok(v) => v,
                                 Err(e) => {
                                     return Some((
-                                        Err(SdkError::Stream {
-                                            message: format!("failed to parse SSE data: {e}"),
-                                        }),
+                                        Err(SdkError::stream_error(
+                                            format!("failed to parse SSE data: {e}"),
+                                            e,
+                                        )),
                                         state,
                                     ));
                                 }
@@ -1548,13 +1576,13 @@ mod tests {
 
     #[test]
     fn beta_header_includes_cache_header() {
-        let result = build_beta_header(None, true, false);
+        let result = build_beta_header(None, true, false, false);
         assert_eq!(result, Some(CACHE_BETA_HEADER.to_string()));
     }
 
     #[test]
     fn beta_header_no_cache_no_user_headers() {
-        let result = build_beta_header(None, false, false);
+        let result = build_beta_header(None, false, false, false);
         assert_eq!(result, None);
     }
 
@@ -1565,7 +1593,7 @@ mod tests {
                 "beta_headers": ["interleaved-thinking-2025-05-14"]
             }
         });
-        let result = build_beta_header(Some(&opts), true, false);
+        let result = build_beta_header(Some(&opts), true, false, false);
         assert_eq!(
             result,
             Some(format!(
@@ -1581,7 +1609,7 @@ mod tests {
                 "beta_headers": [CACHE_BETA_HEADER]
             }
         });
-        let result = build_beta_header(Some(&opts), true, false);
+        let result = build_beta_header(Some(&opts), true, false, false);
         // Should not duplicate the header
         assert_eq!(result, Some(CACHE_BETA_HEADER.to_string()));
     }
@@ -1593,7 +1621,7 @@ mod tests {
                 "beta_headers": ["interleaved-thinking-2025-05-14"]
             }
         });
-        let result = build_beta_header(Some(&opts), false, false);
+        let result = build_beta_header(Some(&opts), false, false, false);
         assert_eq!(result, Some("interleaved-thinking-2025-05-14".to_string()));
     }
 
@@ -2002,7 +2030,7 @@ mod tests {
         ];
 
         // No user headers — only cache header should appear
-        let header = build_beta_header(None, true, false).unwrap_or_default();
+        let header = build_beta_header(None, true, false, false).unwrap_or_default();
         for dep in &deprecated {
             assert!(
                 !header.contains(dep),
@@ -2016,7 +2044,7 @@ mod tests {
                 "beta_headers": ["interleaved-thinking-2025-05-14"]
             }
         });
-        let header = build_beta_header(Some(&opts), true, false).unwrap_or_default();
+        let header = build_beta_header(Some(&opts), true, false, false).unwrap_or_default();
         for dep in &deprecated {
             assert!(
                 !header.contains(dep),
@@ -2117,7 +2145,7 @@ mod tests {
     fn build_api_request_maps_reasoning_effort_to_output_config() {
         let adapter = Adapter::new("test-key");
         let request = Request {
-            reasoning_effort: Some("medium".to_string()),
+            reasoning_effort: Some(crate::types::ReasoningEffort::Medium),
             ..make_base_request()
         };
 
@@ -2173,7 +2201,7 @@ mod tests {
 
     #[test]
     fn beta_header_includes_both_cache_and_fast_mode() {
-        let result = build_beta_header(None, true, true);
+        let result = build_beta_header(None, true, true, false);
         let header = result.expect("should produce a header");
         assert!(
             header.contains(CACHE_BETA_HEADER),

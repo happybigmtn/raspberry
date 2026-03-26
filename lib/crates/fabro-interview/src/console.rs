@@ -8,6 +8,12 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{Answer, AnswerValue, Interviewer, Question, QuestionOption, QuestionType};
 
+enum PromptRead {
+    Line(String),
+    Eof,
+    Error,
+}
+
 /// Reads from stdin to collect answers. Displays formatted prompts per spec 6.4.
 pub struct ConsoleInterviewer {
     styles: &'static Styles,
@@ -28,7 +34,6 @@ fn find_matching_option(response: &str, options: &[QuestionOption]) -> Option<An
             return Some(Answer {
                 value: AnswerValue::Selected(opt.key.clone()),
                 selected_option: Some(opt.clone()),
-                selected_options: Vec::new(),
                 text: None,
             });
         }
@@ -40,7 +45,6 @@ fn find_matching_option(response: &str, options: &[QuestionOption]) -> Option<An
             return Some(Answer {
                 value: AnswerValue::Selected(opt.key.clone()),
                 selected_option: Some(opt.clone()),
-                selected_options: Vec::new(),
                 text: None,
             });
         }
@@ -48,14 +52,55 @@ fn find_matching_option(response: &str, options: &[QuestionOption]) -> Option<An
     None
 }
 
-async fn read_line(prompt: &str) -> std::io::Result<String> {
+async fn read_line(prompt: &str) -> PromptRead {
     // Print the prompt to stderr so it doesn't interfere with piped stdout
     eprint!("{prompt}");
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    Ok(line.trim_end().to_string())
+    match reader.read_line(&mut line).await {
+        Ok(0) => PromptRead::Eof,
+        Ok(_) => PromptRead::Line(line.trim_end().to_string()),
+        Err(_) => PromptRead::Error,
+    }
+}
+
+fn parse_non_tty_choice_response(question: &Question, prompt_read: PromptRead) -> Answer {
+    let PromptRead::Line(response) = prompt_read else {
+        return Answer::aborted();
+    };
+    if response.trim().is_empty() {
+        return Answer::aborted();
+    }
+    if let Some(answer) = find_matching_option(&response, &question.options) {
+        return answer;
+    }
+    if question.allow_freeform {
+        return Answer::text(response);
+    }
+    find_matching_option(&response, &question.options).unwrap_or_else(Answer::aborted)
+}
+
+fn parse_non_tty_confirm_response(prompt_read: PromptRead) -> Answer {
+    let PromptRead::Line(response) = prompt_read else {
+        return Answer::aborted();
+    };
+    match response.trim().to_lowercase().as_str() {
+        "y" | "yes" => Answer::yes(),
+        "n" | "no" => Answer::no(),
+        _ => Answer::aborted(),
+    }
+}
+
+fn parse_non_tty_freeform_response(prompt_read: PromptRead) -> Answer {
+    let PromptRead::Line(response) = prompt_read else {
+        return Answer::aborted();
+    };
+    if response.trim().is_empty() {
+        Answer::aborted()
+    } else {
+        Answer::text(response)
+    }
 }
 
 /// Ask a multiple-choice question using dialoguer's `Select` widget on a TTY.
@@ -84,18 +129,26 @@ fn ask_select_interactive(question: &Question) -> Answer {
             dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
                 .with_prompt("Enter your response")
                 .interact_on(&Term::stderr())
-                .map_or_else(|_| Answer::skipped(), Answer::text)
+                .map_or_else(
+                    |_| Answer::aborted(),
+                    |response| {
+                        if response.trim().is_empty() {
+                            Answer::aborted()
+                        } else {
+                            Answer::text(response)
+                        }
+                    },
+                )
         }
         Ok(Some(idx)) if idx < question.options.len() => {
             let opt = &question.options[idx];
             Answer {
                 value: AnswerValue::Selected(opt.key.clone()),
                 selected_option: Some(opt.clone()),
-                selected_options: Vec::new(),
                 text: None,
             }
         }
-        _ => Answer::skipped(),
+        _ => Answer::aborted(),
     }
 }
 
@@ -118,13 +171,9 @@ fn ask_multi_select_interactive(question: &Question) -> Answer {
                 .iter()
                 .map(|&i| question.options[i].key.clone())
                 .collect();
-            let options: Vec<_> = indices
-                .iter()
-                .map(|&i| question.options[i].clone())
-                .collect();
-            Answer::multi_selected(keys, options)
+            Answer::multi_selected(keys)
         }
-        _ => Answer::skipped(),
+        _ => Answer::aborted(),
     }
 }
 
@@ -137,7 +186,8 @@ fn ask_confirm_interactive(question: &Question) -> Answer {
 
     match confirmed {
         Ok(Some(true)) => Answer::yes(),
-        _ => Answer::no(),
+        Ok(Some(false)) => Answer::no(),
+        _ => Answer::aborted(),
     }
 }
 
@@ -146,7 +196,16 @@ fn ask_freeform_interactive(question: &Question) -> Answer {
     dialoguer::Input::<String>::with_theme(&ColorfulTheme::default())
         .with_prompt(&question.text)
         .interact_on(&Term::stderr())
-        .map_or_else(|_| Answer::skipped(), Answer::text)
+        .map_or_else(
+            |_| Answer::aborted(),
+            |response| {
+                if response.trim().is_empty() {
+                    Answer::aborted()
+                } else {
+                    Answer::text(response)
+                }
+            },
+        )
 }
 
 #[async_trait]
@@ -167,7 +226,7 @@ impl Interviewer for ConsoleInterviewer {
                 QuestionType::Freeform => ask_freeform_interactive(&q),
             })
             .await
-            .unwrap_or_else(|_| Answer::skipped());
+            .unwrap_or_else(|_| Answer::aborted());
         }
 
         // Non-TTY fallback: line-based stdin reading
@@ -189,29 +248,12 @@ impl Interviewer for ConsoleInterviewer {
                 if question.allow_freeform {
                     eprintln!("  Or type a free-text response");
                 }
-                let response = read_line("Select: ").await.unwrap_or_default();
-                if let Some(answer) = find_matching_option(&response, &question.options) {
-                    return answer;
-                }
-                if question.allow_freeform {
-                    return Answer::text(response);
-                }
-                // Fallback: try match again (spec says to do this)
-                find_matching_option(&response, &question.options).unwrap_or_else(Answer::skipped)
+                parse_non_tty_choice_response(&question, read_line("Select: ").await)
             }
             QuestionType::YesNo | QuestionType::Confirmation => {
-                let response = read_line("[Y/N]: ").await.unwrap_or_default();
-                let trimmed = response.trim().to_lowercase();
-                if trimmed == "y" || trimmed == "yes" {
-                    Answer::yes()
-                } else {
-                    Answer::no()
-                }
+                parse_non_tty_confirm_response(read_line("[Y/N]: ").await)
             }
-            QuestionType::Freeform => {
-                let response = read_line("> ").await.unwrap_or_default();
-                Answer::text(response)
-            }
+            QuestionType::Freeform => parse_non_tty_freeform_response(read_line("> ").await),
         }
     }
 
@@ -289,5 +331,29 @@ mod tests {
         }];
         let result = find_matching_option("5", &options);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn non_tty_multiple_choice_eof_returns_aborted() {
+        let mut question = Question::new("Approve?", QuestionType::MultipleChoice);
+        question.options = vec![crate::QuestionOption {
+            key: "A".to_string(),
+            label: "Approve".to_string(),
+        }];
+
+        let answer = parse_non_tty_choice_response(&question, PromptRead::Eof);
+        assert_eq!(answer.value, AnswerValue::Aborted);
+    }
+
+    #[test]
+    fn non_tty_confirmation_invalid_response_returns_aborted() {
+        let answer = parse_non_tty_confirm_response(PromptRead::Line(String::new()));
+        assert_eq!(answer.value, AnswerValue::Aborted);
+    }
+
+    #[test]
+    fn non_tty_freeform_blank_response_returns_aborted() {
+        let answer = parse_non_tty_freeform_response(PromptRead::Line("   ".to_string()));
+        assert_eq!(answer.value, AnswerValue::Aborted);
     }
 }

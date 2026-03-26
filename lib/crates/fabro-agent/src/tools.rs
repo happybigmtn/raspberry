@@ -3,7 +3,7 @@ use crate::sandbox::GrepOptions;
 use crate::tool_registry::RegisteredTool;
 use fabro_llm::client::Client;
 use fabro_llm::types::{Message, Request, ToolDefinition};
-use fabro_model::ModelId;
+use fabro_model::ModelRef;
 use std::borrow::Cow;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ const MAX_WEB_FETCH_BYTES: usize = 100 * 1024;
 #[derive(Clone)]
 pub struct WebFetchSummarizer {
     pub client: Client,
-    pub model_id: ModelId,
+    pub model_id: ModelRef,
 }
 
 /// Returns true if the input looks like it contains HTML markup.
@@ -460,7 +460,9 @@ pub(crate) fn make_web_search_tool() -> RegisteredTool {
 }
 
 fn make_web_search_tool_with_api_key(api_key: Option<String>) -> RegisteredTool {
-    let client = reqwest::Client::new();
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
     RegisteredTool {
         definition: ToolDefinition {
             name: "web_search".into(),
@@ -475,7 +477,7 @@ fn make_web_search_tool_with_api_key(api_key: Option<String>) -> RegisteredTool 
             }),
         },
         executor: Arc::new(move |args, _ctx| {
-            let client = client.clone();
+            let client = CLIENT.get_or_init(reqwest::Client::new).clone();
             let api_key = api_key.clone();
             Box::pin(async move {
                 let api_key = api_key.ok_or_else(|| {
@@ -577,9 +579,9 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                             "Content from {url}:\n---\n{content}\n---\n\n{user_prompt}\n\nRespond concisely based only on the content above."
                         );
                         let request = Request {
-                            model: s.model_id.model.clone(),
+                            model: s.model_id.model_id().to_string(),
                             messages: vec![Message::user(summarization_prompt)],
-                            provider: Some(s.model_id.provider.as_str().to_string()),
+                            provider: Some(s.model_id.provider().as_str().to_string()),
                             tools: None,
                             tool_choice: None,
                             response_format: None,
@@ -593,7 +595,7 @@ pub(crate) fn make_web_fetch_tool(summarizer: Option<WebFetchSummarizer>) -> Reg
                             provider_options: None,
                         };
                         let response = s.client.complete(&request).await.map_err(|e| {
-                            format!("web_fetch summarization (model={}) failed: {e}", s.model_id.model)
+                            format!("web_fetch summarization (model={}) failed: {e}", s.model_id.model_id())
                         })?;
                         Ok(response.text())
                     }
@@ -1250,7 +1252,10 @@ mod tests {
         let client = make_client(provider).await;
         let summarizer = WebFetchSummarizer {
             client,
-            model_id: ModelId::new(fabro_model::Provider::Anthropic, "mock-model"),
+            model_id: ModelRef::ByName {
+                provider: fabro_model::Provider::Anthropic,
+                model: "mock-model".to_string(),
+            },
         };
 
         let tool = make_web_fetch_tool(Some(summarizer));
@@ -1337,13 +1342,16 @@ mod tests {
 
         let mut providers = HashMap::new();
         providers.insert("other_provider".to_string(), default_provider);
-        // Register under "anthropic" so ModelId { provider: Anthropic, .. } routes here
+        // Register under "anthropic" so ModelRef { provider: Anthropic, .. } routes here
         providers.insert("anthropic".to_string(), target_provider);
         let client = Client::new(providers, Some("other_provider".into()), vec![]);
 
         let summarizer = WebFetchSummarizer {
             client,
-            model_id: ModelId::new(fabro_model::Provider::Anthropic, "target-model"),
+            model_id: ModelRef::ByName {
+                provider: fabro_model::Provider::Anthropic,
+                model: "target-model".to_string(),
+            },
         };
 
         let tool = make_web_fetch_tool(Some(summarizer));

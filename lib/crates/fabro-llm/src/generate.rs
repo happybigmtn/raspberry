@@ -4,9 +4,9 @@ use crate::provider::StreamEventStream;
 use crate::retry::retry;
 use crate::tools::{execute_all_tools_with_repair, RepairToolCallFn, Tool};
 use crate::types::{
-    FinishReason, GenerateResult, Message, ObjectStreamEvent, Request, Response, ResponseFormat,
-    ResponseFormatType, RetryPolicy, StepResult, StreamEvent, TimeoutConfig, ToolCall, ToolChoice,
-    ToolDefinition, Usage,
+    FinishReason, GenerateResult, Message, ObjectStreamEvent, ReasoningEffort, Request, Response,
+    ResponseFormat, ResponseFormatType, RetryPolicy, StepResult, StreamEvent, TimeoutConfig,
+    ToolCall, ToolChoice, ToolDefinition, Usage,
 };
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
@@ -43,6 +43,7 @@ fn build_initial_messages(params: &GenerateParams) -> Result<Vec<Message>, SdkEr
         if params.messages.is_some() {
             return Err(SdkError::Configuration {
                 message: "Cannot specify both 'prompt' and 'messages'".into(),
+                source: None,
             });
         }
         messages.push(Message::user(prompt));
@@ -68,7 +69,7 @@ fn build_request(
         top_p: params.top_p,
         max_tokens: params.max_tokens,
         stop_sequences: params.stop_sequences.clone(),
-        reasoning_effort: params.reasoning_effort.clone(),
+        reasoning_effort: params.reasoning_effort,
         speed: params.speed.clone(),
         metadata: params.metadata.clone(),
         provider_options: params.provider_options.clone(),
@@ -165,6 +166,7 @@ pub async fn generate(params: GenerateParams) -> Result<GenerateResult, SdkError
                     warn!(timeout_secs = per_step, "Per-step timeout exceeded");
                     SdkError::RequestTimeout {
                         message: format!("Per-step timeout of {per_step}s exceeded"),
+                        source: None,
                     }
                 })?
             } else {
@@ -263,6 +265,7 @@ pub async fn generate(params: GenerateParams) -> Result<GenerateResult, SdkError
                 warn!(timeout_secs = total, "Total generation timeout exceeded");
                 SdkError::RequestTimeout {
                     message: format!("Total timeout of {total}s exceeded"),
+                    source: None,
                 }
             })?
     } else {
@@ -288,7 +291,7 @@ pub struct GenerateParams {
     pub top_p: Option<f64>,
     pub max_tokens: Option<i64>,
     pub stop_sequences: Option<Vec<String>>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub speed: Option<String>,
     pub provider: Option<String>,
     pub provider_options: Option<serde_json::Value>,
@@ -412,8 +415,8 @@ impl GenerateParams {
     }
 
     #[must_use]
-    pub fn reasoning_effort(mut self, reasoning_effort: impl Into<String>) -> Self {
-        self.reasoning_effort = Some(reasoning_effort.into());
+    pub fn reasoning_effort(mut self, reasoning_effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(reasoning_effort);
         self
     }
 
@@ -699,6 +702,7 @@ async fn stream_with_tool_loop(params: GenerateParams) -> Result<StreamEventStre
                             .unwrap_or_else(|_| {
                                 Err(SdkError::RequestTimeout {
                                     message: format!("Per-step timeout of {per_step}s exceeded"),
+                                    source: None,
                                 })
                             })
                     } else {
@@ -829,6 +833,7 @@ async fn stream_with_tool_loop(params: GenerateParams) -> Result<StreamEventStre
                 let _ = tx
                     .send(Err(SdkError::RequestTimeout {
                         message: format!("Total timeout of {total}s exceeded"),
+                        source: None,
                     }))
                     .await;
             }
@@ -856,6 +861,7 @@ async fn stream_generate_raw(
             .await
             .map_err(|_| SdkError::RequestTimeout {
                 message: format!("Per-step timeout of {per_step}s exceeded"),
+                source: None,
             })??
     } else {
         client.stream(&request).await?
@@ -893,6 +899,7 @@ async fn stream_generate_raw(
                     Err(_) => Some((
                         Err(SdkError::RequestTimeout {
                             message: format!("Total timeout of {total_copy}s exceeded"),
+                            source: None,
                         }),
                         (stream, true),
                     )),
@@ -1081,6 +1088,7 @@ pub async fn stream_object(
                 Err(e) => {
                     events.push(Err(SdkError::Stream {
                         message: format!("{e}"),
+                        source: None,
                     }));
                 }
             }
@@ -1513,7 +1521,7 @@ mod tests {
             .top_p(0.9)
             .max_tokens(100)
             .stop_sequences(vec!["STOP".to_string()])
-            .reasoning_effort("high")
+            .reasoning_effort(ReasoningEffort::High)
             .provider("anthropic")
             .provider_options(serde_json::json!({"key": "value"}))
             .max_retries(5)
@@ -1532,7 +1540,7 @@ mod tests {
         assert_eq!(params.top_p, Some(0.9));
         assert_eq!(params.max_tokens, Some(100));
         assert_eq!(params.stop_sequences, Some(vec!["STOP".to_string()]));
-        assert_eq!(params.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(params.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(params.provider.as_deref(), Some("anthropic"));
         assert!(params.provider_options.is_some());
         assert_eq!(params.max_retries, 5);

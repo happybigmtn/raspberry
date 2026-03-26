@@ -22,6 +22,7 @@ pub(crate) fn provider_key_url(provider: Provider) -> &'static str {
             "https://platform.minimaxi.com/user-center/basic-information/interface-key"
         }
         Provider::Inception => "https://console.inceptionlabs.ai/api-keys",
+        Provider::OpenAiCompatible => "",
     }
 }
 
@@ -34,6 +35,7 @@ pub(crate) fn provider_display_name(provider: Provider) -> &'static str {
         Provider::Zai => "Zai",
         Provider::Minimax => "Minimax",
         Provider::Inception => "Inception",
+        Provider::OpenAiCompatible => "OpenAI Compatible",
     }
 }
 
@@ -262,6 +264,7 @@ mod tests {
     // -- API key validation --
 
     #[tokio::test]
+    #[ignore] // hits live Anthropic API
     async fn validate_api_key_rejects_invalid_key() {
         let result = validate_api_key(Provider::Anthropic, "sk-invalid-key-12345").await;
         assert!(result.is_err(), "expected invalid key to be rejected");

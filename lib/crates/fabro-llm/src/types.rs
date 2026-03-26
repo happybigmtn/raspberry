@@ -49,10 +49,16 @@ pub struct ThinkingData {
 
 // --- 5.4 ToolCall / ToolResult ---
 
+fn default_tool_type() -> String {
+    "function".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
+    #[serde(rename = "type", default = "default_tool_type")]
+    pub tool_type: String,
     pub arguments: serde_json::Value,
     pub raw_arguments: Option<String>,
     /// Opaque provider-specific metadata (e.g. Gemini `thought_signature`).
@@ -71,6 +77,7 @@ impl ToolCall {
         Self {
             id: id.into(),
             name: name.into(),
+            tool_type: "function".to_string(),
             arguments,
             raw_arguments: None,
             provider_metadata: None,
@@ -440,6 +447,46 @@ pub struct RateLimitInfo {
     pub reset_at: Option<String>,
 }
 
+// --- 3.8 ReasoningEffort ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            other => Err(format!(
+                "invalid reasoning_effort: {other:?} (expected low, medium, or high)"
+            )),
+        }
+    }
+}
+
 // --- 3.6 Request ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,7 +501,7 @@ pub struct Request {
     pub top_p: Option<f64>,
     pub max_tokens: Option<i64>,
     pub stop_sequences: Option<Vec<String>>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub speed: Option<String>,
     pub metadata: Option<HashMap<String, String>>,
     pub provider_options: Option<serde_json::Value>,
@@ -640,9 +687,9 @@ impl StreamEvent {
     }
 }
 
-// --- 2.9 ModelInfo (re-exported from fabro-model) ---
+// --- 2.9 Model (re-exported from fabro-model) ---
 
-pub use fabro_model::{ModelCosts, ModelFeatures, ModelInfo, ModelLimits};
+pub use fabro_model::{Model, ModelCosts, ModelFeatures, ModelLimits};
 
 // --- 4.7 Timeouts ---
 
@@ -1118,6 +1165,7 @@ mod tests {
     fn stream_event_error() {
         let event = StreamEvent::error(SdkError::Stream {
             message: "something went wrong".into(),
+            source: None,
         });
         match &event {
             StreamEvent::Error { error, .. } => {
@@ -1223,7 +1271,22 @@ mod tests {
         let tc = ToolCall::new("c1", "test", serde_json::json!({}));
         assert_eq!(tc.id, "c1");
         assert_eq!(tc.name, "test");
+        assert_eq!(tc.tool_type, "function");
         assert_eq!(tc.raw_arguments, None);
+    }
+
+    #[test]
+    fn tool_call_deserialize_without_type_defaults_to_function() {
+        let json = r#"{"id":"c1","name":"test","arguments":{}}"#;
+        let tc: ToolCall = serde_json::from_str(json).unwrap();
+        assert_eq!(tc.tool_type, "function");
+    }
+
+    #[test]
+    fn tool_call_serializes_type_field() {
+        let tc = ToolCall::new("c1", "test", serde_json::json!({}));
+        let json = serde_json::to_value(&tc).unwrap();
+        assert_eq!(json["type"], "function");
     }
 
     #[test]

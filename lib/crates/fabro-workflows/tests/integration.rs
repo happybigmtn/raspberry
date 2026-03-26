@@ -7,8 +7,8 @@ use fabro_config::run::WorkflowRunConfig;
 use fabro_graphviz::graph::{AttrValue, Edge, Graph, Node};
 use fabro_graphviz::parser::parse;
 use fabro_interview::{
-    Answer, AnswerValue, AutoApproveInterviewer, Interviewer, QueueInterviewer,
-    RecordingInterviewer,
+    Answer, AnswerValue, AutoApproveInterviewer, CallbackInterviewer, Interviewer,
+    QueueInterviewer, RecordingInterviewer,
 };
 use fabro_llm::provider::Provider;
 use fabro_validate::{validate, validate_or_raise, Severity};
@@ -452,7 +452,6 @@ async fn end_to_end_human_gate_pipeline() {
     let answers = VecDeque::from([Answer {
         value: AnswerValue::Selected("R".to_string()),
         selected_option: None,
-        selected_options: Vec::new(),
         text: None,
     }]);
     let interviewer = Arc::new(QueueInterviewer::new(answers));
@@ -498,6 +497,227 @@ async fn end_to_end_human_gate_pipeline() {
     assert!(
         !checkpoint.completed_nodes.contains(&"approve".to_string()),
         "should NOT have traversed approve path"
+    );
+}
+
+#[tokio::test]
+async fn human_gate_aborted_input_fails_closed_without_fail_route() {
+    let mut graph = Graph::new("HumanGateAbortedClosed");
+
+    let mut start = Node::new("start");
+    start.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("Mdiamond".to_string()),
+    );
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut exit = Node::new("exit");
+    exit.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("Msquare".to_string()),
+    );
+    graph.nodes.insert("exit".to_string(), exit);
+
+    let mut gate = Node::new("gate");
+    gate.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("hexagon".to_string()),
+    );
+    gate.attrs
+        .insert("type".to_string(), AttrValue::String("human".to_string()));
+    gate.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("Approve release?".to_string()),
+    );
+    graph.nodes.insert("gate".to_string(), gate);
+    graph
+        .nodes
+        .insert("approve".to_string(), Node::new("approve"));
+    graph
+        .nodes
+        .insert("revise".to_string(), Node::new("revise"));
+
+    graph.edges.push(Edge::new("start", "gate"));
+
+    let mut approve_edge = Edge::new("gate", "approve");
+    approve_edge.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[A] Approve".to_string()),
+    );
+    graph.edges.push(approve_edge);
+
+    let mut revise_edge = Edge::new("gate", "revise");
+    revise_edge.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[R] Revise".to_string()),
+    );
+    graph.edges.push(revise_edge);
+
+    graph.edges.push(Edge::new("approve", "exit"));
+    graph.edges.push(Edge::new("revise", "exit"));
+
+    let interviewer = Arc::new(CallbackInterviewer::new(|_| Answer::aborted()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("human", Box::new(HumanHandler::new(interviewer)));
+
+    let engine = WorkflowRunEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
+    let config = RunConfig {
+        run_dir: dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id: "test-run".into(),
+        git_checkpoint_enabled: false,
+        host_repo_path: None,
+        base_sha: None,
+        run_branch: None,
+        meta_branch: None,
+        labels: std::collections::HashMap::new(),
+        checkpoint_exclude_globs: Vec::new(),
+        github_app: None,
+        git_author: fabro_workflows::git::GitAuthor::default(),
+        base_branch: None,
+        pull_request: None,
+        asset_globs: Vec::new(),
+        workflow_slug: None,
+    };
+
+    let outcome = engine
+        .run(&graph, &config)
+        .await
+        .expect("engine should return Ok with fail outcome");
+    assert_eq!(
+        outcome.status,
+        StageStatus::Fail,
+        "aborted human gate should fail closed"
+    );
+    assert!(
+        outcome
+            .failure_reason()
+            .unwrap_or("")
+            .contains("no outgoing fail edge"),
+        "unexpected outcome: {outcome:?}"
+    );
+
+    let checkpoint = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(
+        checkpoint.node_outcomes.contains_key("gate"),
+        "gate outcome should be checkpointed before termination"
+    );
+    assert!(
+        !checkpoint.completed_nodes.contains(&"approve".to_string()),
+        "approval path must not execute on aborted input"
+    );
+    assert!(
+        !checkpoint.completed_nodes.contains(&"revise".to_string()),
+        "other unconditional choice edges must not execute on aborted input"
+    );
+}
+
+#[tokio::test]
+async fn human_gate_aborted_input_routes_via_outcome_fail_condition() {
+    let mut graph = Graph::new("HumanGateAbortedFailRoute");
+
+    let mut start = Node::new("start");
+    start.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("Mdiamond".to_string()),
+    );
+    graph.nodes.insert("start".to_string(), start);
+
+    let mut exit = Node::new("exit");
+    exit.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("Msquare".to_string()),
+    );
+    graph.nodes.insert("exit".to_string(), exit);
+
+    let mut gate = Node::new("gate");
+    gate.attrs.insert(
+        "shape".to_string(),
+        AttrValue::String("hexagon".to_string()),
+    );
+    gate.attrs
+        .insert("type".to_string(), AttrValue::String("human".to_string()));
+    gate.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("Approve release?".to_string()),
+    );
+    graph.nodes.insert("gate".to_string(), gate);
+    graph
+        .nodes
+        .insert("approve".to_string(), Node::new("approve"));
+    graph
+        .nodes
+        .insert("manual_review".to_string(), Node::new("manual_review"));
+
+    graph.edges.push(Edge::new("start", "gate"));
+
+    let mut approve_edge = Edge::new("gate", "approve");
+    approve_edge.attrs.insert(
+        "label".to_string(),
+        AttrValue::String("[A] Approve".to_string()),
+    );
+    graph.edges.push(approve_edge);
+
+    let mut fail_edge = Edge::new("gate", "manual_review");
+    fail_edge.attrs.insert(
+        "condition".to_string(),
+        AttrValue::String("outcome=fail".to_string()),
+    );
+    graph.edges.push(fail_edge);
+
+    graph.edges.push(Edge::new("approve", "exit"));
+    graph.edges.push(Edge::new("manual_review", "exit"));
+
+    let interviewer = Arc::new(CallbackInterviewer::new(|_| Answer::aborted()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = HandlerRegistry::new(Box::new(StartHandler));
+    registry.register("start", Box::new(StartHandler));
+    registry.register("exit", Box::new(ExitHandler));
+    registry.register("human", Box::new(HumanHandler::new(interviewer)));
+
+    let engine = WorkflowRunEngine::new(registry, Arc::new(EventEmitter::new()), local_env());
+    let config = RunConfig {
+        run_dir: dir.path().to_path_buf(),
+        cancel_token: None,
+        dry_run: false,
+        run_id: "test-run".into(),
+        git_checkpoint_enabled: false,
+        host_repo_path: None,
+        base_sha: None,
+        run_branch: None,
+        meta_branch: None,
+        labels: std::collections::HashMap::new(),
+        checkpoint_exclude_globs: Vec::new(),
+        github_app: None,
+        git_author: fabro_workflows::git::GitAuthor::default(),
+        base_branch: None,
+        pull_request: None,
+        asset_globs: Vec::new(),
+        workflow_slug: None,
+    };
+
+    let outcome = engine
+        .run(&graph, &config)
+        .await
+        .expect("aborted human gate should follow explicit fail route");
+    assert_eq!(outcome.status, StageStatus::Success);
+
+    let checkpoint = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
+    assert!(
+        checkpoint
+            .completed_nodes
+            .contains(&"manual_review".to_string()),
+        "explicit fail route should handle unanswered human gates"
+    );
+    assert!(
+        !checkpoint.completed_nodes.contains(&"approve".to_string()),
+        "approval path must not execute on aborted input"
     );
 }
 
@@ -1302,7 +1522,7 @@ impl Handler for ContextSetterHandler {
     }
 }
 
-fn collect_events(emitter: &mut EventEmitter) -> Arc<std::sync::Mutex<Vec<WorkflowRunEvent>>> {
+fn collect_events(emitter: &EventEmitter) -> Arc<std::sync::Mutex<Vec<WorkflowRunEvent>>> {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
     emitter.on_event(move |event| {
@@ -1859,8 +2079,8 @@ async fn event_streaming_lifecycle() {
     }"#;
     let graph = parse(input).expect("parse");
     let dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
     let engine = WorkflowRunEngine::new(make_linear_registry(), Arc::new(emitter), local_env());
     let config = RunConfig {
         run_dir: dir.path().to_path_buf(),
@@ -2304,13 +2524,11 @@ async fn human_gate_loops_back() {
         Answer {
             value: AnswerValue::Selected("F".to_string()),
             selected_option: None,
-            selected_options: Vec::new(),
             text: None,
         },
         Answer {
             value: AnswerValue::Selected("A".to_string()),
             selected_option: None,
-            selected_options: Vec::new(),
             text: None,
         },
     ]);
@@ -2378,8 +2596,8 @@ async fn scenario_ship_a_feature() {
 
     let interviewer = Arc::new(AutoApproveInterviewer);
     let dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
     let engine = WorkflowRunEngine::new(
         make_full_registry(interviewer),
         Arc::new(emitter),
@@ -2993,8 +3211,8 @@ async fn manager_loop_max_cycles_exceeded_e2e() {
         .failure_reason()
         .unwrap()
         .contains("Max cycles"));
-    // Overall pipeline outcome is from last completed node (manager) = Fail
-    assert_eq!(outcome.status, StageStatus::Fail);
+    // Pipeline reached exit with goal gates satisfied — per spec, SUCCESS.
+    assert_eq!(outcome.status, StageStatus::Success);
 }
 
 // ===========================================================================
@@ -3502,8 +3720,8 @@ async fn integration_smoke_plan_implement_review_done() {
     // Run pipeline
     let interviewer = Arc::new(AutoApproveInterviewer);
     let dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
     let engine = WorkflowRunEngine::new(
         make_full_registry(interviewer),
         Arc::new(emitter),
@@ -6796,7 +7014,6 @@ async fn human_gate_freeform_with_fixed_choice_match() {
     let answers = VecDeque::from([Answer {
         value: AnswerValue::Selected("A".to_string()),
         selected_option: None,
-        selected_options: Vec::new(),
         text: None,
     }]);
     let interviewer = Arc::new(QueueInterviewer::new(answers));
@@ -7050,7 +7267,6 @@ async fn human_gate_freeform_sets_allow_freeform_on_question() {
     let answers = VecDeque::from([Answer {
         value: AnswerValue::Selected("A".to_string()),
         selected_option: None,
-        selected_options: Vec::new(),
         text: None,
     }]);
     let inner = QueueInterviewer::new(answers);
@@ -7165,7 +7381,6 @@ async fn human_gate_without_freeform_sets_allow_freeform_false() {
     let answers = VecDeque::from([Answer {
         value: AnswerValue::Selected("A".to_string()),
         selected_option: None,
-        selected_options: Vec::new(),
         text: None,
     }]);
     let inner = QueueInterviewer::new(answers);
@@ -7432,8 +7647,8 @@ fn engine_with_hooks_and_events(
     Arc<std::sync::Mutex<Vec<WorkflowRunEvent>>>,
 ) {
     let registry = make_linear_registry();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
     let sandbox = local_env();
     let mut engine = WorkflowRunEngine::new(registry, Arc::new(emitter), sandbox);
     if !hooks.is_empty() {
@@ -7622,8 +7837,8 @@ async fn hook_stage_start_skip_bypasses_node() {
     let config = make_run_config(dir.path());
 
     let outcome = engine.run(&graph, &config).await.unwrap();
-    // When the only work node is skipped, the final outcome reflects that
-    assert_eq!(outcome.status, StageStatus::Skipped);
+    // Pipeline reached exit with goal gates satisfied — per spec, SUCCESS.
+    assert_eq!(outcome.status, StageStatus::Success);
 
     // response.md should NOT exist for the work node (it was skipped)
     assert!(
@@ -7678,8 +7893,8 @@ async fn hook_stage_start_matcher_filters_by_node_id() {
     let config = make_run_config(dir.path());
 
     let outcome = engine.run(&graph, &config).await.unwrap();
-    // step2 is the last completed node and was skipped
-    assert_eq!(outcome.status, StageStatus::Skipped);
+    // Pipeline reached exit with goal gates satisfied — per spec, SUCCESS.
+    assert_eq!(outcome.status, StageStatus::Success);
 
     // step1 should have executed (response.md exists)
     assert!(
@@ -8208,8 +8423,8 @@ async fn hook_matcher_regex_pattern() {
     let config = make_run_config(dir.path());
 
     let outcome = engine.run(&graph, &config).await.unwrap();
-    // Both step nodes were skipped, so the last outcome is Skipped
-    assert_eq!(outcome.status, StageStatus::Skipped);
+    // Pipeline reached exit with goal gates satisfied — per spec, SUCCESS.
+    assert_eq!(outcome.status, StageStatus::Success);
 
     // Both step1 and step2 should be skipped
     assert!(
@@ -8890,8 +9105,8 @@ async fn large_context_values_are_offloaded_to_artifact_store() {
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
 
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
     let engine = WorkflowRunEngine::new(registry, Arc::new(emitter), local_env());
     let config = RunConfig {
         run_dir: dir.path().to_path_buf(),
@@ -10664,8 +10879,8 @@ async fn git_checkpoint_host_emits_events_and_diff_patch() {
 
     // 4. Set up event collection and engine
     let run_dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
 
     let env: Arc<dyn fabro_agent::Sandbox> =
         Arc::new(fabro_agent::LocalSandbox::new(worktree_path.clone()));
@@ -11049,8 +11264,8 @@ async fn parallel_git_branching_host_e2e() {
 
     // 4. Set up engine with FileWriterHandler for branches
     let run_dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
 
     let env: Arc<dyn fabro_agent::Sandbox> =
         Arc::new(fabro_agent::LocalSandbox::new(worktree_path.clone()));
@@ -11321,8 +11536,8 @@ async fn git_checkpoint_host_skips_empty_diff_patch() {
     graph.edges.push(Edge::new("work", "exit"));
 
     let run_dir = tempfile::tempdir().unwrap();
-    let mut emitter = EventEmitter::new();
-    let _events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let _events = collect_events(&emitter);
 
     let env: Arc<dyn fabro_agent::Sandbox> =
         Arc::new(fabro_agent::LocalSandbox::new(worktree_path.clone()));
@@ -11517,7 +11732,7 @@ fn circuit_breaker_self_loop_graph(signature_limit: Option<i64>) -> Graph {
     let mut graph = make_graph_with_start_exit("CircuitBreakerSelfLoop");
     graph
         .attrs
-        .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+        .insert("default_max_retries".to_string(), AttrValue::Integer(0));
     // High visit limit so the circuit breaker fires first
     graph
         .attrs
@@ -11560,7 +11775,7 @@ fn circuit_breaker_restart_graph(signature_limit: Option<i64>) -> Graph {
     let mut graph = make_graph_with_start_exit("CircuitBreakerRestart");
     graph
         .attrs
-        .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+        .insert("default_max_retries".to_string(), AttrValue::Integer(0));
     graph
         .attrs
         .insert("max_node_visits".to_string(), AttrValue::Integer(100));
@@ -11958,7 +12173,7 @@ async fn e2e_failure_signature_persisted_in_context() {
     let mut graph = make_graph_with_start_exit("SignatureContextTest");
     graph
         .attrs
-        .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+        .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
     let mut work = Node::new("work");
     work.attrs.insert(
@@ -12002,9 +12217,9 @@ async fn e2e_failure_signature_persisted_in_context() {
     };
 
     let outcome = engine.run(&graph, &config).await.unwrap();
-    // Pipeline reaches exit (terminal), last completed node is "work" (Fail).
-    // The engine doesn't execute exit handlers, just breaks on terminal nodes.
-    assert_eq!(outcome.status, StageStatus::Fail);
+    // Pipeline reaches exit (terminal) with goal gates satisfied.
+    // Per spec, reaching exit with satisfied goal gates returns SUCCESS.
+    assert_eq!(outcome.status, StageStatus::Success);
 
     // Verify checkpoint has failure_signature in context
     let cp = Checkpoint::load(&dir.path().join("checkpoint.json")).unwrap();
@@ -12031,7 +12246,7 @@ async fn e2e_failure_signature_hint_overrides_reason_in_context() {
     let mut graph = make_graph_with_start_exit("SignatureHintTest");
     graph
         .attrs
-        .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+        .insert("default_max_retries".to_string(), AttrValue::Integer(0));
 
     let mut work = Node::new("work");
     work.attrs.insert(
@@ -12234,8 +12449,8 @@ async fn e2e_circuit_breaker_emits_events_before_abort() {
     let dir = tempfile::tempdir().unwrap();
     let graph = circuit_breaker_self_loop_graph(Some(3));
 
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
 
     let mut registry = HandlerRegistry::new(Box::new(StartHandler));
     registry.register("start", Box::new(StartHandler));
@@ -12366,7 +12581,7 @@ async fn e2e_circuit_breaker_multi_stage_impl_verify_cycle() {
     let mut graph = make_graph_with_start_exit("ImplVerifyCycle");
     graph
         .attrs
-        .insert("default_max_retry".to_string(), AttrValue::Integer(0));
+        .insert("default_max_retries".to_string(), AttrValue::Integer(0));
     graph
         .attrs
         .insert("max_node_visits".to_string(), AttrValue::Integer(100));
@@ -12834,7 +13049,7 @@ impl Handler for KeepaliveHandler {
 async fn e2e_stall_watchdog_triggers_from_dot_parsed_pipeline() {
     // Parse a DOT graph with stall_timeout set to 200ms
     let dot = r#"digraph StallTest {
-        graph [goal="Test stall watchdog", stall_timeout="50ms", default_max_retry=0]
+        graph [goal="Test stall watchdog", stall_timeout="50ms", default_max_retries=0]
         start [shape=Mdiamond]
         work  [type="hanging", label="Work"]
         exit  [shape=Msquare]
@@ -12856,7 +13071,7 @@ async fn e2e_stall_watchdog_triggers_from_dot_parsed_pipeline() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let mut emitter = EventEmitter::new();
+    let emitter = EventEmitter::new();
     emitter.on_event(move |event| {
         events_clone.lock().unwrap().push(format!("{event:?}"));
     });
@@ -12903,7 +13118,7 @@ async fn e2e_stall_watchdog_kept_alive_by_handler_events() {
     // Parse a DOT graph with stall_timeout 200ms, but the handler emits events
     // every 100ms for 500ms total — the watchdog should NOT trigger.
     let dot = r#"digraph StallAliveTest {
-        graph [goal="Test stall keepalive", stall_timeout="100ms", default_max_retry=0]
+        graph [goal="Test stall keepalive", stall_timeout="100ms", default_max_retries=0]
         start [shape=Mdiamond]
         work  [type="keepalive", label="Work"]
         exit  [shape=Msquare]
@@ -12956,7 +13171,7 @@ async fn e2e_stall_watchdog_disabled_with_zero_timeout() {
     // Parse a DOT graph with stall_timeout="0s" — watchdog should be disabled,
     // and a short sleep handler should complete successfully.
     let dot = r#"digraph StallDisabledTest {
-        graph [goal="Test stall disabled", stall_timeout="0s", default_max_retry=0]
+        graph [goal="Test stall disabled", stall_timeout="0s", default_max_retries=0]
         start [shape=Mdiamond]
         work  [type="slow", label="Work"]
         exit  [shape=Msquare]
@@ -13028,7 +13243,7 @@ async fn e2e_stall_watchdog_with_explicit_timeout_override() {
     // A short stall_timeout of 50ms should trigger faster than the default 1800s.
     // This tests that the graph attribute is actually respected.
     let dot = r#"digraph StallOverrideTest {
-        graph [goal="Test stall override", stall_timeout="50ms", default_max_retry=0]
+        graph [goal="Test stall override", stall_timeout="50ms", default_max_retries=0]
         start [shape=Mdiamond]
         work  [type="hanging", label="Work"]
         exit  [shape=Msquare]
@@ -13147,8 +13362,8 @@ async fn asset_collection_local_sandbox_success() {
     registry.register("start", Box::new(StartHandler));
     registry.register("exit", Box::new(ExitHandler));
 
-    let mut emitter = EventEmitter::new();
-    let events = collect_events(&mut emitter);
+    let emitter = EventEmitter::new();
+    let events = collect_events(&emitter);
 
     let engine = WorkflowRunEngine::new(registry, Arc::new(emitter), sandbox.clone());
 
@@ -13323,8 +13538,9 @@ async fn asset_collection_local_sandbox_on_failure() {
         .run(&graph, &config)
         .await
         .expect("run should succeed");
-    // The pipeline completes (handler returned Fail, not an error), but assets should still be collected
-    assert_eq!(outcome.status, StageStatus::Fail);
+    // The pipeline completes with goal gates satisfied — per spec, SUCCESS at exit node.
+    // Assets should still be collected regardless of intermediate node failures.
+    assert_eq!(outcome.status, StageStatus::Success);
 
     let assets_dir = run_dir
         .path()

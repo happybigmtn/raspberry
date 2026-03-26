@@ -553,7 +553,7 @@ async fn execute_run(state: Arc<AppState>, run_id: String) {
         runs.get(&run_id).and_then(|r| r.event_tx.clone())
     };
 
-    let mut emitter = EventEmitter::new();
+    let emitter = EventEmitter::new();
     if let Some(tx_clone) = event_tx {
         emitter.on_event(move |event| {
             let _ = tx_clone.send(event.clone());
@@ -858,18 +858,15 @@ async fn submit_answer(
             } else if !req.selected_option_keys.is_empty() {
                 let pending = interviewer.pending_questions();
                 let pq = pending.iter().find(|pq| pq.id == qid);
-                let mut options = Vec::new();
                 for key in &req.selected_option_keys {
-                    let opt = pq
-                        .and_then(|pq| pq.question.options.iter().find(|o| o.key == *key).cloned());
-                    match opt {
-                        Some(o) => options.push(o),
-                        None => {
-                            return ApiError::bad_request("Invalid option key.").into_response();
-                        }
+                    let valid = pq
+                        .and_then(|pq| pq.question.options.iter().find(|o| o.key == *key))
+                        .is_some();
+                    if !valid {
+                        return ApiError::bad_request("Invalid option key.").into_response();
                     }
                 }
-                Answer::multi_selected(req.selected_option_keys, options)
+                Answer::multi_selected(req.selected_option_keys)
             } else if let Some(v) = req.value {
                 Answer::text(v)
             } else {
@@ -1053,7 +1050,7 @@ async fn test_model(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(info) = fabro_model::get_model_info(&id) else {
+    let Some(info) = fabro_model::Catalog::builtin().get(&id) else {
         return ApiError::not_found(format!("Model not found: {id}")).into_response();
     };
 
@@ -1066,7 +1063,7 @@ async fn test_model(
     }
 
     let params = fabro_llm::generate::GenerateParams::new(&info.id)
-        .provider(&info.provider)
+        .provider(info.provider.as_str())
         .prompt("Say OK")
         .max_tokens(16);
 
@@ -1163,17 +1160,18 @@ async fn create_completion(
 ) -> Response {
     // Resolve model
     let model_id = req.model.unwrap_or_else(|| {
-        fabro_model::list_models(None)
+        fabro_model::Catalog::builtin()
+            .list(None)
             .first()
             .map_or_else(|| "claude-sonnet-4-5".to_string(), |m| m.id.clone())
     });
 
-    let catalog_info = fabro_model::get_model_info(&model_id);
+    let catalog_info = fabro_model::Catalog::builtin().get(&model_id);
 
     // Resolve provider: explicit request > catalog > None
     let provider_name = req
         .provider
-        .or_else(|| catalog_info.as_ref().map(|i| i.provider.clone()));
+        .or_else(|| catalog_info.map(|i| i.provider.to_string()));
 
     info!(model = %model_id, provider = ?provider_name, "Completion request received");
 
@@ -1231,7 +1229,7 @@ async fn create_completion(
         } else {
             Some(req.stop_sequences)
         },
-        reasoning_effort: req.reasoning_effort,
+        reasoning_effort: req.reasoning_effort.as_deref().and_then(|s| s.parse().ok()),
         speed: None,
         metadata: None,
         provider_options: req.provider_options,

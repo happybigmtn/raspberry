@@ -77,6 +77,7 @@ impl Question {
 pub enum AnswerValue {
     Yes,
     No,
+    Aborted,
     Skipped,
     Timeout,
     Selected(String),
@@ -89,8 +90,6 @@ pub enum AnswerValue {
 pub struct Answer {
     pub value: AnswerValue,
     pub selected_option: Option<QuestionOption>,
-    #[serde(default)]
-    pub selected_options: Vec<QuestionOption>,
     pub text: Option<String>,
 }
 
@@ -100,7 +99,6 @@ impl Answer {
         Self {
             value: AnswerValue::Yes,
             selected_option: None,
-            selected_options: Vec::new(),
             text: None,
         }
     }
@@ -110,7 +108,15 @@ impl Answer {
         Self {
             value: AnswerValue::No,
             selected_option: None,
-            selected_options: Vec::new(),
+            text: None,
+        }
+    }
+
+    #[must_use]
+    pub fn aborted() -> Self {
+        Self {
+            value: AnswerValue::Aborted,
+            selected_option: None,
             text: None,
         }
     }
@@ -120,7 +126,6 @@ impl Answer {
         Self {
             value: AnswerValue::Skipped,
             selected_option: None,
-            selected_options: Vec::new(),
             text: None,
         }
     }
@@ -130,7 +135,6 @@ impl Answer {
         Self {
             value: AnswerValue::Timeout,
             selected_option: None,
-            selected_options: Vec::new(),
             text: None,
         }
     }
@@ -140,16 +144,14 @@ impl Answer {
         Self {
             value: AnswerValue::Selected(key),
             selected_option: Some(option),
-            selected_options: Vec::new(),
             text: None,
         }
     }
 
-    pub fn multi_selected(keys: Vec<String>, options: Vec<QuestionOption>) -> Self {
+    pub fn multi_selected(keys: Vec<String>) -> Self {
         Self {
             value: AnswerValue::MultiSelected(keys),
             selected_option: None,
-            selected_options: options,
             text: None,
         }
     }
@@ -159,7 +161,6 @@ impl Answer {
         Self {
             value: AnswerValue::Text(t.clone()),
             selected_option: None,
-            selected_options: Vec::new(),
             text: Some(t),
         }
     }
@@ -257,6 +258,12 @@ mod tests {
     }
 
     #[test]
+    fn answer_aborted() {
+        let a = Answer::aborted();
+        assert_eq!(a.value, AnswerValue::Aborted);
+    }
+
+    #[test]
     fn answer_timeout() {
         let a = Answer::timeout();
         assert_eq!(a.value, AnswerValue::Timeout);
@@ -297,6 +304,7 @@ mod tests {
     fn answer_value_variants() {
         assert_ne!(AnswerValue::Yes, AnswerValue::No);
         assert_ne!(AnswerValue::Skipped, AnswerValue::Timeout);
+        assert_ne!(AnswerValue::Aborted, AnswerValue::Timeout);
         assert_eq!(
             AnswerValue::Selected("x".to_string()),
             AnswerValue::Selected("x".to_string())

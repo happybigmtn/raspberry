@@ -2,21 +2,32 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fabro_agent::{
-    AnthropicProfile, GeminiProfile, LocalSandbox, OpenAiProfile, ProviderProfile, Session,
+    AgentProfile, AnthropicProfile, GeminiProfile, LocalSandbox, OpenAiProfile, Session,
     SessionConfig, SubAgentManager, WebFetchSummarizer,
 };
 use fabro_llm::client::Client;
-use fabro_llm::provider::{ModelId, Provider};
+use fabro_llm::provider::Provider;
+use fabro_model::ModelRef;
 
-fn summarizer_model_id(provider: Provider) -> ModelId {
+fn summarizer_model_id(provider: Provider) -> ModelRef {
     match provider {
         Provider::OpenAi
         | Provider::Kimi
         | Provider::Zai
         | Provider::Minimax
-        | Provider::Inception => ModelId::new(Provider::OpenAi, "gpt-5.4-mini"),
-        Provider::Gemini => ModelId::new(Provider::Gemini, "gemini-3-flash-preview"),
-        Provider::Anthropic => ModelId::new(Provider::Anthropic, "claude-haiku-4-5"),
+        | Provider::Inception
+        | Provider::OpenAiCompatible => ModelRef::ByName {
+            provider: Provider::OpenAi,
+            model: "gpt-5.4-mini".to_string(),
+        },
+        Provider::Gemini => ModelRef::ByName {
+            provider: Provider::Gemini,
+            model: "gemini-3-flash-preview".to_string(),
+        },
+        Provider::Anthropic => ModelRef::ByName {
+            provider: Provider::Anthropic,
+            model: "claude-haiku-4-5".to_string(),
+        },
     }
 }
 
@@ -27,12 +38,16 @@ fn build_summarizer(provider: Provider, client: &Client) -> WebFetchSummarizer {
     }
 }
 
-fn build_profile(provider: Provider, model: &str, client: &Client) -> Box<dyn ProviderProfile> {
+fn build_profile(provider: Provider, model: &str, client: &Client) -> Box<dyn AgentProfile> {
     let summarizer = Some(build_summarizer(provider, client));
     match provider {
         Provider::Anthropic => Box::new(AnthropicProfile::with_summarizer(model, summarizer)),
         Provider::OpenAi => Box::new(OpenAiProfile::with_summarizer(model, summarizer)),
-        Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
+        Provider::Kimi
+        | Provider::Zai
+        | Provider::Minimax
+        | Provider::Inception
+        | Provider::OpenAiCompatible => {
             Box::new(OpenAiProfile::with_summarizer(model, summarizer).with_provider(provider))
         }
         Provider::Gemini => Box::new(GeminiProfile::with_summarizer(model, summarizer)),
@@ -51,7 +66,7 @@ async fn make_session(provider: Provider, model: &str, cwd: &Path) -> Session {
     let factory_model: String = model.to_string();
     let factory_cwd = cwd.to_path_buf();
     let factory: fabro_agent::subagent::SessionFactory = Arc::new(move || {
-        let sub_profile: Arc<dyn ProviderProfile> = {
+        let sub_profile: Arc<dyn AgentProfile> = {
             let summarizer = Some(build_summarizer(provider, &factory_client));
             match provider {
                 Provider::Anthropic => Arc::new(AnthropicProfile::with_summarizer(
@@ -61,12 +76,14 @@ async fn make_session(provider: Provider, model: &str, cwd: &Path) -> Session {
                 Provider::OpenAi => {
                     Arc::new(OpenAiProfile::with_summarizer(&factory_model, summarizer))
                 }
-                Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
-                    Arc::new(
-                        OpenAiProfile::with_summarizer(&factory_model, summarizer)
-                            .with_provider(provider),
-                    )
-                }
+                Provider::Kimi
+                | Provider::Zai
+                | Provider::Minimax
+                | Provider::Inception
+                | Provider::OpenAiCompatible => Arc::new(
+                    OpenAiProfile::with_summarizer(&factory_model, summarizer)
+                        .with_provider(provider),
+                ),
                 Provider::Gemini => {
                     Arc::new(GeminiProfile::with_summarizer(&factory_model, summarizer))
                 }
@@ -78,16 +95,17 @@ async fn make_session(provider: Provider, model: &str, cwd: &Path) -> Session {
             sub_profile,
             sub_env,
             SessionConfig::default(),
+            None,
         )
     });
     profile.register_subagent_tools(manager, factory, 0);
 
-    let profile: Arc<dyn ProviderProfile> = Arc::from(profile);
+    let profile: Arc<dyn AgentProfile> = Arc::from(profile);
     let config = SessionConfig {
         max_turns: 20,
         ..SessionConfig::default()
     };
-    Session::new(client, profile, env, config)
+    Session::new(client, profile, env, config, None)
 }
 
 async fn make_session_with_config(
@@ -98,9 +116,9 @@ async fn make_session_with_config(
 ) -> Session {
     dotenvy::dotenv().ok();
     let client = Client::from_env().await.expect("Client::from_env failed");
-    let profile: Arc<dyn ProviderProfile> = Arc::from(build_profile(provider, model, &client));
+    let profile: Arc<dyn AgentProfile> = Arc::from(build_profile(provider, model, &client));
     let env = Arc::new(LocalSandbox::new(cwd.to_path_buf()));
-    Session::new(client, profile, env, config)
+    Session::new(client, profile, env, config, None)
 }
 
 macro_rules! provider_test {
@@ -413,7 +431,7 @@ macro_rules! reasoning_effort_tests {
             let tmp = tempfile::tempdir().expect("failed to create tempdir");
             let config = SessionConfig {
                 max_turns: 20,
-                reasoning_effort: Some("low".to_string()),
+                reasoning_effort: Some(fabro_llm::types::ReasoningEffort::Low),
                 ..SessionConfig::default()
             };
             let mut session = make_session_with_config($provider, $model, tmp.path(), config).await;

@@ -1,7 +1,7 @@
+use crate::agent_profile::AgentProfile;
 use crate::config::SessionConfig;
 use crate::profiles::assemble_system_prompt;
 use crate::profiles::BaseProfile;
-use crate::provider_profile::{ProfileCapabilities, ProviderProfile};
 use crate::sandbox::Sandbox;
 use crate::skills::Skill;
 use crate::tool_registry::ToolRegistry;
@@ -46,7 +46,7 @@ impl GeminiProfile {
     }
 }
 
-impl ProviderProfile for GeminiProfile {
+impl AgentProfile for GeminiProfile {
     fn provider(&self) -> Provider {
         self.base.provider
     }
@@ -197,33 +197,6 @@ in the project.";
             skills,
         )
     }
-
-    fn capabilities(&self) -> ProfileCapabilities {
-        let context_window_size = fabro_model::get_model_info(self.model())
-            .map(|info| info.limits.context_window as usize)
-            .unwrap_or(1_000_000);
-        ProfileCapabilities {
-            supports_reasoning: true,
-            supports_streaming: true,
-            supports_parallel_tool_calls: true,
-            context_window_size,
-        }
-    }
-
-    fn provider_options(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "gemini": {
-                "safety_settings": {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_ONLY_HIGH"
-                }
-            }
-        }))
-    }
-
-    fn knowledge_cutoff(&self) -> &'static str {
-        "January 2025"
-    }
 }
 
 #[cfg(test)]
@@ -240,12 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_profile_capabilities() {
-        let profile = GeminiProfile::new("gemini-2.0-flash");
-        assert!(profile.supports_reasoning());
-        assert!(profile.supports_streaming());
-        assert!(profile.supports_parallel_tool_calls());
-        assert_eq!(profile.context_window_size(), 1_000_000);
+    fn gemini_context_window_from_catalog() {
+        let profile = GeminiProfile::new("gemini-3.1-pro-preview");
+        assert_eq!(profile.context_window_size(), 1_048_576);
     }
 
     #[test]
@@ -304,18 +274,6 @@ mod tests {
         let prompt = profile.build_system_prompt(&env, &EnvContext::default(), &[], None, &[]);
         assert!(prompt.contains("<environment>"));
         assert!(prompt.contains("linux"));
-    }
-
-    #[test]
-    fn gemini_provider_options_returns_safety_settings() {
-        let profile = GeminiProfile::new("gemini-2.0-flash");
-        let options = profile.provider_options();
-        assert!(options.is_some());
-        let options = options.unwrap();
-        let safety = &options["gemini"]["safety_settings"];
-        assert!(safety.is_object());
-        assert_eq!(safety["category"], "HARM_CATEGORY_DANGEROUS_CONTENT");
-        assert_eq!(safety["threshold"], "BLOCK_ONLY_HIGH");
     }
 
     #[test]

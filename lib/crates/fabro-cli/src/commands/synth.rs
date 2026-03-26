@@ -48,7 +48,11 @@ fn automation_cli_command(
                 "cat {prompt_file} | CLAUDECODE= claude -p --output-format {output_format} --dangerously-skip-permissions --model {model} --max-turns {max_turns}"
             )
         }
-        Provider::OpenAi | Provider::Kimi | Provider::Zai | Provider::Inception => format!(
+        Provider::OpenAi
+        | Provider::Kimi
+        | Provider::Zai
+        | Provider::Inception
+        | Provider::OpenAiCompatible => format!(
             "cat {prompt_file} | codex exec --json --yolo -m {model}"
         ),
         Provider::Minimax => format!(

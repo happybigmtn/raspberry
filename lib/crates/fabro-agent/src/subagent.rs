@@ -18,11 +18,19 @@ pub struct SubAgentResult {
     pub turns_used: usize,
 }
 
+#[derive(Debug, Clone)]
+pub enum SubAgentStatus {
+    Running,
+    Finished(Result<SubAgentResult, AgentError>),
+    Closed,
+}
+
 pub struct SubAgent {
     task: Option<tokio::task::JoinHandle<Result<SubAgentResult, AgentError>>>,
     followup_queue: Arc<Mutex<VecDeque<String>>>,
     cancel_token: CancellationToken,
     depth: usize,
+    status: SubAgentStatus,
 }
 
 pub struct SubAgentManager {
@@ -86,6 +94,7 @@ impl SubAgentManager {
                             | AgentEvent::AssistantTextStart
                             | AgentEvent::SessionStarted
                             | AgentEvent::SessionEnded
+                            | AgentEvent::ProcessingEnd
                             | AgentEvent::SkillExpanded { .. }
                     ) {
                         continue;
@@ -122,6 +131,7 @@ impl SubAgentManager {
                 followup_queue,
                 cancel_token,
                 depth: depth + 1,
+                status: SubAgentStatus::Running,
             },
         );
 
@@ -136,8 +146,19 @@ impl SubAgentManager {
 
     pub fn send_input(&self, agent_id: &str, message: &str) -> Result<(), AgentError> {
         let agent = self.agents.get(agent_id).ok_or_else(|| {
-            AgentError::InvalidState(format!("No agent found with id: {agent_id}"))
+            AgentError::InvalidState(format!(
+                "No agent found with id: {agent_id} (it was never spawned)"
+            ))
         })?;
+
+        match agent.status {
+            SubAgentStatus::Running => {}
+            _ => {
+                return Err(AgentError::InvalidState(format!(
+                    "Agent {agent_id} is not running"
+                )));
+            }
+        }
 
         agent
             .followup_queue
@@ -149,70 +170,132 @@ impl SubAgentManager {
     }
 
     pub async fn wait(&mut self, agent_id: &str) -> Result<SubAgentResult, AgentError> {
-        let mut agent = self.agents.remove(agent_id).ok_or_else(|| {
-            AgentError::InvalidState(format!("No agent found with id: {agent_id}"))
-        })?;
+        // Phase 1: Check existence and current status
+        let agent = self.agents.get(agent_id);
+        let depth = match agent {
+            None => {
+                return Err(AgentError::InvalidState(format!(
+                    "No agent found with id: {agent_id} (it was never spawned)"
+                )));
+            }
+            Some(a) => a.depth,
+        };
 
-        let depth = agent.depth;
-
-        match agent.task.take() {
-            Some(join_handle) => match join_handle.await {
-                Ok(Ok(result)) => {
-                    self.emit_event(AgentEvent::SubAgentCompleted {
-                        agent_id: agent_id.to_string(),
-                        depth,
-                        success: result.success,
-                        turns_used: result.turns_used,
-                    });
-                    Ok(result)
-                }
-                Ok(Err(e)) => {
-                    self.emit_event(AgentEvent::SubAgentFailed {
-                        agent_id: agent_id.to_string(),
-                        depth,
-                        error: e.clone(),
-                    });
-                    Err(e)
-                }
-                Err(e) => {
-                    let error_msg = format!("Agent task panicked: {e}");
-                    self.emit_event(AgentEvent::SubAgentFailed {
-                        agent_id: agent_id.to_string(),
-                        depth,
-                        error: AgentError::InvalidState(error_msg.clone()),
-                    });
-                    Err(AgentError::InvalidState(error_msg))
-                }
-            },
-            None => Err(AgentError::InvalidState(format!(
-                "Agent {agent_id} has no running task"
-            ))),
+        match &self.agents[agent_id].status {
+            SubAgentStatus::Closed => {
+                return Err(AgentError::InvalidState(format!(
+                    "Agent {agent_id} has been closed"
+                )));
+            }
+            SubAgentStatus::Finished(result) => {
+                return result.clone();
+            }
+            SubAgentStatus::Running => {}
         }
+
+        // Phase 2: Take the JoinHandle (brief mutable borrow, no await)
+        let join_handle = self
+            .agents
+            .get_mut(agent_id)
+            .unwrap()
+            .task
+            .take()
+            .ok_or_else(|| {
+                AgentError::InvalidState(format!("Agent {agent_id} has no running task"))
+            })?;
+
+        // Phase 3: Await the task (no borrow held)
+        let task_result = match join_handle.await {
+            Ok(result) => result,
+            Err(e) => Err(AgentError::InvalidState(format!(
+                "Agent task panicked: {e}"
+            ))),
+        };
+
+        // Phase 4: Emit event
+        match &task_result {
+            Ok(result) => {
+                self.emit_event(AgentEvent::SubAgentCompleted {
+                    agent_id: agent_id.to_string(),
+                    depth,
+                    success: result.success,
+                    turns_used: result.turns_used,
+                });
+            }
+            Err(e) => {
+                self.emit_event(AgentEvent::SubAgentFailed {
+                    agent_id: agent_id.to_string(),
+                    depth,
+                    error: e.clone(),
+                });
+            }
+        }
+
+        // Phase 5: Store result in status and return clone
+        let agent = self.agents.get_mut(agent_id).unwrap();
+        agent.status = SubAgentStatus::Finished(task_result.clone());
+
+        task_result
     }
 
     pub fn close(&mut self, agent_id: &str) -> Result<(), AgentError> {
-        let agent = self.agents.remove(agent_id).ok_or_else(|| {
-            AgentError::InvalidState(format!("No agent found with id: {agent_id}"))
+        let agent = self.agents.get_mut(agent_id).ok_or_else(|| {
+            AgentError::InvalidState(format!(
+                "No agent found with id: {agent_id} (it was never spawned)"
+            ))
         })?;
 
-        agent.cancel_token.cancel();
-
-        if let Some(join_handle) = agent.task {
-            join_handle.abort();
+        match agent.status {
+            SubAgentStatus::Closed => {
+                return Err(AgentError::InvalidState(format!(
+                    "Agent {agent_id} is already closed"
+                )));
+            }
+            SubAgentStatus::Running => {
+                agent.cancel_token.cancel();
+                if let Some(join_handle) = agent.task.take() {
+                    join_handle.abort();
+                }
+            }
+            SubAgentStatus::Finished(_) => {
+                // No task to cancel, just transition status
+            }
         }
+
+        agent.status = SubAgentStatus::Closed;
+        let depth = agent.depth;
 
         self.emit_event(AgentEvent::SubAgentClosed {
             agent_id: agent_id.to_string(),
-            depth: agent.depth,
+            depth,
         });
 
         Ok(())
+    }
+
+    /// Close all active subagents, cancelling their tokens and aborting tasks.
+    pub fn close_all(&mut self) {
+        let ids: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|(_, a)| matches!(a.status, SubAgentStatus::Running))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let _ = self.close(&id);
+        }
     }
 
     #[cfg(test)]
     #[must_use]
     pub fn get(&self, agent_id: &str) -> Option<&SubAgent> {
         self.agents.get(agent_id)
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn status(&self, agent_id: &str) -> Option<&SubAgentStatus> {
+        self.agents.get(agent_id).map(|a| &a.status)
     }
 }
 
@@ -262,8 +345,8 @@ pub fn make_spawn_agent_tool(
 
                 // Note: working_dir and model require session factory changes to wire through
                 let mut session = session_factory();
-                // Default subagent max_turns is 50 per spec (overridable via parameter)
-                session.set_max_turns(max_turns.unwrap_or(50));
+                // Default subagent max_turns is 0 (unlimited) per spec (overridable via parameter)
+                session.set_max_turns(max_turns.unwrap_or(0));
                 let mut mgr = manager.lock().await;
                 mgr.spawn(session, task.to_string(), current_depth)
                     .map_err(|e| e.to_string())
@@ -405,7 +488,7 @@ mod tests {
         let client = make_client(provider as Arc<dyn ProviderAdapter>).await;
         let profile = Arc::new(TestProfile::new());
         let env = Arc::new(MockSandbox::default());
-        let session = Session::new(client, profile, env, SessionConfig::default());
+        let session = Session::new(client, profile, env, SessionConfig::default(), None);
 
         let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
         let _ = manager.wait(&agent_id).await.unwrap();
@@ -439,7 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_removes_agent() {
+    async fn close_sets_closed_status() {
         let mut manager = SubAgentManager::new(3);
         let session = make_session(vec![text_response("Hello")]).await;
         let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
@@ -447,7 +530,10 @@ mod tests {
 
         let result = manager.close(&agent_id);
         assert!(result.is_ok());
-        assert!(manager.get(&agent_id).is_none());
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Closed)
+        ));
     }
 
     #[tokio::test]
@@ -478,7 +564,10 @@ mod tests {
         assert_eq!(agent_result.output, "Task completed successfully");
         assert!(agent_result.success);
         assert!(agent_result.turns_used > 0);
-        assert!(manager.get(&agent_id).is_none());
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Finished(Ok(_)))
+        ));
     }
 
     #[test]
@@ -620,5 +709,123 @@ mod tests {
             agent_id: "x".into(),
             depth: 0,
         });
+    }
+
+    #[tokio::test]
+    async fn close_all_closes_all_agents() {
+        let mut manager = SubAgentManager::new(3);
+        let session1 = make_session(vec![text_response("Hello")]).await;
+        let session2 = make_session(vec![text_response("World")]).await;
+        let id1 = manager.spawn(session1, "Task 1".into(), 0).unwrap();
+        let id2 = manager.spawn(session2, "Task 2".into(), 0).unwrap();
+        assert!(manager.get(&id1).is_some());
+        assert!(manager.get(&id2).is_some());
+
+        manager.close_all();
+
+        assert!(matches!(manager.status(&id1), Some(SubAgentStatus::Closed)));
+        assert!(matches!(manager.status(&id2), Some(SubAgentStatus::Closed)));
+    }
+
+    #[tokio::test]
+    async fn close_all_on_empty_manager_is_noop() {
+        let mut manager = SubAgentManager::new(3);
+        manager.close_all(); // should not panic
+        assert!(manager.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_twice_returns_cached_result() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("cached output")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+
+        let result1 = manager.wait(&agent_id).await.unwrap();
+        let result2 = manager.wait(&agent_id).await.unwrap();
+
+        assert_eq!(result1.output, "cached output");
+        assert_eq!(result2.output, "cached output");
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Finished(Ok(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_input_to_completed_agent_errors() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("done")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        let _ = manager.wait(&agent_id).await.unwrap();
+
+        let result = manager.send_input(&agent_id, "hello");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("is not running"));
+    }
+
+    #[tokio::test]
+    async fn send_input_to_closed_agent_errors() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("Hello")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        manager.close(&agent_id).unwrap();
+
+        let result = manager.send_input(&agent_id, "hello");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("is not running"));
+    }
+
+    #[tokio::test]
+    async fn close_already_closed_agent_errors() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("Hello")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        manager.close(&agent_id).unwrap();
+
+        let result = manager.close(&agent_id);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already closed"));
+    }
+
+    #[tokio::test]
+    async fn close_completed_agent_succeeds() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("done")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        let _ = manager.wait(&agent_id).await.unwrap();
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Finished(Ok(_)))
+        ));
+
+        let result = manager.close(&agent_id);
+        assert!(result.is_ok());
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn status_is_running_after_spawn() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("Hello")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        assert!(matches!(
+            manager.status(&agent_id),
+            Some(SubAgentStatus::Running)
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_on_closed_agent_errors() {
+        let mut manager = SubAgentManager::new(3);
+        let session = make_session(vec![text_response("Hello")]).await;
+        let agent_id = manager.spawn(session, "Do something".into(), 0).unwrap();
+        manager.close(&agent_id).unwrap();
+
+        let result = manager.wait(&agent_id).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("has been closed"));
     }
 }

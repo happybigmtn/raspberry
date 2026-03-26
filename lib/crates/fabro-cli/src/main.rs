@@ -164,6 +164,8 @@ enum Command {
         #[command(subcommand)]
         command: SecretCommand,
     },
+    /// Resume an interrupted workflow run
+    Resume(commands::resume::ResumeArgs),
     /// Rewind a workflow run to an earlier checkpoint
     Rewind(commands::rewind::RewindArgs),
     /// Fork a workflow run from an earlier checkpoint into a new run
@@ -175,13 +177,6 @@ enum Command {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
-    /// Synthesize or evolve checked-in Fabro workflow packages
-    Synth {
-        #[command(subcommand)]
-        command: commands::synth::SynthCommand,
-    },
-    /// Bootstrap a repo-local Paperclip company and agent roster from the current Fabro package
-    Paperclip(commands::paperclip::PaperclipArgs),
     /// Open the Discord community in the browser
     Discord,
     /// Open the docs website in the browser
@@ -318,6 +313,103 @@ pub(crate) fn build_github_app_credentials(
     })
 }
 
+async fn run_engine_entrypoint(
+    run_dir: PathBuf,
+    styles: &'static fabro_util::terminal::Styles,
+) -> Result<()> {
+    let cli_config = cli_config::load_cli_config(None)?;
+    let github_app = build_github_app_credentials(cli_config.app_id());
+    let git_author = fabro_workflows::git::GitAuthor::from_options(
+        cli_config.git_author().and_then(|a| a.name.clone()),
+        cli_config.git_author().and_then(|a| a.email.clone()),
+    );
+
+    let spec = match fabro_workflows::run_spec::RunSpec::load(&run_dir) {
+        Ok(spec) => spec,
+        Err(err) => {
+            let _ = commands::detached_support::persist_detached_failure(
+                &run_dir,
+                "bootstrap",
+                fabro_workflows::run_status::StatusReason::BootstrapFailed,
+                &err,
+            );
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = std::env::set_current_dir(&spec.working_directory).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to set working directory to {}: {e}",
+            spec.working_directory.display()
+        )
+    }) {
+        let _ = commands::detached_support::persist_detached_failure(
+            &run_dir,
+            "bootstrap",
+            fabro_workflows::run_status::StatusReason::BootstrapFailed,
+            &err,
+        );
+        return Err(err);
+    }
+
+    let workflow_path = {
+        let config_path = commands::run::cached_run_config_path(&run_dir);
+        if config_path.exists() {
+            config_path
+        } else {
+            commands::run::cached_graph_path(&run_dir)
+        }
+    };
+
+    let run_args = commands::run::RunArgs {
+        workflow: Some(workflow_path),
+        run_dir: Some(run_dir.clone()),
+        dry_run: spec.dry_run,
+        preflight: false,
+        auto_approve: spec.auto_approve,
+        goal: spec.goal,
+        goal_file: None,
+        model: Some(spec.model),
+        provider: Some(spec.provider.unwrap_or_default()).filter(|s| !s.is_empty()),
+        verbose: spec.verbose,
+        sandbox: spec
+            .sandbox_provider
+            .parse::<fabro_workflows::sandbox_provider::SandboxProvider>()
+            .ok()
+            .map(commands::run::CliSandboxProvider::from),
+        label: spec
+            .labels
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect(),
+        no_retro: spec.no_retro,
+        preserve_sandbox: spec.preserve_sandbox,
+        detach: false,
+        run_id: Some(spec.run_id),
+    };
+
+    match commands::run::run_command(
+        run_args,
+        cli_config.run_defaults,
+        styles,
+        github_app,
+        git_author,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = commands::detached_support::persist_detached_failure(
+                &run_dir,
+                "bootstrap",
+                fabro_workflows::run_status::StatusReason::SandboxInitFailed,
+                &err,
+            );
+            Err(err)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     fabro_telemetry::panic::install_panic_hook();
@@ -442,28 +534,13 @@ async fn main_inner() -> (String, Result<()>) {
             SecretCommand::Rm(_) => "secret rm",
             SecretCommand::Set(_) => "secret set",
         },
+        Command::Resume(_) => "resume",
         Command::Rewind(_) => "rewind",
         Command::Fork(_) => "fork",
         Command::Wait(_) => "wait",
         Command::Workflow { command } => match command {
             WorkflowCommand::List(_) => "workflow list",
             WorkflowCommand::Create(_) => "workflow create",
-        },
-        Command::Synth { command } => match command {
-            commands::synth::SynthCommand::Import(_) => "synth import",
-            commands::synth::SynthCommand::Create(_) => "synth create",
-            commands::synth::SynthCommand::Evolve(_) => "synth evolve",
-            commands::synth::SynthCommand::Review(_) => "synth review",
-            commands::synth::SynthCommand::Genesis(_) => "synth genesis",
-        },
-        Command::Paperclip(args) => match args.command {
-            commands::paperclip::PaperclipCommand::Bootstrap(_) => "paperclip bootstrap",
-            commands::paperclip::PaperclipCommand::Refresh(_) => "paperclip refresh",
-            commands::paperclip::PaperclipCommand::Start(_) => "paperclip start",
-            commands::paperclip::PaperclipCommand::Stop(_) => "paperclip stop",
-            commands::paperclip::PaperclipCommand::Status(_) => "paperclip status",
-            commands::paperclip::PaperclipCommand::Logs(_) => "paperclip logs",
-            commands::paperclip::PaperclipCommand::Wake(_) => "paperclip wake",
         },
         Command::Skill { command } => match command {
             SkillCommand::Install(_) => "skill install",
@@ -673,24 +750,14 @@ async fn main_inner() -> (String, Result<()>) {
                 let cli_config = cli_config::load_cli_config(None)?;
                 args.verbose = args.verbose || cli_config.verbose;
 
-                if args.detach {
-                    // Detach mode: create + start + print run ID
-                    let (run_id, run_dir) =
-                        commands::create::create_run(&args, cli_config.run_defaults, styles, true)
-                            .await?;
-                    commands::start::start_run(&run_dir)?;
-                    println!("{run_id}");
-                } else {
-                    // Foreground mode: use existing run_command
+                if args.preflight {
+                    // Preflight validates config without creating a run dir.
+                    // Needs github_app for token validation, runs in-process.
                     let github_app = build_github_app_credentials(cli_config.app_id());
                     let git_author = fabro_workflows::git::GitAuthor::from_options(
                         cli_config.git_author().and_then(|a| a.name.clone()),
                         cli_config.git_author().and_then(|a| a.email.clone()),
                     );
-
-                    #[cfg(feature = "sleep_inhibitor")]
-                    let _sleep_guard = fabro_beastie::guard(cli_config.prevent_idle_sleep);
-
                     commands::run::run_command(
                         args,
                         cli_config.run_defaults,
@@ -699,6 +766,29 @@ async fn main_inner() -> (String, Result<()>) {
                         git_author,
                     )
                     .await?;
+                } else {
+                    // Unified path: create + start (+ attach for foreground)
+                    let quiet = args.detach;
+                    let (run_id, run_dir) =
+                        commands::create::create_run(&args, cli_config.run_defaults, styles, quiet)
+                            .await?;
+
+                    #[cfg(feature = "sleep_inhibitor")]
+                    let _sleep_guard = fabro_beastie::guard(cli_config.prevent_idle_sleep);
+
+                    let child = commands::start::start_run(&run_dir)?;
+
+                    if args.detach {
+                        println!("{run_id}");
+                    } else {
+                        let exit_code =
+                            commands::attach::attach_run(&run_dir, true, styles, Some(child))
+                                .await?;
+                        commands::run::print_run_summary(&run_dir, &run_id, styles);
+                        if exit_code != std::process::ExitCode::SUCCESS {
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
             Command::Create(args) => {
@@ -713,15 +803,16 @@ async fn main_inner() -> (String, Result<()>) {
             Command::Start { run } => {
                 let base = fabro_workflows::run_lookup::default_runs_base();
                 let run_info = fabro_workflows::run_lookup::resolve_run(&base, &run)?;
-                let pid = commands::start::start_run(&run_info.path)?;
-                eprintln!("Started engine process (PID {pid})");
+                let child = commands::start::start_run(&run_info.path)?;
+                eprintln!("Started engine process (PID {})", child.id());
             }
             Command::Attach { run } => {
                 let styles: &'static fabro_util::terminal::Styles =
                     Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
                 let base = fabro_workflows::run_lookup::default_runs_base();
                 let run_info = fabro_workflows::run_lookup::resolve_run(&base, &run)?;
-                let exit_code = commands::attach::attach_run(&run_info.path, false, styles).await?;
+                let exit_code =
+                    commands::attach::attach_run(&run_info.path, false, styles, None).await?;
                 if exit_code != std::process::ExitCode::SUCCESS {
                     std::process::exit(1);
                 }
@@ -729,71 +820,7 @@ async fn main_inner() -> (String, Result<()>) {
             Command::RunEngine { run_dir } => {
                 let styles: &'static fabro_util::terminal::Styles =
                     Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
-                let cli_config = cli_config::load_cli_config(None)?;
-                let github_app = build_github_app_credentials(cli_config.app_id());
-                let git_author = fabro_workflows::git::GitAuthor::from_options(
-                    cli_config.git_author().and_then(|a| a.name.clone()),
-                    cli_config.git_author().and_then(|a| a.email.clone()),
-                );
-
-                // Load spec and reconstruct RunArgs
-                let spec = fabro_workflows::run_spec::RunSpec::load(&run_dir)?;
-
-                // Restore the working directory captured at create time
-                std::env::set_current_dir(&spec.working_directory).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to set working directory to {}: {e}",
-                        spec.working_directory.display()
-                    )
-                })?;
-
-                // Prefer the original workflow path while it still exists so repo-relative
-                // prompt/file refs continue to resolve correctly for detached runs.
-                // Fall back to the cached run-dir snapshot for older runs or missing sources.
-                let workflow_path = if spec.workflow_path.exists() {
-                    spec.workflow_path.clone()
-                } else {
-                    commands::run::cached_run_config_path(&run_dir)
-                };
-
-                let run_args = commands::run::RunArgs {
-                    workflow: Some(workflow_path),
-                    run_dir: Some(run_dir),
-                    dry_run: spec.dry_run,
-                    preflight: false,
-                    auto_approve: spec.auto_approve,
-                    resume: spec.resume,
-                    run_branch: spec.run_branch,
-                    goal: spec.goal,
-                    goal_file: None,
-                    model: Some(spec.model),
-                    provider: Some(spec.provider.unwrap_or_default()).filter(|s| !s.is_empty()),
-                    verbose: spec.verbose,
-                    sandbox: spec
-                        .sandbox_provider
-                        .parse::<fabro_workflows::sandbox_provider::SandboxProvider>()
-                        .ok()
-                        .map(commands::run::CliSandboxProvider::from),
-                    label: spec
-                        .labels
-                        .into_iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect(),
-                    no_retro: spec.no_retro,
-                    ssh: spec.ssh,
-                    preserve_sandbox: spec.preserve_sandbox,
-                    detach: false,
-                    run_id: Some(spec.run_id),
-                };
-
-                commands::run::run_command(
-                    run_args,
-                    cli_config.run_defaults,
-                    styles,
-                    github_app,
-                    git_author,
-                )
-                .await?;
+                run_engine_entrypoint(run_dir, styles).await?;
             }
             Command::Validate(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stderr();
@@ -944,6 +971,27 @@ async fn main_inner() -> (String, Result<()>) {
                     commands::secret::set_command(&args)?;
                 }
             },
+            Command::Resume(mut args) => {
+                let styles: &'static fabro_util::terminal::Styles =
+                    Box::leak(Box::new(fabro_util::terminal::Styles::detect_stderr()));
+                let cli_config = cli_config::load_cli_config(None)?;
+                args.verbose = args.verbose || cli_config.verbose;
+                #[cfg(feature = "sleep_inhibitor")]
+                let _sleep_guard = fabro_beastie::guard(cli_config.prevent_idle_sleep);
+                let github_app = build_github_app_credentials(cli_config.app_id());
+                let git_author = fabro_workflows::git::GitAuthor::from_options(
+                    cli_config.git_author().and_then(|a| a.name.clone()),
+                    cli_config.git_author().and_then(|a| a.email.clone()),
+                );
+                commands::resume::resume_command(
+                    args,
+                    cli_config.run_defaults,
+                    styles,
+                    github_app,
+                    git_author,
+                )
+                .await?;
+            }
             Command::Rewind(args) => {
                 let styles = fabro_util::terminal::Styles::detect_stderr();
                 commands::rewind::run(&args, &styles)?;
@@ -962,46 +1010,6 @@ async fn main_inner() -> (String, Result<()>) {
                 }
                 WorkflowCommand::Create(args) => {
                     commands::workflow::create_command(&args)?;
-                }
-            },
-            Command::Synth { command } => match command {
-                commands::synth::SynthCommand::Import(args) => {
-                    commands::synth::import_command(&args)?;
-                }
-                commands::synth::SynthCommand::Create(args) => {
-                    commands::synth::create_command(&args)?;
-                }
-                commands::synth::SynthCommand::Evolve(args) => {
-                    commands::synth::evolve_command(&args)?;
-                }
-                commands::synth::SynthCommand::Review(args) => {
-                    commands::synth::review_command(&args)?;
-                }
-                commands::synth::SynthCommand::Genesis(args) => {
-                    commands::synth::genesis_command(&args)?;
-                }
-            },
-            Command::Paperclip(args) => match args.command {
-                commands::paperclip::PaperclipCommand::Bootstrap(args) => {
-                    commands::paperclip::bootstrap_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Refresh(args) => {
-                    commands::paperclip::refresh_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Start(args) => {
-                    commands::paperclip::start_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Stop(args) => {
-                    commands::paperclip::stop_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Status(args) => {
-                    commands::paperclip::status_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Logs(args) => {
-                    commands::paperclip::logs_command(&args).await?;
-                }
-                commands::paperclip::PaperclipCommand::Wake(args) => {
-                    commands::paperclip::wake_command(&args).await?;
                 }
             },
             Command::Skill { command } => match command {

@@ -370,7 +370,11 @@ impl Graph {
         if by_shape.is_some() {
             return by_shape;
         }
-        self.nodes.get("exit").or_else(|| self.nodes.get("Exit"))
+        self.nodes
+            .get("exit")
+            .or_else(|| self.nodes.get("Exit"))
+            .or_else(|| self.nodes.get("end"))
+            .or_else(|| self.nodes.get("End"))
     }
 
     /// Graph-level goal attribute.
@@ -389,12 +393,12 @@ impl Graph {
             .unwrap_or("")
     }
 
-    /// Graph-level `default_max_retry` (default 3).
-    pub fn default_max_retry(&self) -> i64 {
+    /// Graph-level `default_max_retries` (default 0).
+    pub fn default_max_retries(&self) -> i64 {
         self.attrs
-            .get("default_max_retry")
+            .get("default_max_retries")
             .and_then(AttrValue::as_i64)
-            .unwrap_or(3)
+            .unwrap_or(0)
     }
 
     /// Graph-level `retry_target`.
@@ -686,6 +690,15 @@ mod tests {
     }
 
     #[test]
+    fn graph_find_exit_by_end_id() {
+        let mut g = Graph::new("test");
+        let node = Node::new("end");
+        g.nodes.insert("end".to_string(), node);
+        let exit = g.find_exit_node().unwrap();
+        assert_eq!(exit.id, "end");
+    }
+
+    #[test]
     fn graph_outgoing_edges() {
         let g = sample_graph();
         let edges = g.outgoing_edges("start");
@@ -720,9 +733,9 @@ mod tests {
     }
 
     #[test]
-    fn graph_default_max_retry() {
+    fn graph_default_max_retries() {
         let g = Graph::new("empty");
-        assert_eq!(g.default_max_retry(), 3);
+        assert_eq!(g.default_max_retries(), 0);
     }
 
     #[test]

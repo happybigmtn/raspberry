@@ -13,7 +13,7 @@ use chrono::{Duration, Local, LocalResult, NaiveDateTime, NaiveTime, TimeZone};
 use fabro_agent::sandbox::ExecResult;
 use fabro_agent::Sandbox;
 use fabro_model::{
-    automation_fallback_targets, automation_profile_for_target, FallbackTarget, Provider,
+    FallbackTarget, Provider, automation_fallback_targets, automation_profile_for_target,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,10 @@ impl AgentCli {
             Provider::Anthropic => Self::Claude,
             Provider::Gemini => Self::Gemini,
             Provider::Minimax | Provider::Kimi => Self::Pi,
-            Provider::OpenAi | Provider::Zai | Provider::Inception => Self::Codex,
+            Provider::OpenAi
+            | Provider::Zai
+            | Provider::Inception
+            | Provider::OpenAiCompatible => Self::Codex,
         }
     }
 
@@ -241,7 +244,7 @@ pub fn cli_command_for_provider(
     // redirects in nested shells. A pipe creates an explicit new stdin.
     match provider {
         // --yolo: auto-approve all tool calls and bypass sandbox prompts
-        Provider::OpenAi | Provider::Zai | Provider::Inception => {
+        Provider::OpenAi | Provider::Zai | Provider::Inception | Provider::OpenAiCompatible => {
             let model_flag = if model.is_empty() {
                 String::new()
             } else {
@@ -541,7 +544,9 @@ fn parse_pi_json(output: &str) -> Option<CliResponse> {
 /// Parse CLI output, choosing the right parser based on provider.
 pub fn parse_cli_response(provider: Provider, output: &str) -> Option<CliResponse> {
     match provider {
-        Provider::OpenAi | Provider::Zai | Provider::Inception => parse_codex_ndjson(output),
+        Provider::OpenAi | Provider::Zai | Provider::Inception | Provider::OpenAiCompatible => {
+            parse_codex_ndjson(output)
+        }
         Provider::Minimax | Provider::Kimi => parse_pi_json(output),
         Provider::Gemini => parse_gemini_json(output),
         Provider::Anthropic => parse_claude_ndjson(output),

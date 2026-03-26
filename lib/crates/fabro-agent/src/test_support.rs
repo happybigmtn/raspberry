@@ -1,8 +1,8 @@
 pub use fabro_sandbox::test_support::{MockSandbox, MutableMockSandbox};
 
+use crate::agent_profile::AgentProfile;
 use crate::config::SessionConfig;
 use crate::profiles::EnvContext;
-use crate::provider_profile::{ProfileCapabilities, ProviderProfile};
 use crate::sandbox::*;
 use crate::session::Session;
 use crate::skills::Skill;
@@ -21,7 +21,6 @@ use std::sync::{Arc, Mutex};
 
 pub struct TestProfile {
     pub registry: ToolRegistry,
-    pub parallel_tool_calls: bool,
     pub context_window: usize,
 }
 
@@ -29,7 +28,6 @@ impl TestProfile {
     pub fn new() -> Self {
         Self {
             registry: ToolRegistry::new(),
-            parallel_tool_calls: false,
             context_window: 200_000,
         }
     }
@@ -37,29 +35,19 @@ impl TestProfile {
     pub fn with_tools(registry: ToolRegistry) -> Self {
         Self {
             registry,
-            parallel_tool_calls: false,
             context_window: 200_000,
         }
     }
 
-    pub fn parallel(registry: ToolRegistry) -> Self {
+    pub fn with_context_window(registry: ToolRegistry, context_window: usize) -> Self {
         Self {
             registry,
-            parallel_tool_calls: true,
-            context_window: 200_000,
-        }
-    }
-
-    pub fn parallel_with_context_window(registry: ToolRegistry, context_window: usize) -> Self {
-        Self {
-            registry,
-            parallel_tool_calls: true,
             context_window,
         }
     }
 }
 
-impl ProviderProfile for TestProfile {
+impl AgentProfile for TestProfile {
     fn provider(&self) -> Provider {
         Provider::Anthropic
     }
@@ -98,17 +86,8 @@ impl ProviderProfile for TestProfile {
         }
     }
 
-    fn capabilities(&self) -> ProfileCapabilities {
-        ProfileCapabilities {
-            supports_reasoning: false,
-            supports_streaming: false,
-            supports_parallel_tool_calls: self.parallel_tool_calls,
-            context_window_size: self.context_window,
-        }
-    }
-
-    fn knowledge_cutoff(&self) -> &'static str {
-        "May 2025"
+    fn context_window_size(&self) -> usize {
+        self.context_window
     }
 }
 
@@ -217,7 +196,7 @@ pub async fn make_session(responses: Vec<Response>) -> Session {
     let client = make_client(provider).await;
     let profile = Arc::new(TestProfile::new());
     let env = Arc::new(MockSandbox::default());
-    Session::new(client, profile, env, SessionConfig::default())
+    Session::new(client, profile, env, SessionConfig::default(), None)
 }
 
 pub async fn make_session_with_tools(responses: Vec<Response>, registry: ToolRegistry) -> Session {
@@ -225,7 +204,7 @@ pub async fn make_session_with_tools(responses: Vec<Response>, registry: ToolReg
     let client = make_client(provider).await;
     let profile = Arc::new(TestProfile::with_tools(registry));
     let env = Arc::new(MockSandbox::default());
-    Session::new(client, profile, env, SessionConfig::default())
+    Session::new(client, profile, env, SessionConfig::default(), None)
 }
 
 pub async fn make_session_with_config(responses: Vec<Response>, config: SessionConfig) -> Session {
@@ -233,7 +212,7 @@ pub async fn make_session_with_config(responses: Vec<Response>, config: SessionC
     let client = make_client(provider).await;
     let profile = Arc::new(TestProfile::new());
     let env = Arc::new(MockSandbox::default());
-    Session::new(client, profile, env, config)
+    Session::new(client, profile, env, config, None)
 }
 
 pub async fn make_session_with_tools_and_config(
@@ -245,7 +224,7 @@ pub async fn make_session_with_tools_and_config(
     let client = make_client(provider).await;
     let profile = Arc::new(TestProfile::with_tools(registry));
     let env = Arc::new(MockSandbox::default());
-    Session::new(client, profile, env, config)
+    Session::new(client, profile, env, config, None)
 }
 
 pub fn tool_call_response(

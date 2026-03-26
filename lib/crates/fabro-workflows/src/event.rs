@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 use crate::outcome::StageUsage;
 use fabro_agent::{AgentEvent, SandboxEvent, WorktreeEvent, WorktreeEventCallback};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunNoticeLevel {
+    Info,
+    Warn,
+    Error,
+}
+
 /// Events emitted during workflow run execution for observability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkflowRunEvent {
@@ -38,6 +46,11 @@ pub enum WorkflowRunEvent {
         duration_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         git_commit_sha: Option<String>,
+    },
+    RunNotice {
+        level: RunNoticeLevel,
+        code: String,
+        message: String,
     },
     StageStarted {
         node_id: String,
@@ -87,7 +100,6 @@ pub enum WorkflowRunEvent {
     ParallelStarted {
         branch_count: usize,
         join_policy: String,
-        error_policy: String,
     },
     ParallelBranchStarted {
         branch: String,
@@ -186,11 +198,6 @@ pub enum WorkflowRunEvent {
     Agent {
         stage: String,
         event: AgentEvent,
-    },
-    ParallelEarlyTermination {
-        reason: String,
-        completed_count: usize,
-        pending_count: usize,
     },
     SubgraphStarted {
         node_id: String,
@@ -344,6 +351,21 @@ impl WorkflowRunEvent {
             } => {
                 error!(error = %error, duration_ms, "Workflow run failed");
             }
+            Self::RunNotice {
+                level,
+                code,
+                message,
+            } => match level {
+                RunNoticeLevel::Info => {
+                    info!(code, message, "Run notice");
+                }
+                RunNoticeLevel::Warn => {
+                    warn!(code, message, "Run notice");
+                }
+                RunNoticeLevel::Error => {
+                    error!(code, message, "Run notice");
+                }
+            },
             Self::StageStarted {
                 node_id,
                 name,
@@ -433,12 +455,8 @@ impl WorkflowRunEvent {
             Self::ParallelStarted {
                 branch_count,
                 join_policy,
-                error_policy,
             } => {
-                debug!(
-                    branch_count,
-                    join_policy, error_policy, "Parallel execution started"
-                );
+                debug!(branch_count, join_policy, "Parallel execution started");
             }
             Self::ParallelBranchStarted { branch, index } => {
                 debug!(branch, index, "Parallel branch started");
@@ -546,16 +564,6 @@ impl WorkflowRunEvent {
                 working_directory, ..
             } => {
                 info!(working_directory, "Sandbox initialized");
-            }
-            Self::ParallelEarlyTermination {
-                reason,
-                completed_count,
-                pending_count,
-            } => {
-                warn!(
-                    reason,
-                    completed_count, pending_count, "Parallel early termination"
-                );
             }
             Self::SubgraphStarted {
                 node_id,
@@ -1020,19 +1028,20 @@ fn epoch_millis() -> i64 {
 }
 
 /// Listener callback type for workflow run events.
-type EventListener = Box<dyn Fn(&WorkflowRunEvent) + Send + Sync>;
+type EventListener = Arc<dyn Fn(&WorkflowRunEvent) + Send + Sync>;
 
 /// Callback-based event emitter for workflow run events.
 pub struct EventEmitter {
-    listeners: Vec<EventListener>,
+    listeners: std::sync::Mutex<Vec<EventListener>>,
     /// Epoch milliseconds of the last `emit()` or `touch()` call. 0 until first event.
     last_event_at: AtomicI64,
 }
 
 impl std::fmt::Debug for EventEmitter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.listeners.lock().map(|l| l.len()).unwrap_or(0);
         f.debug_struct("EventEmitter")
-            .field("listener_count", &self.listeners.len())
+            .field("listener_count", &count)
             .field("last_event_at", &self.last_event_at.load(Ordering::Relaxed))
             .finish()
     }
@@ -1048,19 +1057,30 @@ impl EventEmitter {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            listeners: Vec::new(),
+            listeners: std::sync::Mutex::new(Vec::new()),
             last_event_at: AtomicI64::new(0),
         }
     }
 
-    pub fn on_event(&mut self, listener: impl Fn(&WorkflowRunEvent) + Send + Sync + 'static) {
-        self.listeners.push(Box::new(listener));
+    pub fn on_event(&self, listener: impl Fn(&WorkflowRunEvent) + Send + Sync + 'static) {
+        self.listeners
+            .lock()
+            .expect("listeners lock poisoned")
+            .push(Arc::new(listener));
     }
 
     pub fn emit(&self, event: &WorkflowRunEvent) {
         self.last_event_at.store(epoch_millis(), Ordering::Relaxed);
         event.trace();
-        for listener in &self.listeners {
+        // Clone the listener list so we don't hold the lock during dispatch.
+        // This prevents deadlocks if a listener calls emit() reentrantly.
+        // Note: listeners added during this emit() won't receive the current event.
+        let snapshot: Vec<EventListener> = self
+            .listeners
+            .lock()
+            .expect("listeners lock poisoned")
+            .clone();
+        for listener in &snapshot {
             listener(event);
         }
     }
@@ -1102,12 +1122,12 @@ mod tests {
     #[test]
     fn event_emitter_new_has_no_listeners() {
         let emitter = EventEmitter::new();
-        assert_eq!(emitter.listeners.len(), 0);
+        assert_eq!(emitter.listeners.lock().unwrap().len(), 0);
     }
 
     #[test]
     fn event_emitter_calls_listener() {
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
         emitter.on_event(move |event| {
@@ -1165,7 +1185,7 @@ mod tests {
     #[test]
     fn event_emitter_default() {
         let emitter = EventEmitter::default();
-        assert_eq!(emitter.listeners.len(), 0);
+        assert_eq!(emitter.listeners.lock().unwrap().len(), 0);
     }
 
     #[test]
@@ -1389,15 +1409,13 @@ mod tests {
         let event = WorkflowRunEvent::ParallelStarted {
             branch_count: 3,
             join_policy: "wait_all".to_string(),
-            error_policy: "continue".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"join_policy\":\"wait_all\""));
-        assert!(json.contains("\"error_policy\":\"continue\""));
 
         let deserialized: WorkflowRunEvent = serde_json::from_str(&json).unwrap();
         assert!(
-            matches!(deserialized, WorkflowRunEvent::ParallelStarted { join_policy, error_policy, .. } if join_policy == "wait_all" && error_policy == "continue")
+            matches!(deserialized, WorkflowRunEvent::ParallelStarted { join_policy, .. } if join_policy == "wait_all")
         );
     }
 
@@ -1544,6 +1562,7 @@ mod tests {
                 delay_secs: 1.5,
                 error: fabro_llm::error::SdkError::Network {
                     message: "rate limited".to_string(),
+                    source: None,
                 },
             },
         };
@@ -1554,28 +1573,6 @@ mod tests {
 
         let deserialized: WorkflowRunEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(deserialized, WorkflowRunEvent::Agent { stage, .. } if stage == "code"));
-    }
-
-    #[test]
-    fn parallel_early_termination_event_serialization() {
-        let event = WorkflowRunEvent::ParallelEarlyTermination {
-            reason: "fail_fast_branch_failed".to_string(),
-            completed_count: 2,
-            pending_count: 3,
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("ParallelEarlyTermination"));
-        assert!(json.contains("\"completed_count\":2"));
-        assert!(json.contains("\"pending_count\":3"));
-
-        let deserialized: WorkflowRunEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            deserialized,
-            WorkflowRunEvent::ParallelEarlyTermination {
-                completed_count: 2,
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -2281,6 +2278,44 @@ mod tests {
     }
 
     #[test]
+    fn run_notice_event_serialization() {
+        let event = WorkflowRunEvent::RunNotice {
+            level: RunNoticeLevel::Warn,
+            code: "sandbox_cleanup_failed".to_string(),
+            message: "sandbox cleanup failed: boom".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("RunNotice"));
+        assert!(json.contains("\"level\":\"warn\""));
+
+        let deserialized: WorkflowRunEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            WorkflowRunEvent::RunNotice {
+                level: RunNoticeLevel::Warn,
+                code,
+                ..
+            } if code == "sandbox_cleanup_failed"
+        ));
+    }
+
+    #[test]
+    fn flatten_event_run_notice() {
+        let event = WorkflowRunEvent::RunNotice {
+            level: RunNoticeLevel::Error,
+            code: "bootstrap_failed".to_string(),
+            message: "working directory missing".to_string(),
+        };
+        let (name, fields) = flatten_event(&event);
+        assert_eq!(name, "RunNotice");
+        assert_eq!(fields.get("level").and_then(|v| v.as_str()), Some("error"));
+        assert_eq!(
+            fields.get("code").and_then(|v| v.as_str()),
+            Some("bootstrap_failed")
+        );
+    }
+
+    #[test]
     fn workflow_run_completed_serialization_with_status_and_usage() {
         let event = WorkflowRunEvent::WorkflowRunCompleted {
             duration_ms: 30000,
@@ -2518,7 +2553,7 @@ mod tests {
 
     #[test]
     fn emitter_captures_retro_events() {
-        let mut emitter = EventEmitter::new();
+        let emitter = EventEmitter::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let r = Arc::clone(&received);
         emitter.on_event(move |event| {

@@ -14,27 +14,30 @@ use fabro_agent::{
 use fabro_config::run::{RunDefaults, WorkflowRunConfig};
 use fabro_config::{project as project_config, run as run_config, sandbox as sandbox_config};
 use fabro_interview::{AutoApproveInterviewer, ConsoleInterviewer, FileInterviewer, Interviewer};
-use fabro_model::{automation_primary_target, AutomationProfile, Provider};
+use fabro_model::{Catalog, FallbackTarget, Provider, automation_primary_target, AutomationProfile};
 use fabro_util::terminal::Styles;
 use fabro_validate::Severity;
 use fabro_workflows::backend::{AgentApiBackend, AgentCliBackend, BackendRouter};
 use fabro_workflows::checkpoint::Checkpoint;
+use fabro_workflows::conclusion::Conclusion;
 use fabro_workflows::cost::{compute_stage_cost, format_cost};
 use fabro_workflows::devcontainer_bridge;
 use fabro_workflows::direct_integration::{DirectIntegrationRecord, DirectIntegrationRequest};
 use fabro_workflows::engine::{RunConfig, WorkflowRunEngine};
-use fabro_workflows::event::EventEmitter;
+use fabro_workflows::event::{EventEmitter, RunNoticeLevel, WorkflowRunEvent};
 use fabro_workflows::git::GitSyncStatus;
 use fabro_workflows::handler::default_registry;
 use fabro_workflows::live_state::RunLiveState;
 use fabro_workflows::manifest::Manifest as RunManifest;
-use fabro_workflows::outcome::StageStatus;
+use fabro_workflows::outcome::{Outcome, StageStatus};
+use fabro_workflows::run_status::{RunStatus, StatusReason};
 use fabro_workflows::sandbox_provider::SandboxProvider;
 use fabro_workflows::workflow::WorkflowBuilder;
 use indicatif::HumanDuration;
 use std::time::Duration;
 use tracing::debug;
 
+use super::detached_support::{self, DetachedRunBootstrapGuard, DetachedRunCompletionGuard};
 use super::run_progress;
 use crate::commands::shared::{
     format_tokens_human, print_diagnostics, read_workflow_file, relative_path, tilde_path,
@@ -88,8 +91,8 @@ impl From<SandboxProvider> for CliSandboxProvider {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// Path to a .fabro workflow file or .toml task config (not required with --run-branch)
-    #[arg(required_unless_present = "run_branch")]
+    /// Path to a .fabro workflow file or .toml task config
+    #[arg(required = true)]
     pub workflow: Option<PathBuf>,
 
     /// Run output directory
@@ -101,20 +104,12 @@ pub struct RunArgs {
     pub dry_run: bool,
 
     /// Validate run configuration without executing
-    #[arg(long, conflicts_with_all = ["resume", "run_branch", "dry_run"])]
+    #[arg(long, conflicts_with = "dry_run")]
     pub preflight: bool,
 
     /// Auto-approve all human gates
     #[arg(long)]
     pub auto_approve: bool,
-
-    /// Resume from a checkpoint file
-    #[arg(long)]
-    pub resume: Option<PathBuf>,
-
-    /// Resume from a git run branch (reads checkpoint and graph from metadata branch)
-    #[arg(long, conflicts_with = "resume")]
-    pub run_branch: Option<String>,
 
     /// Override the workflow goal (exposed as $goal in prompts)
     #[arg(long)]
@@ -148,16 +143,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_retro: bool,
 
-    /// Create SSH access to the Daytona sandbox and print the connection command
-    #[arg(long)]
-    pub ssh: bool,
-
     /// Keep the sandbox alive after the run finishes (for debugging)
     #[arg(long)]
     pub preserve_sandbox: bool,
 
     /// Run the workflow in the background and print the run ID
-    #[arg(short = 'd', long, conflicts_with_all = ["resume", "run_branch", "preflight"])]
+    #[arg(short = 'd', long, conflicts_with = "preflight")]
     pub detach: bool,
 
     /// Pre-generated run ID (used internally by --detach)
@@ -198,6 +189,45 @@ pub(crate) fn apply_goal_override(
             fabro_graphviz::graph::AttrValue::String(goal.to_string()),
         );
     }
+}
+
+/// Compute the default run directory when `--run-dir` is not provided.
+pub(crate) fn default_run_dir(run_id: &str, dry_run: bool) -> PathBuf {
+    let base = fabro_workflows::run_lookup::default_runs_base();
+    if dry_run {
+        base.join(format!(
+            "{}-dry-run-{}",
+            Local::now().format("%Y%m%d"),
+            run_id
+        ))
+    } else {
+        base.join(format!("{}-{}", Local::now().format("%Y%m%d"), run_id))
+    }
+}
+
+pub(crate) fn workflow_slug_from_path(workflow_path: &Path) -> Option<String> {
+    let file_name = workflow_path.file_name()?.to_string_lossy();
+    if workflow_path.extension().is_none() {
+        return Some(file_name.into_owned());
+    }
+
+    let file_stem = workflow_path.file_stem()?.to_string_lossy();
+    if file_stem == "workflow" {
+        return workflow_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| Some(file_stem.into_owned()));
+    }
+
+    Some(file_stem.into_owned())
+}
+
+fn is_cached_run_restart(workflow_path: &Path, run_dir: &Path) -> bool {
+    workflow_path.starts_with(run_dir)
+        && workflow_path.file_name().is_some_and(|f| {
+            f == std::ffi::OsStr::new(RUN_CONFIG_FILE) || f == std::ffi::OsStr::new(RUN_GRAPH_FILE)
+        })
 }
 
 /// Resolve model and provider through the full precedence chain:
@@ -243,8 +273,8 @@ pub(crate) fn resolve_model_provider(
         });
 
     // Resolve model alias through catalog and enforce provider compatibility.
-    match fabro_model::get_model_info(&model) {
-        Some(info) => (info.id, Some(info.provider)),
+    match Catalog::builtin().get(&model) {
+        Some(info) => (info.id.clone(), provider.or(Some(info.provider.to_string()))),
         None => {
             let write_target = automation_primary_target(AutomationProfile::Write);
             let provider = if provider.is_none() && model == write_target.model {
@@ -298,7 +328,7 @@ pub(crate) fn resolve_sandbox_provider(
 }
 
 /// Resolve preserve-sandbox: CLI flag > TOML config > run defaults > false.
-fn resolve_preserve_sandbox(
+pub(crate) fn resolve_preserve_sandbox(
     cli: bool,
     run_cfg: Option<&WorkflowRunConfig>,
     run_defaults: &RunDefaults,
@@ -412,7 +442,7 @@ fn normalize_source_lane_name(value: &str) -> String {
 }
 
 /// Resolve daytona config: TOML config > run defaults.
-fn resolve_daytona_config(
+pub(crate) fn resolve_daytona_config(
     run_cfg: Option<&WorkflowRunConfig>,
     run_defaults: &RunDefaults,
 ) -> Option<fabro_sandbox::daytona::DaytonaConfig> {
@@ -429,7 +459,7 @@ fn resolve_daytona_config(
 
 #[cfg(feature = "exedev")]
 /// Resolve exe.dev config: TOML config > run defaults.
-fn resolve_exe_config(
+pub(crate) fn resolve_exe_config(
     run_cfg: Option<&WorkflowRunConfig>,
     run_defaults: &RunDefaults,
 ) -> Option<fabro_sandbox::exe::ExeConfig> {
@@ -444,7 +474,9 @@ fn resolve_exe_config(
 ///
 /// Returns `None` if no git repo is detected. Credential resolution is
 /// handled by ExeSandbox itself via its `github_app` field.
-fn resolve_exe_clone_params(cwd: &std::path::Path) -> Option<fabro_sandbox::exe::GitCloneParams> {
+pub(crate) fn resolve_exe_clone_params(
+    cwd: &std::path::Path,
+) -> Option<fabro_sandbox::exe::GitCloneParams> {
     let (detected_url, branch) = match fabro_sandbox::daytona::detect_repo_info(cwd) {
         Ok(info) => info,
         Err(e) => {
@@ -457,7 +489,7 @@ fn resolve_exe_clone_params(cwd: &std::path::Path) -> Option<fabro_sandbox::exe:
 }
 
 /// Resolve SSH sandbox config: TOML config > run defaults.
-fn resolve_ssh_config(
+pub(crate) fn resolve_ssh_config(
     run_cfg: Option<&WorkflowRunConfig>,
     run_defaults: &RunDefaults,
 ) -> Option<fabro_sandbox::ssh::SshConfig> {
@@ -471,7 +503,9 @@ fn resolve_ssh_config(
 ///
 /// Returns `None` if no git repo is detected. Credential resolution is
 /// handled by SshSandbox itself via its `github_app` field.
-fn resolve_ssh_clone_params(cwd: &std::path::Path) -> Option<fabro_sandbox::ssh::GitCloneParams> {
+pub(crate) fn resolve_ssh_clone_params(
+    cwd: &std::path::Path,
+) -> Option<fabro_sandbox::ssh::GitCloneParams> {
     let (detected_url, branch) = match fabro_sandbox::daytona::detect_repo_info(cwd) {
         Ok(info) => info,
         Err(e) => {
@@ -487,17 +521,17 @@ fn resolve_ssh_clone_params(cwd: &std::path::Path) -> Option<fabro_sandbox::ssh:
 ///
 /// `apply_defaults` must be called on `run_cfg` before this — it merges
 /// `run_defaults.llm.fallbacks` into `run_cfg.llm.fallbacks` already.
-fn resolve_fallback_chain(
+pub(crate) fn resolve_fallback_chain(
     provider: Provider,
     model: &str,
     run_cfg: Option<&WorkflowRunConfig>,
-) -> Vec<fabro_model::FallbackTarget> {
+) -> Vec<FallbackTarget> {
     let fallbacks = run_cfg
         .and_then(|c| c.llm.as_ref())
         .and_then(|l| l.fallbacks.as_ref());
 
     match fallbacks {
-        Some(map) => fabro_model::build_fallback_chain(provider.as_str(), model, map),
+        Some(map) => Catalog::builtin().build_fallback_chain(provider, model, map),
         None => Vec::new(),
     }
 }
@@ -506,7 +540,7 @@ fn resolve_fallback_chain(
 ///
 /// Signs a JWT, resolves `owner/repo` from `origin_url`, and requests a
 /// scoped token. Returns the token string on success.
-async fn mint_github_token(
+pub(crate) async fn mint_github_token(
     creds: &fabro_github::GitHubAppCredentials,
     origin_url: &str,
     permissions: &HashMap<String, String>,
@@ -544,17 +578,21 @@ enum WorkdirStrategy {
 
 /// Accumulates token usage and cost across all workflow stages.
 #[derive(Default)]
-struct CostAccumulator {
-    total_input_tokens: i64,
-    total_output_tokens: i64,
-    total_cache_read_tokens: i64,
-    total_cache_write_tokens: i64,
-    total_reasoning_tokens: i64,
-    total_cost: f64,
-    has_pricing: bool,
+pub(crate) struct CostAccumulator {
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cache_read_tokens: i64,
+    pub total_cache_write_tokens: i64,
+    pub total_reasoning_tokens: i64,
+    pub total_cost: f64,
+    pub has_pricing: bool,
 }
 
-fn local_sandbox_with_callback(cwd: PathBuf, emitter: Arc<EventEmitter>) -> Arc<dyn Sandbox> {
+/// Create a [`LocalSandbox`] wired to emit [`WorkflowRunEvent::Sandbox`] events.
+pub(crate) fn local_sandbox_with_callback(
+    cwd: PathBuf,
+    emitter: Arc<EventEmitter>,
+) -> Arc<dyn Sandbox> {
     let mut env = LocalSandbox::new(cwd);
     env.set_event_callback(Arc::new(move |event| {
         emitter.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
@@ -589,15 +627,15 @@ pub(crate) async fn write_run_config_snapshot(
     Ok(())
 }
 
-fn resolve_workflow_source(
+pub(crate) fn resolve_workflow_source(
     workflow_path: &Path,
-) -> anyhow::Result<(PathBuf, Option<WorkflowRunConfig>)> {
+) -> anyhow::Result<(PathBuf, PathBuf, Option<WorkflowRunConfig>)> {
     let path = project_config::resolve_workflow_arg(workflow_path)?;
     if path.extension().is_some_and(|ext| ext == "toml") {
         match run_config::load_run_config(&path) {
             Ok(cfg) => {
                 let dot = run_config::resolve_graph_path(&path, &cfg.graph);
-                Ok((dot, Some(cfg)))
+                Ok((path, dot, Some(cfg)))
             }
             // Backward compatibility for detached runs created before run.toml existed.
             // Use path.exists() to distinguish a genuinely missing run.toml from one
@@ -606,12 +644,12 @@ fn resolve_workflow_source(
                 if !path.exists()
                     && path.starts_with(fabro_workflows::run_lookup::default_runs_base()) =>
             {
-                Ok((path.with_file_name(RUN_GRAPH_FILE), None))
+                Ok((path.clone(), path.with_file_name(RUN_GRAPH_FILE), None))
             }
             Err(err) => Err(err),
         }
     } else {
-        Ok((path, None))
+        Ok((path.clone(), path, None))
     }
 }
 
@@ -623,6 +661,7 @@ pub(crate) struct PreparedWorkflow {
     pub sandbox_provider: SandboxProvider,
     pub model: String,
     pub provider: Option<String>,
+    pub workflow_slug: Option<String>,
     pub run_defaults: RunDefaults,
 }
 
@@ -632,9 +671,19 @@ pub(crate) struct PreparedWorkflow {
 /// `run_command` (which goes on to execute the workflow).
 pub(crate) fn prepare_workflow(
     args: &RunArgs,
+    run_defaults: RunDefaults,
+    styles: &Styles,
+    quiet: bool,
+) -> anyhow::Result<PreparedWorkflow> {
+    prepare_workflow_with_project_config(args, run_defaults, styles, quiet, true)
+}
+
+pub(crate) fn prepare_workflow_with_project_config(
+    args: &RunArgs,
     mut run_defaults: RunDefaults,
     styles: &Styles,
     quiet: bool,
+    apply_project_config: bool,
 ) -> anyhow::Result<PreparedWorkflow> {
     let start_cwd = std::env::current_dir().context("failed to determine current directory")?;
     let workflow_path = args
@@ -642,41 +691,42 @@ pub(crate) fn prepare_workflow(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--workflow is required"))?;
 
-    // Apply project-level config overrides (fabro.toml) on top of CLI defaults.
-    // Precedence: workflow.toml > fabro.toml > cli.toml/server.toml
-    if let Some((config_path, project_config)) =
-        project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())?
-    {
-        tracing::debug!("Applying run defaults from fabro.toml");
-        run_defaults.merge_overlay(project_config.into_run_defaults());
-        if let Some(path) = run_defaults
-            .integration
-            .as_mut()
-            .and_then(|integration| integration.artifact_path.as_mut())
+    if apply_project_config {
+        // Apply project-level config overrides (fabro.toml) on top of CLI defaults.
+        if let Some((config_path, project_config)) =
+            project_config::discover_project_config(&std::env::current_dir().unwrap_or_default())?
         {
-            if path.is_relative() {
-                let config_dir = config_path.parent().unwrap_or(Path::new("."));
-                *path = config_dir.join(&*path);
+            tracing::debug!("Applying run defaults from fabro.toml");
+            run_defaults.merge_overlay(project_config.into_run_defaults());
+            if let Some(path) = run_defaults
+                .integration
+                .as_mut()
+                .and_then(|integration| integration.artifact_path.as_mut())
+            {
+                if path.is_relative() {
+                    let config_dir = config_path.parent().unwrap_or(Path::new("."));
+                    *path = config_dir.join(&*path);
+                }
             }
-        }
-        if let Some(env) = run_defaults
-            .sandbox
-            .as_mut()
-            .and_then(|sandbox| sandbox.env.as_mut())
-        {
-            run_config::resolve_env_refs(env)?;
+            if let Some(env) = run_defaults
+                .sandbox
+                .as_mut()
+                .and_then(|sandbox| sandbox.env.as_mut())
+            {
+                run_config::resolve_env_refs(env)?;
+            }
         }
     }
 
     // Resolve workflow arg, load run config if TOML, apply defaults
-    let (dot_path, run_cfg) = {
-        let (dot, cfg) = resolve_workflow_source(workflow_path)?;
+    let (resolved_workflow_path, dot_path, run_cfg) = {
+        let (resolved, dot, cfg) = resolve_workflow_source(workflow_path)?;
         match cfg {
             Some(mut cfg) => {
                 cfg.apply_defaults(&run_defaults);
-                (dot, Some(cfg))
+                (resolved, dot, Some(cfg))
             }
-            None => (dot, None),
+            None => (resolved, dot, None),
         }
     };
     validate_post_run_delivery_modes(run_cfg.as_ref())?;
@@ -685,6 +735,7 @@ pub(crate) fn prepare_workflow(
     } else {
         start_cwd.join(dot_path)
     };
+    let workflow_slug = workflow_slug_from_path(&resolved_workflow_path);
 
     let directory = run_cfg
         .as_ref()
@@ -782,6 +833,7 @@ pub(crate) fn prepare_workflow(
         sandbox_provider,
         model,
         provider,
+        workflow_slug,
         run_defaults,
     })
 }
@@ -798,11 +850,6 @@ pub async fn run_command(
     github_app: Option<fabro_github::GitHubAppCredentials>,
     git_author: fabro_workflows::git::GitAuthor,
 ) -> anyhow::Result<()> {
-    // Handle --run-branch resume: read everything from git metadata
-    if let Some(branch) = args.run_branch.clone() {
-        return run_from_branch(args, &branch, styles, git_author, run_defaults, github_app).await;
-    }
-
     let PreparedWorkflow {
         source,
         graph,
@@ -810,21 +857,11 @@ pub async fn run_command(
         sandbox_provider,
         model,
         provider,
+        workflow_slug: prepared_workflow_slug,
         run_defaults,
     } = prepare_workflow(&args, run_defaults, styles, false)?;
 
-    // Extract workflow slug from the workflow path argument.
-    // If bare name (no extension, e.g. "smoke"), use it directly.
-    // Otherwise derive from the parent directory of the resolved .toml path.
     let workflow_path = args.workflow.as_ref().unwrap(); // safe: prepare_workflow validated
-    let workflow_slug: Option<String> = if workflow_path.extension().is_none() {
-        Some(workflow_path.to_string_lossy().into_owned())
-    } else {
-        workflow_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-    };
 
     // Collect setup commands — they'll be run inside the sandbox
     let setup_commands: Vec<String> = run_cfg
@@ -872,37 +909,27 @@ pub async fn run_command(
 
     // 3. Create logs directory
     let run_id = args.run_id.unwrap_or_else(|| ulid::Ulid::new().to_string());
-    let run_dir = args.run_dir.unwrap_or_else(|| {
-        if args.dry_run {
-            std::env::temp_dir().join("fabro-dry-run").join(&run_id)
-        } else {
-            let base = dirs::home_dir()
-                .expect("could not determine home directory")
-                .join(".fabro")
-                .join("runs");
-            base.join(format!("{}-{}", Local::now().format("%Y%m%d"), run_id))
-        }
-    });
+    let run_dir = args
+        .run_dir
+        .unwrap_or_else(|| default_run_dir(&run_id, args.dry_run));
     tokio::fs::create_dir_all(&run_dir).await?;
+    let cached_run_restart = is_cached_run_restart(workflow_path, &run_dir);
+    let existing_manifest = if cached_run_restart {
+        RunManifest::load(&run_dir.join("manifest.json")).ok()
+    } else {
+        None
+    };
+    let workflow_slug = if cached_run_restart {
+        existing_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.workflow_slug.clone())
+    } else {
+        prepared_workflow_slug
+    };
     fabro_util::run_log::activate(&run_dir.join("cli.log"))
         .context("Failed to activate per-run log")?;
     tokio::fs::write(cached_graph_path(&run_dir), &source).await?;
-    tokio::fs::write(run_dir.join("run.pid"), std::process::id().to_string()).await?;
-    fabro_workflows::run_status::write_run_status(
-        &run_dir,
-        fabro_workflows::run_status::RunStatus::Starting,
-        Some(fabro_workflows::run_status::StatusReason::SandboxInitializing),
-    );
-
-    // Safety net: mark as failed if we exit before engine.run() (e.g. sandbox init failure)
-    let status_run_dir = run_dir.clone();
-    let status_guard = scopeguard::guard((), move |()| {
-        fabro_workflows::run_status::write_run_status(
-            &status_run_dir,
-            fabro_workflows::run_status::RunStatus::Failed,
-            Some(fabro_workflows::run_status::StatusReason::SandboxInitFailed),
-        );
-    });
+    let mut status_guard = DetachedRunBootstrapGuard::arm(&run_dir)?;
 
     // Serialize the merged run config so the run dir is self-contained.
     // Skip when the workflow path is already the cached run.toml (i.e. _run_engine
@@ -937,7 +964,7 @@ pub async fn run_command(
     }
 
     // 3. Build event emitter
-    let mut emitter = EventEmitter::new();
+    let emitter = EventEmitter::new();
 
     // Track the last git commit SHA from CheckpointCompleted events
     let last_git_sha: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1028,7 +1055,7 @@ pub async fn run_command(
         });
     }
 
-    run_progress::ProgressUI::register(&progress_ui, &mut emitter);
+    run_progress::ProgressUI::register(&progress_ui, &emitter);
 
     // 4. Build interviewer
     let interviewer: Arc<dyn Interviewer> = if args.auto_approve {
@@ -1079,9 +1106,11 @@ pub async fn run_command(
             WorkdirStrategy::LocalDirectory => None,
         };
         if let Some(env_name) = env_name {
-            eprintln!(
-                "{} Uncommitted changes will not be included in the {env_name}.",
-                styles.yellow.apply_to("Warning:"),
+            emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Warn,
+                "dirty_worktree",
+                format!("Uncommitted changes will not be included in the {env_name}."),
             );
         }
     }
@@ -1124,16 +1153,20 @@ pub async fn run_command(
                 match result {
                     Ok(()) => {
                         tracing::info!(%branch, "Pushed current branch to origin");
-                        eprintln!(
-                            "{} {branch} (synced local commits to remote)",
-                            styles.bold.apply_to("Pushed branch:")
+                        emit_run_notice(
+                            &emitter,
+                            RunNoticeLevel::Info,
+                            "git_push_succeeded",
+                            format!("{branch} (synced local commits to remote)"),
                         );
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, %branch, "Failed to push current branch");
-                        eprintln!(
-                            "{} Failed to push {branch} to origin: {e}",
-                            styles.yellow.apply_to("Warning:")
+                        emit_run_notice(
+                            &emitter,
+                            RunNoticeLevel::Warn,
+                            "git_push_failed",
+                            format!("Failed to push {branch} to origin: {e}"),
                         );
                     }
                 }
@@ -1156,6 +1189,12 @@ pub async fn run_command(
                     eprintln!(
                         "{} Git worktree setup failed ({e}), running without worktree.",
                         styles.yellow.apply_to("Warning:"),
+                    );
+                    emit_run_notice(
+                        &emitter,
+                        RunNoticeLevel::Warn,
+                        "worktree_setup_failed",
+                        format!("Git worktree setup failed ({e}), running without worktree."),
                     );
                     (None, None, None, None)
                 }
@@ -1336,34 +1375,6 @@ pub async fn run_command(
         });
     }
 
-    // Register SSH access listener
-    if args.ssh {
-        let deferred_sb_ssh = Arc::clone(&deferred_sandbox);
-        emitter.on_event(move |event| {
-            if let fabro_workflows::event::WorkflowRunEvent::SandboxInitialized { .. } = event {
-                if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                    let sb_lock = deferred_sb_ssh.lock().unwrap();
-                    if let Some(ref sb) = *sb_lock {
-                        let sb = Arc::clone(sb);
-                        rt.spawn(async move {
-                            match sb.ssh_access_command().await {
-                                Ok(Some(ssh_command)) => {
-                                    // Note: we can't emit from here since emitter is shared;
-                                    // SSH access info is logged via tracing.
-                                    tracing::info!(ssh_command, "SSH access ready");
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "Failed to create SSH access");
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        });
-    }
-
     // Wrap emitter in Arc so we can share it with exec env callbacks
     let emitter = Arc::new(emitter);
 
@@ -1459,9 +1470,11 @@ pub async fn run_command(
                         Arc::new(wt_sandbox) as Arc<dyn Sandbox>
                     }
                     Err(e) => {
-                        eprintln!(
-                            "{} Git worktree setup failed ({e}), running without worktree.",
-                            styles.yellow.apply_to("Warning:"),
+                        emit_run_notice(
+                            &emitter,
+                            RunNoticeLevel::Warn,
+                            "worktree_setup_failed",
+                            format!("Git worktree setup failed ({e}), running without worktree."),
                         );
                         // Reset so RunConfig does not enable git checkpointing
                         worktree_path = None;
@@ -1489,17 +1502,21 @@ pub async fn run_command(
     } else {
         match fabro_llm::client::Client::from_env().await {
             Ok(c) if c.provider_names().is_empty() => {
-                eprintln!(
-                    "{} No LLM providers configured. Running in dry-run mode.",
-                    styles.yellow.apply_to("Warning:"),
+                emit_run_notice(
+                    &emitter,
+                    RunNoticeLevel::Warn,
+                    "dry_run_no_llm",
+                    "No LLM providers configured. Running in dry-run mode.",
                 );
                 (true, None)
             }
             Ok(c) => (false, Some(c)),
             Err(e) => {
-                eprintln!(
-                    "{} Failed to initialize LLM client: {e}. Running in dry-run mode.",
-                    styles.yellow.apply_to("Warning:"),
+                emit_run_notice(
+                    &emitter,
+                    RunNoticeLevel::Warn,
+                    "dry_run_llm_init_failed",
+                    format!("Failed to initialize LLM client: {e}. Running in dry-run mode."),
                 );
                 (true, None)
             }
@@ -1561,9 +1578,11 @@ pub async fn run_command(
                         sandbox_env.insert("GITHUB_TOKEN".to_string(), token);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "{} Failed to mint GitHub token: {e}",
-                            styles.yellow.apply_to("Warning:"),
+                        emit_run_notice(
+                            &emitter,
+                            RunNoticeLevel::Warn,
+                            "github_token_failed",
+                            format!("Failed to mint GitHub token: {e}"),
                         );
                     }
                 }
@@ -1647,7 +1666,10 @@ pub async fn run_command(
         dry_run: dry_run_mode,
         run_id: run_id.clone(),
         git_checkpoint_enabled: worktree_path.is_some(),
-        host_repo_path: Some(original_cwd.clone()),
+        host_repo_path: existing_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.host_repo_path.as_deref().map(PathBuf::from))
+            .or_else(|| Some(original_cwd.clone())),
         base_sha: worktree_base_sha,
         run_branch: worktree_branch,
         meta_branch,
@@ -1660,7 +1682,10 @@ pub async fn run_command(
         checkpoint_exclude_globs,
         github_app: github_app.clone(),
         git_author,
-        base_branch: detected_base_branch,
+        base_branch: existing_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.base_branch.clone())
+            .or(detected_base_branch),
         pull_request: run_cfg
             .as_ref()
             .and_then(|c| c.pull_request.as_ref())
@@ -1691,8 +1716,8 @@ pub async fn run_command(
         },
     };
 
-    // Defuse the status guard — engine.run() will write "running" and conclusion handles "concluded"
-    scopeguard::ScopeGuard::into_inner(status_guard);
+    // Defuse the bootstrap guard — engine.run() has taken ownership of lifecycle status.
+    status_guard.defuse();
 
     // Safety net: if we panic or return early, best-effort cleanup via spawn.
     let sandbox_for_cleanup = Arc::clone(&sandbox);
@@ -1709,17 +1734,11 @@ pub async fn run_command(
     });
 
     let run_start = Instant::now();
-    let engine_result = if let Some(ref checkpoint_path) = args.resume {
-        let checkpoint = Checkpoint::load(checkpoint_path)?;
-        engine
-            .run_with_lifecycle(&graph, &mut config, lifecycle, Some(&checkpoint))
-            .await
-    } else {
-        engine
-            .run_with_lifecycle(&graph, &mut config, lifecycle, None)
-            .await
-    };
+    let engine_result = engine
+        .run_with_lifecycle(&graph, &mut config, lifecycle, None)
+        .await;
     let run_duration_ms = run_start.elapsed().as_millis() as u64;
+    let mut completion_guard = DetachedRunCompletionGuard::arm(&run_dir);
 
     // Restore cwd (worktree is kept for `fabro cp` access; pruned separately)
     let _ = std::env::set_current_dir(&original_cwd);
@@ -1793,99 +1812,21 @@ pub async fn run_command(
         }
     }
 
-    {
-        let (status, failure_reason) = match (&engine_result, &direct_integration_failure) {
-            (_, Some(error)) => (
-                fabro_workflows::outcome::StageStatus::Fail,
-                Some(error.clone()),
-            ),
-            (Ok(ref o), None) => (o.status.clone(), o.failure_reason().map(String::from)),
-            (Err(e), None) => (
-                fabro_workflows::outcome::StageStatus::Fail,
-                Some(e.to_string()),
-            ),
-        };
-
-        // Map engine result to RunStatus + StatusReason
-        let (run_status, status_reason) = match (&engine_result, &direct_integration_failure) {
-            (_, Some(_)) => (
-                fabro_workflows::run_status::RunStatus::Failed,
-                Some(fabro_workflows::run_status::StatusReason::WorkflowError),
-            ),
-            (Ok(ref o), None) => match o.status {
-                StageStatus::Success | StageStatus::Skipped => (
-                    fabro_workflows::run_status::RunStatus::Succeeded,
-                    Some(fabro_workflows::run_status::StatusReason::Completed),
-                ),
-                StageStatus::PartialSuccess => (
-                    fabro_workflows::run_status::RunStatus::Succeeded,
-                    Some(fabro_workflows::run_status::StatusReason::PartialSuccess),
-                ),
-                StageStatus::Fail | StageStatus::Retry => (
-                    fabro_workflows::run_status::RunStatus::Failed,
-                    Some(fabro_workflows::run_status::StatusReason::WorkflowError),
-                ),
-            },
-            (Err(fabro_workflows::error::FabroError::Cancelled), None) => (
-                fabro_workflows::run_status::RunStatus::Failed,
-                Some(fabro_workflows::run_status::StatusReason::Cancelled),
-            ),
-            (Err(_), None) => (
-                fabro_workflows::run_status::RunStatus::Failed,
-                Some(fabro_workflows::run_status::StatusReason::WorkflowError),
-            ),
-        };
-
-        // Load checkpoint and stage durations to populate per-stage data
-        let checkpoint = Checkpoint::load(&run_dir.join("checkpoint.json")).ok();
-        let stage_durations = fabro_retro::retro::extract_stage_durations(&run_dir);
-
-        let (stages, total_cost, total_retries) = if let Some(ref cp) = checkpoint {
-            let mut stages = Vec::new();
-            let mut cost_sum: Option<f64> = None;
-            let mut retries_sum: u32 = 0;
-
-            for node_id in &cp.completed_nodes {
-                let outcome = cp.node_outcomes.get(node_id);
-                let retries = cp
-                    .node_retries
-                    .get(node_id)
-                    .copied()
-                    .unwrap_or(1)
-                    .saturating_sub(1);
-                retries_sum += retries;
-
-                let cost = outcome.and_then(|o| o.usage.as_ref()).and_then(|u| u.cost);
-                if let Some(c) = cost {
-                    *cost_sum.get_or_insert(0.0) += c;
-                }
-
-                stages.push(fabro_workflows::conclusion::StageSummary {
-                    stage_id: node_id.clone(),
-                    stage_label: node_id.clone(),
-                    duration_ms: stage_durations.get(node_id).copied().unwrap_or(0),
-                    cost,
-                    retries,
-                });
-            }
-            (stages, cost_sum, retries_sum)
-        } else {
-            (vec![], None, 0)
-        };
-
-        let conclusion = fabro_workflows::conclusion::Conclusion {
-            timestamp: Utc::now(),
-            status,
-            duration_ms: run_duration_ms,
-            failure_reason,
-            final_git_commit_sha: last_git_sha.lock().unwrap().clone(),
-            stages,
-            total_cost,
-            total_retries,
-        };
-        let _ = conclusion.save(&run_dir.join("conclusion.json"));
-        fabro_workflows::run_status::write_run_status(&run_dir, run_status, status_reason);
+    let (mut final_status, mut failure_reason, mut run_status, mut status_reason) =
+        classify_engine_result(&engine_result);
+    if let Some(error) = direct_integration_failure.clone() {
+        final_status = StageStatus::Fail;
+        failure_reason = Some(error);
+        run_status = RunStatus::Failed;
+        status_reason = Some(StatusReason::WorkflowError);
     }
+    let conclusion = build_conclusion(
+        &run_dir,
+        final_status.clone(),
+        failure_reason,
+        run_duration_ms,
+        last_git_sha.lock().unwrap().clone(),
+    );
 
     // Auto-derive retro (always, cheap) and optionally run retro agent
     if !args.no_retro && project_config::is_retro_enabled() {
@@ -1999,9 +1940,11 @@ pub async fn run_command(
                                     error: e.to_string(),
                                 },
                             );
-                            eprintln!(
-                                "{} PR creation failed: {e}",
-                                styles.yellow.apply_to("Warning:")
+                            emit_run_notice(
+                                &emitter,
+                                RunNoticeLevel::Warn,
+                                "pull_request_failed",
+                                format!("PR creation failed: {e}"),
                             );
                         }
                     }
@@ -2012,22 +1955,12 @@ pub async fn run_command(
         debug!("Skipping PR creation: pull_request not enabled in config");
     }
 
-    let outcome = engine_result?;
-    let display_status = if direct_integration_failure.is_some() {
-        StageStatus::Fail
-    } else {
-        outcome.status.clone()
-    };
-    let display_failure = direct_integration_failure
-        .clone()
-        .or_else(|| outcome.failure_reason().map(String::from));
-
     // 8. Print result
     eprintln!("\n{}", styles.bold.apply_to("=== Run Result ==="),);
 
     eprintln!("{}", styles.dim.apply_to(format!("Run:       {run_id}")));
-    let status_str = display_status.to_string().to_uppercase();
-    let status_color = match display_status {
+    let status_str = final_status.to_string().to_uppercase();
+    let status_color = match final_status {
         StageStatus::Success | StageStatus::PartialSuccess => &styles.bold_green,
         _ => &styles.bold_red,
     };
@@ -2087,7 +2020,7 @@ pub async fn run_command(
             .apply_to(format!("Run:       {}", tilde_path(&run_dir)))
     );
 
-    if let Some(failure) = display_failure.as_deref() {
+    if let Some(failure) = conclusion.failure_reason.as_deref() {
         eprintln!("Failure:   {}", styles.red.apply_to(failure));
     }
 
@@ -2117,12 +2050,19 @@ pub async fn run_command(
     if preserve_sandbox {
         let info = sandbox.sandbox_info();
         if !info.is_empty() {
-            eprintln!(
-                "\n{} sandbox preserved: {info}",
-                styles.bold.apply_to("Info:")
+            emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Info,
+                "sandbox_preserved",
+                format!("sandbox preserved: {info}"),
             );
         } else {
-            eprintln!("\n{} sandbox preserved", styles.bold.apply_to("Info:"));
+            emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Info,
+                "sandbox_preserved",
+                "sandbox preserved",
+            );
         }
     }
 
@@ -2134,15 +2074,20 @@ pub async fn run_command(
         .await
     {
         tracing::warn!(error = %e, "Sandbox cleanup failed");
-        eprintln!(
-            "\n{} sandbox cleanup failed: {e}",
-            styles.yellow.apply_to("Warning:")
+        emit_run_notice(
+            &emitter,
+            RunNoticeLevel::Warn,
+            "sandbox_cleanup_failed",
+            format!("sandbox cleanup failed: {e}"),
         );
     }
 
+    persist_terminal_outcome(&run_dir, &conclusion, run_status, status_reason);
+    completion_guard.defuse();
+
     // 10. Exit code
     fabro_util::run_log::deactivate();
-    match outcome.status {
+    match final_status {
         StageStatus::Success | StageStatus::PartialSuccess => Ok(()),
         _ => {
             std::process::exit(1);
@@ -2190,338 +2135,240 @@ fn setup_worktree(
 
     Ok((worktree_path.clone(), worktree_path, branch_name, base_sha))
 }
-/// Resume a workflow run from a git run branch.
+pub(crate) fn emit_run_notice(
+    emitter: &EventEmitter,
+    level: RunNoticeLevel,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) {
+    emitter.emit(&WorkflowRunEvent::RunNotice {
+        level,
+        code: code.into(),
+        message: message.into(),
+    });
+}
+
+pub(crate) fn classify_engine_result(
+    engine_result: &Result<Outcome, fabro_workflows::error::FabroError>,
+) -> (StageStatus, Option<String>, RunStatus, Option<StatusReason>) {
+    match engine_result {
+        Ok(outcome) => {
+            let status = outcome.status.clone();
+            let failure_reason = outcome.failure_reason().map(String::from);
+            let (run_status, status_reason) = match status {
+                StageStatus::Success | StageStatus::Skipped => {
+                    (RunStatus::Succeeded, Some(StatusReason::Completed))
+                }
+                StageStatus::PartialSuccess => {
+                    (RunStatus::Succeeded, Some(StatusReason::PartialSuccess))
+                }
+                StageStatus::Fail | StageStatus::Retry => {
+                    (RunStatus::Failed, Some(StatusReason::WorkflowError))
+                }
+            };
+            (status, failure_reason, run_status, status_reason)
+        }
+        Err(fabro_workflows::error::FabroError::Cancelled) => (
+            StageStatus::Fail,
+            Some("Cancelled".to_string()),
+            RunStatus::Failed,
+            Some(StatusReason::Cancelled),
+        ),
+        Err(err) => (
+            StageStatus::Fail,
+            Some(err.to_string()),
+            RunStatus::Failed,
+            Some(StatusReason::WorkflowError),
+        ),
+    }
+}
+
+pub(crate) fn build_conclusion(
+    run_dir: &Path,
+    status: StageStatus,
+    failure_reason: Option<String>,
+    run_duration_ms: u64,
+    final_git_commit_sha: Option<String>,
+) -> Conclusion {
+    let checkpoint = Checkpoint::load(&run_dir.join("checkpoint.json")).ok();
+    let stage_durations = fabro_retro::retro::extract_stage_durations(run_dir);
+
+    let mut total_input_tokens: i64 = 0;
+    let mut total_output_tokens: i64 = 0;
+    let mut total_cache_read_tokens: i64 = 0;
+    let mut total_cache_write_tokens: i64 = 0;
+    let mut total_reasoning_tokens: i64 = 0;
+    let mut has_pricing = false;
+
+    let (stages, total_cost, total_retries) = if let Some(ref cp) = checkpoint {
+        let mut stages = Vec::new();
+        let mut cost_sum: Option<f64> = None;
+        let mut retries_sum: u32 = 0;
+
+        for node_id in &cp.completed_nodes {
+            let outcome = cp.node_outcomes.get(node_id);
+            let retries = cp
+                .node_retries
+                .get(node_id)
+                .copied()
+                .unwrap_or(1)
+                .saturating_sub(1);
+            retries_sum += retries;
+
+            let cost = outcome.and_then(|o| o.usage.as_ref()).and_then(|u| u.cost);
+            if let Some(c) = cost {
+                *cost_sum.get_or_insert(0.0) += c;
+                has_pricing = true;
+            }
+
+            if let Some(usage) = outcome.and_then(|o| o.usage.as_ref()) {
+                total_input_tokens += usage.input_tokens;
+                total_output_tokens += usage.output_tokens;
+                total_cache_read_tokens += usage.cache_read_tokens.unwrap_or(0);
+                total_cache_write_tokens += usage.cache_write_tokens.unwrap_or(0);
+                total_reasoning_tokens += usage.reasoning_tokens.unwrap_or(0);
+            }
+
+            stages.push(fabro_workflows::conclusion::StageSummary {
+                stage_id: node_id.clone(),
+                stage_label: node_id.clone(),
+                duration_ms: stage_durations.get(node_id).copied().unwrap_or(0),
+                cost,
+                retries,
+            });
+        }
+        (stages, cost_sum, retries_sum)
+    } else {
+        (vec![], None, 0)
+    };
+
+    Conclusion {
+        timestamp: Utc::now(),
+        status,
+        duration_ms: run_duration_ms,
+        failure_reason,
+        final_git_commit_sha,
+        stages,
+        total_cost,
+        total_retries,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_read_tokens,
+        total_cache_write_tokens,
+        total_reasoning_tokens,
+        has_pricing,
+    }
+}
+
+pub(crate) fn persist_terminal_outcome(
+    run_dir: &Path,
+    conclusion: &Conclusion,
+    run_status: RunStatus,
+    status_reason: Option<StatusReason>,
+) {
+    let _ = conclusion.save(&run_dir.join("conclusion.json"));
+    fabro_workflows::run_status::write_run_status(run_dir, run_status, status_reason);
+}
+
+/// Print a summary of the completed run from `conclusion.json` and `pull_request.json`.
 ///
-/// Reads the checkpoint, manifest, and graph DOT from the metadata branch
-/// (`fabro/meta/{run_id}`), re-attaches a worktree to the existing run branch,
-/// and resumes execution via `run_from_checkpoint()`.
-#[allow(unreachable_patterns)]
-async fn run_from_branch(
-    args: RunArgs,
-    run_branch: &str,
-    styles: &'static Styles,
-    git_author: fabro_workflows::git::GitAuthor,
-    run_defaults: RunDefaults,
-    github_app: Option<fabro_github::GitHubAppCredentials>,
-) -> anyhow::Result<()> {
-    // Extract run_id from branch name: "fabro/run/{run_id}" -> "{run_id}"
-    let run_id = run_branch
-        .strip_prefix(fabro_workflows::git::RUN_BRANCH_PREFIX)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "invalid run branch format: expected '{}<run_id>', got '{run_branch}'",
-                fabro_workflows::git::RUN_BRANCH_PREFIX,
-            )
-        })?
-        .to_string();
-
-    let original_cwd = std::env::current_dir()?;
-
-    // Read checkpoint from metadata branch
-    let checkpoint = fabro_workflows::git::MetadataStore::read_checkpoint(&original_cwd, &run_id)?
-        .ok_or_else(|| {
-            anyhow::anyhow!("no checkpoint found on metadata branch for run {run_id}")
-        })?;
-
-    // Read graph DOT from metadata branch
-    let source = fabro_workflows::git::MetadataStore::read_graph_dot(&original_cwd, &run_id)?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no {} found on metadata branch for run {run_id}",
-                RUN_GRAPH_FILE
-            )
-        })?;
-
-    // If --pipeline was also provided, use it instead (allows overriding)
-    let (mut graph, diagnostics) = if let Some(ref workflow_path) = args.workflow {
-        fabro_workflows::workflow::prepare_from_file(workflow_path)?
-    } else {
-        fabro_workflows::workflow::WorkflowBuilder::new().prepare(&source)?
-    };
-    let cli_goal = resolve_cli_goal(&args.goal, &args.goal_file)?;
-    apply_goal_override(&mut graph, cli_goal.as_deref(), None);
-
-    eprintln!(
-        "{} {} from branch {} ({})",
-        styles.bold.apply_to("Resuming workflow:"),
-        graph.name,
-        styles.dim.apply_to(run_branch),
-        run_id,
-    );
-
-    print_diagnostics(&diagnostics, styles);
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        anyhow::bail!("Validation failed");
-    }
-
-    // Set up logs directory
-    let run_dir = args.run_dir.unwrap_or_else(|| {
-        if args.dry_run {
-            std::env::temp_dir().join("fabro-dry-run").join(&run_id)
-        } else {
-            let base = dirs::home_dir()
-                .expect("could not determine home directory")
-                .join(".fabro")
-                .join("runs");
-            base.join(format!(
-                "{}-{}",
-                chrono::Local::now().format("%Y%m%d"),
-                run_id
-            ))
-        }
-    });
-    tokio::fs::create_dir_all(&run_dir).await?;
-    fabro_util::run_log::activate(&run_dir.join("cli.log"))
-        .context("Failed to activate per-run log")?;
-    tokio::fs::write(cached_graph_path(&run_dir), &source).await?;
-
-    let base_sha = fabro_workflows::git::MetadataStore::read_manifest(&original_cwd, &run_id)?
-        .and_then(|m| m.base_sha);
-
-    // Resolve sandbox provider
-    let sandbox_provider = if args.dry_run {
-        SandboxProvider::Local
-    } else {
-        resolve_sandbox_provider(args.sandbox.map(Into::into), None, &run_defaults)?
+/// Used by the unified create+start+attach path in `main.rs` to display
+/// the same result block that `run_command` prints in-process.
+pub fn print_run_summary(run_dir: &Path, run_id: &str, styles: &Styles) {
+    let conclusion_path = run_dir.join("conclusion.json");
+    let Ok(conclusion) = fabro_workflows::conclusion::Conclusion::load(&conclusion_path) else {
+        return;
     };
 
-    let emitter = Arc::new(EventEmitter::new());
-    let (sandbox, _worktree_path): (Arc<dyn fabro_agent::Sandbox>, Option<PathBuf>) =
-        match sandbox_provider {
-            SandboxProvider::Local | SandboxProvider::Docker => {
-                // Re-attach worktree to the existing run branch via WorktreeSandbox.
-                let wt = run_dir.join("worktree");
-                let wt_str = wt.to_string_lossy().into_owned();
-
-                let inner = local_sandbox_with_callback(original_cwd.clone(), Arc::clone(&emitter));
-                let wt_config = WorktreeConfig {
-                    branch_name: run_branch.to_string(),
-                    base_sha: base_sha.clone().unwrap_or_default(),
-                    worktree_path: wt_str.clone(),
-                    skip_branch_creation: true, // branch already exists on resume
-                };
-                let mut wt_sandbox = WorktreeSandbox::new(inner, wt_config);
-                wt_sandbox.set_event_callback(Arc::clone(&emitter).worktree_callback());
-
-                wt_sandbox.initialize().await.map_err(|e| {
-                    anyhow::anyhow!("failed to attach worktree to {run_branch}: {e}")
-                })?;
-                std::env::set_current_dir(&wt)?;
-                (
-                    Arc::new(wt_sandbox) as Arc<dyn fabro_agent::Sandbox>,
-                    Some(wt),
-                )
-            }
-            #[cfg(feature = "exedev")]
-            SandboxProvider::Exe => {
-                let exe_config = resolve_exe_config(None, &run_defaults);
-                let clone_params = resolve_exe_clone_params(&original_cwd);
-                let mgmt_ssh = fabro_sandbox::exe::OpensshRunner::connect_raw("exe.dev")
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to connect to exe.dev: {e}"))?;
-                let config = exe_config.unwrap_or_default();
-                let mut env = fabro_sandbox::exe::ExeSandbox::new(
-                    Box::new(mgmt_ssh),
-                    config,
-                    clone_params,
-                    Some(run_id.clone()),
-                    github_app.clone(),
-                );
-                let emitter_cb = Arc::clone(&emitter);
-                env.set_event_callback(Arc::new(move |event| {
-                    emitter_cb.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
-                }));
-                (Arc::new(env), None)
-            }
-            SandboxProvider::Ssh => {
-                let config = resolve_ssh_config(None, &run_defaults).ok_or_else(|| {
-                    anyhow::anyhow!("--sandbox ssh requires [sandbox.ssh] config")
-                })?;
-                let clone_params = resolve_ssh_clone_params(&original_cwd);
-                let mut env = fabro_sandbox::ssh::SshSandbox::new(
-                    config,
-                    clone_params,
-                    Some(run_id.clone()),
-                    github_app.clone(),
-                );
-                let emitter_cb = Arc::clone(&emitter);
-                env.set_event_callback(Arc::new(move |event| {
-                    emitter_cb.emit(&fabro_workflows::event::WorkflowRunEvent::Sandbox { event });
-                }));
-                (Arc::new(env), None)
-            }
-            SandboxProvider::Daytona => {
-                bail!("--run-branch resume is not yet supported with --sandbox daytona");
-            }
-            #[cfg(not(feature = "exedev"))]
-            _ => unreachable!("exe sandbox requires the exedev feature"),
-        };
-
-    // Wrap with ReadBeforeWriteSandbox to enforce read-before-write guard
-    let sandbox: Arc<dyn fabro_agent::Sandbox> =
-        Arc::new(fabro_agent::ReadBeforeWriteSandbox::new(sandbox));
-
-    // Let the sandbox provide any commands needed to resume on the existing run branch
-    let resume_setup_commands: Vec<String> = sandbox.resume_setup_commands(run_branch);
-
-    // Build interviewer
-    let interviewer: Arc<dyn Interviewer> = if args.auto_approve {
-        Arc::new(AutoApproveInterviewer)
-    } else {
-        Arc::new(ConsoleInterviewer::new(styles))
-    };
-
-    // Build engine with a backend
-    let dry_run_mode = args.dry_run
-        || fabro_llm::client::Client::from_env()
-            .await
-            .map(|c| c.provider_names().is_empty())
-            .unwrap_or(true);
-
-    let model = args.model.unwrap_or_else(|| {
-        automation_primary_target(AutomationProfile::Write)
-            .model
-            .to_string()
-    });
-    let provider_enum = args
-        .provider
-        .as_deref()
-        .map(|s| s.parse::<fabro_model::Provider>())
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .unwrap_or(automation_primary_target(AutomationProfile::Write).provider);
-
-    // No fallback config available for branch resume; use empty chain.
-    let fallback_chain = Vec::new();
-
-    let registry = fabro_workflows::handler::default_registry(interviewer.clone(), || {
-        if dry_run_mode {
-            None
-        } else {
-            let api = AgentApiBackend::new(model.clone(), provider_enum, fallback_chain.clone());
-            let cli = AgentCliBackend::new(model.clone(), provider_enum)
-                .with_fallback_chain(fallback_chain.clone());
-            Some(Box::new(BackendRouter::new(Box::new(api), cli)))
-        }
-    });
-    let mut engine = fabro_workflows::engine::WorkflowRunEngine::with_interviewer(
-        registry,
-        Arc::clone(&emitter),
-        interviewer,
-        Arc::clone(&sandbox),
-    );
-    if dry_run_mode {
-        engine.set_dry_run(true);
-    }
-
-    let meta_branch = Some(fabro_workflows::git::MetadataStore::branch_name(&run_id));
-    let mut config = RunConfig {
-        run_dir: run_dir.clone(),
-        cancel_token: None,
-        dry_run: dry_run_mode,
-        run_id: run_id.clone(),
-        git_checkpoint_enabled: true, // always true for resume (worktree or sandbox git is set up)
-        host_repo_path: Some(original_cwd.clone()),
-        base_sha,
-        run_branch: Some(run_branch.to_string()),
-        meta_branch,
-        labels: HashMap::new(),
-        checkpoint_exclude_globs: Vec::new(),
-        github_app: github_app.clone(),
-        git_author,
-        base_branch: None,
-        pull_request: None,
-        asset_globs: Vec::new(),
-        workflow_slug: None,
-    };
-
-    let lifecycle = fabro_workflows::engine::LifecycleConfig {
-        setup_commands: resume_setup_commands,
-        setup_command_timeout_ms: 60_000,
-        devcontainer_phases: Vec::new(),
-    };
-
-    let run_start = Instant::now();
-    let engine_result = engine
-        .run_with_lifecycle(&graph, &mut config, lifecycle, Some(&checkpoint))
-        .await;
-    let run_duration_ms = run_start.elapsed().as_millis() as u64;
-
-    // Restore cwd (worktree is kept for `fabro cp` access; pruned separately)
-    let _ = std::env::set_current_dir(&original_cwd);
-
-    // Auto-derive retro
-    if !args.no_retro && project_config::is_retro_enabled() {
-        let failed = match &engine_result {
-            Ok(ref o) => o.status == StageStatus::Fail,
-            Err(_) => true,
-        };
-
-        let llm_client = if dry_run_mode {
-            None
-        } else {
-            fabro_llm::client::Client::from_env().await.ok()
-        };
-
-        generate_retro(
-            &config.run_id,
-            &graph.name,
-            graph.goal(),
-            &run_dir,
-            failed,
-            run_duration_ms,
-            dry_run_mode,
-            llm_client.as_ref(),
-            &sandbox,
-            provider_enum,
-            &model,
-            styles,
-            Some(Arc::clone(&emitter)),
-        )
-        .await;
-    }
-
-    // Write finalize commit with retro.json + final node files (captures last diff.patch)
-    write_finalize_commit(&config, &run_dir).await;
-
-    // Cleanup sandbox via engine (fires SandboxCleanup hook)
-    let _ = engine
-        .cleanup_sandbox(&config.run_id, &graph.name, false)
-        .await;
-
-    let outcome = engine_result?;
-
-    eprintln!("\n{}", styles.bold.apply_to("=== Run Result ==="),);
+    eprintln!("\n{}", styles.bold.apply_to("=== Run Result ==="));
     eprintln!("{}", styles.dim.apply_to(format!("Run:       {run_id}")));
-    let status_str = outcome.status.to_string().to_uppercase();
-    let status_color = match outcome.status {
+
+    let status_str = conclusion.status.to_string().to_uppercase();
+    let status_color = match conclusion.status {
         StageStatus::Success | StageStatus::PartialSuccess => &styles.bold_green,
         _ => &styles.bold_red,
     };
-    eprintln!("Status:    {}", status_color.apply_to(&status_str),);
+    eprintln!("Status:    {}", status_color.apply_to(&status_str));
     eprintln!(
         "Duration:  {}",
-        HumanDuration(Duration::from_millis(run_duration_ms))
+        HumanDuration(Duration::from_millis(conclusion.duration_ms))
     );
+
+    let total_tokens = conclusion.total_input_tokens + conclusion.total_output_tokens;
+    if total_tokens > 0 {
+        if conclusion.has_pricing {
+            if let Some(cost) = conclusion.total_cost {
+                if cost > 0.0 {
+                    eprintln!(
+                        "{}",
+                        styles.dim.apply_to(format!(
+                            "Cost:      {} ({} toks)",
+                            format_cost(cost),
+                            format_tokens_human(total_tokens)
+                        ))
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "{}",
+                styles
+                    .dim
+                    .apply_to(format!("Toks:      {}", format_tokens_human(total_tokens)))
+            );
+        }
+        if conclusion.total_cache_read_tokens > 0 {
+            eprintln!(
+                "{}",
+                styles.dim.apply_to(format!(
+                    "Cache:     {} read, {} write",
+                    format_tokens_human(conclusion.total_cache_read_tokens),
+                    format_tokens_human(conclusion.total_cache_write_tokens),
+                )),
+            );
+        }
+        if conclusion.total_reasoning_tokens > 0 {
+            eprintln!(
+                "{}",
+                styles.dim.apply_to(format!(
+                    "Reasoning: {} tokens",
+                    format_tokens_human(conclusion.total_reasoning_tokens),
+                )),
+            );
+        }
+    }
+
     eprintln!(
         "{}",
         styles
             .dim
-            .apply_to(format!("Run:       {}", tilde_path(&run_dir)))
+            .apply_to(format!("Run:       {}", tilde_path(run_dir)))
     );
 
-    print_final_output(&run_dir, styles);
-    print_assets(&run_dir, styles);
-
-    fabro_util::run_log::deactivate();
-    match outcome.status {
-        StageStatus::Success | StageStatus::PartialSuccess => Ok(()),
-        _ => std::process::exit(1),
+    if let Some(ref failure) = conclusion.failure_reason {
+        eprintln!("Failure:   {}", styles.red.apply_to(failure));
     }
+
+    // PR info from pull_request.json (saved by _run_engine)
+    if let Ok(content) = std::fs::read_to_string(run_dir.join("pull_request.json")) {
+        if let Ok(record) =
+            serde_json::from_str::<fabro_workflows::pull_request::PullRequestRecord>(&content)
+        {
+            eprintln!();
+            eprintln!(
+                "{} {}",
+                styles.bold.apply_to("Pull request:"),
+                record.html_url
+            );
+        }
+    }
+
+    print_final_output(run_dir, styles);
+    print_assets(run_dir, styles);
 }
 
 /// Print the final stage output from the checkpoint, if available.
-fn print_final_output(run_dir: &std::path::Path, styles: &Styles) {
+pub(crate) fn print_final_output(run_dir: &std::path::Path, styles: &Styles) {
     let Ok(checkpoint) = Checkpoint::load(&run_dir.join("checkpoint.json")) else {
         return;
     };
@@ -2542,7 +2389,7 @@ fn print_final_output(run_dir: &std::path::Path, styles: &Styles) {
 }
 
 /// Print collected asset paths, if any.
-fn print_assets(run_dir: &std::path::Path, styles: &Styles) {
+pub(crate) fn print_assets(run_dir: &std::path::Path, styles: &Styles) {
     let paths = fabro_workflows::asset_snapshot::collect_asset_paths(run_dir);
     if paths.is_empty() {
         return;
@@ -2770,8 +2617,8 @@ async fn run_preflight(
 
                 // Resolve through catalog to get canonical model ID and provider
                 let (resolved_model, resolved_provider) =
-                    if let Some(info) = fabro_model::get_model_info(node_model) {
-                        (info.id, info.provider)
+                    if let Some(info) = Catalog::builtin().get(node_model) {
+                        (info.id.clone(), info.provider.to_string())
                     } else {
                         (node_model.to_string(), node_provider.to_string())
                     };
@@ -2789,8 +2636,8 @@ async fn run_preflight(
             // If no LLM nodes found, fall back to the default model/provider
             if model_providers.is_empty() {
                 let (resolved_model, resolved_provider) =
-                    if let Some(info) = fabro_model::get_model_info(&model) {
-                        (info.id, info.provider)
+                    if let Some(info) = Catalog::builtin().get(&model) {
+                        (info.id.clone(), info.provider.to_string())
                     } else {
                         (model.clone(), default_provider.to_string())
                     };
@@ -2958,7 +2805,7 @@ async fn run_preflight(
 ///
 /// This captures the last diff.patch (written after the final checkpoint) and retro.json.
 /// Best-effort: errors are logged as warnings.
-async fn write_finalize_commit(config: &RunConfig, run_dir: &std::path::Path) {
+pub(crate) async fn write_finalize_commit(config: &RunConfig, run_dir: &std::path::Path) {
     let (Some(ref meta_branch), Some(ref repo_path)) =
         (&config.meta_branch, &config.host_repo_path)
     else {
@@ -2995,7 +2842,7 @@ async fn write_finalize_commit(config: &RunConfig, run_dir: &std::path::Path) {
 /// Derives a basic retro from the checkpoint, then optionally runs the retro agent
 /// for a richer narrative. Errors are logged as warnings rather than propagated.
 #[allow(clippy::too_many_arguments)]
-async fn generate_retro(
+pub(crate) async fn generate_retro(
     run_id: &str,
     workflow_name: &str,
     goal: &str,
@@ -3192,7 +3039,7 @@ async fn generate_retro(
     }
 }
 
-fn build_event_envelope(
+pub(crate) fn build_event_envelope(
     event: &fabro_workflows::event::WorkflowRunEvent,
     run_id: &str,
     event_seq: u64,
@@ -3265,7 +3112,7 @@ mod tests {
         let dir = tempfile::tempdir_in(&runs_base).unwrap();
         std::fs::write(dir.path().join(RUN_GRAPH_FILE), "digraph test {}").unwrap();
 
-        let (dot_path, run_cfg) =
+        let (_resolved_path, dot_path, run_cfg) =
             resolve_workflow_source(&dir.path().join(RUN_CONFIG_FILE)).unwrap();
 
         assert_eq!(dot_path, dir.path().join(RUN_GRAPH_FILE));
@@ -3279,6 +3126,145 @@ mod tests {
 
         let result = resolve_workflow_source(&dir.path().join(RUN_CONFIG_FILE));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn workflow_slug_from_path_uses_file_stem_for_standalone_files() {
+        assert_eq!(
+            workflow_slug_from_path(Path::new("/tmp/alpha.fabro")).as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            workflow_slug_from_path(Path::new("/tmp/beta.toml")).as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn workflow_slug_from_path_uses_parent_for_workflow_files() {
+        assert_eq!(
+            workflow_slug_from_path(Path::new("/tmp/sluggy/workflow.fabro")).as_deref(),
+            Some("sluggy")
+        );
+        assert_eq!(
+            workflow_slug_from_path(Path::new("/tmp/sluggy/workflow.toml")).as_deref(),
+            Some("sluggy")
+        );
+    }
+
+    #[test]
+    fn workflow_slug_from_path_uses_final_component_for_extensionless_inputs() {
+        assert_eq!(
+            workflow_slug_from_path(Path::new("implement-issue")).as_deref(),
+            Some("implement-issue")
+        );
+        assert_eq!(
+            workflow_slug_from_path(Path::new("nested/repl")).as_deref(),
+            Some("repl")
+        );
+    }
+
+    #[test]
+    fn prepare_workflow_with_project_config_resolves_workflow_toml_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("workflow.fabro"),
+            r#"digraph smoke {
+    start [shape=Mdiamond, label="Start"]
+    exit [shape=Msquare, label="Exit"]
+    work [label="Work", prompt="Do the work"]
+    start -> work -> exit
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("workflow.toml"),
+            r#"
+version = 1
+graph = "workflow.fabro"
+goal = "toml goal"
+
+[setup]
+commands = ["echo from toml"]
+
+[sandbox]
+provider = "docker"
+
+[llm]
+model = "gpt-5.2"
+provider = "openai"
+
+[pull_request]
+enabled = true
+
+[assets]
+include = ["*.md"]
+"#,
+        )
+        .unwrap();
+
+        let args = RunArgs {
+            workflow: Some(dir.path().join("workflow.toml")),
+            run_dir: None,
+            dry_run: false,
+            preflight: false,
+            auto_approve: false,
+            goal: None,
+            goal_file: None,
+            model: None,
+            provider: None,
+            verbose: false,
+            sandbox: None,
+            label: Vec::new(),
+            no_retro: false,
+            preserve_sandbox: false,
+            detach: false,
+            run_id: None,
+        };
+
+        let styles = Styles::new(false);
+        let prepared = prepare_workflow_with_project_config(
+            &args,
+            RunDefaults::default(),
+            &styles,
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.graph.name, "smoke");
+        assert_eq!(prepared.graph.goal(), "toml goal");
+        assert_eq!(prepared.sandbox_provider, SandboxProvider::Docker);
+        assert_eq!(prepared.model, "gpt-5.2");
+        assert_eq!(prepared.provider.as_deref(), Some("openai"));
+
+        let run_cfg = prepared
+            .run_cfg
+            .as_ref()
+            .expect("run config should be loaded");
+        assert_eq!(
+            run_cfg
+                .setup
+                .as_ref()
+                .expect("setup config should be preserved")
+                .commands,
+            vec!["echo from toml".to_string()]
+        );
+        assert!(
+            run_cfg
+                .pull_request
+                .as_ref()
+                .expect("pull request config should be preserved")
+                .enabled
+        );
+        assert_eq!(
+            run_cfg
+                .assets
+                .as_ref()
+                .expect("assets config should be preserved")
+                .include,
+            vec!["*.md".to_string()]
+        );
     }
 
     #[test]

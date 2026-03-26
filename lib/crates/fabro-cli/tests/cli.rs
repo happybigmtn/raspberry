@@ -513,19 +513,31 @@ fn detach_creates_run_dir_with_detach_log() {
     );
 }
 
+// == Resume ===================================================================
+
 #[test]
-fn detach_conflicts_with_resume() {
+fn resume_help_shows_expected_args() {
     arc()
-        .args([
-            "run",
-            "--detach",
-            "--resume",
-            "/tmp/fake-checkpoint.json",
-            "../../../test/simple.fabro",
-        ])
+        .args(["resume", "--help"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot be used with"));
+        .success()
+        .stdout(predicate::str::contains("--checkpoint"))
+        .stdout(predicate::str::contains("--workflow"));
+}
+
+#[test]
+fn resume_requires_run_or_checkpoint() {
+    arc().args(["resume"]).assert().failure();
+}
+
+#[test]
+fn run_help_no_longer_shows_resume_or_run_branch() {
+    arc()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--resume").not())
+        .stdout(predicate::str::contains("--run-branch").not());
 }
 
 // == Bug regression: create/start/attach lifecycle ============================
@@ -569,12 +581,10 @@ fn setup_run_dir(
         "labels": {},
         "verbose": false,
         "no_retro": true,
-        "ssh": false,
+
         "preserve_sandbox": false,
         "dry_run": true,
-        "auto_approve": true,
-        "resume": null,
-        "run_branch": null
+        "auto_approve": true
     });
     if let (Some(base), Some(overrides)) = (spec.as_object_mut(), spec_overrides.as_object()) {
         for (k, v) in overrides {
@@ -591,6 +601,350 @@ fn setup_run_dir(
     std::fs::write(run_dir.join("progress.jsonl"), progress_lines.join("\n")).unwrap();
 
     run_dir
+}
+
+fn find_run_dir(home: &std::path::Path, run_id: &str) -> std::path::PathBuf {
+    let runs_dir = home.join(".fabro").join("runs");
+    std::fs::read_dir(&runs_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(run_id))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected run directory for {run_id} under {}",
+                runs_dir.display()
+            )
+        })
+}
+
+#[test]
+fn completed_run_preserves_workflow_slug_for_lookup() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workflow_dir = project.path().join("workflows").join("sluggy");
+    std::fs::create_dir_all(&workflow_dir).unwrap();
+    let workflow_path = workflow_dir.join("workflow.fabro");
+    std::fs::write(
+        &workflow_path,
+        "\
+digraph BarBaz {
+  start [shape=Mdiamond, label=\"Start\"]
+  exit  [shape=Msquare, label=\"Exit\"]
+  start -> exit
+}
+",
+    )
+    .unwrap();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args([
+            "create",
+            "--dry-run",
+            "--auto-approve",
+            "--run-id",
+            "opaque-run-999",
+            workflow_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["start", "sluggy"])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["attach", "opaque-run-999"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["attach", "sluggy"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    let run_dir = find_run_dir(home.path(), "opaque-run-999");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["workflow_name"].as_str(), Some("BarBaz"));
+    assert_eq!(manifest["workflow_slug"].as_str(), Some("sluggy"));
+}
+
+#[test]
+fn standalone_file_run_uses_file_stem_slug_for_lookup() {
+    let home = tempfile::tempdir().unwrap();
+    let workflow_dir = tempfile::tempdir().unwrap();
+    let workflow_path = workflow_dir.path().join("alpha.fabro");
+    std::fs::write(
+        &workflow_path,
+        "\
+digraph FooWorkflow {
+  start [shape=Mdiamond, label=\"Start\"]
+  exit  [shape=Msquare, label=\"Exit\"]
+  start -> exit
+}
+",
+    )
+    .unwrap();
+
+    arc()
+        .env("HOME", home.path())
+        .args([
+            "create",
+            "--dry-run",
+            "--auto-approve",
+            "--run-id",
+            "opaque-run-alpha",
+            workflow_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .args(["start", "alpha"])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .args(["attach", "alpha"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    let run_dir = find_run_dir(home.path(), "opaque-run-alpha");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["workflow_name"].as_str(), Some("FooWorkflow"));
+    assert_eq!(manifest["workflow_slug"].as_str(), Some("alpha"));
+}
+
+#[test]
+fn resumed_run_preserves_workflow_slug_for_lookup() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workflow_dir = project.path().join("workflows").join("sluggy");
+    std::fs::create_dir_all(&workflow_dir).unwrap();
+    let workflow_path = workflow_dir.join("workflow.fabro");
+    std::fs::write(
+        &workflow_path,
+        "\
+digraph BarBaz {
+  start [shape=Mdiamond, label=\"Start\"]
+  exit  [shape=Msquare, label=\"Exit\"]
+  start -> exit
+}
+",
+    )
+    .unwrap();
+    let original_run_dir = project.path().join("original-run");
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args([
+            "run",
+            "--dry-run",
+            "--auto-approve",
+            "--no-retro",
+            "--run-dir",
+            original_run_dir.to_str().unwrap(),
+            workflow_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args([
+            "resume",
+            "--checkpoint",
+            original_run_dir.join("checkpoint.json").to_str().unwrap(),
+            "--workflow",
+            workflow_path.to_str().unwrap(),
+            "--dry-run",
+            "--auto-approve",
+            "--no-retro",
+        ])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["attach", "sluggy"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    let resumed_runs_dir = home.path().join(".fabro").join("runs");
+    let resumed_run_dir = std::fs::read_dir(&resumed_runs_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a resumed run under {}",
+                resumed_runs_dir.display()
+            )
+        });
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(resumed_run_dir.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["workflow_name"].as_str(), Some("BarBaz"));
+    assert_eq!(manifest["workflow_slug"].as_str(), Some("sluggy"));
+}
+
+#[test]
+fn dry_run_create_start_attach_works_with_default_run_lookup() {
+    let home = tempfile::tempdir().unwrap();
+    let run_id = "drysplit-test-123";
+
+    arc()
+        .env("HOME", home.path())
+        .args([
+            "create",
+            "--dry-run",
+            "--auto-approve",
+            "--run-id",
+            run_id,
+            "../../../test/simple.fabro",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(run_id));
+
+    let run_dir = find_run_dir(home.path(), run_id);
+    assert!(
+        run_dir.join("manifest.json").exists(),
+        "create should persist manifest.json so the run is discoverable"
+    );
+
+    arc()
+        .env("HOME", home.path())
+        .args(["start", run_id])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .args(["attach", run_id])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    assert!(run_dir.join("conclusion.json").exists());
+}
+
+#[test]
+fn dry_run_detach_attach_works_with_default_run_lookup() {
+    let home = tempfile::tempdir().unwrap();
+    let run_id = "drydetach-test-123";
+
+    arc()
+        .env("HOME", home.path())
+        .args([
+            "run",
+            "--detach",
+            "--dry-run",
+            "--auto-approve",
+            "--run-id",
+            run_id,
+            "../../../test/simple.fabro",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(run_id));
+
+    arc()
+        .env("HOME", home.path())
+        .args(["attach", run_id])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+}
+
+#[test]
+fn start_by_workflow_name_prefers_newly_created_submitted_run() {
+    let home = tempfile::tempdir().unwrap();
+    let old_run_dir = home.path().join(".fabro").join("runs").join("old-smoke");
+    std::fs::create_dir_all(&old_run_dir).unwrap();
+    std::fs::write(
+        old_run_dir.join("manifest.json"),
+        serde_json::json!({
+            "run_id": "old-smoke",
+            "workflow_name": "Smoke",
+            "goal": "",
+            "start_time": "2026-01-01T00:00:00Z",
+            "node_count": 1,
+            "edge_count": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        old_run_dir.join("status.json"),
+        serde_json::json!({"status": "succeeded", "updated_at": "2026-01-01T00:00:00Z"})
+            .to_string(),
+    )
+    .unwrap();
+
+    let run_id = "new-smoke-run-123";
+    arc()
+        .env("HOME", home.path())
+        .args([
+            "create",
+            "--dry-run",
+            "--auto-approve",
+            "--run-id",
+            run_id,
+            "smoke",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(run_id));
+
+    arc()
+        .env("HOME", home.path())
+        .args(["start", "smoke"])
+        .assert()
+        .success();
+
+    arc()
+        .env("HOME", home.path())
+        .args(["attach", run_id])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+
+    let new_run_dir = find_run_dir(home.path(), run_id);
+    let status = std::fs::read_to_string(new_run_dir.join("status.json")).unwrap();
+    assert!(
+        status.contains("\"status\": \"succeeded\""),
+        "expected the newly created Smoke run to be started and completed"
+    );
 }
 
 // Bug 2: _run_engine should use cached graph.fabro, not spec.workflow_path.
@@ -622,12 +976,10 @@ digraph G {
         "labels": {},
         "verbose": false,
         "no_retro": true,
-        "ssh": false,
+
         "preserve_sandbox": false,
         "dry_run": true,
-        "auto_approve": true,
-        "resume": null,
-        "run_branch": null
+        "auto_approve": true
     });
     std::fs::write(
         run_dir.join("spec.json"),
@@ -658,7 +1010,7 @@ digraph G {
 // Bug 3: attach loop must delete interview_request.json after handling it
 // to prevent re-prompting the user on the next poll iteration.
 #[test]
-fn bug3_attach_cleans_up_interview_request_after_handling() {
+fn bug3_attach_leaves_interview_request_until_engine_consumes_response() {
     let home = tempfile::tempdir().unwrap();
 
     let run_dir = setup_run_dir(
@@ -683,7 +1035,7 @@ fn bug3_attach_cleans_up_interview_request_after_handling() {
         "question_type": "YesNo",
         "options": [],
         "allow_freeform": false,
-        "default": {"value": "Yes", "selected_option": null, "selected_options": [], "text": null},
+        "default": {"value": "Yes", "selected_option": null, "text": null},
         "timeout_seconds": 1.0,
         "stage": "gate",
         "metadata": {}
@@ -706,11 +1058,88 @@ fn bug3_attach_cleans_up_interview_request_after_handling() {
         .timeout(std::time::Duration::from_secs(5))
         .output();
 
-    // Bug: interview_request.json is never deleted by the attach loop.
-    // After the fix it should be removed immediately after handling.
+    // The attach loop should leave the request durable until the engine consumes
+    // the response, so a crashed attach can be retried safely.
     assert!(
-        !run_dir.join("interview_request.json").exists(),
-        "bug3: interview_request.json should be deleted after being handled by attach"
+        run_dir.join("interview_request.json").exists(),
+        "bug3: interview_request.json should stay present until the engine consumes the answer"
+    );
+    assert!(
+        run_dir.join("interview_response.json").exists(),
+        "bug3: attach should write interview_response.json after handling the prompt"
+    );
+    let response = std::fs::read_to_string(run_dir.join("interview_response.json")).unwrap();
+    assert!(response.contains("\"value\": \"Yes\""));
+}
+
+#[test]
+fn attach_closed_stdin_keeps_interview_pending() {
+    let home = tempfile::tempdir().unwrap();
+
+    let run_dir = setup_run_dir(
+        home.path(),
+        "attach-closed-stdin",
+        serde_json::json!({}),
+        &[
+            r#"{"ts":"2026-01-01T00:00:01Z","run_id":"attach-closed-stdin","event":"StageStarted","node_id":"gate","name":"Gate","index":0,"attempt":1,"max_attempts":1}"#,
+        ],
+    );
+
+    std::fs::write(
+        run_dir.join("status.json"),
+        serde_json::json!({"status": "running", "updated_at": "2026-01-01T00:00:00Z"}).to_string(),
+    )
+    .unwrap();
+
+    let question = serde_json::json!({
+        "text": "Approve?",
+        "question_type": "YesNo",
+        "options": [],
+        "allow_freeform": false,
+        "default": null,
+        "timeout_seconds": null,
+        "stage": "gate",
+        "metadata": {}
+    });
+    std::fs::write(
+        run_dir.join("interview_request.json"),
+        serde_json::to_string(&question).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(run_dir.join("run.pid"), "99999999").unwrap();
+
+    let assert = arc()
+        .env("HOME", home.path())
+        .env("NO_COLOR", "1")
+        .args(["attach", "attach-closed-stdin"])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("still waiting for input"),
+        "attach should explain that the run is still waiting for a human answer.\nstderr: {stderr}"
+    );
+    assert!(
+        run_dir.join("interview_request.json").exists(),
+        "attach with closed stdin must leave the request pending"
+    );
+    assert!(
+        !run_dir.join("interview_response.json").exists(),
+        "attach with closed stdin must not fabricate a response"
+    );
+    assert!(
+        !run_dir.join("interview_request.claim").exists(),
+        "attach with closed stdin must release the claim so a later attach can answer"
+    );
+
+    let progress = std::fs::read_to_string(run_dir.join("progress.jsonl")).unwrap();
+    assert!(
+        progress.contains("\"event\":\"RunNotice\"")
+            && progress.contains("\"code\":\"interview_unanswered\""),
+        "attach should emit a structured warning when the interview ends without an answer.\nprogress: {progress}"
     );
 }
 

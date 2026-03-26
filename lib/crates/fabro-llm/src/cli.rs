@@ -13,12 +13,11 @@ use serde::Deserialize;
 
 use fabro_util::terminal::Styles;
 
-use fabro_model as catalog;
+use fabro_model::{Catalog, Model, Provider};
 
 use crate::generate::{self, GenerateParams};
 use crate::tools::Tool;
 use crate::types::{ContentPart, Message};
-use fabro_model::ModelInfo;
 
 pub struct ServerConnection {
     pub client: reqwest::Client,
@@ -124,7 +123,7 @@ fn color_if(use_color: bool, color: Color) -> Option<Color> {
     }
 }
 
-fn model_row(model: &ModelInfo, use_color: bool) -> Vec<CellStruct> {
+fn model_row(model: &Model, use_color: bool) -> Vec<CellStruct> {
     let aliases = model.aliases.join(", ");
     let cost = format!(
         "{} / {}",
@@ -135,7 +134,6 @@ fn model_row(model: &ModelInfo, use_color: bool) -> Vec<CellStruct> {
         model.id.clone().cell().bold(use_color),
         model
             .provider
-            .clone()
             .cell()
             .foreground_color(color_if(use_color, Color::Ansi256(8))),
         aliases
@@ -163,7 +161,7 @@ fn models_title() -> Vec<CellStruct> {
     ]
 }
 
-fn print_models_table(models: &[crate::types::ModelInfo], s: &Styles) {
+fn print_models_table(models: &[crate::types::Model], s: &Styles) {
     let use_color = s.use_color;
     let rows: Vec<Vec<CellStruct>> = models.iter().map(|m| model_row(m, use_color)).collect();
     let table = rows
@@ -203,12 +201,13 @@ fn resolve_prompt(arg: Option<String>, stdin: Option<String>) -> Result<String> 
 /// Returns (`model_id`, provider) from the catalog, falling back to the first catalog model.
 fn resolve_model(model_arg: Option<String>) -> (String, Option<String>) {
     let raw = model_arg.unwrap_or_else(|| {
-        catalog::list_models(None)
+        Catalog::builtin()
+            .list(None)
             .first()
             .map_or_else(|| "claude-sonnet-4-5".to_string(), |m| m.id.clone())
     });
-    match catalog::get_model_info(&raw) {
-        Some(info) => (info.id, Some(info.provider)),
+    match Catalog::builtin().get(&raw) {
+        Some(info) => (info.id.clone(), Some(info.provider.to_string())),
         None => (raw, None),
     }
 }
@@ -766,7 +765,7 @@ pub async fn run_chat_via_server(args: ChatArgs, server: &ServerConnection) -> R
 
 #[derive(Deserialize)]
 struct PaginatedModelsResponse {
-    data: Vec<ModelInfo>,
+    data: Vec<Model>,
 }
 
 #[derive(Deserialize)]
@@ -779,7 +778,7 @@ async fn fetch_models_from_server(
     client: &reqwest::Client,
     base_url: &str,
     provider: Option<&str>,
-) -> Result<Vec<ModelInfo>> {
+) -> Result<Vec<Model>> {
     let url = format!("{base_url}/models?page[limit]=100");
     tracing::debug!(url = %url, "Fetching models from server");
 
@@ -804,7 +803,7 @@ async fn fetch_models_from_server(
     tracing::debug!(model_count = models.len(), "Models received from server");
 
     if let Some(p) = provider {
-        models.retain(|m| m.provider == p);
+        models.retain(|m| m.provider.as_str() == p);
     }
 
     Ok(models)
@@ -834,7 +833,7 @@ async fn test_model_via_server(
         .context("Failed to parse model test response from server")
 }
 
-fn build_deep_test_params(info: &ModelInfo) -> Option<GenerateParams> {
+fn build_deep_test_params(info: &Model) -> Option<GenerateParams> {
     if !info.features.tools {
         return None;
     }
@@ -858,7 +857,7 @@ fn build_deep_test_params(info: &ModelInfo) -> Option<GenerateParams> {
     );
 
     let mut params = GenerateParams::new(&info.id)
-        .provider(&info.provider)
+        .provider(info.provider.as_str())
         .prompt(
             "I have three numbers: 15, 27, and 42. \
              First use the add tool to compute 15 + 27, \
@@ -870,7 +869,7 @@ fn build_deep_test_params(info: &ModelInfo) -> Option<GenerateParams> {
         .max_tokens(1024);
 
     if info.features.reasoning {
-        params = params.reasoning_effort("high");
+        params = params.reasoning_effort(crate::types::ReasoningEffort::High);
     }
 
     Some(params)
@@ -878,7 +877,7 @@ fn build_deep_test_params(info: &ModelInfo) -> Option<GenerateParams> {
 
 fn validate_deep_result(
     result: &crate::types::GenerateResult,
-    info: &ModelInfo,
+    info: &Model,
 ) -> (cli_table::Color, String) {
     // Check tool use: need at least 2 steps (tool call + follow-up)
     if result.steps.len() < 2 {
@@ -1006,7 +1005,10 @@ pub async fn run_models(
                 Some(s) => {
                     fetch_models_from_server(&s.client, &s.base_url, provider.as_deref()).await?
                 }
-                None => catalog::list_models(provider.as_deref()),
+                None => {
+                    let p = provider.as_deref().and_then(|s| s.parse::<Provider>().ok());
+                    Catalog::builtin().list(p).into_iter().cloned().collect()
+                }
             };
 
             if let Some(q) = &query {
@@ -1040,7 +1042,7 @@ pub async fn run_models(
     Ok(())
 }
 
-async fn test_one_model(info: &ModelInfo, deep: bool) -> (Color, String) {
+async fn test_one_model(info: &Model, deep: bool) -> (Color, String) {
     if deep {
         match build_deep_test_params(info) {
             None => (Color::Yellow, "deep: skipped (no tool support)".to_string()),
@@ -1056,7 +1058,7 @@ async fn test_one_model(info: &ModelInfo, deep: bool) -> (Color, String) {
         }
     } else {
         let params = GenerateParams::new(&info.id)
-            .provider(&info.provider)
+            .provider(info.provider.as_str())
             .prompt("Say OK")
             .max_tokens(16);
 
@@ -1079,12 +1081,13 @@ async fn test_models(
     use rand::seq::SliceRandom;
 
     let models_to_test = if let Some(model_id) = model {
-        match catalog::get_model_info(model_id) {
-            Some(info) => vec![info],
+        match Catalog::builtin().get(model_id) {
+            Some(info) => vec![info.clone()],
             None => bail!("Unknown model: {model_id}"),
         }
     } else {
-        catalog::list_models(provider)
+        let p = provider.and_then(|s| s.parse::<Provider>().ok());
+        Catalog::builtin().list(p).into_iter().cloned().collect()
     };
 
     if models_to_test.is_empty() {
@@ -1102,7 +1105,7 @@ async fn test_models(
     pb.enable_steady_tick(Duration::from_millis(100));
 
     // Build (original_index, model_info) pairs, then shuffle for provider spread
-    let mut indexed: Vec<(usize, &ModelInfo)> = models_to_test.iter().enumerate().collect();
+    let mut indexed: Vec<(usize, &Model)> = models_to_test.iter().enumerate().collect();
     indexed.shuffle(&mut rand::thread_rng());
 
     // Run tests concurrently, 6 at a time
@@ -1435,7 +1438,7 @@ mod tests {
                 .body(serde_json::json!({
                     "data": [{
                         "id": "test-model",
-                        "provider": "test-provider",
+                        "provider": "anthropic",
                         "family": "test",
                         "display_name": "Test Model",
                         "limits": { "context_window": 128000, "max_output": 4096 },
@@ -1458,7 +1461,7 @@ mod tests {
         mock.assert_async().await;
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "test-model");
-        assert_eq!(models[0].provider, "test-provider");
+        assert_eq!(models[0].provider, fabro_model::Provider::Anthropic);
     }
 
     #[tokio::test]
@@ -1474,7 +1477,7 @@ mod tests {
                         "data": [
                             {
                                 "id": "model-a",
-                                "provider": "alpha",
+                                "provider": "anthropic",
                                 "family": "a",
                                 "display_name": "Model A",
                                 "limits": { "context_window": 8000 },
@@ -1485,7 +1488,7 @@ mod tests {
                             },
                             {
                                 "id": "model-b",
-                                "provider": "beta",
+                                "provider": "openai",
                                 "family": "b",
                                 "display_name": "Model B",
                                 "limits": { "context_window": 8000 },
@@ -1503,7 +1506,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let models = fetch_models_from_server(&client, &server.url(""), Some("alpha"))
+        let models = fetch_models_from_server(&client, &server.url(""), Some("anthropic"))
             .await
             .unwrap();
 

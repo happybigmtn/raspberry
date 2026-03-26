@@ -90,6 +90,7 @@ pub enum SessionState {
 pub enum AgentEvent {
     SessionStarted,
     SessionEnded,
+    ProcessingEnd,
     UserInput {
         text: String,
     },
@@ -129,10 +130,10 @@ pub enum AgentEvent {
     Error {
         error: crate::error::AgentError,
     },
-    ContextWindowWarning {
-        estimated_tokens: usize,
-        context_window_size: usize,
-        usage_percent: usize,
+    Warning {
+        kind: String,
+        message: String,
+        details: serde_json::Value,
     },
     LoopDetected,
     TurnLimitReached {
@@ -206,6 +207,9 @@ impl AgentEvent {
             Self::SessionEnded => {
                 info!(session_id, "Agent session ended");
             }
+            Self::ProcessingEnd => {
+                debug!(session_id, "Processing cycle finished, session idle");
+            }
             Self::UserInput { text } => {
                 debug!(session_id, text_len = text.len(), "User input received");
             }
@@ -260,17 +264,12 @@ impl AgentEvent {
             Self::Error { error } => {
                 error!(session_id, error = %error, "Agent error");
             }
-            Self::ContextWindowWarning {
-                estimated_tokens,
-                context_window_size,
-                usage_percent,
-            } => {
+            Self::Warning { kind, message, .. } => {
                 warn!(
                     session_id,
-                    estimated_tokens,
-                    context_window_size,
-                    usage_percent,
-                    "Context window usage high"
+                    kind = kind.as_str(),
+                    message = message.as_str(),
+                    "Warning"
                 );
             }
             Self::LoopDetected => {
@@ -672,6 +671,7 @@ mod tests {
         let event = AgentEvent::Error {
             error: crate::error::AgentError::Llm(fabro_llm::error::SdkError::Network {
                 message: "refused".into(),
+                source: None,
             }),
         };
         let json = serde_json::to_string(&event).unwrap();

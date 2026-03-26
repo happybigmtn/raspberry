@@ -40,7 +40,7 @@ User Input
 ### Key Components
 
 - **`Session`** -- Manages the full agentic loop: LLM calls, tool execution, steering, follow-ups, abort handling, and event emission.
-- **`ProviderProfile`** (trait) -- Defines how to build system prompts, which tools to register, and what capabilities a provider supports. Ships with `AnthropicProfile`, `OpenAiProfile`, and `GeminiProfile`.
+- **`AgentProfile`** (trait) -- Defines how to build system prompts, which tools to register, and what capabilities a provider supports. Ships with `AnthropicProfile`, `OpenAiProfile`, and `GeminiProfile`.
 - **`Sandbox`** (trait) -- Abstracts filesystem, shell, grep, and glob operations. `LocalSandbox` provides a real implementation; the trait enables sandboxing and testing.
 - **`ToolRegistry`** -- Maps tool names to definitions and async executor functions. Tools are registered per-profile.
 - **`History`** -- Ordered list of `Turn` variants (`User`, `Assistant`, `ToolResults`, `System`, `Steering`) that converts to LLM messages.
@@ -54,10 +54,10 @@ User Input
 
 The main entry point. Created with an LLM client, a provider profile, a sandbox, and a config.
 
-### `ProviderProfile`
+### `AgentProfile`
 
 ```rust
-pub trait ProviderProfile: Send + Sync {
+pub trait AgentProfile: Send + Sync {
     fn id(&self) -> String;
     fn model(&self) -> String;
     fn tool_registry(&self) -> &ToolRegistry;
@@ -68,9 +68,7 @@ pub trait ProviderProfile: Send + Sync {
         project_docs: &[String],
         user_instructions: Option<&str>,
     ) -> String;
-    fn capabilities(&self) -> ProfileCapabilities;
-    fn knowledge_cutoff(&self) -> &str;
-    // ... default methods for tools(), provider_options(), supports_*()
+    // ... default methods for tools(), knowledge_cutoff(), context_window_size()
 }
 ```
 
@@ -141,7 +139,7 @@ let config = SessionConfig {
 };
 
 // 5. Create and initialize the session
-let mut session = Session::new(client, profile, env, config);
+let mut session = Session::new(client, profile, env, config, None);
 session.initialize().await;
 
 // 6. Subscribe to events (for UI rendering)
@@ -229,7 +227,7 @@ profile.register_subagent_tools(manager, factory, 0);
 ## Safety Features
 
 - **Loop detection** -- Detects repeating tool call patterns (period 1, 2, or 3) and injects a steering warning
-- **Context window monitoring** -- Emits `ContextWindowWarning` events when estimated usage exceeds 80%
+- **Context window monitoring** -- Emits `Warning` events (kind `"context_window"`) when estimated usage exceeds 80%
 - **Tool argument validation** -- Validates arguments against JSON Schema before execution
 - **Tool output truncation** -- Per-tool character and line limits with head/tail or tail-only truncation modes
 - **Environment variable filtering** -- `LocalSandbox` strips secrets (`*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`, `*_CREDENTIAL`) from subprocess environments

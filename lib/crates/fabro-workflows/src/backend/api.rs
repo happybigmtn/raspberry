@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use fabro_agent::{
     subagent::{SessionFactory, SubAgentManager},
-    AgentEvent, AnthropicProfile, GeminiProfile, OpenAiProfile, ProviderProfile, Sandbox, Session,
+    AgentEvent, AgentProfile, AnthropicProfile, GeminiProfile, OpenAiProfile, Sandbox, Session,
     SessionConfig, Turn,
 };
 use fabro_llm::client::Client;
@@ -20,12 +20,14 @@ use crate::handler::agent::{CodergenBackend, CodergenResult};
 use crate::outcome::StageUsage;
 use fabro_graphviz::graph::Node;
 
-fn build_profile(model: &str, provider: Provider) -> Box<dyn ProviderProfile> {
+fn build_profile(model: &str, provider: Provider) -> Box<dyn AgentProfile> {
     match provider {
         Provider::OpenAi => Box::new(OpenAiProfile::new(model)),
-        Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
-            Box::new(OpenAiProfile::new(model).with_provider(provider))
-        }
+        Provider::Kimi
+        | Provider::Zai
+        | Provider::Minimax
+        | Provider::Inception
+        | Provider::OpenAiCompatible => Box::new(OpenAiProfile::new(model).with_provider(provider)),
         Provider::Gemini => Box::new(GeminiProfile::new(model)),
         Provider::Anthropic => Box::new(AnthropicProfile::new(model)),
     }
@@ -97,6 +99,7 @@ fn spawn_event_forwarder(
                 &event.event,
                 AgentEvent::SessionStarted
                     | AgentEvent::SessionEnded
+                    | AgentEvent::ProcessingEnd
                     | AgentEvent::AssistantTextStart
                     | AgentEvent::AssistantOutputReplace { .. }
                     | AgentEvent::TextDelta { .. }
@@ -199,7 +202,7 @@ impl AgentApiBackend {
 
         let config = SessionConfig {
             max_tokens: node.max_tokens(),
-            reasoning_effort: Some(node.reasoning_effort().to_string()),
+            reasoning_effort: node.reasoning_effort().parse().ok(),
             speed: node.speed().map(String::from),
             tool_hooks,
             mcp_servers,
@@ -217,9 +220,13 @@ impl AgentApiBackend {
         let factory_env = Arc::clone(sandbox);
         let factory_tool_env = env.clone();
         let factory: SessionFactory = Arc::new(move || {
-            let child_profile: Arc<dyn ProviderProfile> = match provider {
+            let child_profile: Arc<dyn AgentProfile> = match provider {
                 Provider::OpenAi => Arc::new(OpenAiProfile::new(&factory_model)),
-                Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
+                Provider::Kimi
+                | Provider::Zai
+                | Provider::Minimax
+                | Provider::Inception
+                | Provider::OpenAiCompatible => {
                     Arc::new(OpenAiProfile::new(&factory_model).with_provider(provider))
                 }
                 Provider::Gemini => Arc::new(GeminiProfile::new(&factory_model)),
@@ -230,6 +237,7 @@ impl AgentApiBackend {
                 child_profile,
                 Arc::clone(&factory_env),
                 SessionConfig::default(),
+                None,
             );
             if !factory_tool_env.is_empty() {
                 session.set_tool_env(factory_tool_env.clone());
@@ -238,9 +246,15 @@ impl AgentApiBackend {
         });
 
         profile.register_subagent_tools(manager, factory, 0);
-        let profile: Arc<dyn ProviderProfile> = Arc::from(profile);
+        let profile: Arc<dyn AgentProfile> = Arc::from(profile);
 
-        let mut session = Session::new(client, profile, Arc::clone(sandbox), config);
+        let mut session = Session::new(
+            client,
+            profile,
+            Arc::clone(sandbox),
+            config,
+            Some(manager_for_callback.clone()),
+        );
         if !env.is_empty() {
             session.set_tool_env(env.clone());
         }
@@ -301,9 +315,11 @@ impl CodergenBackend for AgentApiBackend {
             .and_then(|value| value.parse::<Provider>().ok())
             .unwrap_or(self.provider);
 
-        let max_tokens = node
-            .max_tokens()
-            .or_else(|| fabro_model::get_model_info(model).and_then(|m| m.limits.max_output));
+        let max_tokens = node.max_tokens().or_else(|| {
+            fabro_model::Catalog::builtin()
+                .get(model)
+                .and_then(|m| m.limits.max_output)
+        });
 
         let mut messages = Vec::new();
         if let Some(sys) = system_prompt {
@@ -315,7 +331,7 @@ impl CodergenBackend for AgentApiBackend {
             model: model.to_string(),
             messages,
             provider,
-            reasoning_effort: Some(node.reasoning_effort().to_string()),
+            reasoning_effort: node.reasoning_effort().parse().ok(),
             speed: node.speed().map(String::from),
             tools: None,
             tool_choice: None,
@@ -371,7 +387,9 @@ impl CodergenBackend for AgentApiBackend {
                     );
 
                     let max_tokens = node.max_tokens().or_else(|| {
-                        fabro_model::get_model_info(&target.model).and_then(|m| m.limits.max_output)
+                        fabro_model::Catalog::builtin()
+                            .get(&target.model)
+                            .and_then(|m| m.limits.max_output)
                     });
 
                     let fallback_request = fabro_llm::types::Request {

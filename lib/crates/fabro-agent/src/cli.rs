@@ -1,12 +1,12 @@
 use crate::config::ToolApprovalFn;
 use crate::{
     subagent::{SessionFactory, SubAgentManager},
-    AgentEvent, AnthropicProfile, GeminiProfile, LocalSandbox, OpenAiProfile, ProviderProfile,
+    AgentEvent, AgentProfile, AnthropicProfile, GeminiProfile, LocalSandbox, OpenAiProfile,
     Session, SessionConfig, Turn,
 };
 use clap::{Args, Parser};
 use fabro_llm::client::Client;
-use fabro_model::{automation_primary_target, AutomationProfile, ModelId, Provider};
+use fabro_model::{Catalog, ModelRef, Provider, automation_primary_target, AutomationProfile};
 use fabro_util::terminal::Styles;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -163,15 +163,20 @@ fn build_tool_approval(
     })
 }
 
-fn summarizer_model_id(provider: Provider) -> ModelId {
-    match provider {
-        Provider::OpenAi => ModelId::new(Provider::OpenAi, "gpt-4o-mini"),
-        Provider::Gemini => ModelId::new(Provider::Gemini, "gemini-2.0-flash"),
-        Provider::Anthropic => ModelId::new(Provider::Anthropic, "claude-haiku-4-5"),
-        Provider::Kimi => ModelId::new(Provider::Kimi, "kimi-k2.5"),
-        Provider::Zai => ModelId::new(Provider::Zai, "glm-4.7"),
-        Provider::Minimax => ModelId::new(Provider::Minimax, "minimax-m2.5"),
-        Provider::Inception => ModelId::new(Provider::Inception, "mercury"),
+fn summarizer_model_id(provider: Provider) -> ModelRef {
+    ModelRef::ByName {
+        provider,
+        model: match provider {
+            Provider::OpenAi => "gpt-4o-mini",
+            Provider::Gemini => "gemini-2.0-flash",
+            Provider::Anthropic => "claude-haiku-4-5",
+            Provider::Kimi => "kimi-k2.5",
+            Provider::Zai => "glm-4.7",
+            Provider::Minimax => "minimax-m2.5",
+            Provider::Inception => "mercury",
+            Provider::OpenAiCompatible => "gpt-4o-mini",
+        }
+        .to_string(),
     }
 }
 
@@ -190,11 +195,15 @@ fn build_profile(
     provider: Provider,
     model: &str,
     llm_client: Option<Client>,
-) -> Box<dyn ProviderProfile> {
+) -> Box<dyn AgentProfile> {
     let summarizer = build_summarizer(provider, llm_client);
     match provider {
         Provider::OpenAi => Box::new(OpenAiProfile::with_summarizer(model, summarizer)),
-        Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => {
+        Provider::Kimi
+        | Provider::Zai
+        | Provider::Minimax
+        | Provider::Inception
+        | Provider::OpenAiCompatible => {
             Box::new(OpenAiProfile::with_summarizer(model, summarizer).with_provider(provider))
         }
         Provider::Gemini => Box::new(GeminiProfile::with_summarizer(model, summarizer)),
@@ -399,7 +408,8 @@ pub async fn run_with_args_and_client(
         } else {
             fabro_model::default_model_for_provider(provider.as_str())
                 .map(|m| m.id)
-                .unwrap_or_else(|| provider.as_str().to_string())
+                .or_else(|| Catalog::builtin().default_for_provider(provider).map(|m| m.id.clone()))
+                .unwrap_or_else(|| Catalog::builtin().default_from_env().id.clone())
         }
     });
     eprintln!("{}", styles.dim.apply_to(format!("Using model: {model}")));
@@ -437,12 +447,16 @@ pub async fn run_with_args_and_client(
     let factory_hooks = config.tool_hooks.clone();
     let factory: SessionFactory = Arc::new(move || {
         let child_summarizer = build_summarizer(provider, Some(factory_client.clone()));
-        let child_profile: Arc<dyn ProviderProfile> = match provider {
+        let child_profile: Arc<dyn AgentProfile> = match provider {
             Provider::OpenAi => Arc::new(OpenAiProfile::with_summarizer(
                 &factory_model,
                 child_summarizer,
             )),
-            Provider::Kimi | Provider::Zai | Provider::Minimax | Provider::Inception => Arc::new(
+            Provider::Kimi
+            | Provider::Zai
+            | Provider::Minimax
+            | Provider::Inception
+            | Provider::OpenAiCompatible => Arc::new(
                 OpenAiProfile::with_summarizer(&factory_model, child_summarizer)
                     .with_provider(provider),
             ),
@@ -463,12 +477,19 @@ pub async fn run_with_args_and_client(
                 tool_hooks: factory_hooks.clone(),
                 ..SessionConfig::default()
             },
+            None,
         )
     });
     profile.register_subagent_tools(manager, factory, 0);
-    let profile: Arc<dyn ProviderProfile> = Arc::from(profile);
+    let profile: Arc<dyn AgentProfile> = Arc::from(profile);
 
-    let mut session = Session::new(client, profile, env, config);
+    let mut session = Session::new(
+        client,
+        profile,
+        env,
+        config,
+        Some(manager_for_callback.clone()),
+    );
 
     // Wire subagent event callback to parent session's emitter
     manager_for_callback

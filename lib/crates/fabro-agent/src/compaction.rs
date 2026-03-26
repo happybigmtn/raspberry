@@ -1,20 +1,20 @@
+use crate::agent_profile::AgentProfile;
 use crate::error::AgentError;
 use crate::event::EventEmitter;
 use crate::file_tracker::FileTracker;
 use crate::history::History;
-use crate::provider_profile::ProviderProfile;
 use crate::types::{AgentEvent, Turn};
 use fabro_llm::client::Client;
 use fabro_llm::types::{Message, Request};
 use tracing::debug;
 
 /// Check whether the context window usage exceeds the configured threshold.
-/// Emits a `ContextWindowWarning` event when over the threshold.
+/// Emits a `Warning` event with kind `"context_window"` when over the threshold.
 /// Returns `true` if the threshold is exceeded.
 pub fn check_context_usage(
     system_prompt: &str,
     history: &History,
-    provider_profile: &dyn ProviderProfile,
+    provider_profile: &dyn AgentProfile,
     threshold_percent: usize,
     emitter: &EventEmitter,
     session_id: &str,
@@ -26,10 +26,17 @@ pub fn check_context_usage(
     if estimated_tokens > threshold {
         emitter.emit(
             session_id.to_owned(),
-            AgentEvent::ContextWindowWarning {
-                estimated_tokens,
-                context_window_size: context_window,
-                usage_percent: estimated_tokens * 100 / context_window,
+            AgentEvent::Warning {
+                kind: "context_window".into(),
+                message: format!(
+                    "Context window usage: {}%",
+                    estimated_tokens * 100 / context_window
+                ),
+                details: serde_json::json!({
+                    "estimated_tokens": estimated_tokens,
+                    "context_window_size": context_window,
+                    "usage_percent": estimated_tokens * 100 / context_window,
+                }),
             },
         );
         true
@@ -43,7 +50,7 @@ pub fn check_context_usage(
 pub async fn compact_context(
     history: &mut History,
     llm_client: &Client,
-    provider_profile: &dyn ProviderProfile,
+    provider_profile: &dyn AgentProfile,
     system_prompt: &str,
     file_tracker: &FileTracker,
     preserve_count: usize,
@@ -338,18 +345,15 @@ mod tests {
         let emitter = EventEmitter::new();
         let mut rx = emitter.subscribe();
         // TestProfile has context_window=200_000 by default; use a small one
-        let profile = crate::test_support::TestProfile::parallel_with_context_window(
+        let profile = crate::test_support::TestProfile::with_context_window(
             crate::tool_registry::ToolRegistry::new(),
             100,
         );
         let over = check_context_usage("prompt", &history, &profile, 80, &emitter, "sess");
         assert!(over);
 
-        // Should have emitted a ContextWindowWarning
+        // Should have emitted a Warning
         let event = rx.try_recv().unwrap();
-        assert!(matches!(
-            event.event,
-            AgentEvent::ContextWindowWarning { .. }
-        ));
+        assert!(matches!(event.event, AgentEvent::Warning { .. }));
     }
 }
