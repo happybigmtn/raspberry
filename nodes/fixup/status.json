@@ -1,0 +1,25 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.fixup": "\n## Summary\n\nSuccessfully fixed the 3 failing tests in `fabro-synthesis` by updating unit ID assertions to match the `parent-` prefix naming convention introduced in commit `87c230ba`.\n\n### Tests Fixed\n\n| Test | Issue |\n|------|-------|\n| `inject_workspace_verify_lanes_adds_parent_holistic_gauntlet` | 7 unit/milestone ID references updated from `roulette-holistic-*` → `roulette-parent-holistic-*` |\n| `inject_workspace_verify_lanes_adds_conditional_parent_lanes_for_sensitive_plan` | 4 unit ID references updated to `roulette-parent-*` prefix |\n| `inject_workspace_verify_lanes_document_release_is_hard_gate_and_retro_is_tail` | 2 unit IDs and 1 milestone updated to `roulette-parent-*` prefix |\n\n### Proof Results\n\nAll proof commands now pass:\n- `cargo nextest run -p fabro-cli -- synth` → 13/13 passed\n- `cargo nextest run -p fabro-db` → 5/5 passed  \n- `cargo nextest run -p fabro-mcp` → 17/17 passed\n- `cargo nextest run -p fabro-github` → 40/40 passed\n- `cargo nextest run -p fabro-synthesis -- render` → 68/68 passed",
+    "last_stage": "fixup",
+    "last_response": "\n## Summary\n\nSuccessfully fixed the 3 failing tests in `fabro-synthesis` by updating unit ID assertions to match the `parent-` prefix naming convention introduced in commit `87c230ba`.\n\n### Tests Fixe"
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 50151,
+    "output_tokens": 325
+  },
+  "files_written": [
+    "lib/crates/fabro-synthesis/src/render.rs"
+  ],
+  "files_touched": [
+    "lib/crates/fabro-synthesis/src/render.rs"
+  ],
+  "duration_ms": 284889,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T23:00:53.891538851+00:00",
+  "updated_at": "2026-03-26T23:00:53.891544526+00:00"
+}
