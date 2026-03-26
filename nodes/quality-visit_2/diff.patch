@@ -1,0 +1,13 @@
+diff --git a/outputs/test-coverage-critical-paths-ci-preservation-and-hardening/quality.md b/outputs/test-coverage-critical-paths-ci-preservation-and-hardening/quality.md
+index dd301c9c..59446874 100644
+--- a/outputs/test-coverage-critical-paths-ci-preservation-and-hardening/quality.md
++++ b/outputs/test-coverage-critical-paths-ci-preservation-and-hardening/quality.md
+@@ -24,7 +24,7 @@ external_blocker_only: no
+ ./lib/crates/fabro-synthesis/src/render.rs:2351:        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+ 
+ ## Lane Sizing Hits
+-\n./lib/crates/fabro-synthesis/src/render.rs:9658
++\n./lib/crates/fabro-synthesis/src/render.rs:9655
+ 
+ ## Warning Hits
+ 
