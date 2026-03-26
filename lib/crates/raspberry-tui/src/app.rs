@@ -1274,8 +1274,7 @@ mod tests {
             ready_checks_failing: Vec::new(),
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
-            failure_kind: None,
-            recovery_action: None,
+            consecutive_failures: 0,
         }
     }
 

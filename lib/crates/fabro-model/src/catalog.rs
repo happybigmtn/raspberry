@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn minimax_m2_7_resolves_to_highspeed() {
         let m = get_model_info("MiniMax-M2.7").unwrap();
-        assert_eq!(m.provider, "minimax");
+        assert_eq!(m.provider, Provider::Minimax);
         assert_eq!(m.id, "MiniMax-M2.7-highspeed");
     }
 
