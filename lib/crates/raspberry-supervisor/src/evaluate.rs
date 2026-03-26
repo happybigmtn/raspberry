@@ -621,6 +621,7 @@ fn trunk_delivery_state_for_lane(lane: &EvaluatedLane) -> Option<(String, String
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_lane(
     manifest_path: &Path,
     manifest: &ProgramManifest,
