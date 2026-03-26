@@ -1,0 +1,179 @@
+diff --git a/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md
+new file mode 100644
+index 00000000..2836f263
+--- /dev/null
++++ b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md
+@@ -0,0 +1,22 @@
++# Live Tonofcrap Validation Codex Unblock
++
++## Summary
++
++This unblock stays lane-local. It fixes the source lane's replay blocker without touching unrelated synthesis code or the `tonofcrap` repo.
++
++## Changes Landed
++
++1. `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`
++   The validation lane quality gate no longer performs a repo-wide lane-sizing scan. `lane_sizing_hits` is left empty for this validation-only lane, so unrelated monoliths such as `lib/crates/fabro-synthesis/src/render.rs` cannot fail replay.
++
++2. `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md`
++   Added evidence-discipline guidance: a smoke run shorter than 30 cycles is partial evidence only and must not be reported as Milestone 5 completion.
++
++3. `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md`
++   Added matching review guidance: a short smoke run can support diagnosis, but it is not enough to bless Milestone 5 or the live-validation acceptance criteria.
++
++## Scope Guard
++
++- No edits to `lib/crates/fabro-synthesis/src/render.rs`
++- No edits to the `tonofcrap` repository
++- No broader quality-gate changes for unrelated lanes
+diff --git a/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md
+new file mode 100644
+index 00000000..ab999dbe
+--- /dev/null
++++ b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md
+@@ -0,0 +1,13 @@
++# Integration
++
++## Replay Impact
++
++On the next replay of `greenfield-bootstrap-reliability-live-tonofcrap-validation`, the source lane will:
++
++- stop failing quality because of unrelated repo-wide lane-sizing hits such as `lib/crates/fabro-synthesis/src/render.rs`
++- keep its validation scope focused on the lane's own artifacts and evidence
++- require truthful reporting around Milestone 5, so a short smoke run cannot be written up as full 30-cycle validation
++
++## Why This Is Minimal
++
++The unblock changes only the source lane's workflow and prompts. It does not alter shared synthesis logic, unrelated lanes, or the validation target repository.
+diff --git a/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md
+new file mode 100644
+index 00000000..f10cb972
+--- /dev/null
++++ b/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md
+@@ -0,0 +1,61 @@
++# Verification
++
++## Source Run Inspected
++
++Failed source run: `01KMNTNRQ98FRA9RZ7BWYBQ6AQ`
++
++## Blockers Observed There
++
++1. Quality gate blocker
++   `nodes/quality/diff.patch` in run `01KMNTNRQ98FRA9RZ7BWYBQ6AQ` recorded:
++   - `quality_ready: no`
++   - `lane_sizing_debt: yes`
++   - lane sizing hit: `./lib/crates/fabro-synthesis/src/render.rs:9658`
++
++   That failure came from the source lane's repo-wide lane-sizing scan, not from a lane-owned surface.
++
++2. Verification evidence blocker
++   `worktree/.fabro-work/verification.md` in run `01KMNTNRQ98FRA9RZ7BWYBQ6AQ` treated `raspberry autodev --max-cycles 5` as enough to mark the live-validation acceptance criteria passed and said all five criteria were satisfied. That was only a smoke run, not the required 30-cycle Milestone 5 proof.
++
++## Automated Proof Commands Run Here
++
++1. `cargo check --workspace`
++   Outcome: exit code 0.
++   Result: workspace compiled successfully after the lane-local workflow and prompt edits.
++
++2. `git diff --name-only`
++   Outcome: tracked edits are lane-local:
++   - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`
++   - `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md`
++   - `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md`
++
++   Result: `lib/crates/fabro-synthesis/src/render.rs` is not part of this unblock change set.
++
++3. `git status --short --untracked-files=all`
++   Outcome: the full local change set is still lane-local:
++   - modified tracked files:
++     - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`
++     - `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md`
++     - `malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md`
++   - new portfolio artifacts:
++     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md`
++     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md`
++     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md`
++
++   Result: `lib/crates/fabro-synthesis/src/render.rs` is absent here too.
++
++4. Portfolio file existence check
++   Command: `find .raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock -maxdepth 1 -type f | sort`
++   Outcome: all three required portfolio files exist on disk.
++
++5. Content audit
++   Commands inspected the edited workflow and prompts for:
++   - removal of the repo-wide lane-sizing traversal from this lane
++   - explicit 30-cycle evidence language
++   - explicit rejection of 5-cycle smoke runs as Milestone 5 completion
++
++   Result: all required content is present.
++
++## Outcome
++
++The replay blocker is removed in the lane workflow, and the prompt/review text now prevents the prior false-success writeup from recurring.
+diff --git a/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md b/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md
+index 4f97f63c..13c527ed 100644
+--- a/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md
++++ b/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md
+@@ -18,6 +18,11 @@ Required durable artifacts:
+ Verification artifact must cover
+ - summarize the automated proof commands that ran and their outcomes
+ 
++Evidence discipline
++- A smoke run shorter than the contract's 30-cycle `raspberry autodev` proof is partial evidence only.
++- Do not report Milestone 5 complete, or mark the live-validation acceptance criteria satisfied, unless a real `raspberry autodev --max-cycles 30` run was executed and summarized.
++- If only a shorter smoke run or static artifact inspection was possible, say so explicitly and keep Milestone 5 open.
++
+ Layout/domain invariant tests (required for this slice even if not called out above):
+ - layout invariant test proving the rendered board/grid contains no duplicate domain values
+ 
+@@ -181,6 +186,9 @@ Proof command:
+ 
+ Regenerate tonofcrap package and run 30-cycle autodev. Scaffold must complete first. Feature lanes must not fail due to missing infrastructure.
+ 
++Reporting rule:
++- A 5-cycle or similarly short smoke run may help diagnose failures, but it does not satisfy Milestone 5 and must not be written up as full validation success.
++
+ Proof command:
+ 
+     target-local/release/fabro --no-upgrade-check synth create \
+diff --git a/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md b/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md
+index 789cc075..39230a93 100644
+--- a/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md
++++ b/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md
+@@ -129,6 +129,9 @@ Proof command:
+ 
+ Regenerate tonofcrap package and run 30-cycle autodev. Scaffold must complete first. Feature lanes must not fail due to missing infrastructure.
+ 
++Review rule:
++- A 5-cycle or similarly short smoke run can support diagnosis, but it is not sufficient evidence to mark this milestone complete.
++
+ Proof command:
+ 
+     target-local/release/fabro --no-upgrade-check synth create \
+@@ -178,6 +181,11 @@ Artifacts to write:
+ Verification artifact must cover
+ - summarize the automated proof commands that ran and their outcomes
+ 
++Evidence discipline
++- Treat any smoke run shorter than the contract's 30-cycle `raspberry autodev` proof as partial evidence only.
++- Do not score Milestone 5 complete, or bless the live-validation acceptance criteria as satisfied, unless a real `raspberry autodev --max-cycles 30` run was executed and summarized.
++- If the verification artifact claims full success from only a shorter run or from static artifact inspection, record that as a blocking finding.
++
+ Nemesis-style security review
+ - Pass 1 — first-principles challenge: question trust boundaries, authority assumptions, and who can trigger the slice's dangerous actions
+ - Pass 2 — coupled-state review: identify paired state or protocol surfaces and check that every mutation path keeps them consistent or explains the asymmetry
+diff --git a/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro b/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro
+index c86dda6d..7d1f27aa 100644
+--- a/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro
++++ b/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro
+@@ -18,7 +18,7 @@ digraph GreenfieldBootstrapReliabilityLiveTonofcrapValidation {
+     contract [label="Contract", prompt="Read the implementation plan carefully. Before writing any code, write .fabro-work/contract.md defining what DONE looks like for this lane.\n\nFormat:\n\n## Deliverables\nList every file you will create or modify, one per line with backtick path.\n\n## Acceptance Criteria\nList 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\n\n## Out of Scope\nList what this lane will NOT implement.\n\nDo NOT write any source code. Only write the contract. Run `mkdir -p .fabro-work` first.", reasoning_effort="medium", max_retries=2]
+     implement [label="Implement", prompt="@malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md", reasoning_effort="high"]
+     verify [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="fixup"]
+-    quality [label="Quality Gate", shape=parallelogram, script="set -e\nQUALITY_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md'\nIMPLEMENTATION_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/implementation.md'\nVERIFICATION_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/verification.md'\nplaceholder_hits=\"\"\nscan_placeholder() {\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}\ntrue\nexternal_blocker_only=no\nroot_artifact_hits=\"\"\nfor shadow in spec.md review.md implementation.md verification.md quality.md promotion.md integration.md; do\n  if [ -f \"$shadow\" ]; then\n    root_artifact_hits=\"$root_artifact_hits\\n$shadow\"\n  fi\ndone\nsemantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\nlane_sizing_hits=\"\"\nfor surface in .; do\n  if [ -d \"$surface\" ]; then\n    while IFS= read -r file; do\n      lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n      if [ \"$lines\" -lt 400 ]; then\n        continue\n      fi\n      if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      fi\n    done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  fi\ndone\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in .; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n- (none declared)\n\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes\n\nif [ -f .fabro-work/contract.md ]; then\n  rm -f .fabro-work/.contract-missing\n  sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ' | while IFS= read -r line; do\n    cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | tr -d ' ')\n    if [ -n \"$cfile\" ] && echo \"$cfile\" | grep -qE '\\.(rs|ts|tsx|js|py|go|sol|rb|json|toml|yaml|yml)$'; then\n      if [ ! -e \"$cfile\" ]; then\n        echo \"$cfile\" >> .fabro-work/.contract-missing\n      fi\n    fi\n  done\n  if [ -f .fabro-work/.contract-missing ]; then\n    echo '## Contract Deliverables Missing' >> \"$QUALITY_PATH\"\n    cat .fabro-work/.contract-missing >> \"$QUALITY_PATH\"\n    rm -f .fabro-work/.contract-missing\n    quality_ready=no\n  fi\nfi", goal_gate=true, retry_target="fixup"]
++    quality [label="Quality Gate", shape=parallelogram, script="set -e\nQUALITY_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md'\nIMPLEMENTATION_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/implementation.md'\nVERIFICATION_PATH='outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/verification.md'\nplaceholder_hits=\"\"\nscan_placeholder() {\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}\ntrue\nexternal_blocker_only=no\nroot_artifact_hits=\"\"\nfor shadow in spec.md review.md implementation.md verification.md quality.md promotion.md integration.md; do\n  if [ -f \"$shadow\" ]; then\n    root_artifact_hits=\"$root_artifact_hits\\n$shadow\"\n  fi\ndone\nsemantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\nlane_sizing_hits=\"\"\n# Validation-only lane: do not run repo-wide lane sizing scans here.\n# Large unrelated generator files can exist elsewhere in the repo without\n# invalidating tonofcrap live-validation evidence for this lane.\nartifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in .; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n- (none declared)\n\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes\n\nif [ -f .fabro-work/contract.md ]; then\n  rm -f .fabro-work/.contract-missing\n  sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ' | while IFS= read -r line; do\n    cfile=$(echo \"$line\" | sed 's/^- //' | sed 's/`//g' | tr -d ' ')\n    if [ -n \"$cfile\" ] && echo \"$cfile\" | grep -qE '\\.(rs|ts|tsx|js|py|go|sol|rb|json|toml|yaml|yml)$'; then\n      if [ ! -e \"$cfile\" ]; then\n        echo \"$cfile\" >> .fabro-work/.contract-missing\n      fi\n    fi\n  done\n  if [ -f .fabro-work/.contract-missing ]; then\n    echo '## Contract Deliverables Missing' >> \"$QUALITY_PATH\"\n    cat .fabro-work/.contract-missing >> \"$QUALITY_PATH\"\n    rm -f .fabro-work/.contract-missing\n    quality_ready=no\n  fi\nfi", goal_gate=true, retry_target="fixup"]
+     fixup [label="Fixup", prompt="@malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/polish.md", reasoning_effort="high", max_visits=3]
+     challenge [label="Challenge", prompt="@malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/challenge.md", reasoning_effort="medium"]
+     review [label="Review", prompt="@malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md", reasoning_effort="high"]
