@@ -1,25 +1,32 @@
 {
-  "timestamp": "2026-03-26T20:26:01.233169680Z",
-  "current_node": "decide",
+  "timestamp": "2026-03-26T20:26:01.318993441Z",
+  "current_node": "path_b",
   "completed_nodes": [
     "start",
-    "decide"
+    "decide",
+    "path_b"
   ],
   "node_retries": {
     "start": 1,
-    "decide": 1
+    "decide": 1,
+    "path_b": 1
   },
   "context_values": {
-    "current_node": "decide",
+    "current_node": "path_b",
+    "internal.retry_count.path_b": 1,
     "internal.fidelity": "compact",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX6GYSAMYK7YRMQVVEE1F0/worktree",
     "internal.retry_count.decide": 1,
     "internal.run_id": "01KMNX6GYSAMYK7YRMQVVEE1F0",
-    "current.preamble": "Goal: Test condition evaluation with OR and parentheses\n",
-    "internal.thread_id": "start",
+    "current.preamble": "Goal: Test condition evaluation with OR and parentheses\n\n## Completed stages\n- **decide**: success\n",
+    "internal.thread_id": "decide",
+    "last_response": "[Simulated] Response for stage: path_b",
+    "last_stage": "path_b",
     "thread.start.current_node": "decide",
     "internal.retry_count.start": 1,
     "internal.node_visit_count": 1,
+    "thread.decide.current_node": "path_b",
+    "response.path_b": "[Simulated] Response for stage: path_b",
     "failure_signature": "",
     "outcome": "success",
     "failure_class": "",
@@ -32,15 +39,26 @@
       "notes": "[Simulated] decide",
       "duration_ms": 0
     },
+    "path_b": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "[Simulated] Response for stage: path_b",
+        "response.path_b": "[Simulated] Response for stage: path_b",
+        "last_stage": "path_b"
+      },
+      "notes": "[Simulated] path_b",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
       "duration_ms": 0
     }
   },
-  "next_node_id": "path_b",
+  "next_node_id": "exit",
   "node_visits": {
     "decide": 1,
+    "path_b": 1,
     "start": 1
   }
 }
