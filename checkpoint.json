@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-03-26T18:30:11.964434111Z",
+  "current_node": "specify",
+  "completed_nodes": [
+    "start",
+    "specify"
+  ],
+  "node_retries": {
+    "start": 1,
+    "specify": 1
+  },
+  "context_values": {
+    "last_stage": "specify",
+    "internal.fidelity": "compact",
+    "outcome": "success",
+    "graph.goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
+    "current_node": "specify",
+    "internal.node_visit_count": 1,
+    "thread.start.current_node": "specify",
+    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n",
+    "last_response": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/pr",
+    "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
+    "failure_class": "",
+    "internal.run_id": "01KMNPED2367YB0GPF0QE1ETVW",
+    "internal.thread_id": "start",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNPED2367YB0GPF0QE1ETVW/worktree",
+    "internal.retry_count.start": 1,
+    "graph.rankdir": "LR",
+    "internal.retry_count.specify": 1,
+    "response.specify": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/provider-policy-stabilization/spec.md` | 209 lines |\n| review.md | `outputs/provider-policy-stabilization/review.md` | 365 lines |\n\n## Audit Summary\n\n**9 findings** documented in review.md:\n\n### Critical (1)\n1. **`fabro-synthesis/src/render.rs:2055-2090`** — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax`, `Provider::Anthropic`, `Provider::OpenAi` with specific models, bypassing `policy.rs` for holistic review lanes.\n\n### Medium (3)\n2. **`fabro-workflows/src/backend/cli.rs`** — `cli_failure_is_retryable_for_fallback()` checks for CLI-specific quota messages (\"you've hit your limit\") but not API-level `QuotaExceeded` errors.\n3. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCurrentSnapshot` lacks per-lane model/provider/health fields.\n4. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCycleReport` lacks `usage_by_provider` tracking.\n\n### Low/Informational (5)\n5. Stylesheet tests with hardcoded model names (test fixtures only)\n6. Transform tests with hardcoded model names (test fixtures only)\n7. Integration test fixtures with model names (test fixtures only)\n\n### Positive Findings\n- `fabro-llm/src/error.rs` already has `ProviderErrorKind::QuotaExceeded` and `failover_eligible()` correctly returns `true` for quota errors\n- CLI backend's `build_cli_attempt_targets()` correctly uses `central_policy_fallback_targets()` from policy.rs\n\n## Spec Highlights\n\n- **Target:** Zero model selection decisions outside `policy.rs`\n- **Acceptance criteria:** 4 measurable gates (leak count, quota fallback, status output, usage tracking)\n- **Migration phases:** 3 phases (audit+seal, status+tracking, live validation)\n- **Policy chains preserved:** MiniMax→Kimi→Opus (Write), Kimi→MiniMax→Opus (Review), Opus→Codex→MiniMax (Synth)",
+    "failure_signature": ""
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    },
+    "specify": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/pr",
+        "last_stage": "specify",
+        "response.specify": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/provider-policy-stabilization/spec.md` | 209 lines |\n| review.md | `outputs/provider-policy-stabilization/review.md` | 365 lines |\n\n## Audit Summary\n\n**9 findings** documented in review.md:\n\n### Critical (1)\n1. **`fabro-synthesis/src/render.rs:2055-2090`** — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax`, `Provider::Anthropic`, `Provider::OpenAi` with specific models, bypassing `policy.rs` for holistic review lanes.\n\n### Medium (3)\n2. **`fabro-workflows/src/backend/cli.rs`** — `cli_failure_is_retryable_for_fallback()` checks for CLI-specific quota messages (\"you've hit your limit\") but not API-level `QuotaExceeded` errors.\n3. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCurrentSnapshot` lacks per-lane model/provider/health fields.\n4. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCycleReport` lacks `usage_by_provider` tracking.\n\n### Low/Informational (5)\n5. Stylesheet tests with hardcoded model names (test fixtures only)\n6. Transform tests with hardcoded model names (test fixtures only)\n7. Integration test fixtures with model names (test fixtures only)\n\n### Positive Findings\n- `fabro-llm/src/error.rs` already has `ProviderErrorKind::QuotaExceeded` and `failover_eligible()` correctly returns `true` for quota errors\n- CLI backend's `build_cli_attempt_targets()` correctly uses `central_policy_fallback_targets()` from policy.rs\n\n## Spec Highlights\n\n- **Target:** Zero model selection decisions outside `policy.rs`\n- **Acceptance criteria:** 4 measurable gates (leak count, quota fallback, status output, usage tracking)\n- **Migration phases:** 3 phases (audit+seal, status+tracking, live validation)\n- **Policy chains preserved:** MiniMax→Kimi→Opus (Write), Kimi→MiniMax→Opus (Review), Opus→Codex→MiniMax (Synth)"
+      },
+      "notes": "Stage completed: specify",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 60032,
+        "output_tokens": 505
+      },
+      "files_written": [
+        "outputs/provider-policy-stabilization/review.md",
+        "outputs/provider-policy-stabilization/spec.md"
+      ],
+      "files_touched": [
+        "outputs/provider-policy-stabilization/review.md",
+        "outputs/provider-policy-stabilization/spec.md"
+      ],
+      "duration_ms": 133440
+    }
+  },
+  "next_node_id": "review",
+  "node_visits": {
+    "start": 1,
+    "specify": 1
+  }
+}
