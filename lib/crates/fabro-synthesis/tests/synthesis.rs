@@ -125,6 +125,7 @@ fn reconcile_blueprint_reports_drift_and_writes_patch() {
         blueprint: &blueprint,
         current_repo: &current,
         output_repo: &current,
+        preview_mode: false,
     })
     .expect("reconcile blueprint");
 
@@ -211,6 +212,7 @@ fn reconcile_blueprint_emits_service_follow_on_with_health_gate() {
         blueprint: &blueprint,
         current_repo: &current,
         output_repo: &current,
+        preview_mode: false,
     })
     .expect("reconcile blueprint");
 
@@ -247,6 +249,7 @@ fn reconcile_blueprint_does_not_clobber_files_when_reusing_same_repo() {
         blueprint: &blueprint,
         current_repo: &current,
         output_repo: &current,
+        preview_mode: false,
     })
     .expect("reconcile blueprint");
 

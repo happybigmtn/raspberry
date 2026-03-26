@@ -31,6 +31,9 @@ pub struct ReconcileRequest<'a> {
     pub blueprint: &'a ProgramBlueprint,
     pub current_repo: &'a Path,
     pub output_repo: &'a Path,
+    /// When true, skip rendering implementation follow-ons so the preview
+    /// only contains the manifest and steering report.
+    pub preview_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +204,13 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
         program: &req.blueprint.program.id,
     })?;
     let evolved = refine_blueprint_from_evidence(req.blueprint, req.current_repo);
-    let evolved = augment_with_implementation_follow_on_units(evolved, req.current_repo)?;
+    // In preview mode, skip augmenting with implementation follow-on units so
+    // the preview only contains the manifest and steering report.
+    let evolved = if req.preview_mode {
+        evolved
+    } else {
+        augment_with_implementation_follow_on_units(evolved, req.current_repo)?
+    };
 
     let mut findings = diff_blueprints(&current, &evolved);
     findings.extend(input_findings(&evolved, req.current_repo));
@@ -221,13 +230,17 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
 
     let recommendations = evolve_recommendations(&evolved, req.current_repo, &findings);
     let mut report = render_evolved_blueprint(&evolved, &current, req.output_repo)?;
-    report
-        .written_files
-        .extend(render_implementation_follow_ons(
-            &evolved,
-            req.current_repo,
-            req.output_repo,
-        )?);
+    // In preview mode, skip rendering implementation follow-ons so the preview
+    // only contains the manifest and steering report.
+    if !req.preview_mode {
+        report
+            .written_files
+            .extend(render_implementation_follow_ons(
+                &evolved,
+                req.current_repo,
+                req.output_repo,
+            )?);
+    }
     Ok(ReconcileReport {
         findings,
         recommendations,
@@ -6915,7 +6928,7 @@ Required before validator:oracle implementation-family workflow:
         let preflight_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-preflight")
+            .find(|unit| unit.id == "roulette-parent-holistic-preflight")
             .expect("preflight unit exists");
         let preflight_lane = preflight_unit.lanes.first().expect("preflight lane exists");
 
@@ -6929,39 +6942,39 @@ Required before validator:oracle implementation-family workflow:
         let minimax_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-minimax")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-minimax")
             .expect("minimax unit exists");
         let minimax_lane = minimax_unit.lanes.first().expect("minimax lane exists");
         assert_eq!(minimax_lane.dependencies.len(), 1);
         assert_eq!(
             minimax_lane.dependencies[0].unit,
-            "roulette-holistic-preflight"
+            "roulette-parent-holistic-preflight"
         );
         assert_eq!(
             minimax_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-preflight-verified")
+            Some("roulette-parent-holistic-preflight-verified")
         );
 
         let deep_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-deep")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-deep")
             .expect("deep review unit exists");
         let deep_lane = deep_unit.lanes.first().expect("deep lane exists");
         assert_eq!(deep_lane.dependencies.len(), 1);
         assert_eq!(
             deep_lane.dependencies[0].unit,
-            "roulette-holistic-review-minimax"
+            "roulette-parent-holistic-review-minimax"
         );
         assert_eq!(
             deep_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-review-minimax-reviewed")
+            Some("roulette-parent-holistic-review-minimax-reviewed")
         );
 
         let adjudication_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-adjudication")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-adjudication")
             .expect("adjudication unit exists");
         let adjudication_lane = adjudication_unit
             .lanes
@@ -6970,11 +6983,11 @@ Required before validator:oracle implementation-family workflow:
         assert_eq!(adjudication_lane.dependencies.len(), 1);
         assert_eq!(
             adjudication_lane.dependencies[0].unit,
-            "roulette-holistic-review-deep"
+            "roulette-parent-holistic-review-deep"
         );
         assert_eq!(
             adjudication_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-review-deep-reviewed")
+            Some("roulette-parent-holistic-review-deep-reviewed")
         );
     }
 
@@ -7158,10 +7171,10 @@ Required before validator:oracle implementation-family workflow:
 
         let evolved = inject_workspace_verify_lanes(&blueprint);
         for expected in [
-            "roulette-investigate",
-            "roulette-design-review",
-            "roulette-cso",
-            "roulette-benchmark",
+            "roulette-parent-investigate",
+            "roulette-parent-design-review",
+            "roulette-parent-cso",
+            "roulette-parent-benchmark",
         ] {
             assert!(
                 evolved.units.iter().any(|unit| unit.id == expected),
@@ -7256,7 +7269,7 @@ Required before validator:oracle implementation-family workflow:
         let docs_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-document-release")
+            .find(|unit| unit.id == "roulette-parent-document-release")
             .expect("document release unit exists");
         let docs_lane = docs_unit.lanes.first().expect("docs lane exists");
         assert_eq!(docs_lane.family, "document-release");
@@ -7271,7 +7284,7 @@ Required before validator:oracle implementation-family workflow:
         let docs_milestone = docs_unit
             .milestones
             .iter()
-            .find(|entry| entry.id == "roulette-docs-released")
+            .find(|entry| entry.id == "roulette-parent-docs-released")
             .expect("docs milestone exists");
         assert!(docs_milestone
             .requires
@@ -7285,14 +7298,14 @@ Required before validator:oracle implementation-family workflow:
         let retro_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-retro")
+            .find(|unit| unit.id == "roulette-parent-retro")
             .expect("retro unit exists");
         let retro_lane = retro_unit.lanes.first().expect("retro lane exists");
         assert_eq!(retro_lane.dependencies.len(), 1);
-        assert_eq!(retro_lane.dependencies[0].unit, "roulette-document-release");
+        assert_eq!(retro_lane.dependencies[0].unit, "roulette-parent-document-release");
         assert_eq!(
             retro_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-docs-released")
+            Some("roulette-parent-docs-released")
         );
     }
 

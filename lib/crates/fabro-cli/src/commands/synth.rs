@@ -885,10 +885,12 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
 
     if args.no_review {
         let authored = author_blueprint_for_evolve(&args.target_repo, Some(&program))?;
+        let preview_mode = args.preview_root.is_some();
         let reconcile_report = reconcile_blueprint(ReconcileRequest {
             blueprint: &authored.blueprint,
             current_repo: &args.target_repo,
             output_repo,
+            preview_mode,
         })?;
         write_deterministic_steering_report(
             &program,
