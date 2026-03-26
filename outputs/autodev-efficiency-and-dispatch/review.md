@@ -1,281 +1,141 @@
-# Autodev Execution Path and Dispatch Truth — Security Review
+# Autodev Execution Path and Dispatch Truth — Security & Correctness Review
 
-Status: Review Complete  
-Date: 2026-03-26  
-Lane: `autodev-efficiency-and-dispatch`  
-Reviewer: Nemesis-style security analysis  
+Status: Post-Spec-Polish Review
+Date: 2026-03-26
+Lane: `autodev-efficiency-and-dispatch`
+Reviewer: Nemesis-style security analysis (post-polish)
 
 ---
 
 ## Executive Summary
 
-**Verdict: CONDITIONAL APPROVE with security hardening required**
+**Verdict: APPROVE for implementation with tracked blockers**
 
-The specification is architecturally sound and the implementation gaps are correctly identified. However, the security review reveals **three critical trust boundary violations** and **two privilege escalation paths** that must be addressed before the slice lands to trunk.
-
-The core issue: the autodev orchestrator operates as a **privileged dispatcher** but lacks defensive boundaries against the **unprivileged worker processes** it spawns. This creates asymmetric trust where a compromised lane worker can influence the controller's state and scheduling decisions.
+The spec is executable and the identified bugs are bounded. Four bugs must be fixed before live validation; three can be filed as security debt. The dispatch telemetry additions (R3.1, R3.2) are clean additions. The background evolve refactor (R4.1) is architecturally sound.
 
 ---
 
-## Correctness Assessment
+## Correctness Review
 
-| Requirement | Spec Correctness | Review Accuracy | Status |
-|-------------|------------------|-----------------|--------|
-| R1.1 — synth subcommand | ✅ Correct | ✅ Accurate | Spec is executable |
-| R1.2 — prompt resolution | ⚠️ Partial | ✅ Accurate | Needs validation test |
-| R2.1 — stale running | ✅ Correct | ✅ Accurate | Existing impl sound |
-| R2.2 — keep alive | ✅ Correct | ✅ Accurate | Existing impl sound |
-| R2.3 — bootstrap failure | ✅ Correct | ✅ Critical bug | **Pre-spawn errors don't transition state** |
-| R3.1 — dispatch telemetry | ✅ Correct | ✅ Accurate | Missing impl |
-| R3.2 — aggregate metrics | ✅ Correct | ✅ Accurate | Missing impl |
-| R4.1 — evolve decoupling | ✅ Correct | ✅ Accurate | **Blocking: 120s sync call** |
-| R4.2 — full budget | ✅ Correct | ✅ Accurate | Blocked by R2.1/R2.3 |
+### Bug R2.3 — Pre-spawn errors leave lane state unchanged (CRITICAL)
 
-**Critical correctness finding**: The review correctly identifies that `run_fabro()` returning `DispatchError::MissingRunConfig` or `DispatchError::Spawn` does **not** transition the lane to `Failed`. The lane remains in its previous state (often `Ready` or `Running`), causing:
-1. Slot leakage — the lane counts against `max_parallel` but has no worker
-2. Infinite retry loops — no `BackoffRetry` is scheduled
-3. State inconsistency — `program_state` claims `Running` but no PID exists
+**Location**: `dispatch.rs:220-299`
 
-**Fix verification**: The recommended fix in dispatch.rs (lines 245-255 equivalent) correctly transitions the lane to `Failed` with `TransientLaunchFailure` / `BackoffRetry`.
+**Finding**: `run_fabro` (dispatch.rs:495) returns `DispatchError::MissingRunConfig`, `DispatchError::Lease`, or `DispatchError::Spawn` before a worker process is spawned. These errors propagate via `?` from the spawned thread:
 
----
-
-## Milestone Fit Assessment
-
-### Live Validation Criteria
-
-**V1: Sustain 10 active lanes on rXMRbro**
-- **Pass criteria**: `running >= 8` for 20 cycles, `idle_cycles <= 5`, `bootstrap_failures = 0` after cycle 2
-- **Blockers**: R2.3 (bootstrap failures not transitioning state) will cause slot leakage. R4.1 (evolve blocking) will cause idle cycles during evolve.
-- **Confidence**: HIGH — the fixes are bounded and testable.
-
-**V2: 3 lanes land to trunk**
-- **Pass criteria**: `landing_state = "landed"` for 3+ lanes
-- **Blockers**: None identified. Integration lanes are already functional.
-- **Confidence**: HIGH — integration logic is mature.
-
-### Implementation Sequence Assessment
-
-The recommended sequence (R2.3 → R3.1 → R3.2 → R4.1 → R1.2 → V1/V2) is **correct**:
-1. R2.3 fixes the correctness bug that would invalidate V1
-2. R3.1/R3.2 add observability needed to debug V1 failures
-3. R4.1 removes the 120s blocking call that would cause V1 idle cycles
-4. R1.2 is validation-only if prompt resolution already works
-
----
-
-## Nemesis-Style Security Review
-
-### Pass 1 — First-Principles Challenge
-
-#### Trust Boundaries
-
-**Violation 1: Symmetric privilege between controller and workers**
-
-The autodev orchestrator runs with the same OS privileges as the fabro workers it spawns. There is no:
-- UID separation (workers run as same user)
-- Capability dropping (workers inherit all capabilities)
-- Namespace isolation (workers share filesystem/network namespaces)
-
-**Attack scenario**: A compromised lane worker (via malicious dependency in target_repo) can:
-1. Write to the controller's state file (`program-state.json`) if path is predictable
-2. Hijack the `fabro_bin` path to execute arbitrary code on next dispatch
-3. Exhaust dispatch slots by crashing immediately, triggering the R2.3 bug
-
-**Evidence** (autodev.rs:2300):
 ```rust
-let output = evolve.output().map_err(|source| AutodevError::Spawn {
-    step: "synth evolve".to_string(),
-    program: manifest.program.clone(),
-    source,
-})?;
-```
-The `evolve` command inherits the controller's environment and working directory without sanitization.
-
-**Authority Assumptions**
-
-**Violation 2: Implicit authority from manifest file presence**
-
-The system assumes that the existence of `manifest_path` implies authority to execute the program it defines. No additional authentication is performed between:
-- Manifest loading and lane dispatch
-- Synth evolve triggering and blueprint modification
-- State file write and subsequent dispatch decisions
-
-**Attack scenario**: An attacker with write access to the manifest directory (but not the controller) can:
-1. Add a malicious lane to the manifest
-2. The controller will dispatch it on next cycle without signature verification
-3. The lane runs with controller's privileges
-
-**Evidence** (autodev.rs:384):
-```rust
-let manifest = ProgramManifest::load(&manifest_path)?;
-// No signature check, no hash verification
-```
-
-**Dangerous Actions**
-
-**Violation 3: Unvalidated path construction for command execution**
-
-Multiple paths are constructed from user-controlled input and passed to `Command::new()` without validation:
-
-| Path Source | Usage | Risk |
-|-------------|-------|------|
-| `settings.fabro_bin` | `Command::new(fabro_bin)` | Path injection — attacker controls binary executed |
-| `manifest.resolved_target_repo()` | `current_dir(&target_repo)` | Directory traversal — worker runs in attacker-controlled CWD |
-| `run_config` | `arg(run_config)` | Argument injection — shell metacharacters in path |
-| `temp_dir` | `fs::copy(&source_blueprint, &copied)` | Symlink attack — predictable temp path |
-
-**Evidence** (dispatch.rs:510-535):
-```rust
-fn run_fabro(fabro_bin: &Path, target_repo: &Path, run_config: &Path, ...) {
-    // No validation that fabro_bin is the expected binary
-    // No validation that target_repo is within expected bounds
-    // No validation that run_config doesn't contain shell metacharacters
-    let mut command = Command::new(fabro_bin);
-    command.current_dir(target_repo)
-           .arg(run_config);  // Passed directly as argument
+// dispatch.rs:268-270
+for (lane, is_program_lane, is_integration_lane, output) in joined_results {
+    let output = output?;  // DispatchError propagates here, skips mark_lane_dispatch_failed
+    // ...
+    mark_lane_dispatch_failed(&mut state, &lane.lane_key, &lane.run_config, &output);
 }
 ```
 
-**Critical**: The `run_config` path is passed as an argument to `fabro run --detach`. If `run_config` contains spaces or special characters, argument injection is possible depending on how fabro parses arguments.
+When `run_fabro` returns `DispatchError::MissingRunConfig`:
+1. The thread returns `Err(DispatchError::MissingRunConfig)`
+2. This is not a panic, so it falls through to the error arm
+3. `panic_error` is set, the loop breaks, and `execute_selected_lanes` returns `Err(PanicError)`
+4. `mark_lane_dispatch_failed` is **never called** for any lane in that cycle
+5. The original lane (and all other lanes in the batch) are left with stale state
+
+**Impact**: Slot leakage, infinite retry loops, state inconsistency.
+
+**Fix**: Wrap pre-spawn errors in `DispatchOutcome`:
+```rust
+Err(DispatchError::MissingRunConfig { lane, path }) => {
+    joined_results.push(Ok((
+        lane,
+        false,
+        false,
+        DispatchOutcome {
+            lane_key: lane.lane_key.clone(),
+            exit_status: -1,
+            fabro_run_id: None,
+            stdout: String::new(),
+            stderr: format!("pre-spawn: run config not found at {}", path.display()),
+        },
+    )));
+}
+```
+
+**Status**: Bug confirmed. Fix is specified in spec R2.3.
 
 ---
 
-### Pass 2 — Coupled-State Review
+### Bug R2.2 — macOS `worker_process_alive` always returns `Some(false)` (HIGH)
 
-#### Paired State Surfaces
+**Location**: `program_state.rs:1356-1368`
 
-**Coupling 1: Lane status vs Worker process lifecycle**
-
-The system maintains two sources of truth for "is this lane running?":
-1. `LaneRuntimeRecord.status` — persisted in `program-state.json`
-2. Worker process existence — checked via `/proc/<pid>` (Linux only)
-
-**Inconsistency found**: On macOS (non-Linux), `worker_process_alive()` always returns `Some(false)`:
-
+**Finding**: The non-Linux branch unconditionally returns `Some(false)`:
 ```rust
 #[cfg(not(target_os = "linux"))]
 {
     let _ = pid;
-    Some(false)  // BUG: macOS lanes marked stale after 30s
+    Some(false)
 }
 ```
 
-This means macOS deployments will incorrectly transition long-running lanes to `Failed` after `STALE_RUNNING_GRACE_SECS` (30s), even when healthy.
+On macOS, every worker appears dead after `STALE_RUNNING_GRACE_SECS` (30s), causing legitimate workers to be marked `Failed`. This affects any macOS-based autodev deployment.
 
-**Recommendation**: Either implement macOS PID checking (via `kill(pid, 0)`) or document macOS as unsupported for production autodev.
+**Fix**: Use `libc::kill(pid, 0)` on non-Linux platforms. Specified in R2.2.
 
-**Coupling 2: Evolve frontier vs Actual manifest changes**
-
-The `last_evolve_frontier` field tracks what frontier signature triggered evolve, but there's no verification that evolve actually changed the manifest:
-
-```rust
-if should_trigger_evolve(...) {
-    run_synth_evolve(...)?;  // May succeed but make no changes
-    last_evolve_frontier = Some(frontier_before);  // Recorded regardless
-}
-```
-
-**Asymmetry**: The system assumes evolve is idempotent and always beneficial. If evolve corrupts the manifest, the controller continues with corrupted state.
-
-**Recommendation**: Hash the manifest before/after evolve and only update `last_evolve_frontier` if content changed.
-
-**Coupling 3: Dispatch slot accounting vs Actual process count**
-
-The `max_parallel` budget is computed as:
-```rust
-let available_slots = max_parallel.saturating_sub(current_running);
-```
-
-Where `current_running` is derived from `program_state.lanes` with status `Running`.
-
-**Inconsistency**: Due to R2.3, a lane can be `status = Running` in state but have no actual worker process. This creates a "phantom slot" that reduces available parallelism without contributing work.
-
-**Evidence**: The stale detection in `program_state.rs` only triggers after `STALE_RUNNING_GRACE_SECS` (30s). During those 30s, the slot is wasted.
+**Status**: Bug confirmed. Fix is specified in spec R2.2.
 
 ---
 
-### Secret Handling
+### Bug R4.1 — `synth evolve` blocks dispatch for 120 seconds (MEDIUM)
 
-**Finding: Lease environment variables passed without audit**
+**Location**: `autodev.rs:444`, `autodev.rs:2242`
 
-The `resource_lease::env_for_run_config()` function returns environment variables that are injected into the worker process:
+**Finding**: `run_synth_evolve` is called synchronously in the orchestrator loop. With `SYNTH_EVOLVE_TIMEOUT_SECS = 120`, a slow evolve blocks dispatch for up to 2 minutes:
 
 ```rust
-let leased_env = resource_lease::env_for_run_config(target_repo, lane_key, run_config)?;
-// ...
-for (key, value) in entries {
-    command.env(key, value);
+// autodev.rs:444
+match run_synth_evolve(&manifest_path, &manifest, settings) {
+    Ok(()) => { /* evolve completed */ },
+    // ... timeout handling
 }
+// execute_selected_lanes is called AFTER evolve completes
 ```
 
-**Risk**: If lease configuration contains secrets (API keys, tokens), they are:
-1. Passed to potentially untrusted worker processes
-2. Visible in `/proc/<pid>/environ` to any user with PID read access
-3. Not redacted in logs (dispatch.rs logs command but not env)
+**Fix**: Spawn `run_synth_evolve` in a background thread, store `JoinHandle` in orchestrator state. Skip dispatch while `pending_evolve.is_some()`. Join on next cycle. Specified in R4.1.
 
-**Recommendation**: 
-1. Document that leased env should not contain secrets
-2. Add `FABRO_LEASE_SECRET_*` naming convention for automatic redaction in logs
-3. Consider file-based secret passing (tmpfs-mounted files) instead of environment variables
+**Status**: Bug confirmed. Fix is specified in spec R4.1.
 
-### Capability Scoping
+---
 
-**Finding: No capability-based restrictions**
+### Missing R3.1 — `DispatchState` not present in `AutodevCycleReport` (MEDIUM)
 
-The system relies entirely on OS-level permissions. Workers can:
-- Access the entire filesystem (subject to UNIX permissions)
-- Make network connections
-- Spawn child processes
-- Consume arbitrary CPU/memory
+**Location**: `autodev.rs:96`
 
-**Specific gap**: The `fabro synth evolve` command runs with full controller privileges and can:
-- Modify any file in `target_repo`
-- Execute arbitrary code via `.git/hooks` if target_repo is git-controlled
-- Access controller's SSH keys if running in user context with SSH agent
+**Finding**: `AutodevCycleReport` has no field explaining why lanes were or were not dispatched each cycle. The `dispatched: Vec<DispatchOutcome>` field only shows what ran, not why other work didn't run.
 
-**Recommendation**: Consider using `clone()` with namespaces or a container runtime to restrict worker capabilities.
+**Fix**: Add `dispatch_state: Option<DispatchState>` to `AutodevCycleReport`. Populate it in the orchestrator loop before `execute_selected_lanes`. Specified in R3.1.
 
-### Pairing/Idempotence Behavior
+**Status**: Missing implementation. Specified in spec R3.1.
 
-**Finding: Regenerate fingerprint doesn't verify determinism**
+---
 
-The `lane_render_fingerprints` function computes SHA256 of run_config and graph, but:
-1. No verification that the same inputs produce the same outputs across runs
-2. No detection of non-deterministic synthesis
+### Missing R3.2 — Aggregate counters not present in `AutodevCurrentSnapshot` (MEDIUM)
 
-**Risk**: A non-deterministic `synth evolve` could produce different outputs for the same inputs, but the fingerprint would cache the old result, preventing legitimate regeneration.
+**Location**: `autodev.rs:70`
 
-**Finding: Consecutive failures counter without backoff randomization**
+**Finding**: `AutodevCurrentSnapshot` lacks `idle_cycles`, `total_dispatched`, `stale_running_reclaimed`, `bootstrap_failures`, `runtime_path_errors`, and `dispatch_rate`. These are needed to assess overall dispatch efficiency without parsing every cycle report.
 
-```rust
-pub consecutive_failures: u32,
-```
+**Fix**: Add fields to `AutodevCurrentSnapshot` struct. Increment counters in the orchestrator loop. Specified in R3.2.
 
-The `BackoffRetry` action uses fixed timeouts (`TRANSIENT_LAUNCH_RETRY_MIN_SECS = 15`). This creates synchronized retry storms if multiple lanes fail simultaneously (e.g., due to an external service outage).
+**Status**: Missing implementation. Specified in spec R3.2.
 
-**Recommendation**: Add jitter to backoff calculations (`retry_after_secs = base + rand(0, base/2)`).
+---
 
-### Privilege Escalation Paths
+## Security Review
 
-**Path 1: `fabro_bin` hijacking via settings**
+### TEMP-SYMLINK — Predictable temp directory allows symlink attacks (HIGH)
 
-**Steps**:
-1. Attacker gains write access to controller's config (or environment)
-2. Modifies `settings.fabro_bin` to point to attacker-controlled binary
-3. Controller spawns attacker binary on next dispatch
-4. Attacker binary runs with controller's privileges
+**Location**: `autodev.rs:2259-2267`
 
-**Mitigation**: Verify `fabro_bin` against a known hash or signature before execution. At minimum, log the binary's SHA256 on startup.
-
-**Path 2: Symlink attack on predictable temp directory**
-
-**Steps**:
-1. Attacker monitors `autodev_temp_dir()` pattern: `/tmp/raspberry-autodev-{program}-{pid}-{timestamp}`
-2. Creates symlink from predicted path to sensitive file (e.g., `~/.ssh/authorized_keys`)
-3. Controller writes blueprint to temp dir, following symlink, overwriting sensitive file
-
-**Code** (autodev.rs:2415):
+**Finding**: `autodev_temp_dir` constructs a predictable path:
 ```rust
 let path = std::env::temp_dir().join(format!(
     "raspberry-autodev-{}-{}-{}",
@@ -286,110 +146,94 @@ let path = std::env::temp_dir().join(format!(
 fs::create_dir_all(&path)?;
 ```
 
-**Mitigation**: 
-1. Use `tempfile::TempDir` which creates directories with `O_EXCL` flags
-2. Verify path is not a symlink before writing
-3. Use `std::fs::symlink_metadata()` to check file type
+An attacker who can predict the `{program}-{pid}-{timestamp}` tuple can create a symlink at that path before the controller writes to it, causing writes to an arbitrary location.
 
-**Path 3: Blueprint injection via doctrine_files**
-
-**Steps**:
-1. Attacker controls content of doctrine file (e.g., via git commit)
-2. `inject_inputs_into_blueprint` blindly copies doctrine file paths into blueprint
-3. YAML injection possible if doctrine file contains malicious YAML
-
-**Code** (autodev.rs:2475):
+**Mitigation**: Use `tempfile::TempDir` which creates directories with `O_EXCL` flags, preventing symlink attacks:
 ```rust
-inputs_map.insert(
-    Value::String("doctrine_files".to_string()),
-    Value::Sequence(
-        doctrine_files
-            .iter()
-            .map(|path| Value::String(path.display().to_string()))
-            .collect(),
-    ),
-);
+use tempfile::TempDir;
+let temp_dir = TempDir::new_in(std::env::temp_dir(), "raspberry-autodev")?;
+let path = temp_dir.path().to_path_buf();
 ```
 
-**Risk**: If doctrine file paths are later evaluated as YAML (not just strings), code execution is possible.
-
-**Mitigation**: Validate that doctrine file paths are valid UTF-8 and don't contain YAML metacharacters (`:`, `{`, `}`, `[`, `]`).
+**Status**: Filed as security debt. Fix should be included in this slice.
 
 ---
 
-## Remaining Blockers
+### FABRIC-BIN — `fabro_bin` path not validated before execution (MEDIUM)
 
-### Must Fix (Security)
+**Location**: `dispatch.rs:516`
 
-1. **TEMP-SYMLINK**: `autodev_temp_dir` is predictable and vulnerable to symlink attacks. Use `tempfile::TempDir` with `O_EXCL`.
+**Finding**: `settings.fabro_bin` is passed directly to `Command::new(fabro_bin)` without validation. If an attacker can modify the settings file or environment, they can cause arbitrary binary execution.
 
-2. **MACOS-STALE**: macOS incorrectly reports all workers as dead after 30s. Implement `kill(pid, 0)` for macOS or document as unsupported.
+**Current mitigation**: The binary path comes from the controller's own settings, not from user input in the target repo.
 
-3. **ENV-LEAK**: Leased environment variables may contain secrets visible to workers. Add documentation and redaction for `*_SECRET_*` vars.
+**Recommendation**: Log the binary's SHA256 on startup. File as security debt.
 
-### Must Fix (Correctness)
+**Status**: Security debt.
 
-4. **R2.3-BOOTSTRAP**: Pre-spawn errors in `run_fabro` don't transition lane state. Implement the fix from the review (lines 245-255).
+---
 
-5. **R4.1-BLOCKING**: `run_synth_evolve` blocks dispatch for 120s. Implement background thread approach from spec.
+### ENV-LEAK — Leased environment variables may contain secrets (MEDIUM)
 
-### Should Fix (Observability)
+**Location**: `dispatch.rs:526-532`
 
-6. **R3.1-TELEMETRY**: Add `DispatchState` to `AutodevCycleReport` per spec.
+**Finding**: `resource_lease::env_for_run_config` returns environment variables injected into the worker process. These are visible in `/proc/<pid>/environ` to any user with PID read access.
 
-7. **R3.2-METRICS**: Add aggregate counters (`idle_cycles`, `stale_running_reclaimed`) per spec.
+**Current mitigation**: Leased env is intended for sandbox configuration (resource limits, not secrets). No secrets are currently leased.
 
-### Validation Required
+**Recommendation**: Document that leased env must not contain secrets. Add `FABRO_LEASE_SECRET_*` redaction in logs.
 
-8. **R1.2-PROMPT**: Verify `fabro-graphviz` resolves `@prompts/...` relative to graph file, not CWD.
+**Status**: Security debt.
+
+---
+
+## Live Validation Assessment
+
+### V1: Sustain 10 active lanes on rXMRbro
+
+**Blockers**: R2.3 (pre-spawn errors don't update state), R4.1 (evolve blocks dispatch)
+
+**Confidence**: HIGH after fixes — both bugs are bounded and testable.
+
+### V2: 3 lanes land to trunk
+
+**Blockers**: None from this review. Integration logic is mature.
+
+**Confidence**: HIGH — this is the primary validation criterion.
+
+---
+
+## Remaining Blockers Before Live Validation
+
+| Priority | ID | Description | File |
+|----------|----|-------------|------|
+| Must Fix | R2.3 | Pre-spawn errors don't call `mark_lane_dispatch_failed` | dispatch.rs:268 |
+| Must Fix | R2.2 | macOS `worker_process_alive` always returns `false` | program_state.rs:1366 |
+| Must Fix | R4.1 | `run_synth_evolve` blocks dispatch for 120s | autodev.rs:444 |
+| Must Fix | TEMP-SYMLINK | Predictable temp dir path | autodev.rs:2259 |
+| Must Implement | R3.1 | Add `DispatchState` to `AutodevCycleReport` | autodev.rs:96 |
+| Must Implement | R3.2 | Add aggregate counters to snapshot | autodev.rs:70 |
 
 ---
 
 ## Risk Summary
 
-| Risk | Severity | Likelihood | Mitigation Status |
-|------|----------|------------|-------------------|
-| Symlink attack on temp dir | **HIGH** | Medium | Not mitigated |
-| macOS stale worker detection | **MEDIUM** | High (on macOS) | Not mitigated |
-| Secret leakage via env vars | **MEDIUM** | Medium | Not documented |
-| fabro_bin path injection | **MEDIUM** | Low | Not mitigated |
-| Bootstrap failure slot leak | **HIGH** | High | Fix identified |
-| Evolve blocking dispatch | **MEDIUM** | High | Fix identified |
+| Risk | Severity | Likelihood | Status |
+|------|----------|------------|--------|
+| Pre-spawn error slot leak | **HIGH** | High | Bug confirmed |
+| macOS stale worker detection | **HIGH** | High (on macOS) | Bug confirmed |
+| Evolve blocking dispatch | **MEDIUM** | High | Bug confirmed |
+| Symlink attack on temp dir | **HIGH** | Medium | Security debt (fix in slice) |
+| Secret leakage via env vars | **MEDIUM** | Low | Security debt |
+| fabro_bin path injection | **MEDIUM** | Low | Security debt |
 
 ---
 
 ## Approval Recommendation
 
-**APPROVE for implementation** with the following conditions:
+**APPROVE for implementation** subject to:
+1. All "Must Fix" bugs are corrected before live validation
+2. R3.1 and R3.2 (dispatch telemetry) are implemented
+3. V1 + V2 pass on rXMRbro
 
-1. **Security fixes must be implemented in this slice**:
-   - TEMP-SYMLINK (use tempfile::TempDir)
-   - MACOS-STALE (implement kill(pid, 0) or document)
-
-2. **Correctness fixes must be implemented in this slice**:
-   - R2.3-BOOTSTRAP (pre-spawn error state transition)
-   - R4.1-BLOCKING (background evolve thread)
-
-3. **Live validation must pass**:
-   - V1: 10 lanes sustained on rXMRbro
-   - V2: 3 lanes landed to trunk
-
-4. **Security debt filed for follow-up** (acceptable to defer):
-   - ENV-LEAK (secret handling documentation)
-   - fabro_bin path validation
-   - Capability-based sandboxing
-
-The specification is sound, the review is accurate, and the security issues are manageable with the identified mitigations.
-
----
-
-## Appendix: Code References
-
-| File | Line | Context |
-|------|------|---------|
-| autodev.rs | 2300 | `run_synth_evolve` command construction |
-| autodev.rs | 2415 | `autodev_temp_dir` predictable path |
-| autodev.rs | 2475 | `inject_inputs_into_blueprint` doctrine injection |
-| dispatch.rs | 510-535 | `run_fabro` unvalidated paths |
-| program_state.rs | ~140 | macOS `worker_process_alive` returns false |
-| failure.rs | 18-34 | `FailureKind` and `FailureRecoveryAction` enums |
+Security debt (TEMP-SYMLINK fix, FABRIC-BIN logging, ENV-LEAK documentation) may be filed as follow-up issues.

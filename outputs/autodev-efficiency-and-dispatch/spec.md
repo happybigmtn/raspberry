@@ -16,11 +16,11 @@ This document is the **executable specification** for the autodev execution path
 5. Evolve decoupling — `synth evolve` must not block the dispatch cycle
 
 After this spec is implemented:
-- `fabro synth evolve --help` works from any binary path autodev is configured with
+- `fabro synth --help` works from any binary path autodev is configured with
 - No generated workflow references `@../../prompts/...` resolving under `~/.fabro/`
 - `running: 10, failed: 0` on rXMRbro sustains across 20+ cycles without bootstrap validation failures
 - Every cycle report explains `ready_but_undispatched` and `idle_cycles`
-- `synth evolve` runs in the background; dispatch is never blocked waiting for it
+- `synth evolve` runs in a background thread; dispatch is never blocked waiting for it
 
 ---
 
@@ -30,19 +30,18 @@ After this spec is implemented:
 
 **What**: Every `fabro` binary used as `settings.fabro_bin` must expose the `synth` subcommand family: `synth create`, `synth evolve`, `synth review`, `synth import`, `synth genesis`.
 
-**Why**: The autodev loop invokes `fabro synth evolve` (see `autodev.rs → run_synth_evolve`). If the binary lacks `synth`, the entire loop fails on the first evolve trigger.
+**Why**: The autodev loop invokes `fabro synth evolve` via `rerender_program_package` (autodev.rs:2242 → runs `fabro_bin synth evolve --no-review`). If the binary lacks `synth`, the entire loop fails on the first evolve trigger.
+
+**Current state**: `Command::Synth { command }` is routed in `fabro-cli/src/main.rs` with no feature gate. `fabro-synthesis` is included in default features.
 
 **Validation**:
-```
+```bash
 $ fabro synth --help
 # Must show: create, evolve, review, import, genesis subcommands
 ```
 
-**Proof**:
+**Proof** (fabro-cli/src/main.rs):
 ```rust
-// fabro-cli/src/main.rs must route `Command::Synth { command }` to the handler.
-// The handler lives in fabro-cli/src/commands/synth.rs.
-// This must NOT be behind a feature flag that omits synthesis from default builds.
 Command::Synth { command } => match command {
     commands::synth::SynthCommand::Import(args) => commands::synth::import_command(&args)?,
     commands::synth::SynthCommand::Create(args) => commands::synth::create_command(&args)?,
@@ -52,94 +51,167 @@ Command::Synth { command } => match command {
 },
 ```
 
-**Current state**: The `Synth` variant exists in the CLI enum and is routed in `main.rs`. No feature gate guards it. The concern in the plan was about binary provenance — the controller may be pointed at a binary compiled without `fabro-synthesis`. This is fixed by ensuring `fabro-synthesis` is always included in the default features.
+**Risk**: The controller may be pointed at a binary compiled without synthesis. The fix is a compile-time assertion that `fabro-synthesis` is not an optional feature. Add to `fabro-cli/src/main.rs`:
 
-**Implementation**: Verify `fabro-synthesis` is `default = []` (always compiled) in `lib/crates/fabro-cli/Cargo.toml` and not behind an optional feature flag.
+```rust
+// Compile-time assertion: fabro-synthesis is always compiled in.
+const _: () = assert!(
+    !std::cfg!(feature = "fabro-synthesis"),
+    "fabro-synthesis must NOT be an optional feature"
+);
+```
 
-### R1.2 — `fabro validate` must accept run configs without requiring `~/.fabro/prompts`
+### R1.2 — Prompt refs in copied graphs must resolve relative to the graph file location
 
-**What**: The `fabro validate <run-config>` command must succeed when the run config's workflow graph uses `@prompts/...` references, as long as those prompt files exist relative to the workflow graph file location or the run config's directory.
+**What**: When a lane's run directory is set up, the copied `graph.fabro` file must have `@prompts/...` references resolve relative to the graph file's directory in the run directory, not relative to `~/.fabro/prompts` or the original source tree.
 
-**Why**: Generated workflows copy `graph.fabro` into per-lane run directories. Prompt refs like `@prompts/foo.md` must resolve from the copied graph's location, not from `~/.fabro/prompts`.
+**Why**: `fabro validate` and the workflow engine resolve `@` references from the graph file's location. If the copied graph uses `../../prompts/...` paths, they resolve relative to the copy location — which may not match the original structure.
 
-**Root cause**: Copied `graph.fabro` files referenced prompts as `@../../prompts/...` which resolved under `~/.fabro/` at runtime instead of the target repo.
+**Root cause**: The blueprint renderer in `fabro-synthesis` emits `@prompts/...` refs that are correct when the run config is at `malinka/run-configs/X/`, but become wrong `../../prompts/...` when the run dir structure is flattened.
+
+**Current state**: This is a `fabro-graphviz` resolution concern. The parser resolves `@` refs using the graph file's directory as the resolution context. The issue is ensuring the renderer emits refs that are correct after the graph is copied to the lane's run directory.
 
 **Validation**:
 ```bash
-# Create a temp dir simulating a copied run environment
-mkdir -p /tmp/fabro-validate-test/malinka/run-configs/investigate
-mkdir -p /tmp/fabro-validate-test/malinka/prompts
-cp malinka/run-configs/investigate/baccarat-investigate.toml /tmp/fabro-validate-test/malinka/run-configs/
-cp malinka/workflows/baccarat-investigate.fabro /tmp/fabro-validate-test/malinka/run-configs/
-echo "# Prompt content" > /tmp/fabro-validate-test/malinka/prompts/baccarat-prompt.md
-cd /tmp/fabro-validate-test
-fabro validate malinka/run-configs/baccarat-investigate.toml
-# Must succeed without: "file not found: ~/.fabro/prompts/..."
+# Set up a lane run directory with a copied graph
+mkdir -p /tmp/lane-run/run-configs
+cp malinka/run-configs/investigate/baccarat-investigate.fabro /tmp/lane-run/run-configs/
+# The graph must not reference ../prompts/ or ../../prompts/
+grep -E '@\.\./' /tmp/lane-run/run-configs/*.fabro  # must be empty
 ```
-
-**Implementation**: The workflow graph parser in `fabro-graphviz` must resolve `@` references relative to the graph file's directory. The resolution context must be passed from the call site (run config path → graph path → resolve prompts relative to graph). Currently the parser may fall back to `~/.fabro/prompts` when the path starts with `../../`, which is wrong for detached run environments.
 
 ---
 
 ## Requirement 2: Stale Lane Truth
 
-### R2.1 — `refresh_program_state` must classify `running` lanes as `failed` when the worker process is dead
+### R2.1 — `stale_active_progress` must classify `running` lanes as `failed` when the worker process is dead
 
-**What**: When a lane record has `status = Running` and `last_finished_at = None`, but the worker process is no longer alive (no `/proc/<pid>` on Linux, or equivalent), the refresh must transition the lane to `status = Failed` with `failure_kind = TransientLaunchFailure` and `recovery_action = BackoffRetry`.
+**What**: When a lane record has `status = Running` and the worker process is no longer alive, the refresh must transition the lane to `Failed` with `failure_kind = TransientLaunchFailure` and `recovery_action = BackoffRetry`.
 
-**Why**: Stale `running` lanes consume dispatch slots (see `available_slots = max_parallel - current_running`). If 10 slots are "occupied" by dead workers, no new lanes are dispatched.
+**Why**: Stale `running` lanes consume dispatch slots (available_slots = max_parallel - current_running). If 10 slots are "occupied" by dead workers, no new lanes are dispatched.
 
-**Current state**: `program_state.rs` has `stale_active_progress()` which implements this check. It requires all three conditions:
-1. `progress.workflow_status.is_active()`
-2. `progress.worker_alive == Some(false)` — worker process gone
-3. `(now - started_at).num_seconds() >= STALE_RUNNING_GRACE_SECS (30s)`
+**Current state**: Implemented correctly in `program_state.rs:1413`.
 
-**Additional requirement — kill-process detection**: The `worker_alive` check uses `/proc/<pid>/exists` on Linux. This correctly detects the case where the supervisor process was killed (the PID file exists but the process is gone). However, it does NOT detect the case where the process is still running but unresponsive (stalled). The `stalled_active_progress_reason()` handles that case separately with a 1800-second timeout.
+**Implementation** (program_state.rs:1413):
+```rust
+fn stale_active_progress(
+    progress: &LiveLaneProgress,
+    last_started_at: Option<DateTime<Utc>>,
+) -> bool {
+    let Some(status) = progress.workflow_status else {
+        return false;
+    };
+    if !status.is_active() {
+        return false;
+    }
+    if progress.worker_alive != Some(false) {
+        return false;
+    }
+    let Some(started_at) = last_started_at.or(progress.updated_at) else {
+        return false;
+    };
+    (Utc::now() - started_at).num_seconds() >= STALE_RUNNING_GRACE_SECS
+}
+```
 
-**Edge case — new lane dispatched but process immediately dies**: A lane is dispatched (`mark_lane_submitted`), the worker starts and writes its PID, then crashes before writing any progress. The grace period (30s) means the slot is wasted for up to 30 seconds. This is acceptable because we need the grace period to avoid false positives during slow startup. The fix is to keep the grace period short (≤30s) and ensure the PID file is written early in the worker process.
+**Validation**: The existing test `stale_active_progress_marks_run_as_stale` (program_state.rs:2609) covers the three-condition check (active status, dead worker, past grace period).
+
+### R2.2 — `worker_process_alive` must correctly detect dead processes on all platforms
+
+**What**: `worker_process_alive` (program_state.rs:1356) must return `Some(true)` when the worker PID exists and the process is alive, and `Some(false)` when the PID file is absent or the process is gone. On macOS, use `kill(pid, 0)` instead of `/proc/<pid>/exists`.
+
+**Why**: On Linux, the implementation correctly uses `Path::new("/proc").join(pid).exists()`. On non-Linux (macOS, BSD), this always returns `Some(false)`, causing legitimate long-running workers to be incorrectly marked as stale after `STALE_RUNNING_GRACE_SECS` (30s).
+
+**Current state**: The non-Linux branch unconditionally returns `Some(false)`:
+```rust
+#[cfg(not(target_os = "linux"))]
+{
+    let _ = pid;
+    Some(false)  // BUG: all non-Linux workers appear dead after 30s
+}
+```
+
+**Fix**: Implement macOS/BSD support using `kill(pid, 0)`:
+```rust
+#[cfg(not(target_os = "linux"))]
+{
+    // Use kill(pid, 0) which checks process existence without sending a signal
+    let result = libc::kill(pid as libc::pid_t, 0);
+    Some(result == 0 || errno::errno().0 == libc::EPERM)
+}
+```
+
+### R2.3 — Pre-spawn errors from `run_fabro` must transition lane state to `Failed`
+
+**What**: When `run_fabro` (dispatch.rs:495) returns `DispatchError::MissingRunConfig`, `DispatchError::Lease`, or `DispatchError::Spawn`, the lane must be transitioned to `Failed` (not left in `Ready` or `Running`) and the error must be recorded.
+
+**Why**: Currently, these errors propagate up via `?` from the spawned thread. This causes two problems:
+1. The `panic_error` handler fires, setting `PanicError` and causing an early return
+2. No other lanes in that cycle are processed
+3. The original lane's state is never updated — it stays `Ready` or `Running`
+
+**Root cause**: `execute_selected_lanes` (dispatch.rs:220) spawns lanes into threads. Each thread returns `Result<(Lane, ...), DispatchError>`. When `run_fabro` returns an error variant, the `?` operator propagates it:
+```rust
+let output = output?;  // propagates DispatchError, never reaches mark_lane_dispatch_failed
+```
+
+**Fix**: Add an early-retry path for pre-spawn errors before the thread join. In `execute_selected_lanes`, before joining threads, check each future for pre-spawn errors:
+
+```rust
+// Check for pre-spawn errors before joining
+let mut pre_spawn_failures = Vec::new();
+for (lane_key, handle) in &handles {
+    // Peek at the result without consuming it
+    // If it's an Err containing MissingRunConfig/Lease/Spawn, record and continue
+}
+```
+
+Alternatively (simpler): wrap pre-spawn errors in `DispatchOutcome` with `exit_status = -1` and `stderr = "pre-spawn: ..."` so they flow through the normal `mark_lane_dispatch_failed` path.
+
+**Proof of current bug** (dispatch.rs:220-299):
+```rust
+for (lane_key, handle) in handles {
+    match handle.join() {
+        Ok(result) => joined_results.push(result),  // DispatchError goes straight to ?
+        Err(payload) => { /* panic handling */ }
+    }
+}
+// ...
+for (lane, ..., output) in joined_results {
+    let output = output?;  // <-- if output is Err, function returns here
+    // mark_lane_dispatch_failed is never reached for pre-spawn errors
+}
+```
 
 **Validation**:
 ```rust
-// In program_state.rs tests, verify:
-let mut state = ProgramRuntimeState::new("test");
-state.lanes.insert("lane:1".to_string(), LaneRuntimeRecord {
-    lane_key: "lane:1".to_string(),
-    status: LaneExecutionStatus::Running,
-    current_run_id: Some("01DEADWORKER0000000000000".to_string()),
-    current_fabro_run_id: Some("01DEADWORKER0000000000000".to_string()),
-    current_stage_label: Some("Implement".to_string()),
-    last_started_at: Some(Utc::now() - Duration::seconds(60)), // past grace period
-    ..Default::default()
-});
-
-// Simulate dead worker (no /proc/<pid>):
-// refresh_program_state must transition this to Failed
-// with TransientLaunchFailure and BackoffRetry
+// When run_fabro returns MissingRunConfig for lane "foo:1":
+// After execute_selected_lanes returns Error:
+// - "foo:1" must have status = Failed in program_state.json
+// - error message must be "run config ... does not exist"
+// - recovery_action must be BackoffRetry
 ```
 
-### R2.2 — `refresh_program_state` must NOT transition `running` to `failed` when the worker is still alive
+### R2.4 — Bootstrap validation failures must be recoverable (not terminal)
 
-**What**: A lane whose worker process is still running (PID exists, `/proc/<pid>` exists) must remain `status = Running`, regardless of how long it has been running.
+**What**: When a lane fails at bootstrap (run config missing, workflow graph missing prompts, `fabro validate` fails) before any worker is dispatched, the failure must be classified as `TransientLaunchFailure` with `BackoffRetry` so the lane can be retried after `synth evolve` generates the missing files.
 
-**Why**: `stalled_active_progress_reason` handles genuinely stalled workers (1800s timeout). A long-running worker should not be incorrectly marked failed just because it's slow.
+**Why**: On the first cycle, the generated package may not be complete. Bootstrap failures that are fixed by the next evolve must not permanently block the lane.
 
-**Validation**: The test `refresh_program_state_prefers_long_running_worker` (if added) must verify that a lane with `worker_alive = Some(true)` and activity within 1800s stays `Running`.
+**Current state**: `classify_failure` (failure.rs:72) does not have explicit patterns for bootstrap-specific errors (missing run config, missing prompt file). R2.3 (above) is the prerequisite fix.
 
-### R2.3 — Bootstrap validation failures must be recoverable (not terminal)
+**Fix**: The pre-spawn error path (R2.3) must construct a `DispatchOutcome` with:
+- `exit_status = -1` (indicates pre-spawn failure)
+- `stderr = "pre-spawn: <error description>"`
+- `fabro_run_id = None`
 
-**What**: When a lane fails at bootstrap (run config missing, workflow graph missing prompts, `fabro validate` fails) before any worker is dispatched, the failure must be classified with a recovery action that allows redispatch after the underlying cause is fixed (e.g., after `synth evolve` generates the missing files).
+Then `mark_lane_dispatch_failed` calls `classify_failure` with this stderr, which must classify "pre-spawn" errors as `TransientLaunchFailure`. Add to `classify_failure`:
 
-**Why**: On the first cycle, the generated package may not be complete. Bootstrap failures that are fixed by the next evolve should not permanently block the lane.
-
-**Classification**:
-- Run config file missing → `FailureKind::TransientLaunchFailure`, `BackoffRetry`
-- Prompt reference not found → `FailureKind::TransientLaunchFailure`, `BackoffRetry`
-- `fabro validate` fails with graph error → `FailureKind::TransientLaunchFailure`, `BackoffRetry`
-- Workflow graph references non-existent prompt → `FailureKind::TransientLaunchFailure`, `BackoffRetry`
-
-**Current state**: The `classify_failure()` function in `failure.rs` does not yet have explicit patterns for bootstrap-specific errors. The `run_fabro()` function in `dispatch.rs` returns `DispatchError::MissingRunConfig` before spawning, which prevents the dispatch from completing — the lane is never actually dispatched, so it stays `Running` or `Ready` rather than becoming `Failed`. This is a separate bug: if `run_fabro` fails before dispatching, the lane status is not updated.
-
-**Fix required**: When `run_fabro` returns `DispatchError::MissingRunConfig` (or any pre-spawn error), the dispatch module must call `mark_lane_dispatch_failed()` with an appropriate failure record, not just return an error.
+```rust
+if combined.contains("pre-spawn") {
+    return Some(FailureKind::TransientLaunchFailure);
+}
+```
 
 ---
 
@@ -147,38 +219,40 @@ state.lanes.insert("lane:1".to_string(), LaneRuntimeRecord {
 
 ### R3.1 — Every cycle must emit why ready work was or was not dispatched
 
-**What**: The `AutodevCycleReport` must include a `dispatch_state` field that explains the dispatch decision in operator language. This field must be present in every cycle report, not just cycles with dispatches.
+**What**: The `AutodevCycleReport` (autodev.rs:96) must include a `dispatch_state` field that explains the dispatch decision in operator language.
 
-**Why**: The historical 83% idle rate was opaque. Without per-cycle explainability, operators cannot diagnose why their `max_parallel: 10` configuration results in fewer than 10 running lanes.
+**Why**: Without per-cycle explainability, operators cannot diagnose why `max_parallel: 10` results in fewer than 10 running lanes.
 
-**Schema**:
+**Current state**: `AutodevCycleReport` has `dispatched: Vec<DispatchOutcome>` but no structured reason field.
+
+**Schema addition to `AutodevCycleReport`**:
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutodevCycleReport {
+    pub cycle: usize,
+    pub evolved: bool,
+    pub evolve_target: Option<String>,
+    pub ready_lanes: Vec<String>,
+    #[serde(default)]
+    pub replayed_lanes: Vec<String>,
+    #[serde(default)]
+    pub regenerate_noop_lanes: Vec<String>,
+    pub dispatched: Vec<DispatchOutcome>,
+    pub running_after: usize,
+    pub complete_after: usize,
+    // NEW:
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_state: Option<DispatchState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchState {
-    /// Why ready work was or was not dispatched this cycle.
-    /// One of the following mutually-exclusive reasons:
     pub reason: DispatchStateReason,
-
-    /// For `Reason::Dispatched`: how many lanes were dispatched.
     pub dispatched_count: usize,
-
-    /// For `Reason::MaxParallelFull`: number of slots consumed by running lanes.
-    pub running_count: usize,
-
-    /// For `Reason::MaxParallelFull`: max_parallel setting.
-    pub max_parallel: usize,
-
-    /// For `Reason::NoReadyLanes`: number of lanes that were blocked/failed.
-    pub blocked_or_failed_count: usize,
-
-    /// For `Reason::ReadyButUndispatched`: keys of lanes that were ready
-    /// but not dispatched, with a reason per lane.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ready_undispatched: Vec<ReadyUndispatchedLane>,
-
-    /// For `Reason::Evolving`: if evolve was running and blocked dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evolve_blocked: Option<EvolveBlockInfo>,
+    pub idle_explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +264,7 @@ pub enum DispatchStateReason {
     NoReadyLanes,
     /// Max parallel was reached; no slots available.
     MaxParallelFull,
-    /// Ready lanes existed but were not dispatched (evolve blocking, maintenance, etc.).
+    /// Ready lanes existed but were not dispatched (evolve blocking, etc.).
     ReadyButUndispatched,
     /// Controller is settling (no running, no ready, no failed to replay).
     Settling,
@@ -200,59 +274,82 @@ pub enum DispatchStateReason {
 pub struct ReadyUndispatchedLane {
     pub lane_key: String,
     pub reason: String,
-    /// Why this specific lane was skipped:
-    /// - "max_parallel_reached" — slots exhausted by higher-priority lanes
-    /// - "evolve_blocking" — evolve was running
-    /// - "target_repo_stale" — repo not fresh enough for dispatch
-    /// - "maintenance_mode" — program in maintenance
-    /// - "unknown" — unclassified
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvolveBlockInfo {
-    pub evolve_duration_ms: u64,
-    pub evolve_error: Option<String>,
+    // reason values:
+    // - "max_parallel_reached" — slots exhausted
+    // - "evolve_blocking" — evolve running in background
+    // - "maintenance_mode" — program in maintenance
+    // - "target_repo_stale" — repo not fresh enough
+    // - "unknown" — unclassified
 }
 ```
 
-**Placement**: Add `dispatch_state: DispatchState` to `AutodevCycleReport`. Compute it just before `execute_selected_lanes` is called. Populate `AutodevCycleReport` with it.
+**Computation**: Compute `DispatchState` in the orchestrator loop (autodev.rs) just before `execute_selected_lanes` is called, after `should_trigger_evolve` is evaluated:
 
-### R3.2 — Aggregate dispatch metrics must be accessible without parsing cycle reports
+```rust
+let dispatch_state = compute_dispatch_state(
+    &ready_lanes,
+    &lanes_to_dispatch,
+    available_slots,
+    max_parallel,
+    evolve_in_progress,
+    &program_before,
+);
+// Include in AutodevCycleReport
+report.cycles.push(AutodevCycleReport {
+    // ... existing fields ...
+    dispatch_state: Some(dispatch_state),
+});
+```
 
-**What**: The `AutodevCurrentSnapshot` (returned in `AutodevReport.current`) must include aggregate dispatch metrics that summarize the entire run.
+### R3.2 — Aggregate dispatch metrics in `AutodevCurrentSnapshot`
 
-**Schema additions to `AutodevCurrentSnapshot`**:
+**What**: `AutodevCurrentSnapshot` (autodev.rs:70) must include aggregate counters summarizing the entire autodev run.
+
+**Current state**: `AutodevCurrentSnapshot` has `ready`, `running`, `blocked`, `failed`, `complete` but no aggregate counters.
+
+**Schema additions**:
 ```rust
 pub struct AutodevCurrentSnapshot {
-    // ... existing fields ...
-
-    /// Total cycles where no lanes were dispatched.
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<usize>,
+    pub ready: usize,
+    pub running: usize,
+    pub blocked: usize,
+    pub failed: usize,
+    pub complete: usize,
+    #[serde(default)]
+    pub ready_lanes: Vec<String>,
+    #[serde(default)]
+    pub running_lanes: Vec<String>,
+    #[serde(default)]
+    pub failed_lanes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub critical_blockers: Vec<CriticalBlocker>,
+    // NEW:
+    /// Total cycles with no dispatched lanes since run started.
     pub idle_cycles: usize,
-
-    /// Total lanes dispatched since the run started.
+    /// Total lanes dispatched since run started.
     pub total_dispatched: usize,
-
-    /// Total lanes that landed to trunk (integration complete).
+    /// Total lanes that completed (landing_state = landed).
     pub total_landed: usize,
-
-    /// Total stale `running` lanes detected and reclaimed this run.
+    /// Total stale running lanes detected and reclaimed this run.
     pub stale_running_reclaimed: usize,
-
-    /// Total bootstrap failures (run config missing, prompt not found, etc.).
+    /// Total bootstrap failures (run config missing, etc.).
     pub bootstrap_failures: usize,
-
-    /// Total runtime path errors (fabro command not found, etc.).
+    /// Total runtime-path errors (fabro not found, etc.).
     pub runtime_path_errors: usize,
-
-    /// Current dispatch rate: dispatched / (dispatched + idle_cycles).
+    /// Dispatch rate: dispatched / (dispatched + idle_cycles).
     pub dispatch_rate: f64,
 }
 ```
 
-**Computation**: Maintain running counters in the orchestrator loop:
-- `idle_cycles`: increment when `lanes_to_dispatch.is_empty()` and `!program_before.lanes.iter().any(|l| l.status == Running)`
-- `stale_running_reclaimed`: increment when `refresh_program_state` transitions a `Running` lane to `Failed`
-- `runtime_path_errors`: increment when `run_fabro()` or `run_synth_evolve()` returns a spawn/io error
+**Maintenance**: Increment counters in the orchestrator loop:
+- `idle_cycles++` when `lanes_to_dispatch.is_empty()` and `frontier_before.running == 0`
+- `total_dispatched += lanes_to_dispatch.len()`
+- `stale_running_reclaimed++` when `refresh_program_state` transitions `Running → Failed`
+- `bootstrap_failures++` when a pre-spawn error (R2.3) is encountered
+- `runtime_path_errors++` when `run_fabro` returns `DispatchError::Spawn` (binary not found)
 
 ---
 
@@ -260,9 +357,11 @@ pub struct AutodevCurrentSnapshot {
 
 ### R4.1 — `synth evolve` must not block the dispatch cycle
 
-**What**: When `should_trigger_evolve` returns `true`, the `run_synth_evolve()` call must execute in a background thread or be deferred to a future cycle, such that `execute_selected_lanes()` is called in the same cycle.
+**What**: `run_synth_evolve` (autodev.rs:2242) must execute in a background thread such that `execute_selected_lanes` is called in the same cycle.
 
-**Why**: With a 120-second timeout, blocking `synth evolve` can delay dispatch by up to 2 minutes per cycle. In a 5-second poll interval environment, this means up to 24 cycles worth of dispatch opportunities are lost.
+**Why**: `run_synth_evolve` has a 120-second timeout (`SYNTH_EVOLVE_TIMEOUT_SECS = 120`). Blocking evolve delays dispatch by up to 2 minutes per cycle.
+
+**Current state**: `run_synth_evolve` is called synchronously in the orchestrator loop (autodev.rs:444). The `match run_synth_evolve(...)` block completes before dispatch begins.
 
 **Architecture**:
 ```
@@ -270,53 +369,78 @@ Current (blocking):
   [refresh] → [evaluate] → [evolve (120s blocking)] → [dispatch] → [watch]
 
 Target (non-blocking):
-  [refresh] → [evaluate] → [dispatch] ─────────────────────────────────┐
-       ↓ (background, async)                                           │
-  [evolve (120s, runs in background thread)] ─────────────────────────►│
-                                        ↓                               │
-                              [evaluate post-evolve]                    │
-                                        ↓                               │
-                              [watch] ◄────────────────────────────────┘
+  [refresh] → [evaluate] → [dispatch] ────────────────────────────┐
+       ↓ (background)                                              │
+  [evolve (120s, background thread)] ────────────────────────────►│
+                                        ↓                          │
+                              [join on next cycle]                 │
+                                        ↓                          │
+                              [reload manifest, re-evaluate]       │
+                                        ↓                          │
+                              [watch] ◄────────────────────────────┘
 ```
 
-**Implementation strategy**:
+**Implementation**:
 
-Add a `pending_evolve: Option<JoinHandle<Result<()>>>` field to the orchestrator state. When `should_trigger_evolve` returns `true`:
-
-1. **If no evolve is currently running**: spawn `run_synth_evolve` in a background thread, store the `JoinHandle`. Record `last_evolve_at = Instant::now()` and `last_evolve_frontier = Some(frontier_before)`. Proceed to dispatch.
-2. **If an evolve is currently running** (handle not yet complete): skip dispatching new lanes (`lanes_to_dispatch = Vec::new()`) — wait for evolve to finish before dispatching, because evolve may invalidate the ready lane set.
-3. **On the next cycle**: if the evolve thread has completed, join it. If it succeeded, reload the manifest and re-evaluate. If it failed, log the error and continue.
-
-**Critical invariant**: We must never dispatch lanes using a manifest that has been invalidated by an in-progress evolve. The `frontier_before` frontier signature is captured before evolve starts; if evolve changes the manifest, dispatching based on `program_before` would use stale lane definitions.
-
-**Alternative (simpler) approach — evolve every N cycles, never blocking**:
-
-Move evolve to a timer-based trigger that runs between dispatch cycles. The autodev loop dispatches every `poll_interval_ms`. Evolve runs every `evolve_every_seconds` seconds, but only when no lanes are currently running (`frontier.running == 0`). This is the simplest change: add a `last_evolve_check: Instant` field, and only call `run_synth_evolve` when:
+Add to the orchestrator state struct:
 ```rust
-if last_evolve_check.elapsed() >= evolve_every
-    && frontier.running == 0
-    && (locally_settled || !has_ready_before)
-{
-    // run evolve (blocking), but it's acceptable because nothing is running
+struct OrchestratorState {
+    // ... existing fields ...
+    pending_evolve: Option<tokio::task::JoinHandle<Result<(), AutodevError>>>,
+    evolve_completed_this_cycle: bool,
 }
 ```
 
-This is acceptable because evolve when nothing is running doesn't delay any dispatch opportunity.
+Refactor the orchestrator loop (autodev.rs:426-495):
+```rust
+// 1. If evolve was triggered and no evolve is currently running, spawn it
+if should_trigger_evolve(...) && state.pending_evolve.is_none() {
+    let manifest_path = manifest_path.clone();
+    let manifest = manifest.clone();
+    let settings = settings.clone();
+    state.pending_evolve = Some(tokio::task::spawn_blocking(move || {
+        run_synth_evolve(&manifest_path, &manifest, &settings)
+    }));
+}
 
-**Chosen approach**: Implement the background-thread approach (Option 1) because it allows evolve to run even when slots are occupied, which is needed for the `RegenerateLane` recovery action.
+// 2. If an evolve is running, check if it completed
+if let Some(handle) = state.pending_evolve.as_mut() {
+    if handle.is_finished() {
+        match handle.join().unwrap() {
+            Ok(()) => {
+                last_evolve_at = Some(Instant::now());
+                last_evolve_frontier = Some(frontier_before);
+                evolved = true;
+                state.evolve_completed_this_cycle = true;
+            }
+            Err(e) => { /* log and continue */ }
+        }
+        state.pending_evolve = None;
+    }
+}
+
+// 3. Dispatch ALWAYS happens in the same cycle (unless another evolve is running)
+if state.pending_evolve.is_none() {
+    execute_selected_lanes(...);
+} else {
+    // Skip dispatch this cycle — waiting for evolve to complete
+    // This is safe because the manifest may change
+}
+```
+
+**Invariant**: We must never dispatch using a manifest that has been invalidated by an in-progress evolve. The background-thread approach preserves this because dispatch is skipped while `pending_evolve.is_some()`.
 
 ### R4.2 — Dispatch must consume the full `max_parallel` budget when ready lanes exist
 
-**What**: In any cycle where `available_slots > 0` and `ready_lanes > 0`, `lanes_to_dispatch` must contain at least `min(available_slots, ready_lanes)` lanes.
+**What**: When `available_slots > 0` and `ready_lanes > 0`, `lanes_to_dispatch` must contain at least `min(available_slots, ready_lanes)` lanes.
 
-**Why**: The `select_ready_lanes_for_dispatch()` function already implements this correctly. The bug was that stale `running` lanes consumed slots without actually running, and evolve blocking delayed dispatch. This requirement ensures the fix is validated.
+**Why**: Confirmed by R2.1 (stale slots) and R2.3 (pre-spawn errors). This requirement validates the combined fix.
 
 **Validation**:
 ```rust
-// In a test with 15 ready lanes and max_parallel=10:
-// After dispatch, running count must be 10 (or less if fewer than 10 were ready)
+// In integration test with 15 ready lanes and max_parallel=10:
+// After dispatch, running count must be 10 (or fewer if fewer than 10 were ready)
 assert!(program_after.lanes.iter().filter(|l| l.status == Running).count() <= 10);
-assert!(program_after.lanes.iter().filter(|l| l.status == Running).count() > 0); // unless no lanes were ready
 ```
 
 ---
@@ -327,62 +451,60 @@ assert!(program_after.lanes.iter().filter(|l| l.status == Running).count() > 0);
 
 **Command**:
 ```bash
-cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \
-target-local/release/raspberry autodev \
+raspberry autodev \
   --manifest /home/r/coding/rXMRbro/malinka/programs/rxmragent.yaml \
   --max-parallel 10 --max-cycles 20
 ```
 
 **Pass criteria**:
-1. Controller enters `InProgress` state and maintains it for all 20 cycles
-2. Every cycle report shows `running >= 8` (allowing 2 slots for brief gaps during lane completion)
-3. `AutodevCurrentSnapshot.idle_cycles <= 5` for the full 20-cycle run
-4. `failed_bootstrap_count = 0` for all cycles 3-20 (bootstrap failures in cycles 1-2 are acceptable)
-5. No `runtime_path_errors` — the `fabro` binary must expose `synth`, and prompt refs must resolve correctly
+1. Controller maintains `InProgress` state for all 20 cycles
+2. Every cycle report shows `running >= 8` (allowing 2 slots for brief gaps)
+3. `AutodevCurrentSnapshot.idle_cycles <= 5` for the full run
+4. `bootstrap_failures = 0` for cycles 3-20 (cycles 1-2 bootstrap failures are acceptable)
+5. `runtime_path_errors = 0` — `fabro` binary must expose `synth`
 
 ### V2 — At least 3 lanes land to trunk
 
-**Pass criteria**:
-After the full 20-cycle run or when the controller settles, at least 3 lanes have `landing_state = "landed"` in their `trunk_delivery_state_for_lane()` detail, meaning their integration artifacts were pushed to `origin/main`.
+**Pass criteria**: After 20 cycles or when controller settles, at least 3 lanes have `landing_state = "landed"` in their `trunk_delivery_state_for_lane()` detail.
 
 ---
 
 ## Implementation Order
 
-1. **R1.1**: Verify `fabro-synthesis` is always compiled in `fabro-cli`. Add a test that `fabro synth --help` succeeds.
-2. **R2.1 + R2.2**: Existing `stale_active_progress` logic is correct. Add integration tests simulating dead workers. Verify no regression.
-3. **R2.3**: Fix `dispatch.rs` to call `mark_lane_dispatch_failed()` when `run_fabro` returns pre-spawn errors. Add `DispatchError` variants to the failure classifier.
-4. **R3.1**: Add `DispatchState` to `AutodevCycleReport`. Compute it before `execute_selected_lanes`. Populate `ready_undispatched` with the reason each ready-but-undispatched lane was skipped.
-5. **R3.2**: Add aggregate counters to `AutodevCurrentSnapshot`. Increment in the orchestrator loop.
-6. **R4.1**: Refactor `run_synth_evolve` to run in a background thread. Store `pending_evolve` handle. Wait for it on the next cycle before dispatching.
-7. **V1 + V2**: Live validation on rXMRbro.
+| Step | Requirement | Key File | Status |
+|------|-------------|----------|--------|
+| 1 | R2.3 — pre-spawn error state transition | dispatch.rs:220-299 | **Bug** |
+| 2 | R2.2 — macOS `worker_process_alive` | program_state.rs:1356 | **Bug** |
+| 3 | R3.1 — `DispatchState` in `AutodevCycleReport` | autodev.rs:96 | **Missing** |
+| 4 | R3.2 — aggregate counters in snapshot | autodev.rs:70 | **Missing** |
+| 5 | R4.1 — background evolve thread | autodev.rs:426-495 | **Missing** |
+| 6 | R2.4 — bootstrap failure recovery | dispatch.rs + failure.rs | **Bug** |
+| 7 | V1 + V2 — live validation | rXMRbro | **Unvalidated** |
 
 ---
 
-## Key Files and Their Roles
+## Key Files
 
-| File | Role in This Spec |
-|------|-------------------|
-| `lib/crates/fabro-cli/src/main.rs` | Routes `Command::Synth` — must always include synthesis commands |
-| `lib/crates/fabro-cli/src/commands/synth.rs` | Implements `synth evolve` — called by autodev |
+| File | Role |
+|------|------|
 | `lib/crates/raspberry-supervisor/src/autodev.rs` | Orchestrator loop — must emit dispatch telemetry, decouple evolve |
-| `lib/crates/raspberry-supervisor/src/dispatch.rs` | `run_fabro()` — must update lane state on pre-spawn errors |
-| `lib/crates/raspberry-supervisor/src/program_state.rs` | `refresh_program_state`, `stale_active_progress` — stale lane detection |
-| `lib/crates/raspberry-supervisor/src/failure.rs` | `classify_failure` — must classify bootstrap errors as `TransientLaunchFailure` |
-| `lib/crates/fabro-graphviz/src/` | Workflow graph parser — must resolve `@prompts/...` relative to graph file |
-| `lib/crates/fabro-synthesis/src/render.rs` | Blueprint renderer — must emit workflow graphs with repo-relative prompt refs |
+| `lib/crates/raspberry-supervisor/src/dispatch.rs` | `execute_selected_lanes`, `run_fabro` — must update lane state on pre-spawn errors |
+| `lib/crates/raspberry-supervisor/src/program_state.rs` | `stale_active_progress`, `worker_process_alive` — stale lane detection |
+| `lib/crates/raspberry-supervisor/src/failure.rs` | `classify_failure` — must classify bootstrap/pre-spawn errors as `TransientLaunchFailure` |
+| `fabro-cli/src/main.rs` | Routes `Command::Synth` — must always include synthesis commands |
 
 ---
 
 ## Decision Log
 
 - **Decision**: Implement background-thread evolve (R4.1) instead of interval-gated evolve.
-  **Rationale**: Interval-gated evolve (`only when running == 0`) prevents evolve from running during the most active cycles, when regenerable failed lanes most need it. Background threading allows evolve to run during active dispatch without blocking.
-  **Date/Author**: 2026-03-26 / Spec Author
+  **Rationale**: Interval-gated evolve prevents evolve from running during active dispatch cycles. Background threading allows evolve to run even when slots are occupied.
+  **Date**: 2026-03-26
 
 - **Decision**: Emit dispatch telemetry as structured data in `AutodevCycleReport` rather than log lines.
-  **Rationale**: Log lines are not machine-parseable in dashboards. The `AutodevReport` JSON is already persisted and parsed by the Paperclip dashboard. Adding `dispatch_state` to the cycle report makes it observable without adding new infrastructure.
-  **Date/Author**: 2026-03-26 / Spec Author
+  **Rationale**: The `AutodevReport` JSON is already persisted and parsed by the Paperclip dashboard. Adding `dispatch_state` to the cycle report makes it observable without new infrastructure.
+  **Date**: 2026-03-26
 
-- **Failure scenario**: If the background evolve thread takes longer than `poll_interval_ms` to complete, subsequent cycles may dispatch based on a pre-evolve manifest. This is acceptable because the evolve thread will be joined on the next cycle, and the stale manifest will be detected by the doctrine fingerprint or by a subsequent evolve re-trigger. The invariant "never dispatch using an invalidated manifest" is preserved by waiting for evolve to complete before the next dispatch.
-  **Date/Author**: 2026-03-26 / Spec Author
+- **Decision**: Fix R2.3 by wrapping pre-spawn errors in `DispatchOutcome` with `exit_status = -1` instead of adding a special-case error path.
+  **Rationale**: This flows naturally through `mark_lane_dispatch_failed` and `classify_failure` without special-casing. The stderr string `"pre-spawn: <error>"` triggers the `TransientLaunchFailure` classification.
+  **Date**: 2026-03-26
