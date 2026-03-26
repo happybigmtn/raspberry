@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-03-26T19:35:26.628797838Z",
+  "current_node": "specify",
+  "completed_nodes": [
+    "start",
+    "specify"
+  ],
+  "node_retries": {
+    "specify": 1,
+    "start": 1
+  },
+  "context_values": {
+    "thread.start.current_node": "specify",
+    "graph.goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
+    "last_stage": "specify",
+    "internal.retry_count.specify": 1,
+    "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
+    "current_node": "specify",
+    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNT43GYMVY8GTY6W8T3043A/worktree",
+    "last_response": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do whe",
+    "graph.rankdir": "LR",
+    "outcome": "success",
+    "internal.run_id": "01KMNT43GYMVY8GTY6W8T3043A",
+    "internal.fidelity": "compact",
+    "internal.thread_id": "start",
+    "internal.node_visit_count": 1,
+    "response.specify": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do when this is done\n\n- **Centralization**: `fabro-model/src/policy.rs` is the sole source of truth. Every other call site must call `automation_chain()`, `automation_primary_target()`, or `automation_fallback_targets()`. No `ModelTarget` literals outside policy.rs (except tests).\n- **Quota failover**: `ProviderErrorKind::QuotaExceeded` in `fabro-llm` is already `failover_eligible = true`. The API path is wired. The CLI path (which runs `claude-code`/`codex`/`pi` as subprocesses) uses fragile substring matching that works today but is not integrated with the structured error type.\n- **Status output**: `raspberry status` must show per-lane model + provider + health flag (`ok` / `quota_limited` / etc.). `DispatchOutcome` needs a `ProviderHealth` field.\n- **Usage tracking**: `AutodevCycleReport` needs a `usage_by_provider` map. The raw data exists in `provider_used.json` written by `backend/cli.rs` and in CLI output parsers, but nothing aggregates it upward.\n\n### `review.md` — What is true today and what needs to change\n\nFour confirmed hardcoded model leaks in `fabro-synthesis/src/render.rs`:\n\n| Location | Hardcoded value | Severity |\n|---|---|---|\n| `recurring_report_primary_target_for_lane()` lines 2050–2084 | `\"MiniMax-M2.7-highspeed\"`, `\"claude-opus-4-6\"`, `\"gpt-5.4\"` with hardcoded per-family fallback chains | **High** — generates workflow TOML that bypasses policy.rs at runtime |\n| `challenge_target_for_lane()` lines 2011–2021 | `\"gpt-5.4\"` on `Provider::OpenAi` for codex-unblock lanes | Medium |\n| `review_target_for_lane()` lines 2024–2034 | Same | Medium |\n| Workflow graph template literals lines 1917–1990 | Populated from the above | Inherits from above |\n\nOne open question flagged for operator confirmation: the hardcoded `\"gpt-5.4\"` string appears in render.rs but the policy chain uses `\"gpt-5.3-codex\"` — need to confirm whether `\"gpt-5.4\"` is intentional or a copy-paste error before replacing with policy.rs calls.",
+    "failure_class": "",
+    "internal.retry_count.start": 1,
+    "failure_signature": ""
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    },
+    "specify": {
+      "status": "success",
+      "context_updates": {
+        "response.specify": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do when this is done\n\n- **Centralization**: `fabro-model/src/policy.rs` is the sole source of truth. Every other call site must call `automation_chain()`, `automation_primary_target()`, or `automation_fallback_targets()`. No `ModelTarget` literals outside policy.rs (except tests).\n- **Quota failover**: `ProviderErrorKind::QuotaExceeded` in `fabro-llm` is already `failover_eligible = true`. The API path is wired. The CLI path (which runs `claude-code`/`codex`/`pi` as subprocesses) uses fragile substring matching that works today but is not integrated with the structured error type.\n- **Status output**: `raspberry status` must show per-lane model + provider + health flag (`ok` / `quota_limited` / etc.). `DispatchOutcome` needs a `ProviderHealth` field.\n- **Usage tracking**: `AutodevCycleReport` needs a `usage_by_provider` map. The raw data exists in `provider_used.json` written by `backend/cli.rs` and in CLI output parsers, but nothing aggregates it upward.\n\n### `review.md` — What is true today and what needs to change\n\nFour confirmed hardcoded model leaks in `fabro-synthesis/src/render.rs`:\n\n| Location | Hardcoded value | Severity |\n|---|---|---|\n| `recurring_report_primary_target_for_lane()` lines 2050–2084 | `\"MiniMax-M2.7-highspeed\"`, `\"claude-opus-4-6\"`, `\"gpt-5.4\"` with hardcoded per-family fallback chains | **High** — generates workflow TOML that bypasses policy.rs at runtime |\n| `challenge_target_for_lane()` lines 2011–2021 | `\"gpt-5.4\"` on `Provider::OpenAi` for codex-unblock lanes | Medium |\n| `review_target_for_lane()` lines 2024–2034 | Same | Medium |\n| Workflow graph template literals lines 1917–1990 | Populated from the above | Inherits from above |\n\nOne open question flagged for operator confirmation: the hardcoded `\"gpt-5.4\"` string appears in render.rs but the policy chain uses `\"gpt-5.3-codex\"` — need to confirm whether `\"gpt-5.4\"` is intentional or a copy-paste error before replacing with policy.rs calls.",
+        "last_stage": "specify",
+        "last_response": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do whe"
+      },
+      "notes": "Stage completed: specify",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 66922,
+        "output_tokens": 564
+      },
+      "files_written": [
+        "outputs/provider-policy-stabilization/review.md",
+        "outputs/provider-policy-stabilization/spec.md"
+      ],
+      "files_touched": [
+        "outputs/provider-policy-stabilization/review.md",
+        "outputs/provider-policy-stabilization/spec.md"
+      ],
+      "duration_ms": 186497
+    }
+  },
+  "next_node_id": "review",
+  "node_visits": {
+    "start": 1,
+    "specify": 1
+  }
+}

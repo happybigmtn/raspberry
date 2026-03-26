@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.specify": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do when this is done\n\n- **Centralization**: `fabro-model/src/policy.rs` is the sole source of truth. Every other call site must call `automation_chain()`, `automation_primary_target()`, or `automation_fallback_targets()`. No `ModelTarget` literals outside policy.rs (except tests).\n- **Quota failover**: `ProviderErrorKind::QuotaExceeded` in `fabro-llm` is already `failover_eligible = true`. The API path is wired. The CLI path (which runs `claude-code`/`codex`/`pi` as subprocesses) uses fragile substring matching that works today but is not integrated with the structured error type.\n- **Status output**: `raspberry status` must show per-lane model + provider + health flag (`ok` / `quota_limited` / etc.). `DispatchOutcome` needs a `ProviderHealth` field.\n- **Usage tracking**: `AutodevCycleReport` needs a `usage_by_provider` map. The raw data exists in `provider_used.json` written by `backend/cli.rs` and in CLI output parsers, but nothing aggregates it upward.\n\n### `review.md` — What is true today and what needs to change\n\nFour confirmed hardcoded model leaks in `fabro-synthesis/src/render.rs`:\n\n| Location | Hardcoded value | Severity |\n|---|---|---|\n| `recurring_report_primary_target_for_lane()` lines 2050–2084 | `\"MiniMax-M2.7-highspeed\"`, `\"claude-opus-4-6\"`, `\"gpt-5.4\"` with hardcoded per-family fallback chains | **High** — generates workflow TOML that bypasses policy.rs at runtime |\n| `challenge_target_for_lane()` lines 2011–2021 | `\"gpt-5.4\"` on `Provider::OpenAi` for codex-unblock lanes | Medium |\n| `review_target_for_lane()` lines 2024–2034 | Same | Medium |\n| Workflow graph template literals lines 1917–1990 | Populated from the above | Inherits from above |\n\nOne open question flagged for operator confirmation: the hardcoded `\"gpt-5.4\"` string appears in render.rs but the policy chain uses `\"gpt-5.3-codex\"` — need to confirm whether `\"gpt-5.4\"` is intentional or a copy-paste error before replacing with policy.rs calls.",
+    "last_stage": "specify",
+    "last_response": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do whe"
+  },
+  "notes": "Stage completed: specify",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 66922,
+    "output_tokens": 564
+  },
+  "files_written": [
+    "outputs/provider-policy-stabilization/review.md",
+    "outputs/provider-policy-stabilization/spec.md"
+  ],
+  "files_touched": [
+    "outputs/provider-policy-stabilization/review.md",
+    "outputs/provider-policy-stabilization/spec.md"
+  ],
+  "duration_ms": 186497,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T19:35:26.628602418+00:00",
+  "updated_at": "2026-03-26T19:35:26.628603935+00:00"
+}
