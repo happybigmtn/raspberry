@@ -4,10 +4,10 @@ digraph TestCoverageCriticalPathsCiPreservationAndHardeningCodexUnblock {
         fallback_retry_target="deep_review",
         model_stylesheet="
             *            { backend: cli; }
-            #challenge   { backend: cli; model: gpt-5.4; provider: openai; }
-            #review      { backend: cli; model: gpt-5.4; provider: openai; }
-            #deep_review { backend: cli; model: gpt-5.4; provider: openai; }
-            #escalation  { backend: cli; model: gpt-5.4; provider: openai; }
+            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }
         "
     ]
     rankdir=LR
