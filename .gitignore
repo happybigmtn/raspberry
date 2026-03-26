@@ -1,4 +1,5 @@
 target
+.gstack/
 .env
 .entire
 node_modules

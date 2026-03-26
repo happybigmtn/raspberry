@@ -1,4 +1,8 @@
 import { redirect } from "react-router";
+import {
+  isGitHubLoginAllowed,
+  readCookieValue,
+} from "../lib/auth-policy.server";
 import { getAppConfig } from "../lib/config.server";
 import { getGitHubOAuth } from "../lib/github.server";
 import { getSession, commitSession } from "../lib/session.server";
@@ -9,9 +13,10 @@ export async function loader({ request }: Route.LoaderArgs) {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
 
-  const cookies = request.headers.get("Cookie") ?? "";
-  const stateMatch = cookies.match(/fabro_oauth_state=([^;]+)/);
-  const storedState = stateMatch?.[1];
+  const storedState = readCookieValue(
+    request.headers.get("Cookie") ?? "",
+    "fabro_oauth_state",
+  );
 
   if (!code || !state || state !== storedState) {
     throw redirect("/auth/login");
@@ -44,7 +49,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const primaryEmail = emails.find((e) => e.primary && e.verified)?.email ?? "";
 
   const { allowed_usernames } = getAppConfig().web.auth;
-  if (allowed_usernames.length > 0 && !allowed_usernames.includes(profile.login)) {
+  if (!isGitHubLoginAllowed(allowed_usernames, profile.login)) {
     throw redirect("/auth/login?error=unauthorized");
   }
 

@@ -3,17 +3,49 @@ import { resolve, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { redirect } from "react-router";
 import { parse, stringify } from "smol-toml";
+import {
+  clearSetupStateCookie,
+  isLoopbackRequest,
+  readCookieValue,
+  shouldUseSecureCookie,
+} from "../lib/auth-policy.server";
 import { FABRO_CONFIG_PATH, reloadAppConfig } from "../lib/config.server";
+import { isGitHubAppConfigured } from "../lib/github.server";
 import { mergeEnv } from "../lib/merge-env";
 import type { Route } from "./+types/setup-callback";
 
 const ENV_PATH = resolve(import.meta.dirname, "../../../../.env");
 
 export async function loader({ request }: Route.LoaderArgs) {
+  if (isGitHubAppConfigured()) {
+    return {
+      error:
+        "GitHub App setup is already complete. Refusing to overwrite the existing local credentials from a public callback.",
+    };
+  }
+
+  if (!isLoopbackRequest(request)) {
+    return {
+      error:
+        "GitHub App setup callback is only accepted from localhost. Re-run setup through a local browser or SSH tunnel.",
+    };
+  }
+
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
+  const setupState = url.searchParams.get("setup_state");
+  const storedSetupState = readCookieValue(
+    request.headers.get("Cookie") ?? "",
+    "fabro_setup_state",
+  );
   if (!code) {
     return { error: "Missing code parameter" };
+  }
+  if (!setupState || !storedSetupState || setupState !== storedSetupState) {
+    return {
+      error:
+        "Invalid or expired setup state. Start again from /setup so Fabro can bind the callback to this browser session.",
+    };
   }
 
   const response = await fetch(
@@ -79,7 +111,11 @@ export async function loader({ request }: Route.LoaderArgs) {
   process.env.GITHUB_APP_WEBHOOK_SECRET = data.webhook_secret;
   process.env.GITHUB_APP_PRIVATE_KEY = Buffer.from(data.pem).toString("base64");
 
-  throw redirect("/auth/login");
+  throw redirect("/auth/login", {
+    headers: {
+      "Set-Cookie": clearSetupStateCookie(shouldUseSecureCookie(request)),
+    },
+  });
 }
 
 export default function SetupCallback({ loaderData }: Route.ComponentProps) {

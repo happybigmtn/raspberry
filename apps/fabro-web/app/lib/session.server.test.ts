@@ -86,7 +86,23 @@ describe("getUser", () => {
       testAuthConfig = { provider: "github", allowed_usernames: [] };
     });
 
-    test("returns user from session", async () => {
+    test("returns null when allowed_usernames is empty", async () => {
+      sessionData = {
+        userUrl: "https://github.com/octocat",
+        login: "octocat",
+        name: "Octocat",
+        email: "octocat@github.com",
+        avatarUrl: "https://github.com/octocat.png",
+      };
+      const request = new Request("http://localhost");
+
+      const user = await getUser(request);
+
+      expect(user).toBeNull();
+    });
+
+    test("returns user from session when login is allowed", async () => {
+      testAuthConfig = { provider: "github", allowed_usernames: ["octocat"] };
       sessionData = {
         userUrl: "https://github.com/octocat",
         login: "octocat",
@@ -105,6 +121,22 @@ describe("getUser", () => {
         email: "octocat@github.com",
         avatarUrl: "https://github.com/octocat.png",
       });
+    });
+
+    test("returns null when session login is not allowed", async () => {
+      testAuthConfig = { provider: "github", allowed_usernames: ["alice"] };
+      sessionData = {
+        userUrl: "https://github.com/octocat",
+        login: "octocat",
+        name: "Octocat",
+        email: "octocat@github.com",
+        avatarUrl: "https://github.com/octocat.png",
+      };
+      const request = new Request("http://localhost");
+
+      const user = await getUser(request);
+
+      expect(user).toBeNull();
     });
 
     test("returns null when session is empty", async () => {

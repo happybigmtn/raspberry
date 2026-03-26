@@ -1,4 +1,5 @@
 import { redirect } from "react-router";
+import { isGitHubLoginAllowed } from "./auth-policy.server";
 import { getAppConfig } from "./config.server";
 import { createSqliteSessionStorage } from "./session-storage.server";
 
@@ -53,7 +54,9 @@ export async function getUser(request: Request) {
 
   const session = await getSession(request);
   const login = session.get("login");
-  if (!login) return null;
+  if (!isGitHubLoginAllowed(allowed_usernames, typeof login === "string" ? login : null)) {
+    return null;
+  }
   return {
     userUrl: session.get("userUrl") ?? "",
     login,

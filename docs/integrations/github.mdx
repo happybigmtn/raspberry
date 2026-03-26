@@ -40,7 +40,7 @@ Fabro uses a [GitHub App](https://docs.github.com/en/apps/overview) to authentic
 
 3. Review the permissions on GitHub and click **Create GitHub App**.
 
-4. GitHub redirects back to Fabro, which automatically:
+4. GitHub redirects back to Fabro. For safety, complete this step through `localhost` (or an SSH tunnel to `localhost`) because the setup callback only accepts local requests. Fabro then automatically:
    - Exchanges the temporary code for permanent app credentials
    - Writes `app_id`, `client_id`, and `slug` to `~/.fabro/server.toml`
    - Writes `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_WEBHOOK_SECRET`, and `GITHUB_APP_PRIVATE_KEY` to `.env`

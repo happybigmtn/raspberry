@@ -1,5 +1,12 @@
 import { redirect } from "react-router";
 import { AuthLayout } from "../components/auth-layout";
+import {
+  buildSetupCallbackUrl,
+  buildSetupStateCookie,
+  generateSetupState,
+  isLoopbackRequest,
+  shouldUseSecureCookie,
+} from "../lib/auth-policy.server";
 import { isGitHubAppConfigured } from "../lib/github.server";
 import type { Route } from "./+types/setup";
 
@@ -8,16 +15,26 @@ export function loader({ request }: Route.LoaderArgs) {
     return redirect("/");
   }
 
+  if (!isLoopbackRequest(request)) {
+    return {
+      error:
+        "GitHub App setup is only available from localhost. Open Fabro through a local browser or SSH tunnel to finish setup safely.",
+      manifest: null,
+    };
+  }
+
   const url = new URL(request.url);
   const baseUrl = `${url.protocol}//${url.host}`;
+  const setupState = generateSetupState();
+  const callbackUrl = buildSetupCallbackUrl(baseUrl, setupState);
   const suffix = Math.random().toString(16).slice(2, 8);
 
   const manifest = {
     name: `Fabro-${suffix}`,
     url: baseUrl,
-    redirect_url: `${baseUrl}/setup/callback`,
+    redirect_url: callbackUrl,
     callback_urls: [`${baseUrl}/auth/callback`],
-    setup_url: `${baseUrl}/setup/callback`,
+    setup_url: callbackUrl,
     public: false,
     default_permissions: {
       contents: "write",
@@ -30,11 +47,35 @@ export function loader({ request }: Route.LoaderArgs) {
     default_events: [] as string[],
   };
 
-  return { manifest: JSON.stringify(manifest), baseUrl };
+  return Response.json(
+    { manifest: JSON.stringify(manifest), error: null },
+    {
+      headers: {
+        "Set-Cookie": buildSetupStateCookie(
+          setupState,
+          shouldUseSecureCookie(request),
+        ),
+      },
+    },
+  );
 }
 
 export default function Setup({ loaderData }: Route.ComponentProps) {
-  const { manifest } = loaderData;
+  const { manifest, error } = loaderData;
+  const manifestValue = manifest ?? "";
+
+  if (error) {
+    return (
+      <AuthLayout>
+        <h1 className="text-center text-lg font-semibold text-fg">
+          Local setup required
+        </h1>
+        <p className="mt-2 text-center text-sm text-fg-3">
+          {error}
+        </p>
+      </AuthLayout>
+    );
+  }
 
   return (
     <AuthLayout>
@@ -49,7 +90,7 @@ export default function Setup({ loaderData }: Route.ComponentProps) {
         action="https://github.com/settings/apps/new"
         className="mt-6"
       >
-        <input type="hidden" name="manifest" value={manifest} />
+        <input type="hidden" name="manifest" value={manifestValue} />
         <button
           type="submit"
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-teal-300"
