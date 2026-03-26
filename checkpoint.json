@@ -1,36 +1,51 @@
 {
-  "timestamp": "2026-03-26T20:25:40.133259504Z",
-  "current_node": "plan",
+  "timestamp": "2026-03-26T20:25:40.199653926Z",
+  "current_node": "implement",
   "completed_nodes": [
     "start",
-    "plan"
+    "plan",
+    "implement"
   ],
   "node_retries": {
+    "implement": 1,
     "plan": 1,
     "start": 1
   },
   "context_values": {
-    "internal.thread_id": "start",
+    "internal.thread_id": "plan",
     "graph.goal": "Implement and validate a feature",
     "failure_signature": "",
-    "current.preamble": "Goal: Implement and validate a feature\n",
+    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n",
     "response.plan": "[Simulated] Response for stage: plan",
     "internal.fidelity": "compact",
+    "internal.retry_count.implement": 1,
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX59A05XXVEVR66GNKE7TC/worktree",
-    "last_stage": "plan",
-    "current_node": "plan",
+    "last_stage": "implement",
+    "current_node": "implement",
     "internal.node_visit_count": 1,
     "internal.run_id": "01KMNX59A05XXVEVR66GNKE7TC",
     "outcome": "success",
     "internal.retry_count.plan": 1,
-    "last_response": "[Simulated] Response for stage: plan",
+    "last_response": "[Simulated] Response for stage: implement",
     "graph.rankdir": "LR",
     "failure_class": "",
+    "thread.plan.current_node": "implement",
     "internal.retry_count.start": 1,
+    "response.implement": "[Simulated] Response for stage: implement",
     "thread.start.current_node": "plan"
   },
   "logs": [],
   "node_outcomes": {
+    "implement": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "implement",
+        "last_response": "[Simulated] Response for stage: implement",
+        "response.implement": "[Simulated] Response for stage: implement"
+      },
+      "notes": "[Simulated] implement",
+      "duration_ms": 0
+    },
     "plan": {
       "status": "success",
       "context_updates": {
@@ -47,9 +62,10 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "implement",
+  "next_node_id": "validate",
   "node_visits": {
     "plan": 1,
+    "implement": 1,
     "start": 1
   }
 }
