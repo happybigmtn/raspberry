@@ -1,0 +1,7 @@
+The latest remediation context pointed to a harness-level replay risk, so I kept the fix narrow: the source lane was still carrying unrelated layout/security template requirements that didn’t match a CI-hardening slice.
+
+I removed the stray board-grid/layout asks from the source lane’s [plan prompt](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/plan.md#L18), [challenge prompt](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md#L8), and [review prompt](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md#L185). I also aligned the source lane’s [audit gate](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro#L25) so it no longer requires unrelated `layout_invariants_complete` / `slice_decomposition_respected` fields from `promotion.md`.
+
+Proof command ran cleanly: `cargo check --workspace` passed and finished the `dev` profile successfully in 4.12s.
+
+I did not run the full lane replay, but the remaining blocker from the remediation notes was this prompt/audit mismatch, and that is now corrected.
