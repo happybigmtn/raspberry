@@ -1,0 +1,369 @@
+diff --git a/outputs/greenfield-bootstrap-reliability/review.md b/outputs/greenfield-bootstrap-reliability/review.md
+new file mode 100644
+index 00000000..a392144b
+--- /dev/null
++++ b/outputs/greenfield-bootstrap-reliability/review.md
+@@ -0,0 +1,212 @@
++# Greenfield Bootstrap and Runtime Asset Reliability — Review
++
++## Assessment Date
++2026-03-26
++
++## Current Implementation Status
++
++### ✅ Scaffold-First Ordering (Planning)
++
++**Location**: `lib/crates/fabro-synthesis/src/planning.rs`, lines 752–843
++
++**Code Review**:
++```rust
++// Scaffold-first ordering: identify infrastructure/scaffold plans and
++// inject them as implicit dependencies for all non-infrastructure plans.
++let scaffold_plan_ids: Vec<String> = registry
++    .plans
++    .iter()
++    .filter(|p| {
++        p.mapping_source == PlanMappingSource::Contract
++            && (p.category == PlanCategory::Infrastructure
++                || p.plan_id == "project-scaffold"
++                || p.plan_id == "workspace-setup")
++    })
++    .map(|p| p.plan_id.clone())
++    .collect();
++```
++
++**Strengths**:
++- Explicit check for `PlanMappingSource::Contract` prevents false positives on legacy master-plan projects
++- Handles composite scaffold plans by resolving to last child
++- Properly excludes infrastructure plans themselves from dependency injection
++- Comprehensive filtering by category AND ID
++
++**Concerns**:
++- **No unit test**: The logic exists but has no `#[test]` coverage
++- Debug output via `eprintln!` instead of structured logging (minor)
++
++**Test Gap**: `cargo nextest run -p fabro-synthesis -- scaffold_first` does not exist
++
++---
++
++### ❌ Bootstrap Verification Gate (Render)
++
++**Location**: `lib/crates/fabro-synthesis/src/render.rs`
++
++**Current State**: The `render_workflow_graph()` function generates workflows for `WorkflowTemplate::Bootstrap` but does NOT include language-specific health checks.
++
++**Code Gap** (in `render_workflow_graph()` Bootstrap branch):
++```rust
++// Current Bootstrap workflow (simplified):
++verify  [label="Verify", shape=parallelogram, script="...", goal_gate=true]
++// No language-specific health check before verify
++```
++
++**Required Addition**:
++```rust
++// Insert between implement and verify stages:
++bootstrap_health [label="Bootstrap Health", shape=parallelogram, script="{bootstrap_health_command}", goal_gate=true]
++// Then: implement -> bootstrap_health -> verify
++```
++
++**Language Detection**: Need to detect project type from `target_repo` before rendering.
++
++---
++
++### ❌ Runtime-Stable Asset Resolution (Render)
++
++**Location**: `lib/crates/fabro-synthesis/src/render.rs`
++
++**Current Code**:
++```rust
++let prompt_path = |name: &str| -> String {
++    format!(
++        "@../../prompts/{}/{}/{}.md",
++        lane.workflow_family(),
++        lane.slug(),
++        name
++    )
++};
++```
++
++**Problem**: `../../prompts/` is relative to the workflow file location, which breaks when workflows are copied to `~/.fabro/runs/<run-id>/`.
++
++**Impact**: Every `fabro run` from a detached run directory will fail prompt loading.
++
++**Required Change**: Use `${FABRO_PROJECT_ROOT}` substitution:
++```rust
++let prompt_path = |name: &str| -> String {
++    format!(
++        "@${FABRO_PROJECT_ROOT}/malinka/prompts/{}/{}/{}.md",
++        lane.workflow_family(),
++        lane.slug(),
++        name
++    )
++};
++```
++
++**Consumer Impact**: Requires `fabro-workflows` to set `FABRO_PROJECT_ROOT` environment variable when executing in detached runs. Check `lib/crates/fabro-workflows/src/handler/agent.rs` and `lib/crates/fabro-cli/src/commands/run.rs`.
++
++---
++
++### ❌ TypeScript Quality Checks (Render)
++
++**Location**: `lib/crates/fabro-synthesis/src/render.rs`, `implementation_quality_command()`
++
++**Current Coverage**:
++- ✅ Rust: overflow detection, f64 truncation warnings
++- ✅ Python: syntax validation, duplicate function detection
++- ❌ TypeScript: No checks
++
++**Required TypeScript Checks**:
++
++1. **`any` usage in exported signatures**:
++   ```bash
++   # Pattern: export function foo(): any OR export const bar: any
++   rg -n 'export (function|const|class|interface|type) \w+.*: any' -g '*.ts' -g '*.tsx'
++   ```
++
++2. **Missing imports in test files**:
++   - Heuristic: if test file is `foo.test.ts`, it should import from `foo.ts`
++   - Check for mismatched module paths
++
++3. **Schema file existence** (if declared in plan):
++   - Extract schema path from `prompt_context`
++   - `test -f "$schema_path"`
++
++---
++
++## Test Coverage Assessment
++
++| Test | Status | Location |
++|------|--------|----------|
++| `scaffold_first` | ❌ Missing | Need to add to `src/planning.rs` |
++| `bootstrap_verify` | ❌ Missing | Need to add to `src/render.rs` |
++| `quality_typescript` | ❌ Missing | Need to add to `src/render.rs` |
++| Existing synthesis tests | ✅ 5 passing | `tests/synthesis.rs` |
++| Existing render tests | ✅ 86 passing | `src/render.rs` |
++
++---
++
++## Dependencies and Risks
++
++### Risks
++
++1. **False positive infrastructure detection**: A plan named "infrastructure" that is actually a feature plan gets treated as a scaffold dependency.
++   - **Status**: Mitigated by requiring `PlanMappingSource::Contract`
++
++2. **Bootstrap verification passes in target repo but fails in detached runs**: `@../../prompts/...` resolves under `~/.fabro/` instead of project root.
++   - **Status**: Not mitigated — requires `${FABRO_PROJECT_ROOT}` fix
++
++3. **TypeScript quality gate passes with `any[]` parameters**: No schema to check against when scaffold hasn't completed.
++   - **Status**: Mitigated by scaffold-first ordering ensuring scaffold completes first
++
++---
++
++## Implementation Checklist
++
++### Milestone 1: Scaffold-First Ordering Test
++- [ ] Add `#[test] scaffold_first` to `src/planning.rs`
++- [ ] Create test fixture with Infrastructure plan and Feature plan
++- [ ] Verify feature plan dependencies include scaffold plan
++
++### Milestone 2: Bootstrap Verification Gate
++- [ ] Add `bootstrap_health_command()` function to `src/render.rs`
++- [ ] Implement language detection from `target_repo`
++- [ ] Add health node to Bootstrap workflow graph
++- [ ] Add `#[test] bootstrap_verify` test
++
++### Milestone 3: Runtime-Stable Asset Resolution
++- [ ] Update `prompt_path()` to use `${FABRO_PROJECT_ROOT}`
++- [ ] Verify `fabro-workflows` sets `FABRO_PROJECT_ROOT` in run context
++- [ ] Add integration test for detached run validation
++
++### Milestone 4: TypeScript Quality Checks
++- [ ] Add TypeScript detection to `implementation_quality_command()`
++- [ ] Implement `any` usage detection
++- [ ] Implement missing import validation
++- [ ] Add `#[test] quality_typescript` test
++
++### Milestones 5-6: Live Validations
++- [ ] Run tonofcrap 30-cycle autodev
++- [ ] Create fresh Rust project fixture
++- [ ] Run scaffold-first validation
++
++---
++
++## Effort Estimate
++
++| Milestone | Estimated Effort | Complexity |
++|-----------|-----------------|------------|
++| 1: Scaffold-First Test | 2-4 hours | Low |
++| 2: Bootstrap Verification | 4-8 hours | Medium |
++| 3: Runtime-Stable Assets | 2-4 hours | Medium |
++| 4: TypeScript Quality | 4-6 hours | Medium |
++| 5-6: Live Validations | 8-16 hours | High |
++
++**Total**: ~20-38 hours
++
++---
++
++## Recommendation
++
++Proceed with implementation in order:
++
++1. **First**: Add scaffold-first test (validates existing code works)
++2. **Second**: Runtime-stable asset resolution (small change, high impact)
++3. **Third**: Bootstrap verification gate (requires language detection design)
++4. **Fourth**: TypeScript quality checks (follows Python pattern in codebase)
++5. **Fifth**: Live validations (end-to-end proof)
++
++The scaffold-first ordering logic is already correct; adding a test first validates the existing implementation before building new features on top of it.
+diff --git a/outputs/greenfield-bootstrap-reliability/spec.md b/outputs/greenfield-bootstrap-reliability/spec.md
+new file mode 100644
+index 00000000..5ebfe4a5
+--- /dev/null
++++ b/outputs/greenfield-bootstrap-reliability/spec.md
+@@ -0,0 +1,145 @@
++# Greenfield Bootstrap and Runtime Asset Reliability — Spec
++
++## Purpose
++
++This spec defines the durable behavior required for `fabro synth create` to produce packages where:
++
++1. Scaffold/infrastructure lanes complete **before** any feature lanes dispatch
++2. Generated runtime assets (workflows, prompts) resolve correctly when copied into `~/.fabro/runs/`
++3. Agents never write language-specific code into repos missing their language infrastructure
++4. Quality gates are type-aware and catch language-specific issues
++
++## Scope
++
++This spec applies to the greenfield bootstrap flow: `fabro synth create` → `raspberry autodev` on repos with no pre-existing `malinka/` package.
++
++## Current State
++
++### What Already Exists
++
++**Scaffold-first ordering** (`lib/crates/fabro-synthesis/src/planning.rs`):
++- Lines 752–843 implement scaffold dependency injection
++- Identifies scaffold plans via `PlanCategory::Infrastructure` or plan ID matching `project-scaffold`/`workspace-setup`
++- Only applies to plans from YAML plan-mappings (Opus-decomposed) to avoid false positives
++- **Gap**: No unit test exists to verify this behavior
++
++**Bootstrap guard** (partial, `fabro-workflows/src/`):
++- Commit `cb0c016e` added a bootstrap guard for fresh projects
++- **Gap**: No language-specific project health markers exist
++
++**Quality gate** (`lib/crates/fabro-synthesis/src/render.rs`):
++- `implementation_quality_command()` exists (lines ~2300–2500)
++- Checks for placeholders, warnings, semantic risk, lane sizing, etc.
++- **Gap**: No TypeScript-specific checks (no `any` detection, no missing import checks)
++
++**Prompt/workflow asset references** (`lib/crates/fabro-synthesis/src/render.rs`):
++- `prompt_path()` generates: `@../../prompts/{family}/{slug}/{name}.md`
++- These are **relative** paths that may break in detached run directories
++
++### What Is Missing
++
++| Milestone | Status | Gap |
++|-----------|--------|-----|
++| Scaffold-first ordering test | ❌ Not done | No unit test `scaffold_first` |
++| Bootstrap verification gate | ❌ Not done | No language-specific health checks in scaffold workflow |
++| Runtime-stable asset refs | ❌ Not done | `@../../prompts/...` breaks in detached runs |
++| TypeScript quality checks | ❌ Not done | No `any` detection, no import validation |
++| tonofcrap 30-cycle validation | ⏸ Deferred | Requires above milestones |
++| Fresh Rust project validation | ⏸ Deferred | Requires above milestones |
++
++## Architecture
++
++### Target Greenfield Flow
++
++```
++scaffold ──> [bootstrap verify] ──> feature-1 ──┐
++                                 ──> feature-2 ──┘
++```
++
++### Bootstrap Verification Gate
++
++The scaffold lane workflow must include a verification node that checks language-specific project health markers **before** feature lanes dispatch. This gate is inserted into the scaffold workflow's `verify` stage.
++
++#### Language-Specific Health Markers
++
++| Language | Required Markers | Verification Command |
++|----------|-----------------|---------------------|
++| Node.js/TypeScript | `package.json` exists, `node_modules/` populated, `tsconfig.json` present | `test -f package.json && test -d node_modules && test -f tsconfig.json` |
++| Rust | `Cargo.toml` valid, `cargo check` passes | `cargo check --quiet` |
++| Python | `pyproject.toml` or `requirements.txt` exists | `test -f pyproject.toml -o -f requirements.txt` |
++
++#### Implementation Location
++
++- **File**: `lib/crates/fabro-synthesis/src/render.rs`
++- **Function**: `render_workflow_graph()`
++- **Target**: `WorkflowTemplate::Bootstrap` and `WorkflowTemplate::ServiceBootstrap` branches
++
++### Runtime-Stable Asset Resolution
++
++#### Problem
++
++Generated workflows contain prompt references like:
++```
++@../../prompts/bootstrap/rules/plan.md
++```
++
++When Fabro copies `graph.fabro` into `~/.fabro/runs/<run-id>/`, this path resolves relative to the run directory, not the project root.
++
++#### Solution Options
++
++1. **Inline prompts**: Copy prompt content directly into the workflow graph
++2. **Absolute paths with env var substitution**: `@${FABRO_PROJECT_ROOT}/malinka/prompts/...`
++3. **Copy prompts to run context**: Bundle prompts alongside the workflow in the run dir
++
++**Decision**: Option 2 — use `${FABRO_PROJECT_ROOT}` environment variable substitution. This preserves the current workflow format while making resolution runtime-stable.
++
++#### Implementation Location
++
++- **File**: `lib/crates/fabro-synthesis/src/render.rs`
++- **Function**: `render_workflow_graph()` → `prompt_path()` lambda
++- **Change**: Replace `@../../prompts/` with `@${FABRO_PROJECT_ROOT}/malinka/prompts/`
++
++### TypeScript Quality Checks
++
++#### Required Checks
++
++1. **`any` usage detection**: Exported function signatures should not use `any`
++   ```bash
++   rg -n 'export (function|const|class) \w+.*: any' -g '*.ts'
++   ```
++
++2. **Missing import validation**: Test files should import from the module they claim to test
++   - This is heuristic-based; check that test file paths match imported module paths
++
++3. **Schema file existence**: If plan context declares a schema, verify it exists
++   - Extract schema path from plan context (look for `schema`, `types`, `api` references)
++   - `test -f` the extracted path
++
++#### Implementation Location
++
++- **File**: `lib/crates/fabro-synthesis/src/render.rs`
++- **Function**: `implementation_quality_command()`
++- **Add**: TypeScript-specific quality script block after existing Rust/Python checks
++
++## Validation Criteria
++
++The implementation is complete when:
++
++1. ✅ `cargo nextest run -p fabro-synthesis -- scaffold_first` passes
++2. ✅ `cargo nextest run -p fabro-synthesis -- bootstrap_verify` passes
++3. ✅ `cargo nextest run -p fabro-synthesis -- quality_typescript` passes
++4. ✅ `fabro validate` works on detached run directories with `${FABRO_PROJECT_ROOT}` resolution
++5. ✅ tonofcrap 30-cycle autodev completes without infrastructure-caused failures
++6. ✅ Fresh Rust project scaffold-first validation passes
++
++## Non-Goals
++
++- This spec does not address multi-repo workflows
++- This spec does not address Windows path resolution
++- This spec does not address remote/Docker sandbox environments (separate concern)
++
++## Related Documents
++
++- `genesis/plans/004-greenfield-bootstrap-reliability.md` — ExecPlan with Milestones 1-6
++- `genesis/plans/001-master-plan.md` — Phase 0 dependency ordering
++- `plans/032426-greenfield-bootstrapping-and-code-quality.md` — Historical root cause analysis
