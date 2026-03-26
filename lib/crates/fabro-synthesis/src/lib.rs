@@ -6,7 +6,7 @@ pub mod render;
 pub use blueprint::{
     import_existing_package, load_blueprint, save_blueprint, validate_blueprint, BlueprintArtifact,
     BlueprintInputs, BlueprintLane, BlueprintPackage, BlueprintProgram, BlueprintUnit,
-    ProgramBlueprint, WorkflowTemplate,
+    BOOTSTRAP_REQUIRED_ARTIFACTS, ProgramBlueprint, WorkflowTemplate,
 };
 pub use error::{BlueprintError, PlanningError, RenderError};
 pub use planning::{

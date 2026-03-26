@@ -1,0 +1,39 @@
+version: 1
+program:
+  id: bootstrap-verify-test
+  max_parallel: 1
+units:
+  - id: demo
+    title: Demo Bootstrap Unit
+    output_root: outputs/demo
+    artifacts:
+      - id: implementation
+        path: implementation.md
+      - id: verification
+        path: verification.md
+      - id: quality
+        path: quality.md
+      - id: promotion
+        path: promotion.md
+      - id: integration
+        path: integration.md
+    milestones:
+      - id: implemented
+        requires: [implementation, verification]
+      - id: verified
+        requires: [implementation, verification, quality]
+      - id: merge_ready
+        requires: [implementation, verification, quality, promotion]
+      - id: integrated
+        requires: [integration]
+    lanes:
+      - id: bootstrap
+        kind: platform
+        title: Demo Bootstrap Lane
+        family: bootstrap
+        workflow_family: bootstrap
+        template: bootstrap
+        goal: Bootstrap the demo feature from scratch.
+        managed_milestone: implemented
+        produces: [implementation, verification, quality, promotion, integration]
+        verify_command: cargo check --workspace

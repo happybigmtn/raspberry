@@ -1861,6 +1861,38 @@ fn render_lane(
             remove_file_if_exists(&prompt_dir.join("promote.md"))?;
         }
     }
+
+    // Write the five durable artifact placeholder files for bootstrap/implementation lanes.
+    if matches!(
+        lane.template,
+        WorkflowTemplate::Bootstrap | WorkflowTemplate::ServiceBootstrap | WorkflowTemplate::Implementation
+    ) {
+        let artifact_dir = lane_artifact_dir(
+            blueprint
+                .units
+                .iter()
+                .find(|u| u.id == unit_id)
+                .unwrap_or(blueprint.units.first().unwrap()),
+            lane,
+        );
+        let unit_output_root = layout.target_repo.join(
+            blueprint
+                .units
+                .iter()
+                .find(|u| u.id == unit_id)
+                .map(|u| &u.output_root)
+                .unwrap_or(&PathBuf::from(".")),
+        );
+        for artifact_id in crate::blueprint::BOOTSTRAP_REQUIRED_ARTIFACTS {
+            let artifact_path = unit_output_root.join(&artifact_dir).join(format!("{artifact_id}.md"));
+            let placeholder = format!(
+                "# {}\n\n_Placeholder artifact — to be populated by the lane agent._\n",
+                artifact_id.replace('_', " ")
+            );
+            write_file(&artifact_path, &placeholder, &mut written_files)?;
+        }
+    }
+
     Ok(written_files)
 }
 

@@ -134,6 +134,15 @@ pub struct BlueprintLane {
     pub health_command: Option<String>,
 }
 
+/// The five durable artifact IDs that a bootstrap/implementation lane must produce.
+pub const BOOTSTRAP_REQUIRED_ARTIFACTS: &[&str] = &[
+    "implementation",
+    "verification",
+    "quality",
+    "promotion",
+    "integration",
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowTemplate {
@@ -358,6 +367,24 @@ impl BlueprintLane {
 
     pub fn workflow_family(&self) -> &str {
         self.workflow_family.as_deref().unwrap_or(&self.family)
+    }
+
+    /// Returns true if this lane is a bootstrap lane (Bootstrap or ServiceBootstrap template).
+    pub fn is_bootstrap(&self) -> bool {
+        matches!(
+            self.template,
+            WorkflowTemplate::Bootstrap | WorkflowTemplate::ServiceBootstrap
+        )
+    }
+}
+
+impl BlueprintUnit {
+    /// Returns the five durable artifact IDs that a bootstrap/implementation lane must produce.
+    pub fn bootstrap_required_artifacts(&self) -> Vec<String> {
+        BOOTSTRAP_REQUIRED_ARTIFACTS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
     }
 }
 
