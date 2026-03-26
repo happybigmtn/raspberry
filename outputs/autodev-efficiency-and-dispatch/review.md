@@ -1,282 +1,163 @@
 # Autodev Execution Path and Dispatch Truth — Review
 
-## Review Status: **APPROVED WITH BLOCKERS**
+## Review Status: APPROVED WITH REQUIRED FIXES
 
-This review evaluates the specification for the first slice of autodev execution path and dispatch truth work (Plan 003, Phase 0). The spec is well-researched and identifies real gaps. However, **security review reveals trust boundary concerns that must be addressed before implementation proceeds.**
+**Spec**: `outputs/autodev-efficiency-and-dispatch/spec.md`
+**Phase 0 gate alignment**: Plan 003, Phase 0 stabilization
+**Reviewer**: Supervisory plane
+**Date**: 2026-03-26
 
 ---
 
-## Summary Assessment
+## Summary
 
-| Criterion | Rating | Evidence |
-|-----------|--------|----------|
-| Correctness | ✓ Good | Identifies 5 concrete gaps with code locations |
-| Milestone Fit | ✓ Good | Aligns with Phase 0 gate (10 lanes, 0 bootstrap failures) |
-| Remaining Blockers | △ Medium | Security gaps in trust boundaries; threading race conditions |
+The spec identifies real gaps in the autodev execution path. Three blockers must be resolved before implementation; the remaining items are recommended improvements. Phase 0 gate success requires evidence of all five acceptance criteria.
+
+| Category | Finding | Severity |
+|----------|---------|----------|
+| Correctness | Stale lane reclassification has a state-file durability window | Required |
+| Correctness | Evolve in background thread risks partial package state | Required |
+| Security | Telemetry `message` field may leak file paths or env vars | Required |
+| Completeness | Bootstrap failure definition is implicit, not explicit | Recommended |
+| Correctness | `dispatch_summary` is per-session but not documented as such | Recommended |
+
+---
+
+## Gate Alignment
+
+The Phase 0 gate requires:
+> On a proving-ground repo, `raspberry autodev --max-parallel 10` sustains 10 running lanes for at least 20 cycles, produces zero bootstrap-time validation failures caused by missing CLI subcommands or unresolved prompt/workflow refs, and lands at least 3 lanes to trunk.
+
+| Gate Requirement | Spec Coverage | Status |
+|-----------------|---------------|--------|
+| 10 lanes sustained for 20 cycles | Section 2.3 (stale slots) | ✓ Covered |
+| 0 bootstrap failures from runtime path | Sections 1.1–1.3 | ✓ Covered |
+| 3 lanes to trunk | Indirect (requires correct execution) | ✓ Implicit |
+
+**Gap**: "bootstrap validation failure" is not explicitly defined. The acceptance criteria should require `runtime_path_errors` to remain empty for 20 consecutive cycles.
 
 ---
 
 ## Correctness Review
 
-### Gap 1: Stale Lane Reclassification (Section 2.1)
-**Verdict**: Correct diagnosis. The spec correctly identifies that `refresh_program_state` updates stale lanes to `Failed`, but `evaluate_program` re-classifies them as `Running` because `evaluate_lane` loads a fresh `run_snapshot` from an absent run directory.
+### Finding 1: Stale Lane Reclassification — State-File Durability Window
 
-**Proposed Fix Assessment**: The fix in `evaluate.rs` to check staleness when building `run_snapshot` is sound. However, the alternative fix (preferring runtime record over snapshot) is **riskier**—it creates a second source of truth that could diverge.
+**Location**: `program_state.rs:383` (`refresh_program_state`), `evaluate.rs:1021` (`is_active`)
 
-**Recommendation**: Implement the first fix (snapshot-level staleness detection) and add a consistency assertion that `runtime_record.status` and `run_snapshot.status` must agree after refresh.
+**Analysis**: `refresh_program_state` correctly updates stale `Running` lanes to `Failed`. However, if the process crashes between the in-memory update and the fsync of `program_state.json`, the on-disk state still shows `Running`. On restart, `is_active()` falls through to the `runtime_record` alternative, which would return `true` if the record still shows `Running`.
 
-### Gap 2: Runtime Path Validation (Section 2.2)
-**Verdict**: Correct diagnosis. Pre-flight validation should catch missing graphs before dispatch consumes a slot.
+**Severity**: Medium. The crash window is small (single write), and the consequence is a momentary slot consumption error, not data loss.
 
-**Concern**: The proposed `DispatchError::RuntimePathInvalid` variant needs careful error classification—is this a `TransientLaunchFailure` (retryable) or `PermanentSetupFailure` (requires operator intervention)?
+**Required fix**: Add an idempotency property — `evaluate_program` must produce the same classification if run twice with the same inputs, even if state file is mid-write. One approach: after marking a lane `Failed` due to staleness, record the detection timestamp in the state file atomically, so a subsequent load can distinguish "never checked" from "checked and found stale."
 
-### Gap 3: Evolve Blocking (Section 4)
-**Verdict**: Correct diagnosis. Synchronous `synth evolve` blocks dispatch.
+### Finding 2: Evolve Background Thread — Partial Package State Risk
 
-**Concern**: See Security Pass 2 (Coupled State) for race condition analysis.
+**Location**: `autodev.rs:2333` (`run_synth_evolve`), Section 4 of spec
 
-### Gap 4: Telemetry Completeness (Section 3)
-**Verdict**: Correct and necessary. The proposed `AutodevCycleReport` extensions are well-designed.
+**Analysis**: Running `run_synth_evolve` in a spawned thread without atomic package updates creates a window where `malinka/` contains partially-evolved content. A dispatch that starts during this window could use an inconsistent package.
 
-### Gap 5: Prompt Resolution (Section 1.2)
-**Verdict**: Partial. The spec acknowledges three resolution strategies but does not mandate which one to implement.
+**Severity**: High. Inconsistent package state can cause non-deterministic lane outcomes.
 
-**Risk**: Without a mandated strategy, different code paths may implement different resolutions, leading to inconsistent behavior.
+**Required fix**: Use temp directory + atomic rename for evolve output. Alternatively, have evolve produce a manifest hash; dispatch validates the hash before using the package.
 
----
+### Finding 3: Greedy Dispatch — Selection Exhaustion Not Propagated
 
-## Milestone Fit Review
+**Location**: `autodev.rs:551` (`select_ready_lanes_for_dispatch`), Section 3.1
 
-### Phase 0 Gate Alignment
+**Analysis**: When `select_ready_lanes_for_dispatch` returns fewer lanes than `available_slots` due to family-diversity constraints, the telemetry does not capture `SelectionExhausted { candidates: N }`.
 
-The 180-Day Plan (genesis/plans/001-master-plan.md) defines the Phase 0 gate as:
-> "On a proving-ground repo, `raspberry autodev --max-parallel 10` sustains 10 running lanes for at least 20 cycles, produces zero bootstrap-time validation failures caused by missing CLI subcommands or unresolved prompt/workflow refs, and lands at least 3 lanes to trunk."
-
-**Alignment Check**:
-
-| Gate Requirement | Spec Coverage | Verdict |
-|------------------|---------------|---------|
-| 10 lanes sustained | Section 2.3 (stale lanes don't consume slots) | ✓ Covered |
-| 0 bootstrap failures | Sections 1.1, 1.2, 1.3 (runtime path validation) | ✓ Covered |
-| 3 lanes to trunk | Indirect—requires correct execution | ✓ Implicit |
-
-**Gap**: The spec does not explicitly define "bootstrap validation failure" telemetry. The acceptance criteria should specify that `runtime_path_errors` in the cycle report must remain empty for 20 consecutive cycles.
+**Severity**: Low. The spec defines the fix correctly; the finding is that the implementation must wire it through.
 
 ---
 
-## Nemesis-Style Security Review
+## Security Review
 
-### Pass 1: First-Principles Challenge
+### Finding 4: Telemetry Message Field — Potential Information Leak
 
-#### Trust Boundaries
+**Location**: Proposed `RuntimePathError.message` field
 
-**Question**: Who can trigger the dangerous actions this slice enables?
+**Analysis**: If `message` contains file paths (which include home directory paths on Linux), environment variable dumps, or command-line arguments, these could leak into telemetry outputs.
 
-| Action | Current Authority | Risk |
-|--------|-------------------|------|
-| Dispatch lane execution | `raspberry autodev` or `raspberry execute` | Low—requires local manifest access |
-| Mark lane as stale/failed | `refresh_program_state()` internal | **Medium—no audit trail** |
-| Trigger `synth evolve` | `should_trigger_evolve()` logic | **Medium—can mutate checked-in package** |
-| Modify `program_state.json` | Any process with write access to `.raspberry/` | **High—no integrity checks** |
+**Severity**: Medium.
 
-**Finding**: The spec does not address integrity of `.raspberry/*-state.json` files. A malicious or buggy process could:
-1. Mark a completed lane as `Ready` to trigger re-execution
-2. Clear `failed` status to bypass failure classification
-3. Modify `last_evolve_at` to force or skip evolution
+**Required fix**: All `RuntimePathError.message` values must be processed through `fabro-util::redaction` before serialization. Specifically:
+- Home directory paths must be redacted to `~`
+- Environment variable contents must be redacted unless the variable name is on an explicit allow-list
+- Command-line arguments must not include secret tokens
 
-**Recommendation**: Add a section on state file integrity—at minimum, document that `.raspberry/` should be writable only by the autodev operator user.
+### Finding 5: State File Permission Model — Not Documented
 
-#### Authority Assumptions
+**Location**: `.raspberry/*-state.json`
 
-**Question**: What authority does the autodev loop assume it has?
+**Analysis**: The spec does not address who can write to state files. A malicious or buggy process could:
+- Mark a completed lane as `Ready` to trigger re-execution
+- Clear `failed` status to bypass failure classification
+- Modify `last_finished_at` to break `stale_failure_superseded_by_render` logic
 
-The spec assumes:
-- Write access to `~/.fabro/runs/<run-id>/` (run directories)
-- Write access to `.raspberry/*-state.json` (program state)
-- Execute permission on `fabro_bin` (CLI binary)
-- Read access to target repo
+**Severity**: Medium (for multi-user systems; low for single-operator use).
 
-**Missing**: The spec does not specify what happens when any of these assumptions are violated. The error handling should be explicit:
-- Permission denied on state file → `PermanentSetupFailure` with operator alert
-- `fabro_bin` not executable → `TransientLaunchFailure` (may be temporary build issue)
-- Run directory not creatable → `PermanentSetupFailure`
-
-#### Secret Handling
-
-**Question**: Are secrets exposed in the new telemetry fields?**
-
-Review of proposed `RuntimePathError`:
-```rust
-pub struct RuntimePathError {
-    pub lane_key: String,
-    pub error_type: String,
-    pub message: String,
-}
-```
-
-**Risk**: If `message` contains:
-- File paths that include home directory (PII)
-- Environment variable dumps
-- Command-line arguments with tokens
-
-**Recommendation**: Add a requirement that `RuntimePathError.message` must be redacted via `fabro-util::redaction` before serialization.
-
-### Pass 2: Coupled-State Review
-
-#### Paired State Surfaces
-
-**Paired Surface 1: `program_state.json` ↔ `~/.fabro/runs/<run-id>/`**
-
-These two state surfaces must agree:
-- `program_state` records which run ID is current for a lane
-- Run directory contains the actual run state
-
-**Inconsistency Scenario**:
-1. `refresh_program_state` detects stale run, updates record to `Failed`
-2. Before `program_state.json` is written, process crashes
-3. On restart, `program_state` still shows `Running`, run directory is gone
-4. `evaluate_program` loads fresh snapshot from absent directory → reclassifies as `Running`
-
-**Mitigation in Spec**: The spec's Gap 1 fix (snapshot-level staleness detection) helps, but **does not eliminate the window** between state file write and evaluation.
-
-**Recommendation**: Add idempotency requirement—`evaluate_program` must produce the same classification if run twice with the same inputs, even if state file is mid-write.
-
-**Paired Surface 2: `last_evolve_at` ↔ `malinka/` package content**
-
-When `synth evolve` runs in a background thread (Gap 3 fix):
-- Main thread sets `last_evolve_at = Some(now)` optimistically
-- Evolve thread mutates `malinka/` files
-- If evolve fails, `malinka/` is in partially-evolved state
-
-**Race Condition**:
-```
-Cycle N:   Evolve starts, sets last_evolve_at
-Cycle N+1: Dispatch uses evolved package (may be partial)
-Cycle N+2: Evolve fails, package reverted (or not)
-```
-
-**Finding**: The spec's "Option 1 (thread-based)" approach has a **serious consistency issue**—the next cycle may see partially-evolved package state.
-
-**Recommendation**: Change the threading model:
-- Option A: Evolve to temp directory, atomic rename on success
-- Option B: Evolve produces a manifest hash; dispatch validates hash before using
-- Option C: Block only on first evolve (package creation), not subsequent evolves
-
-**Paired Surface 3: `dispatch_summary` ↔ actual dispatch history**
-
-Rolling statistics in `AutodevCurrentSnapshot.dispatch_summary` are derived state:
-```rust
-pub struct DispatchSummary {
-    pub cycles_with_dispatch: usize,
-    pub idle_cycles: usize,
-    pub total_dispatched: usize,
-    pub failed_bootstrap: usize,
-    pub stale_running_reclaimed: usize,
-}
-```
-
-**Risk**: If the autodev process restarts, these counters reset to zero. An operator monitoring `idle_cycles` would see a sudden drop, misinterpreting it as recovery.
-
-**Recommendation**: Either:
-1. Persist `dispatch_summary` to `.raspberry/dispatch-summary.json` across restarts
-2. Change to timestamp-based metrics ("idle cycles in last hour") that are recomputed from run history
-3. Document that these are per-session metrics, not durable truth
-
-#### Idempotence and Pairing Behavior
-
-**Question**: Is every mutation path idempotent?**
-
-| Mutation | Idempotent? | Evidence |
-|----------|-------------|----------|
-| `refresh_program_state` → stale lane to Failed | **No** | Sets `last_finished_at = Some(now)`; re-running would set different timestamp |
-| `run_fabro` → spawn worker | **Yes** | Uses UUID-based run ID; duplicate spawns would have different IDs |
-| `stale_failure_superseded_by_render` → reset to Blocked | **Yes** | Deterministic check of file mtime vs `last_finished_at` |
-
-**Concern**: Non-idempotent `last_finished_at` assignment means crash-recovery may see different timestamps for the same logical event. This affects:
-- `stale_failure_superseded_by_render` logic (compares mtimes)
-- Human auditing of when failures occurred
-
-**Recommendation**: Consider using the run directory's deletion timestamp (if available) or a deterministic timestamp based on the state file's own mtime.
-
-#### Privilege Escalation Paths
-
-**Question**: Can this slice enable privilege escalation?**
-
-**Path 1: Symlink Attack on Run Directory**
-
-The spec mentions eliminating "local-only shims" including symlinks. However, the autodev loop creates directories under `~/.fabro/runs/<run-id>/`. If an attacker can:
-1. Predict or control the run ID
-2. Create a symlink at that path pointing to a sensitive directory
-3. The autodev loop writes worker output to that path
-
-**Mitigation**: The spec does not address run ID generation. UUIDv4 (random) is safer than predictable sequences.
-
-**Path 2: Command Injection via `fabro_bin` Path**
-
-`AutodevSettings.fabro_bin` is a path string passed to `Command::new`. If this path contains shell metacharacters, it could execute unintended commands.
-
-**Mitigation**: The spec should require that `fabro_bin` is validated as an absolute path to an executable file before use.
+**Recommended fix**: Document that `.raspberry/` must be writable only by the autodev operator user. Consider adding file permission checks or optional checksums for integrity validation in a follow-up plan.
 
 ---
 
-## Remaining Blockers
+## Completeness Review
 
-### Blocker 1: Security — State File Integrity
-**Severity**: High
-**Requirement**: Add integrity requirements for `.raspberry/*-state.json`:
-- Document permission model (owner-write-only)
-- Add optional checksum or consider append-only log structure
-- Validate state file on load, fail closed on corruption
+### Finding 6: Bootstrap Failure Definition — Implicit Not Explicit
 
-### Blocker 2: Security — Telemetry Redaction
-**Severity**: Medium
-**Requirement**: Mandate that `RuntimePathError.message` is redacted before serialization to prevent accidental secret exposure.
+**Location**: Acceptance criteria
 
-### Blocker 3: Correctness — Evolve Race Condition
-**Severity**: High
-**Requirement**: Revise Gap 3 fix to use atomic package updates (temp directory + rename) rather than in-place mutation.
+**Analysis**: The gate criterion says "zero bootstrap-time validation failures caused by missing CLI subcommands or unresolved prompt/workflow refs." The spec defines `runtime_path_errors` but does not explicitly require it to be empty for 20 consecutive cycles.
 
-### Blocker 4: Correctness — Dispatch Summary Durability
-**Severity**: Low
-**Requirement**: Clarify whether `dispatch_summary` is per-session or durable. If per-session, document this explicitly. If durable, specify persistence mechanism.
+**Recommended fix**: Add to acceptance criterion #8:
+> `runtime_path_errors` in `AutodevReport` JSON is empty for all 20 consecutive cycles.
 
-### Blocker 5: Completeness — Bootstrap Failure Definition
-**Severity**: Low
-**Requirement**: Add explicit definition of "bootstrap validation failure" to acceptance criteria, with telemetry field that must remain zero for gate success.
+### Finding 7: `dispatch_summary` Per-Session vs. Durable — Undocumented
+
+**Location**: Section 3.2
+
+**Analysis**: If the autodev process restarts, `DispatchSummary` counters reset to zero. An operator monitoring `idle_cycles` would see a sudden drop, potentially misinterpreting it as recovery.
+
+**Recommended fix**: Document explicitly: "These are per-session counters. On process restart, all counters reset to zero."
 
 ---
 
-## Recommendations for Implementation Order
+## Implementation Order
 
-1. **Gap 1** (stale lane reclassification) + **Blocker 3** (evolve atomicity) — These fix slot consumption and package consistency
-2. **Blocker 2** (telemetry redaction) — Security hygiene
-3. **Gap 4** (telemetry fields) — Enables observability for gate validation
-4. **Gap 2** (pre-flight validation) — Reduces bootstrap failures
-5. **Gap 5** (prompt resolution) — Polish, can be deferred if temporary symlink works
-6. **Blocker 1** (state integrity) — Documentation and validation, can be post-Phase 0
+| Priority | Item | Rationale |
+|----------|------|-----------|
+| 1 | Finding 2 (evolve atomicity) | Prevents inconsistent package state in background evolve |
+| 2 | Finding 4 (telemetry redaction) | Security hygiene before live telemetry |
+| 3 | Section 2.1 (stale reclassification) | Fixes slot consumption accuracy |
+| 4 | Section 3.1 (telemetry fields) | Enables gate validation observability |
+| 5 | Section 1.3 (pre-flight validation) | Reduces bootstrap failures |
+| 6 | Section 1.2 (prompt resolution) | Can be deferred if symlink workaround holds |
+| 7 | Finding 1 (state durability window) | Low-probability crash scenario |
+| 8 | Finding 5 (state file permissions) | Documentation, post-Phase 0 |
 
 ---
 
-## Open Questions from Spec
+## Required Evidence for Phase 0 Gate
 
-| Question | Reviewer Response |
-|----------|-------------------|
-| Priority dispatch vs. family diversity? | Document that `ready_undispatched` includes diversity-skipped lanes; no change needed |
-| Evolve blocking on first cycle? | Acceptable for Phase 0; first-cycle latency is not the gate metric |
-| Stale grace period (30s vs 0s)? | 30s is conservative; consider 10s for faster slot recovery without risking slow-start misclassification |
+Implementation PRs must include:
+
+1. `runtime_path_errors` remains empty for 20 consecutive cycles on rXMRbro (JSON report inspection)
+2. Lane with deleted run directory is reported as `failed` in `raspberry status` (unit test or manual verification)
+3. Stale `Running` lanes do not reduce `available_slots` (derived from `raspberry status` counts before/after)
+4. Evolve does not block dispatch — dispatch occurs in same cycle as evolve trigger (timing logs showing dispatch timestamp vs evolve completion timestamp)
+5. `raspberry status` shows dispatch summary fields (human-readable output inspection)
+
+---
+
+## Open Questions — Resolved
+
+| Question | Resolution |
+|----------|------------|
+| Priority dispatch vs. family diversity? | Document that `ready_undispatched` includes diversity-skipped lanes. No code change needed. |
+| Evolve blocking on first cycle? | Acceptable for Phase 0. First-cycle latency is not the gate metric. |
+| Stale grace period (30s vs 0s)? | Recommend 10s for faster slot recovery. 30s is conservative but acceptable. |
 
 ---
 
 ## Conclusion
 
-The specification is technically sound and well-aligned with the Phase 0 gate. The security review identified **trust boundary and coupled-state issues** that should be addressed before or during implementation:
-
-1. State file integrity and permission model
-2. Telemetry redaction requirements
-3. Atomic evolve updates to prevent race conditions
-
-**Approval**: The spec is approved for implementation with the blockers noted above. The implementation PR should include:
-- Evidence that `runtime_path_errors` remains empty for 20 cycles on rXMRbro
-- Evidence that stale lanes are correctly reclassified (unit test)
-- Evidence that evolve does not block dispatch (timing logs)
-- Security review sign-off on telemetry and state handling
+The spec is approved for implementation. The required fixes (Findings 1, 2, 4) must be addressed in the implementation PR. The recommended improvements (Findings 3, 6, 7) should be addressed where convenient but do not block Phase 0 gate passage.
