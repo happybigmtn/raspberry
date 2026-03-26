@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-03-26T20:26:01.233169680Z",
+  "current_node": "decide",
+  "completed_nodes": [
+    "start",
+    "decide"
+  ],
+  "node_retries": {
+    "start": 1,
+    "decide": 1
+  },
+  "context_values": {
+    "current_node": "decide",
+    "internal.fidelity": "compact",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX6GYSAMYK7YRMQVVEE1F0/worktree",
+    "internal.retry_count.decide": 1,
+    "internal.run_id": "01KMNX6GYSAMYK7YRMQVVEE1F0",
+    "current.preamble": "Goal: Test condition evaluation with OR and parentheses\n",
+    "internal.thread_id": "start",
+    "thread.start.current_node": "decide",
+    "internal.retry_count.start": 1,
+    "internal.node_visit_count": 1,
+    "failure_signature": "",
+    "outcome": "success",
+    "failure_class": "",
+    "graph.goal": "Test condition evaluation with OR and parentheses"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "decide": {
+      "status": "success",
+      "notes": "[Simulated] decide",
+      "duration_ms": 0
+    },
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "path_b",
+  "node_visits": {
+    "decide": 1,
+    "start": 1
+  }
+}
