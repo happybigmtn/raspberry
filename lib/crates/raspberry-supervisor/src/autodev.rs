@@ -129,6 +129,19 @@ const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "CLAUDE.md",
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TargetRepoFreshness {
+    NoOrigin,
+    Current,
+    FastForwarded,
+    LocalAhead,
+    WrongBranch { current: String, expected: String },
+    BehindWithLocalChanges { behind: usize },
+    Diverged { ahead: usize, behind: usize },
+    FetchFailed,
+    MergeFailed,
+}
+
 fn autodev_debug_steps_enabled() -> bool {
     std::env::var_os("FABRO_AUTODEV_DEBUG_STEPS").is_some()
 }
@@ -549,7 +562,7 @@ pub fn orchestrate_program(
         let dispatched = if lanes_to_dispatch.is_empty() {
             Vec::new()
         } else {
-            execute_selected_lanes(
+            match execute_selected_lanes(
                 &manifest_path,
                 &lanes_to_dispatch,
                 &DispatchSettings {
@@ -565,7 +578,17 @@ pub fn orchestrate_program(
                         .chain(std::iter::once(manifest_path.clone()))
                         .collect(),
                 },
-            )?
+            ) {
+                Ok(outcomes) => outcomes,
+                Err(DispatchError::TargetRepoStale { message }) => {
+                    eprintln!(
+                        "[autodev] dispatch skipped for program `{}`: target repo is stale: {}",
+                        manifest.program, message
+                    );
+                    Vec::new()
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
         autodev_debug_step(
             &manifest.program,
@@ -1194,7 +1217,67 @@ fn repo_relative_or_absolute(target_repo: &Path, path: &Path) -> PathBuf {
 /// evaluate function checks the local filesystem for milestone artifacts.
 /// Without this sync, artifacts exist on origin but not locally, so
 /// milestones are never satisfied and lanes re-dispatch indefinitely.
-fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) {
+fn current_git_branch(target_repo: &Path) -> Option<String> {
+    Command::new("git")
+        .current_dir(target_repo)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn current_origin_head_branch(target_repo: &Path) -> Option<String> {
+    Command::new("git")
+        .current_dir(target_repo)
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .and_then(|branch| branch.strip_prefix("origin/").map(str::to_string))
+}
+
+fn worktree_is_clean(target_repo: &Path) -> bool {
+    Command::new("git")
+        .current_dir(target_repo)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| output.stdout.is_empty())
+}
+
+fn ahead_behind_counts(target_repo: &Path, remote_ref: &str) -> Option<(usize, usize)> {
+    let output = Command::new("git")
+        .current_dir(target_repo)
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{remote_ref}"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let mut parts = raw.split_whitespace();
+    let ahead = parts.next()?.parse().ok()?;
+    let behind = parts.next()?.parse().ok()?;
+    Some((ahead, behind))
+}
+
+pub(crate) fn ensure_target_repo_fresh_for_dispatch(
+    manifest: &ProgramManifest,
+    manifest_path: &Path,
+) -> TargetRepoFreshness {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     let has_origin = Command::new("git")
         .current_dir(&target_repo)
@@ -1205,7 +1288,7 @@ fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) 
         .ok()
         .is_some_and(|status| status.success());
     if !has_origin {
-        return;
+        return TargetRepoFreshness::NoOrigin;
     }
     let fetch = Command::new("git")
         .current_dir(&target_repo)
@@ -1220,69 +1303,67 @@ fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) 
                 "[autodev] git fetch origin failed (exit {}), target repo may be stale",
                 s.code().unwrap_or(-1)
             );
-            return;
+            return TargetRepoFreshness::FetchFailed;
         }
         Err(e) => {
             eprintln!("[autodev] git fetch origin failed to spawn: {e}");
-            return;
+            return TargetRepoFreshness::FetchFailed;
         }
     }
-    // Only fast-forward when the checked-out branch matches the remote default
-    // branch and the worktree is clean. This keeps artifact truth fresh without
-    // clobbering local operator changes.
-    let head_branch = Command::new("git")
+    let Some(head_branch) = current_git_branch(&target_repo) else {
+        return TargetRepoFreshness::Current;
+    };
+    let Some(origin_head_branch) = current_origin_head_branch(&target_repo) else {
+        return TargetRepoFreshness::Current;
+    };
+    if head_branch != origin_head_branch {
+        return TargetRepoFreshness::WrongBranch {
+            current: head_branch,
+            expected: origin_head_branch,
+        };
+    }
+    let remote_ref = format!("origin/{origin_head_branch}");
+    let Some((ahead, behind)) = ahead_behind_counts(&target_repo, &remote_ref) else {
+        return TargetRepoFreshness::Current;
+    };
+    if behind == 0 {
+        return if ahead > 0 {
+            TargetRepoFreshness::LocalAhead
+        } else {
+            TargetRepoFreshness::Current
+        };
+    }
+    if ahead > 0 {
+        return TargetRepoFreshness::Diverged { ahead, behind };
+    }
+    if !worktree_is_clean(&target_repo) {
+        return TargetRepoFreshness::BehindWithLocalChanges { behind };
+    }
+    let merge = Command::new("git")
         .current_dir(&target_repo)
-        .args(["symbolic-ref", "--short", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    let origin_head_branch = Command::new("git")
-        .current_dir(&target_repo)
-        .args([
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .and_then(|branch| branch.strip_prefix("origin/").map(str::to_string));
-    let is_clean = Command::new("git")
-        .current_dir(&target_repo)
-        .args(["status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| o.stdout.is_empty());
-    if is_clean
-        && head_branch.is_some()
-        && head_branch == origin_head_branch
-        && origin_head_branch.is_some()
-    {
-        let remote_ref = format!("origin/{}", origin_head_branch.as_deref().unwrap_or("main"));
-        let merge = Command::new("git")
-            .current_dir(&target_repo)
-            .args(["merge", "--ff-only", &remote_ref])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match merge {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                eprintln!(
-                    "[autodev] git merge --ff-only {} failed (exit {})",
-                    remote_ref,
-                    status.code().unwrap_or(-1)
-                );
-            }
-            Err(e) => {
-                eprintln!("[autodev] git merge --ff-only {} failed: {e}", remote_ref);
-            }
+        .args(["merge", "--ff-only", &remote_ref])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match merge {
+        Ok(status) if status.success() => TargetRepoFreshness::FastForwarded,
+        Ok(status) => {
+            eprintln!(
+                "[autodev] git merge --ff-only {} failed (exit {})",
+                remote_ref,
+                status.code().unwrap_or(-1)
+            );
+            TargetRepoFreshness::MergeFailed
+        }
+        Err(e) => {
+            eprintln!("[autodev] git merge --ff-only {} failed: {e}", remote_ref);
+            TargetRepoFreshness::MergeFailed
         }
     }
+}
+
+fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) {
+    let _ = ensure_target_repo_fresh_for_dispatch(manifest, manifest_path);
 }
 
 fn maybe_sync_target_repo_to_origin(
@@ -2095,6 +2176,7 @@ mod tests {
     use crate::evaluate::{EvaluatedLane, LaneExecutionStatus};
     use crate::manifest::LaneKind;
     use std::collections::BTreeMap;
+    use std::process::Command;
     use std::time::Duration;
 
     fn failed_lane(lane_key: &str, error: &str) -> EvaluatedLane {
@@ -2137,6 +2219,31 @@ mod tests {
             running_checks_passing: Vec::new(),
             running_checks_failing: Vec::new(),
             consecutive_failures: 0,
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .expect("git command spawns");
+        assert!(
+            status.success(),
+            "git {:?} failed with status {:?}",
+            args,
+            status.code()
+        );
+    }
+
+    fn demo_manifest(target_repo: &Path) -> ProgramManifest {
+        ProgramManifest {
+            program: "demo".to_string(),
+            target_repo: target_repo.to_path_buf(),
+            state_path: target_repo.join(".raspberry/demo-state.json"),
+            max_parallel: 1,
+            run_dir: None,
+            units: BTreeMap::new(),
         }
     }
 
@@ -3113,6 +3220,115 @@ units:
         );
 
         assert_eq!(target.as_deref(), Some("demo:service"));
+    }
+
+    #[test]
+    fn ensure_target_repo_fresh_for_dispatch_fast_forwards_clean_default_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let local = temp.path().join("local");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+        git(&source, &["init"]);
+        git(&source, &["config", "user.name", "Fabro"]);
+        git(&source, &["config", "user.email", "fabro@example.com"]);
+        std::fs::write(source.join("README.md"), "hello\n").expect("write readme");
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "initial"]);
+        git(&source, &["branch", "-M", "main"]);
+        git(
+            &source,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                local.to_str().expect("local path"),
+            ],
+        );
+
+        std::fs::write(source.join("README.md"), "hello\nworld\n").expect("update readme");
+        git(&source, &["commit", "-am", "advance remote"]);
+        git(&source, &["push", "origin", "main"]);
+
+        let manifest = demo_manifest(&local);
+        let manifest_path = temp.path().join("demo.yaml");
+        std::fs::write(&manifest_path, "program: demo\nunits: {}\n").expect("manifest");
+
+        let freshness = ensure_target_repo_fresh_for_dispatch(&manifest, &manifest_path);
+        assert_eq!(freshness, TargetRepoFreshness::FastForwarded);
+
+        let counts = ahead_behind_counts(&local, "origin/main").expect("ahead behind");
+        assert_eq!(counts, (0, 0));
+    }
+
+    #[test]
+    fn ensure_target_repo_fresh_for_dispatch_blocks_dirty_repo_that_is_behind() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let local = temp.path().join("local");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+        git(&source, &["init"]);
+        git(&source, &["config", "user.name", "Fabro"]);
+        git(&source, &["config", "user.email", "fabro@example.com"]);
+        std::fs::write(source.join("README.md"), "hello\n").expect("write readme");
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "initial"]);
+        git(&source, &["branch", "-M", "main"]);
+        git(
+            &source,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                local.to_str().expect("local path"),
+            ],
+        );
+
+        std::fs::write(source.join("README.md"), "hello\nworld\n").expect("update readme");
+        git(&source, &["commit", "-am", "advance remote"]);
+        git(&source, &["push", "origin", "main"]);
+        std::fs::write(local.join("scratch.txt"), "dirty\n").expect("dirty local");
+
+        let manifest = demo_manifest(&local);
+        let manifest_path = temp.path().join("demo.yaml");
+        std::fs::write(&manifest_path, "program: demo\nunits: {}\n").expect("manifest");
+
+        let freshness = ensure_target_repo_fresh_for_dispatch(&manifest, &manifest_path);
+        assert_eq!(
+            freshness,
+            TargetRepoFreshness::BehindWithLocalChanges { behind: 1 }
+        );
     }
 
     #[test]

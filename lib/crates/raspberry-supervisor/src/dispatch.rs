@@ -7,7 +7,10 @@ use crate::controller_lease::ControllerLeaseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::autodev::{autodev_cargo_target_dir, orchestrate_program, AutodevSettings};
+use crate::autodev::{
+    autodev_cargo_target_dir, ensure_target_repo_fresh_for_dispatch, orchestrate_program,
+    AutodevSettings, TargetRepoFreshness,
+};
 use crate::evaluate::{evaluate_program, LaneExecutionStatus};
 use crate::integration::{integrate_lane, IntegrationRequest};
 use crate::maintenance::{load_active_maintenance, MaintenanceError};
@@ -76,6 +79,8 @@ pub enum DispatchError {
     MissingRunId { lane: String },
     #[error("program `{program}` is in maintenance mode: {reason}")]
     MaintenanceMode { program: String, reason: String },
+    #[error("target repo is not current enough to dispatch new lanes: {message}")]
+    TargetRepoStale { message: String },
 }
 
 pub fn execute_selected_lanes(
@@ -89,6 +94,43 @@ pub fn execute_selected_lanes(
             program: manifest.program.clone(),
             reason: maintenance.reason,
         });
+    }
+    match ensure_target_repo_fresh_for_dispatch(&manifest, manifest_path) {
+        TargetRepoFreshness::NoOrigin
+        | TargetRepoFreshness::Current
+        | TargetRepoFreshness::FastForwarded
+        | TargetRepoFreshness::LocalAhead => {}
+        TargetRepoFreshness::WrongBranch { current, expected } => {
+            return Err(DispatchError::TargetRepoStale {
+                message: format!(
+                    "checked-out branch `{current}` does not match remote default branch `{expected}`"
+                ),
+            });
+        }
+        TargetRepoFreshness::BehindWithLocalChanges { behind } => {
+            return Err(DispatchError::TargetRepoStale {
+                message: format!(
+                    "local default branch is behind origin by {behind} commits and the worktree is not clean"
+                ),
+            });
+        }
+        TargetRepoFreshness::Diverged { ahead, behind } => {
+            return Err(DispatchError::TargetRepoStale {
+                message: format!(
+                    "local default branch diverged from origin (ahead {ahead}, behind {behind})"
+                ),
+            });
+        }
+        TargetRepoFreshness::FetchFailed => {
+            return Err(DispatchError::TargetRepoStale {
+                message: "git fetch origin failed".to_string(),
+            });
+        }
+        TargetRepoFreshness::MergeFailed => {
+            return Err(DispatchError::TargetRepoStale {
+                message: "git merge --ff-only origin/<default> failed".to_string(),
+            });
+        }
     }
     let evaluated = evaluate_program(manifest_path)?;
     let mut state =
