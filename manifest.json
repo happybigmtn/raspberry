@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNT43GYBNGVHW1CAE9EY75N",
+  "workflow_name": "TestCoverageCriticalPathsSynthesisRuntimeRegressionTests",
+  "goal": "Synthesis Runtime Regression Tests\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- render`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-26T19:32:20.158024224Z",
+  "node_count": 11,
+  "edge_count": 15,
+  "run_branch": "fabro/run/01KMNT43GYBNGVHW1CAE9EY75N",
+  "base_sha": "87c230ba6702fbbc79ab9bdc694c2dacd7656e21",
+  "base_branch": "main",
+  "workflow_slug": "test-coverage-critical-paths-synthesis-runtime-regression-tests",
+  "host_repo_path": "/home/r/coding/fabro"
+}
