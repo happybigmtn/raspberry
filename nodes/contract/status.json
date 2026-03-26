@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "response.contract": "Created `.fabro-work/contract.md`. The issue is clear:\n\n**Problem**: The `fabro synth evolve` command with `--no-review` flag uses the deterministic reconcile path which outputs `\"Mode: evolve (deterministic reconcile)\"` (line 905 in `synth.rs`), but the 3 tests still expect the old format `\"Mode: evolve (deterministic steering report)\"`.\n\n**Fix needed**: Update 3 test assertions in `lib/crates/fabro-cli/tests/synth.rs`:\n- Line 313: `synth_evolve_updates_existing_package`\n- Line 382: `synth_evolve_can_import_current_package_without_blueprint_flag`\n- Line 416: `synth_evolve_preview_stays_bounded_to_manifest_and_report`\n\nEach needs to change from:\n```rust\n.stdout(predicate::str::contains(\n    \"Mode: evolve (deterministic steering report)\",\n))\n```\nto:\n```rust\n.stdout(predicate::str::contains(\n    \"Mode: evolve (deterministic reconcile)\",\n))\n```",
+    "last_response": "Created `.fabro-work/contract.md`. The issue is clear:\n\n**Problem**: The `fabro synth evolve` command with `--no-review` flag uses the deterministic reconcile path which outputs `\"Mode: evolve (determ"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 11404,
+    "output_tokens": 292
+  },
+  "duration_ms": 191862,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T22:40:48.376390131+00:00",
+  "updated_at": "2026-03-26T22:40:48.376410510+00:00"
+}
