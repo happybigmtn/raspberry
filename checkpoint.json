@@ -1,32 +1,49 @@
 {
-  "timestamp": "2026-03-26T19:01:54.158772595Z",
-  "current_node": "decide",
+  "timestamp": "2026-03-26T19:01:54.969034053Z",
+  "current_node": "path_b",
   "completed_nodes": [
     "start",
-    "decide"
+    "decide",
+    "path_b"
   ],
   "node_retries": {
     "start": 1,
-    "decide": 1
+    "decide": 1,
+    "path_b": 1
   },
   "context_values": {
+    "internal.retry_count.path_b": 1,
     "graph.goal": "Test condition evaluation with OR and parentheses",
     "failure_signature": "",
+    "last_stage": "path_b",
     "thread.start.current_node": "decide",
+    "thread.decide.current_node": "path_b",
     "internal.node_visit_count": 1,
+    "response.path_b": "[Simulated] Response for stage: path_b",
+    "last_response": "[Simulated] Response for stage: path_b",
     "outcome": "success",
-    "internal.thread_id": "start",
-    "current_node": "decide",
+    "internal.thread_id": "decide",
+    "current_node": "path_b",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNRAQEYHP8CKG1MG3ZXSKMD/worktree",
     "internal.run_id": "01KMNRAQEYHP8CKG1MG3ZXSKMD",
     "internal.retry_count.start": 1,
     "internal.retry_count.decide": 1,
     "failure_class": "",
     "internal.fidelity": "compact",
-    "current.preamble": "Goal: Test condition evaluation with OR and parentheses\n"
+    "current.preamble": "Goal: Test condition evaluation with OR and parentheses\n\n## Completed stages\n- **decide**: success\n"
   },
   "logs": [],
   "node_outcomes": {
+    "path_b": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "path_b",
+        "last_response": "[Simulated] Response for stage: path_b",
+        "response.path_b": "[Simulated] Response for stage: path_b"
+      },
+      "notes": "[Simulated] path_b",
+      "duration_ms": 0
+    },
     "decide": {
       "status": "success",
       "notes": "[Simulated] decide",
@@ -38,9 +55,10 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "path_b",
+  "next_node_id": "exit",
   "node_visits": {
     "start": 1,
+    "path_b": 1,
     "decide": 1
   }
 }
