@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "last_response": "Contract written to `.fabro-work/contract.md`.\n\n**Summary:**\n\n| Section | Content |\n|---------|---------|\n| **Deliverables** | 7 files to create/modify: `render.rs` (core implementation), `synthesis.r",
+    "response.contract": "Contract written to `.fabro-work/contract.md`.\n\n**Summary:**\n\n| Section | Content |\n|---------|---------|\n| **Deliverables** | 7 files to create/modify: `render.rs` (core implementation), `synthesis.rs` (tests), plus 5 workflow artifacts |\n| **Acceptance Criteria** | 6 verifiable conditions including the `bootstrap_verify` test passing, language-specific health checks, verification node injection, valid Graphviz output, error handling, and idempotency |\n| **Out of Scope** | Milestones 3-6 (runtime assets, TypeScript quality, tonofcrap validation, Rust validation) |"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 22645,
+    "output_tokens": 152
+  },
+  "duration_ms": 40731,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:37:44.747770180+00:00",
+  "updated_at": "2026-03-26T19:37:44.747772130+00:00"
+}
