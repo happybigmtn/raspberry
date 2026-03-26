@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "response.contract": "Contract written to `.fabro-work/contract.md`. \n\n**Summary:**\n- **Deliverables**: Creates an integration test file at `lib/crates/fabro-synthesis/tests/greenfield_rust.rs` containing the `greenfield_rust` test function\n- **Acceptance Criteria**: 6 verifiable conditions covering test execution, Rust project bootstrapping, compilation, file structure, error handling, and cleanup\n- **Out of Scope**: Complex templates, workflow integration, network ops, CLI testing",
+    "last_response": "Contract written to `.fabro-work/contract.md`. \n\n**Summary:**\n- **Deliverables**: Creates an integration test file at `lib/crates/fabro-synthesis/tests/greenfield_rust.rs` containing the `greenfield_r"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 15113,
+    "output_tokens": 131
+  },
+  "duration_ms": 46004,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:47:06.773259320+00:00",
+  "updated_at": "2026-03-26T19:47:06.773260929+00:00"
+}
