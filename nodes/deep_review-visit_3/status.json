@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "deep_review",
+    "last_response": "Updated [deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md) to reflect the latest evidence. It now classifies the remaining ",
+    "response.deep_review": "Updated [deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md) to reflect the latest evidence. It now classifies the remaining deterministic issue as a lane-owned harness mismatch, not a new external code failure: the source lane needed its `quality` stage to emit `.fabro-work/quality.md` for review/audit consumers, and that fix is already present in [test-coverage-critical-paths-ci-preservation-and-hardening.fabro](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro). The plan is now: replay the lane unchanged, and only send fixup after external `lib/crates/**` failures if they reappear.\n\n`cargo check --workspace` passed."
+  },
+  "notes": "Stage completed: deep_review",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 747370,
+    "output_tokens": 12151,
+    "cost": 2.05069
+  },
+  "duration_ms": 245562,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T21:04:07.498215073+00:00",
+  "updated_at": "2026-03-26T21:04:07.498216308+00:00"
+}

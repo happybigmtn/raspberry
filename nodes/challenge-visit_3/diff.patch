@@ -1,0 +1,73 @@
+diff --git a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md
+index 7fdc88e7..d081f8b4 100644
+--- a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md
++++ b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md
+@@ -8,9 +8,6 @@ Your job is to challenge assumptions, find obvious scope drift, identify weak pr
+ Verification artifact must cover
+ - summarize the automated proof commands that ran and their outcomes
+ 
+-Layout/domain invariant checklist (flag every missing item in `.fabro-work/verification.md`):
+-- layout invariant test proving the rendered board/grid contains no duplicate domain values
+-
+ Structural discipline
+ - if a new source file would exceed roughly 400 lines, split it before landing
+ - do not mix state transitions, input handling, rendering, and animation in one new file unless the prompt explicitly justifies that coupling
+diff --git a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/plan.md b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/plan.md
+index 3db7ba17..f9c6fcc7 100644
+--- a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/plan.md
++++ b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/plan.md
+@@ -18,9 +18,6 @@ Required durable artifacts:
+ Verification artifact must cover
+ - summarize the automated proof commands that ran and their outcomes
+ 
+-Layout/domain invariant tests (required for this slice even if not called out above):
+-- layout invariant test proving the rendered board/grid contains no duplicate domain values
+-
+ Decomposition pressure
+ - if a new source file would exceed roughly 400 lines, split it before landing
+ - do not mix state transitions, input handling, rendering, and animation in one new file unless the prompt explicitly justifies that coupling
+diff --git a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md
+index f3b13eae..725a393f 100644
+--- a/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md
++++ b/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md
+@@ -185,12 +185,6 @@ Artifacts to write:
+ Verification artifact must cover
+ - summarize the automated proof commands that ran and their outcomes
+ 
+-Nemesis-style security review
+-- Pass 1 — first-principles challenge: question trust boundaries, authority assumptions, and who can trigger the slice's dangerous actions
+-- Pass 2 — coupled-state review: identify paired state or protocol surfaces and check that every mutation path keeps them consistent or explains the asymmetry
+-- check state transitions that affect balances, commitments, randomness, payout safety, or replayability
+-- check secret handling, capability scoping, pairing/idempotence behavior, and privilege escalation paths
+-
+ Focus on:
+ - slice scope discipline
+ - proof-gate coverage for the active slice
+@@ -229,14 +223,7 @@ If `.fabro-work/contract.md` exists, verify EVERY acceptance criterion from it.
+ Any dimension below 6 = merge_ready: no.
+ If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.
+ 
+-For security-sensitive slices, append these mandatory fields exactly:
+-- layout_invariants_complete: yes|no
+-- slice_decomposition_respected: yes|no
+-If any mandatory security field is `no`, set `merge_ready: no`.
+-
+ Review stage ownership:
+ - you may write or replace `.fabro-work/promotion.md` in this stage
+ - read `.fabro-work/quality.md` before deciding `merge_ready`
+-- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review
+-- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control
+ - prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful
+diff --git a/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro b/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro
+index df0bab70..f52297ed 100644
+--- a/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro
++++ b/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro
+@@ -22,7 +22,7 @@ digraph TestCoverageCriticalPathsCiPreservationAndHardening {
+     fixup [label="Fixup", prompt="@malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/polish.md", reasoning_effort="high", max_visits=3]
+     challenge [label="Challenge", prompt="@malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/challenge.md", reasoning_effort="medium"]
+     review [label="Review", prompt="@malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md", reasoning_effort="high"]
+-    audit [label="Audit Artifacts", shape=parallelogram, script="ARTIFACT_DIR='outputs/test-coverage-critical-paths-ci-preservation-and-hardening'\nsync_artifacts() {\n  mkdir -p \"$ARTIFACT_DIR\"\n  [ -f .fabro-work/verification.md ] && cp .fabro-work/verification.md \"$ARTIFACT_DIR/verification.md\"\n  [ -f .fabro-work/quality.md ] && cp .fabro-work/quality.md \"$ARTIFACT_DIR/quality.md\"\n  [ -f .fabro-work/promotion.md ] && cp .fabro-work/promotion.md \"$ARTIFACT_DIR/promotion.md\"\n}\ncapture_remediation() {\n  sync_artifacts\n  {\n    echo '# Remediation Notes (auto-captured from failed audit)'\n    echo ''\n    echo '## Quality Gate'\n    cat .fabro-work/quality.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Verification Findings'\n    cat .fabro-work/verification.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Deep Review Findings'\n    cat .fabro-work/deep-review-findings.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Promotion Decision'\n    cat .fabro-work/promotion.md 2>/dev/null || echo '(not found)'\n  } > \"$ARTIFACT_DIR/remediation.md\"\n}\nsync_artifacts\nif ! ( test -f \"$ARTIFACT_DIR/implementation.md\" && test -f \"$ARTIFACT_DIR/verification.md\" && test -f \"$ARTIFACT_DIR/quality.md\" && test -f \"$ARTIFACT_DIR/promotion.md\" && test -f \"$ARTIFACT_DIR/integration.md\" && grep -Eq '^merge_ready: yes$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^manual_proof_pending: no$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^reason: .+$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^next_action: .+$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^completeness: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^correctness: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^convention: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^test_quality: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && \\\n        grep -Eq '^layout_invariants_complete: yes$' \"$ARTIFACT_DIR/promotion.md\" && \\\n        grep -Eq '^slice_decomposition_respected: yes$' \"$ARTIFACT_DIR/promotion.md\" && ( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 ) && grep -Eq '^quality_ready: yes$' \"$ARTIFACT_DIR/quality.md\" ); then\n  capture_remediation\n  exit 1\nfi", goal_gate=true, retry_target="fixup", max_retries=0]
++    audit [label="Audit Artifacts", shape=parallelogram, script="ARTIFACT_DIR='outputs/test-coverage-critical-paths-ci-preservation-and-hardening'\nsync_artifacts() {\n  mkdir -p \"$ARTIFACT_DIR\"\n  [ -f .fabro-work/verification.md ] && cp .fabro-work/verification.md \"$ARTIFACT_DIR/verification.md\"\n  [ -f .fabro-work/quality.md ] && cp .fabro-work/quality.md \"$ARTIFACT_DIR/quality.md\"\n  [ -f .fabro-work/promotion.md ] && cp .fabro-work/promotion.md \"$ARTIFACT_DIR/promotion.md\"\n}\ncapture_remediation() {\n  sync_artifacts\n  {\n    echo '# Remediation Notes (auto-captured from failed audit)'\n    echo ''\n    echo '## Quality Gate'\n    cat .fabro-work/quality.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Verification Findings'\n    cat .fabro-work/verification.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Deep Review Findings'\n    cat .fabro-work/deep-review-findings.md 2>/dev/null || echo '(not found)'\n    echo ''\n    echo '## Promotion Decision'\n    cat .fabro-work/promotion.md 2>/dev/null || echo '(not found)'\n  } > \"$ARTIFACT_DIR/remediation.md\"\n}\nsync_artifacts\nif ! ( test -f \"$ARTIFACT_DIR/implementation.md\" && test -f \"$ARTIFACT_DIR/verification.md\" && test -f \"$ARTIFACT_DIR/quality.md\" && test -f \"$ARTIFACT_DIR/promotion.md\" && test -f \"$ARTIFACT_DIR/integration.md\" && grep -Eq '^merge_ready: yes$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^manual_proof_pending: no$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^reason: .+$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^next_action: .+$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^completeness: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^correctness: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^convention: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && grep -Eq '^test_quality: ([6-9]|10)$' \"$ARTIFACT_DIR/promotion.md\" && ( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 ) && grep -Eq '^quality_ready: yes$' \"$ARTIFACT_DIR/quality.md\" ); then\n  capture_remediation\n  exit 1\nfi", goal_gate=true, retry_target="fixup", max_retries=0]
+ 
+     start -> preflight -> contract -> implement -> verify
+     verify -> quality [condition="outcome=success"]
