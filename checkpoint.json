@@ -1,37 +1,42 @@
 {
-  "timestamp": "2026-03-26T20:26:01.275770309Z",
-  "current_node": "implement",
+  "timestamp": "2026-03-26T20:26:01.335730700Z",
+  "current_node": "validate",
   "completed_nodes": [
     "start",
     "plan",
-    "implement"
+    "implement",
+    "validate"
   ],
   "node_retries": {
     "implement": 1,
     "start": 1,
-    "plan": 1
+    "plan": 1,
+    "validate": 1
   },
   "context_values": {
-    "last_stage": "implement",
+    "last_stage": "validate",
     "failure_class": "",
     "graph.rankdir": "LR",
     "internal.fidelity": "compact",
-    "internal.thread_id": "plan",
+    "internal.thread_id": "implement",
     "outcome": "success",
     "internal.retry_count.plan": 1,
+    "thread.implement.current_node": "validate",
     "failure_signature": "",
     "internal.retry_count.implement": 1,
-    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n",
+    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n",
     "internal.run_id": "01KMNX6GYS41K651BCWX11D50J",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX6GYS41K651BCWX11D50J/worktree",
-    "current_node": "implement",
+    "current_node": "validate",
     "thread.start.current_node": "plan",
+    "response.validate": "[Simulated] Response for stage: validate",
     "thread.plan.current_node": "implement",
     "response.plan": "[Simulated] Response for stage: plan",
     "internal.node_visit_count": 1,
-    "last_response": "[Simulated] Response for stage: implement",
+    "last_response": "[Simulated] Response for stage: validate",
     "response.implement": "[Simulated] Response for stage: implement",
     "graph.goal": "Implement and validate a feature",
+    "internal.retry_count.validate": 1,
     "internal.retry_count.start": 1
   },
   "logs": [],
@@ -40,6 +45,16 @@
       "status": "success",
       "notes": "[Simulated] start",
       "duration_ms": 4
+    },
+    "implement": {
+      "status": "success",
+      "context_updates": {
+        "response.implement": "[Simulated] Response for stage: implement",
+        "last_response": "[Simulated] Response for stage: implement",
+        "last_stage": "implement"
+      },
+      "notes": "[Simulated] implement",
+      "duration_ms": 0
     },
     "plan": {
       "status": "success",
@@ -51,21 +66,22 @@
       "notes": "[Simulated] plan",
       "duration_ms": 0
     },
-    "implement": {
+    "validate": {
       "status": "success",
       "context_updates": {
-        "response.implement": "[Simulated] Response for stage: implement",
-        "last_response": "[Simulated] Response for stage: implement",
-        "last_stage": "implement"
+        "response.validate": "[Simulated] Response for stage: validate",
+        "last_stage": "validate",
+        "last_response": "[Simulated] Response for stage: validate"
       },
-      "notes": "[Simulated] implement",
+      "notes": "[Simulated] validate",
       "duration_ms": 0
     }
   },
-  "next_node_id": "validate",
+  "next_node_id": "gate",
   "node_visits": {
     "start": 1,
     "plan": 1,
-    "implement": 1
+    "implement": 1,
+    "validate": 1
   }
 }
