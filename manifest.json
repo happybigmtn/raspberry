@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNXD8SQ1JNDZ6GC9SG7KQNQ",
+  "workflow_name": "AutodevEfficiencyAndDispatch",
+  "goal": "Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n",
+  "start_time": "2026-03-26T20:29:41.281014077Z",
+  "node_count": 6,
+  "edge_count": 6,
+  "run_branch": "fabro/run/01KMNXD8SQ1JNDZ6GC9SG7KQNQ",
+  "base_sha": "f035a0e637d93ed0f1482197961e60ad67f43c4f",
+  "base_branch": "main",
+  "workflow_slug": "autodev-efficiency-and-dispatch",
+  "host_repo_path": "/home/r/coding/fabro"
+}
