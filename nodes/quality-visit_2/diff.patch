@@ -1,0 +1,36 @@
+diff --git a/outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md b/outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md
+index 164e8f6e..18e1387d 100644
+--- a/outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md
++++ b/outputs/greenfield-bootstrap-reliability-live-tonofcrap-validation/quality.md
+@@ -2,10 +2,10 @@ quality_ready: no
+ placeholder_debt: no
+ warning_debt: no
+ test_quality_debt: no
+-artifact_mismatch_risk: yes
++artifact_mismatch_risk: no
+ manual_followup_required: no
+ semantic_risk_debt: no
+-lane_sizing_debt: no
++lane_sizing_debt: yes
+ external_blocker_only: no
+ 
+ ## Touched Surfaces
+@@ -15,8 +15,7 @@ external_blocker_only: no
+ 
+ 
+ ## Artifact Consistency Hits
+-.fabro-work/implementation.md:90:- Scans for `TODO`, `stub`, `placeholder`, `not yet implemented` in TypeScript files
+-.fabro-work/verification.md:151:- `placeholder_debt` detection via `rg` search for `TODO|stub|placeholder|not yet implemented`
++
+ 
+ ## Root Artifact Shadow Hits
+ 
+@@ -25,7 +24,7 @@ external_blocker_only: no
+ 
+ 
+ ## Lane Sizing Hits
+-
++\n./lib/crates/fabro-synthesis/src/render.rs:9659
+ 
+ ## Warning Hits
+ 
