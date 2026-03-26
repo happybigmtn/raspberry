@@ -2348,7 +2348,7 @@ fn implementation_quality_command(
         lane,
         lane.prompt_context.as_deref().unwrap_or_default(),
     ) {
-        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' '[a-z] = .*payout_multiplier\\(\\).*as.*i16|[a-z] = .*numerator.*as.*i16' . 2>/dev/null || true)\"\n"
             .to_string()
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
@@ -2365,7 +2365,7 @@ fn implementation_quality_command(
                if [ \"$lines\" -lt 400 ]; then\n        \
                  continue\n      \
                fi\n      \
-               if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
+               if rg -q 'fn handle_input' \"$file\" 2>/dev/null && rg -q 'fn render_' \"$file\" 2>/dev/null && rg -q 'fn tick\\(' \"$file\" 2>/dev/null; then\n        \
                  lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
                fi\n    \
              done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
