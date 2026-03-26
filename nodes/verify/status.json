@@ -1,0 +1,9 @@
+{
+  "status": "fail",
+  "duration_ms": 576,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T21:08:03.923745655+00:00",
+  "updated_at": "2026-03-26T21:08:03.923746671+00:00",
+  "failure_reason": "Script failed with exit code: 4\n\n## stderr\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s\n────────────\n Nextest run ID 7f9f4d57-e1af-4ac7-a190-f1aae19802fb with nextest profile: default\n    Starting 0 tests across 2 binaries (95 tests skipped)\n────────────\n     Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\nerror: no tests to run\n(hint: use `--no-tests` to customize)\n"
+}

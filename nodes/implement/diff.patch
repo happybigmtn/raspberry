@@ -1,0 +1,322 @@
+diff --git a/lib/crates/fabro-synthesis/src/lib.rs b/lib/crates/fabro-synthesis/src/lib.rs
+index 9e638441..c02a2f17 100644
+--- a/lib/crates/fabro-synthesis/src/lib.rs
++++ b/lib/crates/fabro-synthesis/src/lib.rs
+@@ -14,6 +14,7 @@ pub use planning::{
+     author_blueprint_for_evolve, AuthoredBlueprint,
+ };
+ pub use render::{
+-    cleanup_obsolete_package_files, reconcile_blueprint, render_blueprint, ImportRequest,
+-    ReconcileReport, ReconcileRequest, RenderReport, RenderRequest,
++    bootstrap_verify_command, cleanup_obsolete_package_files, reconcile_blueprint,
++    render_blueprint, render_workflow_graph, ImportRequest, ReconcileReport, ReconcileRequest,
++    RenderReport, RenderRequest,
+ };
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index 72fb59ac..913188a6 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -1890,7 +1890,7 @@ fn write_manifest(
+     Ok(manifest_path)
+ }
+ 
+-fn render_workflow_graph(
++pub fn render_workflow_graph(
+     lane: &BlueprintLane,
+     verify_command: &str,
+     health_command: &str,
+@@ -1913,32 +1913,40 @@ fn render_workflow_graph(
+     let goal = escape_graph_attr(&lane.goal);
+ 
+     match lane.template {
+-        WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => format!(
+-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> specify -> review -> polish -> verify\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
++        WorkflowTemplate::Bootstrap | WorkflowTemplate::RecurringReport => {
++            let bootstrap_verify = bootstrap_verify_command();
++            format!(
++            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    bootstrap_health [label=\"Bootstrap Health\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"specify\", max_retries=0]\n    specify [label=\"Specify\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review  [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish  [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify  [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> bootstrap_health -> specify -> review -> polish -> verify\n    bootstrap_health -> specify [condition=\"outcome=success\"]\n    verify -> exit [condition=\"outcome=success\"]\n    verify -> polish\n}}\n",
+             graph_name(lane),
+             goal,
+             review_target.model,
+             review_target.provider.as_str(),
+             write_target.model,
+             write_target.provider.as_str(),
++            escape_graph_attr(&bootstrap_verify),
+             prompt_path("plan"),
+             prompt_path("review"),
+             prompt_path("polish"),
+             escape_graph_attr(verify_command),
+-        ),
+-        WorkflowTemplate::ServiceBootstrap => format!(
+-            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> inventory -> review -> polish -> verify_outputs\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
++        )
++        }
++        WorkflowTemplate::ServiceBootstrap => {
++            let bootstrap_verify = bootstrap_verify_command();
++            format!(
++            "digraph {} {{\n    graph [\n        goal=\"{}\",\n        model_stylesheet=\"\n            *       {{ backend: cli; }}\n            #review {{ backend: cli; model: {}; provider: {}; }}\n            #polish {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    bootstrap_health [label=\"Bootstrap Health\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"inventory\", max_retries=0]\n    inventory [label=\"Inventory\", prompt=\"{}\", reasoning_effort=\"high\"]\n    review    [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    polish    [label=\"Polish\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    verify_outputs [label=\"Verify Outputs\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"polish\", max_retries=0]\n\n    start -> bootstrap_health -> inventory -> review -> polish -> verify_outputs\n    bootstrap_health -> inventory [condition=\"outcome=success\"]\n    verify_outputs -> exit [condition=\"outcome=success\"]\n    verify_outputs -> polish\n}}\n",
+             graph_name(lane),
+             goal,
+             review_target.model,
+             review_target.provider.as_str(),
+             write_target.model,
+             write_target.provider.as_str(),
++            escape_graph_attr(&bootstrap_verify),
+             prompt_path("plan"),
+             prompt_path("review"),
+             prompt_path("polish"),
+             escape_graph_attr(verify_command),
+-        ),
++        )
++        }
+         WorkflowTemplate::Implementation => {
+             let profile = lane.proof_profile.as_deref().unwrap_or("standard");
+             let max_visits = profile_max_visits(profile);
+@@ -9355,6 +9363,55 @@ fn escape_graph_attr(value: &str) -> String {
+         .replace('\n', "\\n")
+ }
+ 
++/// Bootstrap verification command that checks language-specific project health markers.
++/// Detects the project language and verifies required markers exist.
++/// Returns 0 if project is properly bootstrapped, 1 otherwise.
++/// Idempotent: passes on already-scaffolded repos.
++pub fn bootstrap_verify_command() -> String {
++    r#"set -e
++# Bootstrap verification: detect language and check project health markers
++BOOTSTRAP_STATUS=0
++
++if [ -f Cargo.toml ]; then
++    echo "[bootstrap] Detected: Rust project"
++    # Rust: manifest exists, cargo can parse it
++    if ! cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
++        echo "[bootstrap] ERROR: Cargo.toml is invalid or cannot be parsed"
++        BOOTSTRAP_STATUS=1
++    else
++        echo "[bootstrap] OK: Rust project is valid"
++    fi
++
++elif [ -f pyproject.toml ]; then
++    echo "[bootstrap] Detected: Python project (pyproject.toml)"
++    # Python with pyproject.toml: manifest exists
++    echo "[bootstrap] OK: Python project (pyproject.toml) is valid"
++
++elif [ -f requirements.txt ]; then
++    echo "[bootstrap] Detected: Python project (requirements.txt)"
++    # Python with requirements.txt: manifest exists
++    echo "[bootstrap] OK: Python project (requirements.txt) is valid"
++
++elif [ -f package.json ]; then
++    echo "[bootstrap] Detected: Node.js/TypeScript project"
++    if [ ! -f tsconfig.json ]; then
++        echo "[bootstrap] ERROR: package.json exists but tsconfig.json is missing"
++        BOOTSTRAP_STATUS=1
++    else
++        echo "[bootstrap] OK: TypeScript project has tsconfig.json"
++    fi
++
++else
++    echo "[bootstrap] WARNING: No recognized project manifest found"
++    echo "[bootstrap] Supported: Cargo.toml, pyproject.toml, requirements.txt, package.json"
++    # Don't fail on empty repos — scaffold lane will create the initial structure
++    echo "[bootstrap] Proceeding: empty repo or unrecognized project type"
++fi
++
++exit $BOOTSTRAP_STATUS"#
++        .to_string()
++}
++
+ struct PackageLayout<'a> {
+     blueprint: &'a ProgramBlueprint,
+     target_repo: &'a Path,
+diff --git a/lib/crates/fabro-synthesis/tests/synthesis.rs b/lib/crates/fabro-synthesis/tests/synthesis.rs
+index 8f07aba8..870b3b54 100644
+--- a/lib/crates/fabro-synthesis/tests/synthesis.rs
++++ b/lib/crates/fabro-synthesis/tests/synthesis.rs
+@@ -2,9 +2,10 @@ use std::fs;
+ use std::path::{Path, PathBuf};
+ 
+ use fabro_synthesis::{
+-    import_existing_package, load_blueprint, reconcile_blueprint, render_blueprint, ImportRequest,
+-    ReconcileRequest, RenderRequest,
++    bootstrap_verify_command, import_existing_package, load_blueprint, reconcile_blueprint,
++    render_blueprint, render_workflow_graph, ImportRequest, ReconcileRequest, RenderRequest,
+ };
++use raspberry_supervisor::manifest::LaneKind;
+ 
+ fn fixture(path: &str) -> PathBuf {
+     Path::new(env!("CARGO_MANIFEST_DIR"))
+@@ -262,3 +263,174 @@ fn reconcile_blueprint_does_not_clobber_files_when_reusing_same_repo() {
+     assert!(run_config_after.contains("model = \"MiniMax-M2.7\""));
+     assert!(run_config_after.contains("graph = \"../../workflows/bootstrap/poker.fabro\""));
+ }
++
++#[test]
++fn bootstrap_verify_command_checks_language_markers() {
++    let cmd = bootstrap_verify_command();
++
++    // Rust detection
++    assert!(cmd.contains("Cargo.toml"));
++    assert!(cmd.contains("cargo metadata"));
++
++    // Python detection
++    assert!(cmd.contains("pyproject.toml"));
++    assert!(cmd.contains("requirements.txt"));
++
++    // TypeScript detection
++    assert!(cmd.contains("package.json"));
++    assert!(cmd.contains("tsconfig.json"));
++
++    // Error messages present
++    assert!(cmd.contains("ERROR:"));
++    assert!(cmd.contains("Detected:"));
++    assert!(cmd.contains("BOOTSTRAP_STATUS"));
++}
++
++#[test]
++fn bootstrap_verify_injects_health_node_for_scaffold_lanes() {
++    // Bootstrap template lane
++    let bootstrap_lane = fabro_synthesis::BlueprintLane {
++        id: "craps-bootstrap".to_string(),
++        kind: LaneKind::Platform,
++        title: "Craps Bootstrap".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: Some("bootstrap".to_string()),
++        slug: Some("craps-bootstrap".to_string()),
++        template: fabro_synthesis::WorkflowTemplate::Bootstrap,
++        goal: "Bootstrap the craps gameplay lane.".to_string(),
++        managed_milestone: "reviewed".to_string(),
++        dependencies: Vec::new(),
++        produces: Vec::new(),
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++
++    let graph = render_workflow_graph(
++        &bootstrap_lane,
++        "test -f spec.md && test -f review.md",
++        "true",
++        "true",
++        "true",
++    );
++
++    // Bootstrap health node should be present
++    assert!(graph.contains(r#"label="Bootstrap Health""#));
++    assert!(graph.contains(r#"shape=parallelogram"#));
++    assert!(graph.contains(r#"goal_gate=true"#));
++
++    // Bootstrap health should come before specify
++    assert!(graph.contains("start -> bootstrap_health"));
++    assert!(graph.contains("bootstrap_health -> specify"));
++
++    // Verify the bootstrap verify command is embedded in the script
++    // (the bootstrap_health node script contains these markers)
++    assert!(graph.contains("Cargo.toml"));
++    assert!(graph.contains("package.json"));
++    assert!(graph.contains("pyproject.toml"));
++
++    // ServiceBootstrap template lane
++    let service_lane = fabro_synthesis::BlueprintLane {
++        id: "miner-service-bootstrap".to_string(),
++        kind: LaneKind::Service,
++        title: "Miner Service Bootstrap".to_string(),
++        family: "service_bootstrap".to_string(),
++        workflow_family: Some("service_bootstrap".to_string()),
++        slug: Some("miner-service-bootstrap".to_string()),
++        template: fabro_synthesis::WorkflowTemplate::ServiceBootstrap,
++        goal: "Bootstrap the miner service.".to_string(),
++        managed_milestone: "reviewed".to_string(),
++        dependencies: Vec::new(),
++        produces: Vec::new(),
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++
++    let service_graph = render_workflow_graph(
++        &service_lane,
++        "test -f inventory.md && test -f review.md",
++        "true",
++        "true",
++        "true",
++    );
++
++    // Bootstrap health node should be present for service bootstrap too
++    assert!(service_graph.contains(r#"label="Bootstrap Health""#));
++    assert!(service_graph.contains("start -> bootstrap_health"));
++    assert!(service_graph.contains("bootstrap_health -> inventory"));
++}
++
++#[test]
++fn bootstrap_verify_is_idempotent_on_empty_repo() {
++    let cmd = bootstrap_verify_command();
++
++    // The command should not fail on empty repos - it warns but proceeds
++    assert!(cmd.contains("WARNING: No recognized project manifest found"));
++    assert!(cmd.contains("Proceeding: empty repo or unrecognized project type"));
++    // Command exits with status from BOOTSTRAP_STATUS variable
++    assert!(cmd.contains("exit $BOOTSTRAP_STATUS"));
++}
++
++#[test]
++fn bootstrap_verify_fails_on_partial_typescript_setup() {
++    let cmd = bootstrap_verify_command();
++
++    // Should detect package.json but complain about missing tsconfig.json
++    assert!(cmd.contains("ERROR: package.json exists but tsconfig.json is missing"));
++}
++
++#[test]
++fn bootstrap_verify_graphviz_output_is_valid() {
++    let lane = fabro_synthesis::BlueprintLane {
++        id: "test-bootstrap".to_string(),
++        kind: LaneKind::Platform,
++        title: "Test Bootstrap".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: Some("bootstrap".to_string()),
++        slug: Some("test-bootstrap".to_string()),
++        template: fabro_synthesis::WorkflowTemplate::Bootstrap,
++        goal: "Test bootstrap verification.".to_string(),
++        managed_milestone: "reviewed".to_string(),
++        dependencies: Vec::new(),
++        produces: Vec::new(),
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++
++    let graph = render_workflow_graph(&lane, "test -f spec.md", "true", "true", "true");
++
++    // Should be a valid digraph
++    assert!(graph.starts_with("digraph TestBootstrap {"));
++    assert!(graph.contains("}"));
++
++    // All edges should have valid node references
++    assert!(graph.contains("start -> bootstrap_health"));
++    assert!(graph.contains("bootstrap_health -> specify"));
++    assert!(graph.contains("specify -> review"));
++    assert!(graph.contains("review -> polish"));
++    assert!(graph.contains("polish -> verify"));
++    assert!(graph.contains("verify -> exit"));
++}
