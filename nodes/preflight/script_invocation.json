@@ -1,0 +1,5 @@
+{
+  "command": "set +e\ncargo nextest run --workspace && cargo nextest run -p fabro-cli -- synth && cargo nextest run -p fabro-db && cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github && cargo nextest run -p fabro-synthesis -- render && cargo nextest run -p raspberry-supervisor -- integration autodev_cycle && cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\ntrue",
+  "language": "shell",
+  "timeout_ms": null
+}
