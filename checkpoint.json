@@ -1,13 +1,15 @@
 {
-  "timestamp": "2026-03-26T20:26:01.335730700Z",
-  "current_node": "validate",
+  "timestamp": "2026-03-26T20:26:01.395319659Z",
+  "current_node": "gate",
   "completed_nodes": [
     "start",
     "plan",
     "implement",
-    "validate"
+    "validate",
+    "gate"
   ],
   "node_retries": {
+    "gate": 1,
     "implement": 1,
     "start": 1,
     "plan": 1,
@@ -15,23 +17,25 @@
   },
   "context_values": {
     "last_stage": "validate",
+    "internal.retry_count.gate": 1,
     "failure_class": "",
     "graph.rankdir": "LR",
     "internal.fidelity": "compact",
-    "internal.thread_id": "implement",
+    "internal.thread_id": "validate",
     "outcome": "success",
     "internal.retry_count.plan": 1,
     "thread.implement.current_node": "validate",
     "failure_signature": "",
     "internal.retry_count.implement": 1,
-    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n",
+    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n- **validate**: success\n",
     "internal.run_id": "01KMNX6GYS41K651BCWX11D50J",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX6GYS41K651BCWX11D50J/worktree",
-    "current_node": "validate",
+    "current_node": "gate",
     "thread.start.current_node": "plan",
     "response.validate": "[Simulated] Response for stage: validate",
     "thread.plan.current_node": "implement",
     "response.plan": "[Simulated] Response for stage: plan",
+    "thread.validate.current_node": "gate",
     "internal.node_visit_count": 1,
     "last_response": "[Simulated] Response for stage: validate",
     "response.implement": "[Simulated] Response for stage: implement",
@@ -56,6 +60,11 @@
       "notes": "[Simulated] implement",
       "duration_ms": 0
     },
+    "gate": {
+      "status": "success",
+      "notes": "[Simulated] gate",
+      "duration_ms": 0
+    },
     "plan": {
       "status": "success",
       "context_updates": {
@@ -77,11 +86,12 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "gate",
+  "next_node_id": "exit",
   "node_visits": {
     "start": 1,
     "plan": 1,
     "implement": 1,
-    "validate": 1
+    "validate": 1,
+    "gate": 1
   }
 }
