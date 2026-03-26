@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-03-26T18:29:59.514220960Z",
+  "current_node": "specify",
+  "completed_nodes": [
+    "start",
+    "specify"
+  ],
+  "node_retries": {
+    "specify": 1,
+    "start": 1
+  },
+  "context_values": {
+    "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
+    "internal.node_visit_count": 1,
+    "current_node": "specify",
+    "internal.retry_count.specify": 1,
+    "thread.start.current_node": "specify",
+    "failure_signature": "",
+    "outcome": "success",
+    "failure_class": "",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNPED223RBA6KFJEB9C16GA/worktree",
+    "graph.goal": "Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n",
+    "last_response": "I've created both required durable artifacts for the `autodev-efficiency-and-dispatch` lane:\n\n## Artifacts Created\n\n### `outputs/autodev-efficiency-and-dispatch/spec.md` (179 lines, ~8KB)\n\nA capabilit",
+    "response.specify": "I've created both required durable artifacts for the `autodev-efficiency-and-dispatch` lane:\n\n## Artifacts Created\n\n### `outputs/autodev-efficiency-and-dispatch/spec.md` (179 lines, ~8KB)\n\nA capability specification that defines:\n\n1. **Purpose**: Make `raspberry autodev` run generated packages without local-only rescue steps\n\n2. **Command Surface Invariant**: `fabro` binary must expose `run`, `validate`, `synth evolve`, `synth create`, `synth import`\n\n3. **Prompt Resolution Contract**: Generated workflows must NOT resolve prompts from `~/.fabro/prompts/`\n\n4. **Lane State Truth Contract**: Stale `running` lanes must be reclassified as `failed` within 30 seconds\n\n5. **Dispatch Telemetry Contract**: Six required telemetry fields (`dispatch_rate`, `idle_cycles`, `ready_but_undispatched`, `failed_bootstrap_count`, `runtime_path_errors`, `stale_running_reclaimed`)\n\n6. **Key Files**: Maps each contract to the source files (`autodev.rs`, `dispatch.rs`, `program_state.rs`, `evaluate.rs`, `render.rs`, `main.rs`)\n\n7. **Acceptance Criteria**: Six verifiable outcomes for live validation\n\n### `outputs/autodev-efficiency-and-dispatch/review.md` (223 lines, ~11KB)\n\nA review document that:\n\n1. **Summarizes what is working**: Lane state management, evaluation logic, dispatch, and orchestration all have solid foundations\n\n2. **Identifies four issues**:\n   - Issue 1: Command surface exposure (Medium) — `fabro synth` may not be reliably exposed\n   - Issue 2: Prompt resolution (High) — `@../../prompts/...` paths resolve incorrectly\n   - Issue 3: Dispatch telemetry gaps (Medium) — missing 6 telemetry fields\n   - Issue 4: Blocking evolve (Low-Medium) — `synth evolve` delays dispatch\n\n3. **Provides recommendations**: Code snippets for adding startup validation and telemetry structs\n\n4. **Includes verification checklist**: 9 items to verify before live validation on rXMRbro\n\n5. **Lists risks and mitigations**: Build configuration drift, prompt resolution, evolve race conditions",
+    "graph.rankdir": "LR",
+    "current.preamble": "Goal: Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n\n",
+    "internal.retry_count.start": 1,
+    "internal.run_id": "01KMNPED223RBA6KFJEB9C16GA",
+    "internal.fidelity": "compact",
+    "internal.thread_id": "start",
+    "last_stage": "specify"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "specify": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "specify",
+        "last_response": "I've created both required durable artifacts for the `autodev-efficiency-and-dispatch` lane:\n\n## Artifacts Created\n\n### `outputs/autodev-efficiency-and-dispatch/spec.md` (179 lines, ~8KB)\n\nA capabilit",
+        "response.specify": "I've created both required durable artifacts for the `autodev-efficiency-and-dispatch` lane:\n\n## Artifacts Created\n\n### `outputs/autodev-efficiency-and-dispatch/spec.md` (179 lines, ~8KB)\n\nA capability specification that defines:\n\n1. **Purpose**: Make `raspberry autodev` run generated packages without local-only rescue steps\n\n2. **Command Surface Invariant**: `fabro` binary must expose `run`, `validate`, `synth evolve`, `synth create`, `synth import`\n\n3. **Prompt Resolution Contract**: Generated workflows must NOT resolve prompts from `~/.fabro/prompts/`\n\n4. **Lane State Truth Contract**: Stale `running` lanes must be reclassified as `failed` within 30 seconds\n\n5. **Dispatch Telemetry Contract**: Six required telemetry fields (`dispatch_rate`, `idle_cycles`, `ready_but_undispatched`, `failed_bootstrap_count`, `runtime_path_errors`, `stale_running_reclaimed`)\n\n6. **Key Files**: Maps each contract to the source files (`autodev.rs`, `dispatch.rs`, `program_state.rs`, `evaluate.rs`, `render.rs`, `main.rs`)\n\n7. **Acceptance Criteria**: Six verifiable outcomes for live validation\n\n### `outputs/autodev-efficiency-and-dispatch/review.md` (223 lines, ~11KB)\n\nA review document that:\n\n1. **Summarizes what is working**: Lane state management, evaluation logic, dispatch, and orchestration all have solid foundations\n\n2. **Identifies four issues**:\n   - Issue 1: Command surface exposure (Medium) — `fabro synth` may not be reliably exposed\n   - Issue 2: Prompt resolution (High) — `@../../prompts/...` paths resolve incorrectly\n   - Issue 3: Dispatch telemetry gaps (Medium) — missing 6 telemetry fields\n   - Issue 4: Blocking evolve (Low-Medium) — `synth evolve` delays dispatch\n\n3. **Provides recommendations**: Code snippets for adding startup validation and telemetry structs\n\n4. **Includes verification checklist**: 9 items to verify before live validation on rXMRbro\n\n5. **Lists risks and mitigations**: Build configuration drift, prompt resolution, evolve race conditions"
+      },
+      "notes": "Stage completed: specify",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 80265,
+        "output_tokens": 490
+      },
+      "files_written": [
+        "outputs/autodev-efficiency-and-dispatch/review.md",
+        "outputs/autodev-efficiency-and-dispatch/spec.md"
+      ],
+      "files_touched": [
+        "outputs/autodev-efficiency-and-dispatch/review.md",
+        "outputs/autodev-efficiency-and-dispatch/spec.md"
+      ],
+      "duration_ms": 120955
+    },
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "review",
+  "node_visits": {
+    "specify": 1,
+    "start": 1
+  }
+}
