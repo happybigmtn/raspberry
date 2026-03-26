@@ -1229,6 +1229,8 @@ struct FrontierSyncEntry {
     detail: String,
     current_run_id: Option<String>,
     last_run_id: Option<String>,
+    current_run_dir: Option<String>,
+    last_run_dir: Option<String>,
     current_stage: Option<String>,
     current_stage_provider: Option<String>,
     current_stage_cli_name: Option<String>,
@@ -2739,6 +2741,9 @@ fn build_frontier_entry(
         })
         .unwrap_or_default();
 
+    let current_run_dir = resolve_run_dir_display(lane.current_run_id.as_deref());
+    let last_run_dir = resolve_run_dir_display(lane.last_run_id.as_deref());
+
     FrontierSyncEntry {
         sync_key: lane_sync_key(program_id, &lane.lane_key),
         lane_key: lane.lane_key.clone(),
@@ -2751,6 +2756,8 @@ fn build_frontier_entry(
         detail: lane.detail.clone(),
         current_run_id: lane.current_run_id.clone(),
         last_run_id: lane.last_run_id.clone(),
+        current_run_dir,
+        last_run_dir,
         current_stage: lane.current_stage.clone(),
         current_stage_provider: None,
         current_stage_cli_name: None,
@@ -2779,6 +2786,17 @@ fn build_frontier_entry(
             refresh_command,
         ),
     }
+}
+
+fn resolve_run_dir_display(run_id: Option<&str>) -> Option<String> {
+    resolve_run_dir_display_in_base(&fabro_workflows::run_lookup::default_runs_base(), run_id)
+}
+
+fn resolve_run_dir_display_in_base(base: &Path, run_id: Option<&str>) -> Option<String> {
+    let run_id = run_id?;
+    fabro_workflows::run_lookup::find_run_by_prefix(base, run_id)
+        .ok()
+        .map(|path| path.display().to_string())
 }
 
 fn render_dependency_key(dependency: &raspberry_supervisor::LaneDependency) -> String {
@@ -2924,8 +2942,14 @@ fn render_frontier_entry(entry: Option<&FrontierSyncEntry>) -> String {
     if let Some(run_id) = entry.current_run_id.as_ref() {
         lines.push(format!("- current run: {}", run_id));
     }
+    if let Some(run_dir) = entry.current_run_dir.as_ref() {
+        lines.push(format!("- current run dir: {}", run_dir));
+    }
     if let Some(run_id) = entry.last_run_id.as_ref() {
         lines.push(format!("- last run: {}", run_id));
+    }
+    if let Some(run_dir) = entry.last_run_dir.as_ref() {
+        lines.push(format!("- last run dir: {}", run_dir));
     }
     if let Some(reason) = entry.blocker_reason.as_ref() {
         lines.push(format!("- blocker: {}", reason));
@@ -6622,6 +6646,8 @@ fn frontier_entry_snapshot(entry: &FrontierSyncEntry) -> serde_json::Value {
         "detail": entry.detail,
         "currentRunId": entry.current_run_id,
         "lastRunId": entry.last_run_id,
+        "currentRunDir": entry.current_run_dir,
+        "lastRunDir": entry.last_run_dir,
         "blockerReason": entry.blocker_reason,
         "failureKind": entry.failure_kind,
     })
@@ -7349,6 +7375,8 @@ mod tests {
                     detail: "ready".to_string(),
                     current_run_id: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: None,
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -7385,6 +7413,8 @@ mod tests {
                     detail: "ready".to_string(),
                     current_run_id: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: None,
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -7683,6 +7713,8 @@ mod tests {
             detail: "verification failed".to_string(),
             current_run_id: None,
             last_run_id: Some("01KMTEST".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             current_stage: Some("Verify".to_string()),
             current_stage_provider: None,
             current_stage_cli_name: None,
@@ -7746,6 +7778,8 @@ mod tests {
                     detail: "running".to_string(),
                     current_run_id: Some("01RUN".to_string()),
                     last_run_id: Some("01RUN".to_string()),
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: Some("Implement".to_string()),
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -7781,6 +7815,8 @@ mod tests {
                     detail: "failed".to_string(),
                     current_run_id: None,
                     last_run_id: Some("01FAIL".to_string()),
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: Some("Review".to_string()),
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -7816,6 +7852,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_run_dir_display_in_base_uses_run_id_prefix() {
+        let temp = tempdir().expect("tempdir");
+        let run_dir = temp.path().join("20260326-01KMPTESTRUN0000000000000000");
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        fabro_workflows::manifest::Manifest {
+            run_id: "01KMPTESTRUN00000000000000".to_string(),
+            workflow_name: "demo".to_string(),
+            goal: "Investigate a failure".to_string(),
+            start_time: chrono::Utc::now(),
+            node_count: 1,
+            edge_count: 0,
+            run_branch: None,
+            base_sha: None,
+            labels: std::collections::HashMap::new(),
+            base_branch: None,
+            workflow_slug: None,
+            host_repo_path: None,
+        }
+        .save(&run_dir.join("manifest.json"))
+        .expect("manifest");
+
+        let resolved =
+            resolve_run_dir_display_in_base(temp.path(), Some("01KMPTESTRUN00000000000000"));
+        let expected = run_dir.display().to_string();
+
+        assert_eq!(resolved.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
     fn desired_lane_issue_sets_workspace_binding_and_override() {
         let entry = FrontierSyncEntry {
             sync_key: "frontier/zend/lane/client:implement".to_string(),
@@ -7829,6 +7894,8 @@ mod tests {
             detail: "ready".to_string(),
             current_run_id: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             current_stage: None,
             current_stage_provider: None,
             current_stage_cli_name: None,
@@ -7900,6 +7967,8 @@ mod tests {
                     detail: "running".to_string(),
                     current_run_id: Some("01RUN".to_string()),
                     last_run_id: Some("01RUN".to_string()),
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: Some("Implement".to_string()),
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -7935,6 +8004,8 @@ mod tests {
                     detail: "failed".to_string(),
                     current_run_id: None,
                     last_run_id: Some("01FAIL".to_string()),
+                    current_run_dir: None,
+                    last_run_dir: None,
                     current_stage: Some("Review".to_string()),
                     current_stage_provider: None,
                     current_stage_cli_name: None,
@@ -8316,6 +8387,8 @@ mod tests {
                 detail: "ready".to_string(),
                 current_run_id: None,
                 last_run_id: None,
+                current_run_dir: None,
+                last_run_dir: None,
                 current_stage: None,
                 current_stage_provider: None,
                 current_stage_cli_name: None,
@@ -8509,6 +8582,8 @@ mod tests {
                 detail: "run active at stage `Specify`".to_string(),
                 current_run_id: Some("01KMTEST".to_string()),
                 last_run_id: Some("01KMTEST".to_string()),
+                current_run_dir: None,
+                last_run_dir: None,
                 current_stage: Some("Specify".to_string()),
                 current_stage_provider: None,
                 current_stage_cli_name: None,
@@ -8795,6 +8870,8 @@ mod tests {
                 detail: "run active at stage `Review`".to_string(),
                 current_run_id: Some("01CRAPSRUN".to_string()),
                 last_run_id: Some("01CRAPSRUN".to_string()),
+                current_run_dir: None,
+                last_run_dir: None,
                 current_stage: Some("Review".to_string()),
                 current_stage_provider: None,
                 current_stage_cli_name: None,

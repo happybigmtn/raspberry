@@ -885,7 +885,10 @@ pub(crate) fn prepare_workflow_with_project_config(
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        bail!("Validation failed");
+        bail!(
+            "{}",
+            crate::commands::shared::validation_failure_message(&diagnostics)
+        );
     }
 
     // Resolve sandbox provider

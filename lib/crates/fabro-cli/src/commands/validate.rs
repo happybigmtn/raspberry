@@ -5,7 +5,7 @@ use clap::Args;
 use fabro_util::terminal::Styles;
 use fabro_validate::Severity;
 
-use crate::commands::shared::{print_diagnostics, relative_path};
+use crate::commands::shared::{print_diagnostics, relative_path, validation_failure_message};
 
 #[derive(Args)]
 pub struct ValidateArgs {
@@ -33,7 +33,7 @@ pub fn run(args: &ValidateArgs, styles: &Styles) -> anyhow::Result<()> {
     print_diagnostics(&diagnostics, styles);
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        bail!("Validation failed");
+        bail!("{}", validation_failure_message(&diagnostics));
     }
 
     eprintln!("Validation: {}", styles.green.apply_to("OK"));

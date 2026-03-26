@@ -13,7 +13,9 @@ use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::controller_lease::{acquire_autodev_lease, ControllerLeaseError};
+use crate::controller_lease::{
+    acquire_autodev_lease, autodev_controller_active, ControllerLeaseError,
+};
 use crate::dispatch::{execute_selected_lanes, DispatchError, DispatchOutcome, DispatchSettings};
 use crate::evaluate::{evaluate_program, EvaluateError, LaneExecutionStatus};
 use crate::failure::{
@@ -1785,10 +1787,15 @@ pub fn sync_autodev_report_with_program(
         .as_ref()
         .and_then(|current| current.max_parallel);
     let next_snapshot = current_snapshot(program, preserved_max_parallel);
-    if report.current.as_ref() == Some(&next_snapshot) {
+    let controller_active = autodev_controller_active(manifest_path, manifest)?;
+    let next_stop_reason =
+        synced_stop_reason(report.stop_reason, &next_snapshot, controller_active);
+    if report.current.as_ref() == Some(&next_snapshot) && report.stop_reason == next_stop_reason {
         return Ok(());
     }
     report.current = Some(next_snapshot);
+    report.stop_reason = next_stop_reason;
+    report.updated_at = Utc::now();
     save_autodev_report(manifest_path, manifest, &report)?;
     Ok(())
 }
@@ -1817,20 +1824,28 @@ fn save_autodev_report(
 }
 
 fn deserialize_autodev_report(
-    _path: &Path,
-    manifest: &ProgramManifest,
+    path: &Path,
+    _manifest: &ProgramManifest,
     raw: &str,
 ) -> Result<AutodevReport, AutodevError> {
-    serde_json::from_str(raw).or_else(|_source| {
-        Ok(AutodevReport {
-            program: manifest.program.clone(),
-            stop_reason: AutodevStopReason::InProgress,
-            updated_at: Utc::now(),
-            provenance: None,
-            current: None,
-            cycles: Vec::new(),
-        })
+    serde_json::from_str(raw).map_err(|source| AutodevError::ParseReport {
+        path: path.to_path_buf(),
+        source,
     })
+}
+
+fn synced_stop_reason(
+    previous: AutodevStopReason,
+    snapshot: &AutodevCurrentSnapshot,
+    controller_active: bool,
+) -> AutodevStopReason {
+    if controller_active {
+        return AutodevStopReason::InProgress;
+    }
+    if snapshot.ready == 0 && snapshot.running == 0 {
+        return AutodevStopReason::Settled;
+    }
+    previous
 }
 
 fn current_snapshot(
@@ -4626,6 +4641,66 @@ units:
 
         assert_eq!(report.stop_reason, AutodevStopReason::Maintenance);
         assert!(report.cycles.is_empty());
+    }
+
+    #[test]
+    fn sync_autodev_report_with_program_marks_live_controller_in_progress() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        let manifest = demo_manifest(temp.path());
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![ready_lane("demo:lane", "demo", "lane", LaneKind::Artifact)],
+        };
+        let previous_snapshot = current_snapshot(&program, Some(1));
+        let previous_updated_at = Utc::now() - chrono::Duration::minutes(5);
+        let report = AutodevReport {
+            program: "demo".to_string(),
+            stop_reason: AutodevStopReason::CycleLimit,
+            updated_at: previous_updated_at,
+            provenance: None,
+            current: Some(previous_snapshot),
+            cycles: Vec::new(),
+        };
+        save_autodev_report(&manifest_path, &manifest, &report).expect("report saved");
+        let _lease = crate::controller_lease::acquire_autodev_lease(&manifest_path, &manifest)
+            .expect("lease acquired");
+
+        sync_autodev_report_with_program(&manifest_path, &manifest, &program)
+            .expect("sync succeeds");
+
+        let synced = load_optional_autodev_report(&manifest_path, &manifest)
+            .expect("report loads")
+            .expect("report present");
+        assert_eq!(synced.stop_reason, AutodevStopReason::InProgress);
+        assert!(synced.updated_at > previous_updated_at);
+        assert_eq!(
+            synced.current.as_ref().map(|snapshot| snapshot.running),
+            Some(0)
+        );
+        assert_eq!(
+            synced.current.as_ref().map(|snapshot| snapshot.ready),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn load_optional_autodev_report_surfaces_parse_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        let manifest = demo_manifest(temp.path());
+        let report_path = autodev_report_path(&manifest_path, &manifest);
+        std::fs::create_dir_all(report_path.parent().expect("parent")).expect("report dir");
+        std::fs::write(&report_path, "{not-json").expect("invalid report written");
+
+        let error = load_optional_autodev_report(&manifest_path, &manifest)
+            .expect_err("invalid report should fail");
+
+        assert!(matches!(error, AutodevError::ParseReport { .. }));
     }
 
     #[test]

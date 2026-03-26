@@ -105,9 +105,17 @@ impl Default for WorkflowBuilder {
 ///
 /// Returns an error if the file cannot be read, parsed, or validated.
 pub fn prepare_from_file(path: &Path) -> Result<(Graph, Vec<Diagnostic>), FabroError> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| FabroError::Parse(format!("Failed to read {}: {e}", path.display())))?;
-    let dot_dir = path.parent().unwrap_or(Path::new("."));
+    let workflow_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+    let source = std::fs::read_to_string(&workflow_path).map_err(|e| {
+        FabroError::Parse(format!("Failed to read {}: {e}", workflow_path.display()))
+    })?;
+    let dot_dir = workflow_path.parent().unwrap_or(Path::new("."));
     WorkflowBuilder::new().prepare_with_file_inlining_and_fallbacks(&source, dot_dir, &[])
 }
 
@@ -160,6 +168,12 @@ fn infer_repo_root_fallback(base_dir: &Path) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use fabro_graphviz::graph::AttrValue;
+    use std::sync::{Mutex, OnceLock};
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     const MINIMAL_DOT: &str = r#"digraph Test {
         graph [goal="Build feature"]
@@ -280,6 +294,51 @@ mod tests {
         let (graph, diagnostics) = WorkflowBuilder::new()
             .prepare_with_file_inlining(dot, &workflow_dir)
             .unwrap();
+        fabro_validate::raise_on_errors(&diagnostics).unwrap();
+        let prompt = graph.nodes["plan"]
+            .attrs
+            .get("prompt")
+            .and_then(AttrValue::as_str)
+            .unwrap();
+        assert_eq!(prompt, "repo relative prompt");
+    }
+
+    #[test]
+    fn prepare_from_file_resolves_repo_relative_prompts_from_relative_workflow_path() {
+        let _guard = cwd_lock().lock().expect("cwd lock");
+        let original_cwd = std::env::current_dir().unwrap();
+        let _restore = scopeguard::guard(original_cwd.clone(), |cwd| {
+            std::env::set_current_dir(cwd).expect("restore cwd");
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        let package_root = repo_root.join("malinka");
+        std::fs::create_dir_all(package_root.join("workflows/implementation")).unwrap();
+        std::fs::create_dir_all(package_root.join("prompts/implementation/demo")).unwrap();
+        std::fs::create_dir_all(package_root.join("run-configs")).unwrap();
+        std::fs::write(
+            package_root.join("prompts/implementation/demo/plan.md"),
+            "repo relative prompt",
+        )
+        .unwrap();
+
+        let workflow_path = package_root.join("workflows/implementation/demo.fabro");
+        std::fs::write(
+            &workflow_path,
+            r#"digraph Demo {
+                graph [goal="Run demo"]
+                start [shape=Mdiamond]
+                plan  [prompt="@malinka/prompts/implementation/demo/plan.md"]
+                exit  [shape=Msquare]
+                start -> plan -> exit
+            }"#,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&repo_root).unwrap();
+        let relative_workflow = Path::new("malinka/workflows/implementation/demo.fabro");
+        let (graph, diagnostics) = prepare_from_file(relative_workflow).unwrap();
         fabro_validate::raise_on_errors(&diagnostics).unwrap();
         let prompt = graph.nodes["plan"]
             .attrs

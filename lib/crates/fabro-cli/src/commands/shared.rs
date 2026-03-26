@@ -41,6 +41,42 @@ pub fn print_diagnostics(diagnostics: &[Diagnostic], styles: &Styles) {
     }
 }
 
+fn compact_diagnostic(diagnostic: &Diagnostic) -> String {
+    let location = match (&diagnostic.node_id, &diagnostic.edge) {
+        (Some(node), _) => format!("node {node}: "),
+        (_, Some((from, to))) => format!("edge {from}->{to}: "),
+        _ => String::new(),
+    };
+    format!("{location}{} ({})", diagnostic.message, diagnostic.rule)
+}
+
+pub fn validation_failure_message(diagnostics: &[Diagnostic]) -> String {
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        return "Validation failed".to_string();
+    }
+
+    let preview = errors
+        .iter()
+        .take(3)
+        .map(|diagnostic| compact_diagnostic(diagnostic))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if errors.len() > 3 {
+        format!(
+            "Validation failed ({} errors): {}; +{} more",
+            errors.len(),
+            preview,
+            errors.len() - 3
+        )
+    } else {
+        format!("Validation failed ({} errors): {preview}", errors.len())
+    }
+}
+
 pub fn relative_path(path: &Path) -> String {
     if let Ok(cwd) = std::env::current_dir() {
         if let Ok(rel) = path.strip_prefix(&cwd) {
@@ -127,7 +163,8 @@ pub fn format_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_tokens_human;
+    use super::{format_tokens_human, validation_failure_message};
+    use fabro_validate::{Diagnostic, Severity};
 
     #[test]
     fn format_tokens_human_zero() {
@@ -157,5 +194,32 @@ mod tests {
     #[test]
     fn format_tokens_human_mid_millions() {
         assert_eq!(format_tokens_human(3_456_789), "3.5m");
+    }
+
+    #[test]
+    fn validation_failure_message_includes_first_errors() {
+        let diagnostics = vec![
+            Diagnostic {
+                rule: "unresolved_file_ref".to_string(),
+                severity: Severity::Error,
+                message: "missing prompt".to_string(),
+                node_id: Some("plan".to_string()),
+                edge: None,
+                fix: None,
+            },
+            Diagnostic {
+                rule: "start_node".to_string(),
+                severity: Severity::Error,
+                message: "missing start".to_string(),
+                node_id: None,
+                edge: None,
+                fix: None,
+            },
+        ];
+
+        let message = validation_failure_message(&diagnostics);
+        assert!(message.contains("Validation failed (2 errors)"));
+        assert!(message.contains("node plan: missing prompt (unresolved_file_ref)"));
+        assert!(message.contains("missing start (start_node)"));
     }
 }

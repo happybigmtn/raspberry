@@ -1513,7 +1513,7 @@ fn merge_failure_detail(current: Option<String>, candidate: Option<String>) -> O
     match (current, candidate) {
         (Some(current), Some(candidate)) => {
             if (is_generic_failure(&current) || is_cycle_collapse_failure(&current))
-                && !is_generic_failure(&candidate)
+                && current != candidate
             {
                 Some(candidate)
             } else {
@@ -1535,7 +1535,8 @@ fn is_generic_failure(text: &str) -> bool {
 
 fn is_cycle_collapse_failure(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("run is stuck in a cycle")
+    lower.contains("deterministic failure cycle detected")
+        || lower.contains("run is stuck in a cycle")
         || lower.contains("visited 3 times")
         || lower.contains("node limit 3")
 }
@@ -2712,13 +2713,13 @@ units:
     #[test]
     fn merge_failure_detail_keeps_existing_specific_failure() {
         let merged = merge_failure_detail(
-            Some("Engine error: deterministic failure cycle detected".to_string()),
+            Some("OSError: [Errno 98] Address already in use".to_string()),
             Some("Script failed with exit code: 1".to_string()),
         );
 
         assert_eq!(
             merged.as_deref(),
-            Some("Engine error: deterministic failure cycle detected")
+            Some("OSError: [Errno 98] Address already in use")
         );
     }
 
@@ -2733,5 +2734,18 @@ units:
             merged.as_deref(),
             Some("OSError: [Errno 98] Address already in use")
         );
+    }
+
+    #[test]
+    fn merge_failure_detail_prefers_underlying_stage_failure_over_signature_cycle_wrapper() {
+        let merged = merge_failure_detail(
+            Some(
+                "Engine error: deterministic failure cycle detected: signature verify|deterministic|script failed with exit code: <n> repeated 3 times (limit 3)"
+                    .to_string(),
+            ),
+            Some("Script failed with exit code: 101".to_string()),
+        );
+
+        assert_eq!(merged.as_deref(), Some("Script failed with exit code: 101"));
     }
 }

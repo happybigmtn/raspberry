@@ -126,6 +126,18 @@ pub fn acquire_autodev_lease(
     })
 }
 
+pub fn autodev_controller_active(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+) -> Result<bool, ControllerLeaseError> {
+    let path = autodev_lease_path(manifest_path, manifest);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let lease = load_lease(&path)?;
+    Ok(autodev_owner_active(&lease))
+}
+
 impl Drop for AutodevLeaseGuard {
     fn drop(&mut self) {
         let Ok(existing) = load_lease(&self.path) else {

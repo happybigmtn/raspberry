@@ -332,12 +332,21 @@ pub fn load_run_config(path: &Path) -> anyhow::Result<WorkflowRunConfig> {
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let mut config = parse_run_config(&contents)?;
 
-    let config_dir = path.parent().unwrap_or(Path::new("."));
-    resolve_work_dir(&mut config, config_dir);
-    resolve_integration_paths(&mut config, config_dir);
-    resolve_dockerfile(&mut config, config_dir)?;
+    let config_dir = absolute_base_dir(path.parent().unwrap_or(Path::new(".")));
+    resolve_work_dir(&mut config, &config_dir);
+    resolve_integration_paths(&mut config, &config_dir);
+    resolve_dockerfile(&mut config, &config_dir)?;
 
     Ok(config)
+}
+
+fn absolute_base_dir(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(path)
 }
 
 fn resolve_work_dir(config: &mut WorkflowRunConfig, config_dir: &Path) {
@@ -460,6 +469,12 @@ pub fn parse_run_config(contents: &str) -> anyhow::Result<WorkflowRunConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn load_run_config_resolves_relative_work_dir() {
@@ -478,6 +493,35 @@ mod tests {
             config.work_dir,
             Some(dir.path().join("fabro").display().to_string())
         );
+    }
+
+    #[test]
+    fn load_run_config_resolves_relative_work_dir_from_relative_config_path() {
+        let _guard = cwd_lock().lock().expect("cwd lock");
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                std::env::set_current_dir(&self.0).expect("restore cwd");
+            }
+        }
+        let _restore = CwdGuard(std::env::current_dir().unwrap());
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo_root = dir.path().join("repo");
+        let config_dir = repo_root.join("malinka/run-configs/implementation");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("workflow.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ngraph = \"../../workflows/demo.fabro\"\ndirectory = \"../../..\"\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&repo_root).unwrap();
+        let relative_path = Path::new("malinka/run-configs/implementation/workflow.toml");
+
+        let config = load_run_config(relative_path).unwrap();
+        assert_eq!(config.work_dir, Some(repo_root.display().to_string()));
     }
 
     #[test]

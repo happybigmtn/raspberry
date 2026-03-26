@@ -543,7 +543,10 @@ async fn prepare_from_branch(
                 fabro_workflows::workflow::WorkflowBuilder::new().prepare(&source)?;
             print_diagnostics(&diagnostics, styles);
             if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-                bail!("Validation failed");
+                bail!(
+                    "{}",
+                    crate::commands::shared::validation_failure_message(&diagnostics)
+                );
             }
 
             let sandbox_provider = if args.dry_run {
