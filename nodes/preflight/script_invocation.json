@@ -1,0 +1,5 @@
+{
+  "command": "set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- render\nelse\n  cargo test -p fabro-synthesis -- render\nfi\ntrue",
+  "language": "shell",
+  "timeout_ms": null
+}
