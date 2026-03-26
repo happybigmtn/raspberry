@@ -1,34 +1,39 @@
 {
-  "timestamp": "2026-03-26T19:34:36.709905970Z",
-  "current_node": "specify",
+  "timestamp": "2026-03-26T19:38:36.319142189Z",
+  "current_node": "review",
   "completed_nodes": [
     "start",
-    "specify"
+    "specify",
+    "review"
   ],
   "node_retries": {
     "specify": 1,
-    "start": 1
+    "start": 1,
+    "review": 1
   },
   "context_values": {
     "internal.retry_count.start": 1,
     "internal.retry_count.specify": 1,
-    "current.preamble": "Goal: Greenfield Bootstrap and Runtime Asset Reliability\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify scaffold-first ordering works in planning.rs\n- Add bootstrap verification gate to render.rs\n- Make generated prompt and workflow asset refs runtime-stable\n- Add type-aware quality checks for TypeScript projects\n- Validate on tonofcrap with 30-cycle autodev run\n- Validate on a fresh Rust project with scaffold dependency\n\nRequired durable artifacts:\n- `outputs/greenfield-bootstrap-reliability/spec.md`\n- `outputs/greenfield-bootstrap-reliability/review.md`\n\n",
-    "internal.thread_id": "start",
-    "current_node": "specify",
+    "current.preamble": "Goal: Greenfield Bootstrap and Runtime Asset Reliability\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify scaffold-first ordering works in planning.rs\n- Add bootstrap verification gate to render.rs\n- Make generated prompt and workflow asset refs runtime-stable\n- Add type-aware quality checks for TypeScript projects\n- Validate on tonofcrap with 30-cycle autodev run\n- Validate on a fresh Rust project with scaffold dependency\n\nRequired durable artifacts:\n- `outputs/greenfield-bootstrap-reliability/spec.md`\n- `outputs/greenfield-bootstrap-reliability/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 82.5k tokens in / 472 out\n",
+    "internal.thread_id": "specify",
+    "current_node": "review",
     "outcome": "success",
     "failure_class": "",
     "graph.rankdir": "LR",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNT43GYBA3VBECJRD9HDRBR/worktree",
     "internal.fidelity": "compact",
     "response.specify": "## Summary\n\nI've completed the first honest reviewed slice for the **Greenfield Bootstrap and Runtime Asset Reliability** frontier. Here's what was produced:\n\n### Durable Artifacts Created\n\n1. **`outputs/greenfield-bootstrap-reliability/spec.md`** (7.9KB)\n   - Documents the durable behavior contract for scaffold-first ordering, bootstrap verification gates, and runtime-stable asset resolution\n   - Defines the architecture/runtime contract with specific invariants\n   - Lists acceptance criteria with proof commands for each milestone\n\n2. **`outputs/greenfield-bootstrap-reliability/review.md`** (8.6KB)\n   - Honest assessment of current implementation state\n   - Identifies what's implemented vs. what's missing\n   - Documents required tests and implementation roadmap\n\n### Current Implementation Status\n\n| Component | Status | Evidence |\n|-----------|--------|----------|\n| **Scaffold-first ordering** | ✅ Implemented | `planning.rs` lines 610-690 injects scaffold deps |\n| **Bootstrap verification gate** | ❌ Not implemented | No verification node in scaffold workflows |\n| **Runtime-stable asset resolution** | ⚠️ Partial | `cache_workflow_file_refs()` exists but needs verification |\n| **TypeScript quality gate** | ❌ Not implemented | No TS-specific checks in `implementation_quality_command()` |\n\n### Open Questions Identified\n\n1. **Language detection strategy** — How should `render_workflow_graph()` detect the project language?\n2. **Prompt inlining vs. copying** — Which approach is preferred for runtime stability?\n3. **Bootstrap verification failure handling** — Should downstream lanes be blocked indefinitely on verification failure?\n\n### Next Steps (per the plan)\n\n1. **Write `scaffold_first` test** — Verify the existing scaffold-first ordering works correctly\n2. **Implement bootstrap verification gate** — Add language-specific health checks to scaffold workflows\n3. **Trace runtime asset resolution** — Verify `extract_at_file_refs()` captures prompts and `cache_workflow_file_refs()` copies them\n4. **Implement TypeScript quality gate** — Add `any` usage detection, test import validation, schema existence checks\n5. **Live validation** — Run tonofcrap 30-cycle autodev and fresh Rust project validation",
-    "last_response": "## Summary\n\nI've completed the first honest reviewed slice for the **Greenfield Bootstrap and Runtime Asset Reliability** frontier. Here's what was produced:\n\n### Durable Artifacts Created\n\n1. **`outp",
+    "last_response": "## Review Complete\n\nCreated durable artifacts:\n\n| Artifact | Path |\n|----------|------|\n| Spec | `outputs/greenfield-bootstrap-reliability/spec.md` |\n| Review | `outputs/greenfield-bootstrap-reliabili",
+    "thread.specify.current_node": "review",
     "internal.run_id": "01KMNT43GYBA3VBECJRD9HDRBR",
-    "last_stage": "specify",
+    "last_stage": "review",
     "failure_signature": "",
+    "internal.retry_count.review": 1,
     "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
     "internal.node_visit_count": 1,
     "thread.start.current_node": "specify",
-    "graph.goal": "Greenfield Bootstrap and Runtime Asset Reliability\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify scaffold-first ordering works in planning.rs\n- Add bootstrap verification gate to render.rs\n- Make generated prompt and workflow asset refs runtime-stable\n- Add type-aware quality checks for TypeScript projects\n- Validate on tonofcrap with 30-cycle autodev run\n- Validate on a fresh Rust project with scaffold dependency\n\nRequired durable artifacts:\n- `outputs/greenfield-bootstrap-reliability/spec.md`\n- `outputs/greenfield-bootstrap-reliability/review.md`\n"
+    "graph.goal": "Greenfield Bootstrap and Runtime Asset Reliability\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Verify scaffold-first ordering works in planning.rs\n- Add bootstrap verification gate to render.rs\n- Make generated prompt and workflow asset refs runtime-stable\n- Add type-aware quality checks for TypeScript projects\n- Validate on tonofcrap with 30-cycle autodev run\n- Validate on a fresh Rust project with scaffold dependency\n\nRequired durable artifacts:\n- `outputs/greenfield-bootstrap-reliability/spec.md`\n- `outputs/greenfield-bootstrap-reliability/review.md`\n",
+    "response.review": "## Review Complete\n\nCreated durable artifacts:\n\n| Artifact | Path |\n|----------|------|\n| Spec | `outputs/greenfield-bootstrap-reliability/spec.md` |\n| Review | `outputs/greenfield-bootstrap-reliability/review.md` |\n\n---\n\n## Summary\n\n### Correctness Assessment\n\n| Component | Status | Evidence |\n|-----------|--------|----------|\n| **Scaffold-first ordering** | ✅ Correct | `planning.rs:753-815` — properly identifies infrastructure plans by `PlanCategory::Infrastructure` and injects as implicit dependencies for non-infrastructure plans |\n| **Composite scaffold resolution** | ✅ Correct | Resolves to `children.last()` for composite scaffold plans |\n| **Runtime asset references** | ✅ Correct | `@malinka/prompts/` convention is repo-relative and survives handoff to `~/.fabro/runs/` |\n| **Bootstrap verification gate** | ❌ **MISSING** | `preflight_command()` (lines 2167-2175) is a pass-through — no language-specific health checks |\n| **TypeScript quality checks** | ❌ **MISSING** | No `any[]` detection or import verification in `implementation_quality_command()` |\n\n### Milestone Fit\n\n**Phase 0 Gate**: **NOT READY**\n\nThe scaffold-first ordering foundation is solid, but the verification gates that prove the bootstrap actually succeeded are not implemented. The plan explicitly requires:\n\n1. Bootstrap verification that `package.json`/`tsconfig.json` exists before TypeScript lanes dispatch\n2. TypeScript-specific quality checks for `any` usage\n3. 30-cycle tonofcrap validation\n4. Fresh Rust project validation\n\nNone of these are complete.\n\n### Security Review (Nemesis-style)\n\n**Pass 1 — Trust Boundaries**:\n- Plan categorization is trusted from YAML without secondary validation — acceptable risk\n- Prompt path `@malinka/prompts/` is not validated for directory traversal — **low-severity gap**\n\n**Pass 2 — Coupled State**:\n- Scaffold plan detection and dependency injection are consistent\n- Composite scaffold → last child resolution assumes ordering — **fragile but functional**\n- Prompt file existence at runtime has **no validation**\n\n**No privilege escalation paths identified.**\n\n### Remaining Blockers\n\n| Blocker | Priority |\n|---------|----------|\n| Language-specific bootstrap verification gate | **P0 — Required for Phase 0** |\n| tonofcrap 30-cycle autodev validation | **P0 — Required for Phase 0** |\n| Fresh Rust project validation | **P0 — Required for Phase 0** |\n| TypeScript `any[]` quality detection | P1 — Post-gate |\n| Prompt path traversal validation | P2 — Hardening |"
   },
   "logs": [],
   "node_outcomes": {
@@ -50,11 +55,35 @@
         "output_tokens": 472
       },
       "duration_ms": 136513
+    },
+    "review": {
+      "status": "success",
+      "context_updates": {
+        "response.review": "## Review Complete\n\nCreated durable artifacts:\n\n| Artifact | Path |\n|----------|------|\n| Spec | `outputs/greenfield-bootstrap-reliability/spec.md` |\n| Review | `outputs/greenfield-bootstrap-reliability/review.md` |\n\n---\n\n## Summary\n\n### Correctness Assessment\n\n| Component | Status | Evidence |\n|-----------|--------|----------|\n| **Scaffold-first ordering** | ✅ Correct | `planning.rs:753-815` — properly identifies infrastructure plans by `PlanCategory::Infrastructure` and injects as implicit dependencies for non-infrastructure plans |\n| **Composite scaffold resolution** | ✅ Correct | Resolves to `children.last()` for composite scaffold plans |\n| **Runtime asset references** | ✅ Correct | `@malinka/prompts/` convention is repo-relative and survives handoff to `~/.fabro/runs/` |\n| **Bootstrap verification gate** | ❌ **MISSING** | `preflight_command()` (lines 2167-2175) is a pass-through — no language-specific health checks |\n| **TypeScript quality checks** | ❌ **MISSING** | No `any[]` detection or import verification in `implementation_quality_command()` |\n\n### Milestone Fit\n\n**Phase 0 Gate**: **NOT READY**\n\nThe scaffold-first ordering foundation is solid, but the verification gates that prove the bootstrap actually succeeded are not implemented. The plan explicitly requires:\n\n1. Bootstrap verification that `package.json`/`tsconfig.json` exists before TypeScript lanes dispatch\n2. TypeScript-specific quality checks for `any` usage\n3. 30-cycle tonofcrap validation\n4. Fresh Rust project validation\n\nNone of these are complete.\n\n### Security Review (Nemesis-style)\n\n**Pass 1 — Trust Boundaries**:\n- Plan categorization is trusted from YAML without secondary validation — acceptable risk\n- Prompt path `@malinka/prompts/` is not validated for directory traversal — **low-severity gap**\n\n**Pass 2 — Coupled State**:\n- Scaffold plan detection and dependency injection are consistent\n- Composite scaffold → last child resolution assumes ordering — **fragile but functional**\n- Prompt file existence at runtime has **no validation**\n\n**No privilege escalation paths identified.**\n\n### Remaining Blockers\n\n| Blocker | Priority |\n|---------|----------|\n| Language-specific bootstrap verification gate | **P0 — Required for Phase 0** |\n| tonofcrap 30-cycle autodev validation | **P0 — Required for Phase 0** |\n| Fresh Rust project validation | **P0 — Required for Phase 0** |\n| TypeScript `any[]` quality detection | P1 — Post-gate |\n| Prompt path traversal validation | P2 — Hardening |",
+        "last_stage": "review",
+        "last_response": "## Review Complete\n\nCreated durable artifacts:\n\n| Artifact | Path |\n|----------|------|\n| Spec | `outputs/greenfield-bootstrap-reliability/spec.md` |\n| Review | `outputs/greenfield-bootstrap-reliabili"
+      },
+      "notes": "Stage completed: review",
+      "usage": {
+        "model": "k2p5",
+        "input_tokens": 1369,
+        "output_tokens": 582
+      },
+      "files_written": [
+        "outputs/greenfield-bootstrap-reliability/review.md",
+        "outputs/greenfield-bootstrap-reliability/spec.md"
+      ],
+      "files_touched": [
+        "outputs/greenfield-bootstrap-reliability/review.md",
+        "outputs/greenfield-bootstrap-reliability/spec.md"
+      ],
+      "duration_ms": 237795
     }
   },
-  "next_node_id": "review",
+  "next_node_id": "polish",
   "node_visits": {
     "start": 1,
-    "specify": 1
+    "specify": 1,
+    "review": 1
   }
 }
