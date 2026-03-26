@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.contract": "## Contract Written\n\nCreated `.fabro-work/contract.md` defining the DONE criteria for the Autodev Integration Test lane.\n\n### Key Points\n\n**Preflight Note:** The preflight failed because `cargo-nextest` is not installed. The contract uses `cargo test` instead of `cargo nextest` (they use the same test filter syntax).\n\n**Deliverables:**\n- 9 files to create/modify tests in\n- `fabro-db` gets its first tests (zero currently)\n- `raspberry-supervisor` gets `integration_tests.rs` plus module-level tests\n- `fabro-mcp`, `fabro-github`, `fabro-synthesis`, `fabro-cli` each get minimal test coverage\n\n**Acceptance Criteria (13 total):**\n1. All `fabro-db` tests pass\n2. `autodev_cycle` integration test passes\n3-8. Six filter-based test groups for edge cases: `stale`, `dispatch`, `recovery`, `cycle`, `frontier`, `malformed`\n9-10. MCP and GitHub tests pass\n11-12. Synthesis render and CLI synth tests pass\n13. Full workspace test pass\n\n**Out of Scope:**\n- Code coverage percentages\n- Benchmarks\n- Network tests\n- CI config changes\n- `fabro-types` tests (auto-generated)",
+    "last_stage": "contract",
+    "last_response": "## Contract Written\n\nCreated `.fabro-work/contract.md` defining the DONE criteria for the Autodev Integration Test lane.\n\n### Key Points\n\n**Preflight Note:** The preflight failed because `cargo-nextes"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 30545,
+    "output_tokens": 295
+  },
+  "duration_ms": 61020,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T18:29:01.330645272+00:00",
+  "updated_at": "2026-03-26T18:29:01.330659235+00:00"
+}
