@@ -1,0 +1,32 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.review": "The minimal unblock edits are in [`.config/nextest.toml`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.config/nextest.toml#L1), [`run.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli/src/commands/run.rs#L3432), [`list.trycmd`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli/tests/cmd/model/list.trycmd#L1), and [`bare.trycmd`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli/tests/cmd/model/bare.trycmd#L1). That fixes the stale `fabro-cli` replay blockers I found: updated the default-provider assertion, refreshed the model CLI fixtures, and gave the two known-slow `fabro-cli` tests a targeted nextest timeout override. I also cleaned up incidental fixture-state churn from verification, so only those four files remain modified.\n\nProof:\n- `cargo check --workspace`: passed.\n- `cargo nextest run -p fabro-cli resolve_model_provider_defaults cli_model dry_run_writes_jsonl_and_live_json cli_run --no-fail-fast`: passed.\n\nThe source lane is still not fully replay-safe. A full `cargo nextest run --workspace --no-fail-fast` now fails on 23 unrelated tests outside this slice, with representative clusters in [`catalog.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-model/src/catalog.rs#L362), [`render.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-synthesis/src/render.rs#L6832), [`direct_integration.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-workflows/src/direct_integration.rs#L895), [`integration.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/raspberry-supervisor/src/integration.rs#L170), [`evaluate.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/raspberry-supervisor/src/evaluate.rs#L1882), [`program_state.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/raspberry-supervisor/src/program_state.rs#L2003), and [`cli.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/raspberry-cli/tests/cli.rs#L41). So this lane’s owned proof is green, but the broader workspace remains externally blocked.",
+    "last_stage": "review",
+    "last_response": "The minimal unblock edits are in [`.config/nextest.toml`](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.config/nextest.toml#L1), [`run.rs`](/home/r/.fabro/runs/20260326-01KMNT43GY5"
+  },
+  "notes": "Stage completed: review",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 8922622,
+    "output_tokens": 26660,
+    "cost": 22.706455
+  },
+  "files_written": [
+    ".config/nextest.toml",
+    "lib/crates/fabro-cli/src/commands/run.rs",
+    "lib/crates/fabro-cli/tests/cmd/model/bare.trycmd",
+    "lib/crates/fabro-cli/tests/cmd/model/list.trycmd"
+  ],
+  "files_touched": [
+    ".config/nextest.toml",
+    "lib/crates/fabro-cli/src/commands/run.rs",
+    "lib/crates/fabro-cli/tests/cmd/model/bare.trycmd",
+    "lib/crates/fabro-cli/tests/cmd/model/list.trycmd"
+  ],
+  "duration_ms": 799156,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:33:51.813993492+00:00",
+  "updated_at": "2026-03-26T20:33:51.813994933+00:00"
+}
