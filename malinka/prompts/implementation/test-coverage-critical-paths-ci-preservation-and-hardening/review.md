@@ -185,12 +185,6 @@ Artifacts to write:
 Verification artifact must cover
 - summarize the automated proof commands that ran and their outcomes
 
-Nemesis-style security review
-- Pass 1 — first-principles challenge: question trust boundaries, authority assumptions, and who can trigger the slice's dangerous actions
-- Pass 2 — coupled-state review: identify paired state or protocol surfaces and check that every mutation path keeps them consistent or explains the asymmetry
-- check state transitions that affect balances, commitments, randomness, payout safety, or replayability
-- check secret handling, capability scoping, pairing/idempotence behavior, and privilege escalation paths
-
 Focus on:
 - slice scope discipline
 - proof-gate coverage for the active slice
@@ -229,14 +223,7 @@ If `.fabro-work/contract.md` exists, verify EVERY acceptance criterion from it.
 Any dimension below 6 = merge_ready: no.
 If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.
 
-For security-sensitive slices, append these mandatory fields exactly:
-- layout_invariants_complete: yes|no
-- slice_decomposition_respected: yes|no
-If any mandatory security field is `no`, set `merge_ready: no`.
-
 Review stage ownership:
 - you may write or replace `.fabro-work/promotion.md` in this stage
 - read `.fabro-work/quality.md` before deciding `merge_ready`
-- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review
-- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control
 - prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful

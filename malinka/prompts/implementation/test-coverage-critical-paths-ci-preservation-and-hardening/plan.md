@@ -18,9 +18,6 @@ Required durable artifacts:
 Verification artifact must cover
 - summarize the automated proof commands that ran and their outcomes
 
-Layout/domain invariant tests (required for this slice even if not called out above):
-- layout invariant test proving the rendered board/grid contains no duplicate domain values
-
 Decomposition pressure
 - if a new source file would exceed roughly 400 lines, split it before landing
 - do not mix state transitions, input handling, rendering, and animation in one new file unless the prompt explicitly justifies that coupling

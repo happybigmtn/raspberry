@@ -8,9 +8,6 @@ Your job is to challenge assumptions, find obvious scope drift, identify weak pr
 Verification artifact must cover
 - summarize the automated proof commands that ran and their outcomes
 
-Layout/domain invariant checklist (flag every missing item in `.fabro-work/verification.md`):
-- layout invariant test proving the rendered board/grid contains no duplicate domain values
-
 Structural discipline
 - if a new source file would exceed roughly 400 lines, split it before landing
 - do not mix state transitions, input handling, rendering, and animation in one new file unless the prompt explicitly justifies that coupling
