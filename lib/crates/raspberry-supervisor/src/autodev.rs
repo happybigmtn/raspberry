@@ -4124,4 +4124,239 @@ units:
         let root = paperclip_bundle_root(&manifest_path, &manifest).expect("bundle root");
         assert_eq!(root, temp.path().join("malinka/paperclip/raspberry-demo"));
     }
+
+    #[test]
+    fn stale_running_state_detected_when_worker_disappears() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let programs_dir = temp.path().join("malinka/programs");
+        let raspberry_dir = temp.path().join(".raspberry");
+        let state_dir = raspberry_dir.join("runs/demo-lane");
+        std::fs::create_dir_all(&programs_dir).expect("program dir");
+        std::fs::create_dir_all(&raspberry_dir).expect("raspberry dir");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+
+        let manifest_path = programs_dir.join("demo.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: docs
+    title: Docs
+    output_root: ../../outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+    milestones:
+      - id: reviewed
+        requires: [plan]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: ../run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan]
+"#,
+        )
+        .expect("manifest");
+
+        // Create state with a "running" lane but no actual run files
+        std::fs::write(
+            raspberry_dir.join("demo-state.json"),
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "demo",
+                "updated_at": "2026-03-01T00:00:00Z",
+                "lanes": {
+                    "docs:lane": {
+                        "lane_key": "docs:lane",
+                        "status": "running",
+                        "run_config": "malinka/run-configs/bootstrap/docs.toml",
+                        "current_run_id": "01STALERUN0000000000000000",
+                        "current_fabro_run_id": "01STALERUN0000000000000000",
+                        "current_stage_label": "Implement",
+                        "last_run_id": "01STALERUN0000000000000000",
+                        "last_started_at": "2026-03-01T00:00:00Z"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("state file");
+
+        // No run directory with progress.jsonl means the run disappeared
+        // The refresh should detect this and mark the lane as failed
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let state_path = manifest.resolved_state_path(&manifest_path);
+        let mut state = ProgramRuntimeState::load_optional(&state_path)
+            .expect("load should work")
+            .expect("state should exist");
+
+        let changed =
+            refresh_program_state(&manifest_path, &manifest, &mut state).expect("refresh works");
+
+        // State should change because stale running is detected
+        assert!(changed, "stale running state should be detected as changed");
+        let lane = state.lanes.get("docs:lane").expect("lane should exist");
+        assert_eq!(
+            lane.status,
+            LaneExecutionStatus::Failed,
+            "stale running should become failed"
+        );
+        assert!(
+            lane.last_error.is_some(),
+            "should have an error explaining the stale state"
+        );
+    }
+
+    #[test]
+    fn dispatch_race_with_frontier_budget_exhaustion() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let programs_dir = temp.path().join("malinka/programs");
+        let raspberry_dir = temp.path().join(".raspberry");
+        std::fs::create_dir_all(&programs_dir).expect("program dir");
+        std::fs::create_dir_all(&raspberry_dir).expect("raspberry dir");
+
+        let manifest_path = programs_dir.join("demo.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 2
+units:
+  - id: work
+    title: Work
+    output_root: ../../outputs/work
+    lanes:
+      - id: lane1
+        title: Lane 1
+        kind: platform
+        run_config: ../run-configs/work/lane1.toml
+      - id: lane2
+        title: Lane 2
+        kind: platform
+        run_config: ../run-configs/work/lane2.toml
+      - id: lane3
+        title: Lane 3
+        kind: platform
+        run_config: ../run-configs/work/lane3.toml
+      - id: lane4
+        title: Lane 4
+        kind: platform
+        run_config: ../run-configs/work/lane4.toml
+"#,
+        )
+        .expect("manifest");
+
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let evaluated = evaluate_program(&manifest_path).expect("program evaluates");
+
+        // All lanes should be ready
+        let ready_count = evaluated
+            .lanes
+            .iter()
+            .filter(|l| l.status == LaneExecutionStatus::Ready)
+            .count();
+        assert_eq!(ready_count, 4, "all 4 lanes should be ready");
+
+        // With max_parallel=2, frontier budget of 2 means no more dispatches when running=2 and ready=0
+        let max_parallel = 2usize;
+        let frontier_budget = 2usize;
+
+        // Simulate running lanes consuming budget
+        let running = 2usize;
+        let ready = 0usize;
+        let frontier_signature = FrontierSignature {
+            ready,
+            running,
+            replayable_failed: 0,
+            regenerable_failed: 0,
+            complete: 0,
+            failed_recovery_keys: Vec::new(),
+        };
+
+        // should_trigger_evolve should return false when frontier is at budget
+        let result = should_trigger_evolve(
+            None,                     // last_evolve_at
+            Duration::from_secs(300), // evolve_every
+            &frontier_signature,
+            max_parallel,
+            frontier_budget,
+            true,  // locally_settled
+            false, // doctrine_changed
+            false, // recovery_needs_evolve
+            None,  // last_evolve_frontier
+        );
+
+        assert!(
+            !result,
+            "evolve should not trigger when frontier is at budget"
+        );
+    }
+
+    #[test]
+    fn autodev_cycles_honor_max_cycles_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let programs_dir = temp.path().join("malinka/programs");
+        let raspberry_dir = temp.path().join(".raspberry");
+        let runs_dir = temp.path().join("runs");
+        std::fs::create_dir_all(&programs_dir).expect("program dir");
+        std::fs::create_dir_all(&raspberry_dir).expect("raspberry dir");
+        std::fs::create_dir_all(&runs_dir).expect("runs dir");
+
+        let manifest_path = programs_dir.join("demo.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: work
+    title: Work
+    output_root: ../../outputs/work
+    lanes:
+      - id: lane1
+        title: Lane 1
+        kind: platform
+        run_config: ../run-configs/work/lane1.toml
+"#,
+        )
+        .expect("manifest");
+
+        // Run with max_cycles = 3
+        let report = orchestrate_program(
+            &manifest_path,
+            &AutodevSettings {
+                fabro_bin: PathBuf::from("/bin/false"),
+                max_parallel_override: None,
+                frontier_budget: None,
+                max_cycles: 3,
+                poll_interval_ms: 1,
+                evolve_every_seconds: 0,
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        )
+        .expect("orchestrate should succeed");
+
+        assert_eq!(
+            report.stop_reason,
+            AutodevStopReason::CycleLimit,
+            "should stop due to cycle limit"
+        );
+        assert!(report.cycles.len() <= 3, "should have at most 3 cycles");
+    }
 }

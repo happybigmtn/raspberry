@@ -2734,4 +2734,195 @@ units:
             Some("OSError: [Errno 98] Address already in use")
         );
     }
+
+    #[test]
+    fn malformed_json_state_file_returns_parse_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+
+        // Write malformed JSON
+        std::fs::write(&state_path, b"{ invalid json }").expect("write malformed");
+
+        let result = ProgramRuntimeState::load(&state_path);
+        assert!(result.is_err(), "malformed JSON should return error");
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ProgramStateError::Parse { .. }),
+            "error should be a Parse error"
+        );
+    }
+
+    #[test]
+    fn empty_json_state_file_returns_parse_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+
+        // Write empty JSON
+        std::fs::write(&state_path, b"{}").expect("write empty");
+
+        let result = ProgramRuntimeState::load(&state_path);
+        // Empty JSON should fail schema validation (missing required fields)
+        assert!(result.is_err(), "empty JSON should return error");
+    }
+
+    #[test]
+    fn state_file_with_wrong_schema_version_is_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+
+        // Write JSON with wrong schema version
+        std::fs::write(
+            &state_path,
+            serde_json::json!({
+                "schema_version": "wrong.version",
+                "program": "demo",
+                "updated_at": Utc::now(),
+                "lanes": {}
+            })
+            .to_string(),
+        )
+        .expect("write wrong schema");
+
+        let result = ProgramRuntimeState::load(&state_path);
+        assert!(result.is_err(), "wrong schema version should return error");
+    }
+
+    #[test]
+    fn state_file_missing_required_field_returns_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+
+        // Write JSON missing 'program' field
+        std::fs::write(
+            &state_path,
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "updated_at": Utc::now(),
+                "lanes": {}
+            })
+            .to_string(),
+        )
+        .expect("write incomplete JSON");
+
+        let result = ProgramRuntimeState::load(&state_path);
+        assert!(
+            result.is_err(),
+            "missing required field should return error"
+        );
+    }
+
+    #[test]
+    fn cycle_limit_zero_means_no_limit() {
+        let limit = cycle_limit(0);
+        assert!(limit.is_none(), "max_cycles=0 should mean no limit");
+    }
+
+    #[test]
+    fn cycle_limit_honors_explicit_limit() {
+        let limit = cycle_limit(5);
+        assert_eq!(limit, Some(5), "max_cycles=5 should return Some(5)");
+    }
+
+    #[test]
+    fn has_more_cycles_respects_none_limit() {
+        assert!(
+            has_more_cycles(None, 1000),
+            "None limit means infinite cycles"
+        );
+    }
+
+    #[test]
+    fn has_more_cycles_false_at_limit() {
+        assert!(!has_more_cycles(Some(5), 5), "at limit should return false");
+        assert!(
+            !has_more_cycles(Some(5), 6),
+            "beyond limit should return false"
+        );
+    }
+
+    #[test]
+    fn has_more_cycles_true_before_limit() {
+        assert!(
+            has_more_cycles(Some(5), 4),
+            "before limit should return true"
+        );
+    }
+
+    #[test]
+    fn consecutive_failures_escalate_to_surface_blocked() {
+        let mut state = ProgramRuntimeState::new("demo");
+        let record =
+            ensure_lane_record(&mut state, "demo:lane", Path::new("run-configs/demo.toml"));
+
+        // Simulate multiple replay failures
+        record.consecutive_failures = MAX_CONSECUTIVE_REPLAY_FAILURES - 1;
+        record.recovery_action = Some(FailureRecoveryAction::ReplayLane);
+
+        // Manually escalate
+        escalate_if_replay_exhausted(record);
+
+        assert_eq!(
+            record.recovery_action,
+            Some(FailureRecoveryAction::SurfaceBlocked),
+            "should escalate to SurfaceBlocked"
+        );
+    }
+
+    #[test]
+    fn malformed_lane_record_status_json_handled_gracefully() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+
+        // Write state with invalid status value
+        std::fs::write(
+            &state_path,
+            serde_json::json!({
+                "schema_version": "raspberry.program.v2",
+                "program": "demo",
+                "updated_at": Utc::now(),
+                "lanes": {
+                    "demo:lane": {
+                        "lane_key": "demo:lane",
+                        "status": "not_a_valid_status",
+                        "run_config": "run-configs/demo.toml"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write malformed status");
+
+        // The deserialization should fail because "not_a_valid_status" is not a valid enum variant
+        let result = ProgramRuntimeState::load(&state_path);
+        assert!(
+            result.is_err(),
+            "invalid status value should cause deserialization error"
+        );
+    }
+
+    #[test]
+    fn read_live_lane_progress_handles_missing_progress_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Don't create progress.jsonl - it should be treated as empty
+
+        let result = read_live_lane_progress(temp.path());
+        assert!(result.is_ok(), "missing progress file should not error");
+        assert!(
+            result.unwrap().is_none(),
+            "missing progress should return None"
+        );
+    }
+
+    #[test]
+    fn read_live_lane_progress_handles_corrupt_progress_jsonl() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let progress_path = temp.path().join("progress.jsonl");
+
+        // Write corrupt JSON lines
+        std::fs::write(&progress_path, b"not json at all\n").expect("write corrupt");
+
+        let result = read_live_lane_progress(temp.path());
+        assert!(result.is_ok(), "corrupt lines should be skipped gracefully");
+    }
 }

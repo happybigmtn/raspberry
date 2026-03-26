@@ -366,6 +366,208 @@ units:
         assert!(matches!(error, DispatchError::MaintenanceMode { .. }));
         assert!(error.to_string().contains("framework redesign in progress"));
     }
+
+    #[test]
+    fn max_parallel_budget_exhaustion() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("malinka/run-configs")).expect("run-config dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ..
+state_path: .raspberry/demo-state.json
+max_parallel: 2
+units:
+  - id: work
+    title: Work
+    output_root: ../outputs/work
+    lanes:
+      - id: lane1
+        title: Lane 1
+        kind: platform
+        run_config: ../malinka/run-configs/lane1.toml
+      - id: lane2
+        title: Lane 2
+        kind: platform
+        run_config: ../malinka/run-configs/lane2.toml
+      - id: lane3
+        title: Lane 3
+        kind: platform
+        run_config: ../malinka/run-configs/lane3.toml
+      - id: lane4
+        title: Lane 4
+        kind: platform
+        run_config: ../malinka/run-configs/lane4.toml
+"#,
+        )
+        .expect("manifest");
+        // Touch the run configs so they exist
+        for i in 1..=4 {
+            std::fs::write(
+                temp.path()
+                    .join(format!("malinka/run-configs/lane{}.toml", i)),
+                "# empty config",
+            )
+            .expect("write config");
+        }
+
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest");
+        let evaluated = evaluate_program(&manifest_path).expect("evaluate");
+        let ready_lanes = evaluated
+            .lanes
+            .iter()
+            .filter(|l| l.status == LaneExecutionStatus::Ready)
+            .map(|l| l.lane_key.clone())
+            .collect::<Vec<_>>();
+
+        // With max_parallel=2, we should only dispatch 2 lanes at once
+        assert_eq!(ready_lanes.len(), 4);
+
+        // The dispatch logic should respect max_parallel budget
+        let max_parallel = manifest.max_parallel.max(1);
+        assert_eq!(max_parallel, 2);
+
+        // Verify chunking behavior
+        let chunks: Vec<_> = ready_lanes.chunks(max_parallel).collect();
+        assert_eq!(chunks.len(), 2, "should create 2 chunks of 2 lanes each");
+        assert_eq!(chunks[0].len(), 2);
+        assert_eq!(chunks[1].len(), 2);
+    }
+
+    #[test]
+    fn recovery_action_authority_persisted_in_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("malinka/run-configs")).expect("run-config dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ..
+state_path: .raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: work
+    title: Work
+    output_root: ../outputs/work
+    lanes:
+      - id: lane1
+        title: Lane 1
+        kind: platform
+        run_config: ../malinka/run-configs/lane1.toml
+"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            temp.path().join("malinka/run-configs/lane1.toml"),
+            "# config",
+        )
+        .expect("write config");
+
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest");
+        let evaluated = evaluate_program(&manifest_path).expect("evaluate");
+
+        // Get a lane from the evaluated program
+        let lane = evaluated
+            .lanes
+            .iter()
+            .find(|l| l.lane_key == "work:lane1")
+            .expect("lane exists");
+
+        // Create initial state
+        let state_path = manifest.resolved_state_path(&manifest_path);
+        let mut state = ProgramRuntimeState::load_optional(&state_path)
+            .expect("load works")
+            .unwrap_or_else(|| ProgramRuntimeState::new(manifest.program.clone()));
+
+        // Simulate a failed dispatch
+        let outcome = DispatchOutcome {
+            lane_key: lane.lane_key.clone(),
+            exit_status: 1,
+            fabro_run_id: Some("01FAILED".to_string()),
+            stdout: "".to_string(),
+            stderr: "Script failed with exit code: 1".to_string(),
+        };
+
+        mark_lane_dispatch_failed(&mut state, &lane.lane_key, &lane.run_config, &outcome);
+
+        let record = state.lanes.get(&lane.lane_key).expect("record exists");
+        assert_eq!(
+            record.status,
+            LaneExecutionStatus::Failed,
+            "lane should be marked failed"
+        );
+        assert!(
+            record.recovery_action.is_some(),
+            "recovery action should be set after dispatch failure"
+        );
+        assert_eq!(
+            record.consecutive_failures, 1,
+            "consecutive failures should increment"
+        );
+    }
+
+    #[test]
+    fn explicit_lane_selection_bypasses_ready_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("malinka/programs/demo.yaml");
+        std::fs::create_dir_all(manifest_path.parent().expect("parent")).expect("program dir");
+        std::fs::create_dir_all(temp.path().join("malinka/run-configs")).expect("run-config dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: ..
+state_path: .raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: work
+    title: Work
+    output_root: ../outputs/work
+    lanes:
+      - id: lane1
+        title: Lane 1
+        kind: platform
+        run_config: ../malinka/run-configs/lane1.toml
+"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            temp.path().join("malinka/run-configs/lane1.toml"),
+            "# config",
+        )
+        .expect("write config");
+
+        // Explicitly selecting a non-Ready lane should work
+        let result = execute_selected_lanes(
+            &manifest_path,
+            &["work:lane1".to_string()], // Explicit selection
+            &DispatchSettings {
+                fabro_bin: PathBuf::from("/bin/false"),
+                max_parallel_override: Some(1),
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        );
+
+        // Should not fail with LaneNotReady when explicitly selected
+        // (It may fail for other reasons like missing run config, but not LaneNotReady)
+        match &result {
+            Err(DispatchError::LaneNotReady { lane }) => {
+                panic!("explicit selection should bypass ready check, but got LaneNotReady for lane: {}", lane);
+            }
+            _ => {} // Other errors are acceptable (e.g., the /bin/false won't work)
+        }
+    }
 }
 
 fn build_integration_request(

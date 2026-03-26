@@ -1444,7 +1444,9 @@ name = "fabro-db"
 version = "0.176.2"
 dependencies = [
  "chrono",
+ "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
