@@ -1,41 +1,60 @@
 {
-  "timestamp": "2026-03-26T19:14:46.192142821Z",
-  "current_node": "implement",
+  "timestamp": "2026-03-26T19:14:46.230594472Z",
+  "current_node": "critical_review",
   "completed_nodes": [
     "start",
     "plan",
-    "implement"
+    "implement",
+    "critical_review"
   ],
   "node_retries": {
+    "critical_review": 1,
+    "implement": 1,
     "start": 1,
-    "plan": 1,
-    "implement": 1
+    "plan": 1
   },
   "context_values": {
     "graph.model_stylesheet": "\n            * { model: claude-sonnet-4-5;}\n            .code { model: claude-opus-4-6; }\n            #critical_review { model: gpt-5.2;reasoning_effort: high; }\n        ",
     "graph.goal": "Build a styled pipeline",
     "internal.fidelity": "compact",
     "outcome": "success",
-    "current_node": "implement",
-    "last_response": "[Simulated] Response for stage: implement",
+    "current_node": "critical_review",
+    "last_response": "[Simulated] Response for stage: critical_review",
     "internal.run_id": "01KMNS428ZPYKZKQNER6SNPWT4",
     "failure_signature": "",
-    "current.preamble": "Goal: Build a styled pipeline\n\n## Completed stages\n- **plan**: success\n",
+    "current.preamble": "Goal: Build a styled pipeline\n\n## Completed stages\n- **plan**: success\n- **implement**: success\n",
     "thread.planning.current_node": "plan",
     "response.implement": "[Simulated] Response for stage: implement",
+    "response.critical_review": "[Simulated] Response for stage: critical_review",
     "internal.retry_count.implement": 1,
     "internal.thread_id": "code",
     "internal.retry_count.start": 1,
     "failure_class": "",
-    "last_stage": "implement",
+    "last_stage": "critical_review",
     "internal.node_visit_count": 1,
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNS428ZPYKZKQNER6SNPWT4/worktree",
-    "thread.code.current_node": "implement",
+    "thread.code.current_node": "critical_review",
+    "internal.retry_count.critical_review": 1,
     "response.plan": "[Simulated] Response for stage: plan",
     "internal.retry_count.plan": 1
   },
   "logs": [],
   "node_outcomes": {
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    },
+    "critical_review": {
+      "status": "success",
+      "context_updates": {
+        "response.critical_review": "[Simulated] Response for stage: critical_review",
+        "last_stage": "critical_review",
+        "last_response": "[Simulated] Response for stage: critical_review"
+      },
+      "notes": "[Simulated] critical_review",
+      "duration_ms": 0
+    },
     "implement": {
       "status": "success",
       "context_updates": {
@@ -55,17 +74,13 @@
       },
       "notes": "[Simulated] plan",
       "duration_ms": 0
-    },
-    "start": {
-      "status": "success",
-      "notes": "[Simulated] start",
-      "duration_ms": 0
     }
   },
-  "next_node_id": "critical_review",
+  "next_node_id": "exit",
   "node_visits": {
     "implement": 1,
-    "start": 1,
-    "plan": 1
+    "plan": 1,
+    "critical_review": 1,
+    "start": 1
   }
 }
