@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-03-26T20:24:25.324300273Z",
+  "current_node": "echo_task",
+  "completed_nodes": [
+    "start",
+    "echo_task"
+  ],
+  "node_retries": {
+    "start": 1,
+    "echo_task": 1
+  },
+  "context_values": {
+    "internal.node_visit_count": 1,
+    "failure_class": "",
+    "internal.retry_count.echo_task": 1,
+    "thread.start.current_node": "echo_task",
+    "internal.run_id": "01KMNX3H1QX99WV0PTCB9FG36H",
+    "outcome": "success",
+    "graph.goal": "Verify backwards compatibility with old tool naming",
+    "graph.rankdir": "LR",
+    "current.preamble": "Goal: Verify backwards compatibility with old tool naming\n",
+    "failure_signature": "",
+    "internal.thread_id": "start",
+    "current_node": "echo_task",
+    "internal.fidelity": "compact",
+    "command.stderr": "",
+    "command.output": "",
+    "internal.retry_count.start": 1,
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX3H1QX99WV0PTCB9FG36H/worktree"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    },
+    "echo_task": {
+      "status": "success",
+      "context_updates": {
+        "command.stderr": "",
+        "command.output": ""
+      },
+      "notes": "[Simulated] Command skipped: echo hello",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "exit",
+  "node_visits": {
+    "start": 1,
+    "echo_task": 1
+  }
+}
