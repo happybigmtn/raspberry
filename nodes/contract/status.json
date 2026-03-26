@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "response.contract": "The contract is written at `.fabro-work/contract.md`. Here's a summary of the situation and plan:\n\n**Root cause of preflight failure:**\nThe test `integrate_lane_squash_merges_run_branch_into_trunk` creates a bare git repo at a local path and uses it as `origin`. When `integrate_run` calls `resolve_ssh_push_url` in `fabro-workflows/src/git.rs`, that function only accepts SSH (`git@…`, `ssh://…`) or GitHub HTTPS URLs. A raw local filesystem path (`/home/r/.cache/rust-tmp/.tmpohclm1/remote.git`) is rejected.\n\n**Fix strategy (2 files, minimal scope):**\n1. `lib/crates/fabro-workflows/src/git.rs` — extend `resolve_ssh_push_url` to also accept `file://` URLs (a standard git remote URL scheme that works for local push/fetch)\n2. `lib/crates/raspberry-supervisor/src/integration.rs` — change the test's `origin` remote URL from a bare path to a `file://` URL (e.g., `file:///tmp/…/remote.git`)\n\nThe `file://` scheme is a valid, standard git remote URL. This fix is narrowly targeted: it makes unit tests work with local remotes without relaxing validation for non-`file://` local paths (the existing error message for bare local paths is intentionally preserved for the non-`file://` case).",
+    "last_response": "The contract is written at `.fabro-work/contract.md`. Here's a summary of the situation and plan:\n\n**Root cause of preflight failure:**\nThe test `integrate_lane_squash_merges_run_branch_into_trunk` cr"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 33357,
+    "output_tokens": 333
+  },
+  "duration_ms": 106353,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:35:03.658609814+00:00",
+  "updated_at": "2026-03-26T19:35:03.658612091+00:00"
+}
