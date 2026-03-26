@@ -1,0 +1,3 @@
+The contract is written at [.fabro-work/contract.md](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/.fabro-work/contract.md).
+
+It keeps the scope narrow around the likely replay blocker in [malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro): the validation lane’s audit harness, while preserving the existing artifact and quality checks. No source code was changed.
