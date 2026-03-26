@@ -1,0 +1,241 @@
+diff --git a/lib/crates/fabro-cli/src/commands/run.rs b/lib/crates/fabro-cli/src/commands/run.rs
+index 619b33b9..422b0bd8 100644
+--- a/lib/crates/fabro-cli/src/commands/run.rs
++++ b/lib/crates/fabro-cli/src/commands/run.rs
+@@ -3435,7 +3435,7 @@ include = ["*.md"]
+         let defaults = RunDefaults::default();
+         let (model, provider) = resolve_model_provider(None, None, None, &defaults, &graph);
+         assert_eq!(model, "MiniMax-M2.7-highspeed");
+-        assert_eq!(provider, Some("anthropic".to_string()));
++        assert_eq!(provider, Some("minimax".to_string()));
+     }
+ 
+     #[test]
+diff --git a/lib/crates/fabro-cli/src/commands/synth.rs b/lib/crates/fabro-cli/src/commands/synth.rs
+index 198ced12..64ab6856 100644
+--- a/lib/crates/fabro-cli/src/commands/synth.rs
++++ b/lib/crates/fabro-cli/src/commands/synth.rs
+@@ -889,6 +889,7 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
+             blueprint: &authored.blueprint,
+             current_repo: &args.target_repo,
+             output_repo,
++            preview_mode: args.preview_root.is_some(),
+         })?;
+         write_deterministic_steering_report(
+             &program,
+diff --git a/lib/crates/fabro-cli/tests/cmd/model/bare.trycmd b/lib/crates/fabro-cli/tests/cmd/model/bare.trycmd
+index 9498915f..cf853eb9 100644
+--- a/lib/crates/fabro-cli/tests/cmd/model/bare.trycmd
++++ b/lib/crates/fabro-cli/tests/cmd/model/bare.trycmd
+@@ -1,25 +1,26 @@
+ ```console
+ $ fabro model
+-[0m [0m[0m[0m[1mMODEL                             [0m [0m[0m [0m[0m[0m[1mPROVIDER [0m [0m[0m [0m[0m[0m[1mALIASES                [0m [0m[0m [0m[0m[0m[1mCONTEXT[0m [0m[0m [0m[0m[0m[1m          COST[0m [0m[0m [0m[0m[0m[1m     SPEED[0m [0m
+-[0m[0m [0m[0m[0mclaude-opus-4-6                   [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mopus, claude-opus      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m $15.0 / $75.0[0m [0m[0m [0m[0m[0m  25 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-sonnet-4-5                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0m                       [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-sonnet-4-6                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0msonnet, claude-sonnet  [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-haiku-4-5                  [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mhaiku, claude-haiku    [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m   $0.8 / $4.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.2                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5                   [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m  65 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5-mini                        [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5-mini              [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $2.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.2-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0m                       [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.3-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex                  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.3-codex-spark               [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex-spark            [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54, gpt-54          [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.5 / $15.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4-pro                       [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-pro, gpt-54-pro  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m$30.0 / $180.0[0m [0m[0m [0m[0m[0m  20 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4-mini                      [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-mini, gpt-54-mini[0m [0m[0m [0m[0m[0m   400k[0m [0m[0m [0m[0m[0m   $0.8 / $4.5[0m [0m[0m [0m[0m[0m 140 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-pro-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-pro             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-pro-preview-customtools[0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-customtools     [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3-flash-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash           [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.5 / $3.0[0m [0m[0m [0m[0m[0m 150 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-flash-lite-preview     [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash-lite      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $1.5[0m [0m[0m [0m[0m[0m 200 tok/s[0m [0m
+-[0m[0m [0m[0m[0mkimi-k2.5                         [0m [0m[0m [0m[0m[0mkimi     [0m [0m[0m [0m[0m[0mkimi                   [0m [0m[0m [0m[0m[0m   262k[0m [0m[0m [0m[0m[0m   $0.6 / $3.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mglm-4.7                           [0m [0m[0m [0m[0m[0mzai      [0m [0m[0m [0m[0m[0mglm, glm4              [0m [0m[0m [0m[0m[0m   203k[0m [0m[0m [0m[0m[0m   $0.6 / $2.2[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mminimax-m2.5                      [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mminimax                [0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m   $0.3 / $1.2[0m [0m[0m [0m[0m[0m  45 tok/s[0m [0m
+-[0m[0m [0m[0m[0mmercury-2                         [0m [0m[0m [0m[0m[0minception[0m [0m[0m [0m[0m[0mmercury                [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m   $0.2 / $0.8[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
++[0m [0m[0m[0m[1mMODEL                             [0m [0m[0m [0m[0m[0m[1mPROVIDER [0m [0m[0m [0m[0m[0m[1mALIASES                                           [0m [0m[0m [0m[0m[0m[1mCONTEXT[0m [0m[0m [0m[0m[0m[1m          COST[0m [0m[0m [0m[0m[0m[1m     SPEED[0m [0m
++[0m[0m [0m[0m[0mclaude-opus-4-6                   [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mopus, claude-opus                                 [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m $15.0 / $75.0[0m [0m[0m [0m[0m[0m  25 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-sonnet-4-5                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0m                                                  [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-sonnet-4-6                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0msonnet, claude-sonnet                             [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-haiku-4-5                  [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mhaiku, claude-haiku                               [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m   $0.8 / $4.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.2                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5                                              [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m  65 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5-mini                        [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5-mini                                         [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $2.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.2-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0m                                                  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.3-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex                                             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.3-codex-spark               [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex-spark                                       [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54, gpt-54                                     [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.5 / $15.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4-pro                       [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-pro, gpt-54-pro                             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m$30.0 / $180.0[0m [0m[0m [0m[0m[0m  20 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4-mini                      [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-mini, gpt-54-mini                           [0m [0m[0m [0m[0m[0m   400k[0m [0m[0m [0m[0m[0m   $0.8 / $4.5[0m [0m[0m [0m[0m[0m 140 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-pro-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-pro                                        [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-pro-preview-customtools[0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-customtools                                [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3-flash-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash                                      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.5 / $3.0[0m [0m[0m [0m[0m[0m 150 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-flash-lite-preview     [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash-lite                                 [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $1.5[0m [0m[0m [0m[0m[0m 200 tok/s[0m [0m
++[0m[0m [0m[0m[0mkimi-k2.5                         [0m [0m[0m [0m[0m[0mkimi     [0m [0m[0m [0m[0m[0mkimi, kimi-for-coding                             [0m [0m[0m [0m[0m[0m   262k[0m [0m[0m [0m[0m[0m   $0.6 / $3.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mglm-4.7                           [0m [0m[0m [0m[0m[0mzai      [0m [0m[0m [0m[0m[0mglm, glm4                                         [0m [0m[0m [0m[0m[0m   203k[0m [0m[0m [0m[0m[0m   $0.6 / $2.2[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mminimax-m2.5                      [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mminimax                                           [0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m   $0.3 / $1.2[0m [0m[0m [0m[0m[0m  45 tok/s[0m [0m
++[0m[0m [0m[0m[0mMiniMax-M2.7-highspeed            [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mMiniMax-M2.7, minimax-m2.7, minimax-m2.7-highspeed[0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m  80 tok/s[0m [0m
++[0m[0m [0m[0m[0mmercury-2                         [0m [0m[0m [0m[0m[0minception[0m [0m[0m [0m[0m[0mmercury                                           [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m   $0.2 / $0.8[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
+ [0m
+ ```
+diff --git a/lib/crates/fabro-cli/tests/cmd/model/list.trycmd b/lib/crates/fabro-cli/tests/cmd/model/list.trycmd
+index cd4c8568..dfe8558d 100644
+--- a/lib/crates/fabro-cli/tests/cmd/model/list.trycmd
++++ b/lib/crates/fabro-cli/tests/cmd/model/list.trycmd
+@@ -1,25 +1,26 @@
+ ```console
+ $ fabro model list
+-[0m [0m[0m[0m[1mMODEL                             [0m [0m[0m [0m[0m[0m[1mPROVIDER [0m [0m[0m [0m[0m[0m[1mALIASES                [0m [0m[0m [0m[0m[0m[1mCONTEXT[0m [0m[0m [0m[0m[0m[1m          COST[0m [0m[0m [0m[0m[0m[1m     SPEED[0m [0m
+-[0m[0m [0m[0m[0mclaude-opus-4-6                   [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mopus, claude-opus      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m $15.0 / $75.0[0m [0m[0m [0m[0m[0m  25 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-sonnet-4-5                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0m                       [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-sonnet-4-6                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0msonnet, claude-sonnet  [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mclaude-haiku-4-5                  [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mhaiku, claude-haiku    [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m   $0.8 / $4.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.2                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5                   [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m  65 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5-mini                        [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5-mini              [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $2.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.2-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0m                       [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.3-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex                  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.3-codex-spark               [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex-spark            [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54, gpt-54          [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.5 / $15.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4-pro                       [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-pro, gpt-54-pro  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m$30.0 / $180.0[0m [0m[0m [0m[0m[0m  20 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgpt-5.4-mini                      [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-mini, gpt-54-mini[0m [0m[0m [0m[0m[0m   400k[0m [0m[0m [0m[0m[0m   $0.8 / $4.5[0m [0m[0m [0m[0m[0m 140 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-pro-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-pro             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-pro-preview-customtools[0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-customtools     [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3-flash-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash           [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.5 / $3.0[0m [0m[0m [0m[0m[0m 150 tok/s[0m [0m
+-[0m[0m [0m[0m[0mgemini-3.1-flash-lite-preview     [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash-lite      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $1.5[0m [0m[0m [0m[0m[0m 200 tok/s[0m [0m
+-[0m[0m [0m[0m[0mkimi-k2.5                         [0m [0m[0m [0m[0m[0mkimi     [0m [0m[0m [0m[0m[0mkimi                   [0m [0m[0m [0m[0m[0m   262k[0m [0m[0m [0m[0m[0m   $0.6 / $3.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
+-[0m[0m [0m[0m[0mglm-4.7                           [0m [0m[0m [0m[0m[0mzai      [0m [0m[0m [0m[0m[0mglm, glm4              [0m [0m[0m [0m[0m[0m   203k[0m [0m[0m [0m[0m[0m   $0.6 / $2.2[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
+-[0m[0m [0m[0m[0mminimax-m2.5                      [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mminimax                [0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m   $0.3 / $1.2[0m [0m[0m [0m[0m[0m  45 tok/s[0m [0m
+-[0m[0m [0m[0m[0mmercury-2                         [0m [0m[0m [0m[0m[0minception[0m [0m[0m [0m[0m[0mmercury                [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m   $0.2 / $0.8[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
++[0m [0m[0m[0m[1mMODEL                             [0m [0m[0m [0m[0m[0m[1mPROVIDER [0m [0m[0m [0m[0m[0m[1mALIASES                                           [0m [0m[0m [0m[0m[0m[1mCONTEXT[0m [0m[0m [0m[0m[0m[1m          COST[0m [0m[0m [0m[0m[0m[1m     SPEED[0m [0m
++[0m[0m [0m[0m[0mclaude-opus-4-6                   [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mopus, claude-opus                                 [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m $15.0 / $75.0[0m [0m[0m [0m[0m[0m  25 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-sonnet-4-5                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0m                                                  [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-sonnet-4-6                 [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0msonnet, claude-sonnet                             [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m  $3.0 / $15.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mclaude-haiku-4-5                  [0m [0m[0m [0m[0m[0manthropic[0m [0m[0m [0m[0m[0mhaiku, claude-haiku                               [0m [0m[0m [0m[0m[0m   200k[0m [0m[0m [0m[0m[0m   $0.8 / $4.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.2                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5                                              [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m  65 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5-mini                        [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt5-mini                                         [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $2.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.2-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0m                                                  [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.3-codex                     [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex                                             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $1.8 / $14.0[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.3-codex-spark               [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mcodex-spark                                       [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4                           [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54, gpt-54                                     [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.5 / $15.0[0m [0m[0m [0m[0m[0m  70 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4-pro                       [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-pro, gpt-54-pro                             [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m$30.0 / $180.0[0m [0m[0m [0m[0m[0m  20 tok/s[0m [0m
++[0m[0m [0m[0m[0mgpt-5.4-mini                      [0m [0m[0m [0m[0m[0mopenai   [0m [0m[0m [0m[0m[0mgpt54-mini, gpt-54-mini                           [0m [0m[0m [0m[0m[0m   400k[0m [0m[0m [0m[0m[0m   $0.8 / $4.5[0m [0m[0m [0m[0m[0m 140 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-pro-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-pro                                        [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-pro-preview-customtools[0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-customtools                                [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m  $2.0 / $12.0[0m [0m[0m [0m[0m[0m  85 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3-flash-preview            [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash                                      [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.5 / $3.0[0m [0m[0m [0m[0m[0m 150 tok/s[0m [0m
++[0m[0m [0m[0m[0mgemini-3.1-flash-lite-preview     [0m [0m[0m [0m[0m[0mgemini   [0m [0m[0m [0m[0m[0mgemini-flash-lite                                 [0m [0m[0m [0m[0m[0m     1m[0m [0m[0m [0m[0m[0m   $0.2 / $1.5[0m [0m[0m [0m[0m[0m 200 tok/s[0m [0m
++[0m[0m [0m[0m[0mkimi-k2.5                         [0m [0m[0m [0m[0m[0mkimi     [0m [0m[0m [0m[0m[0mkimi, kimi-for-coding                             [0m [0m[0m [0m[0m[0m   262k[0m [0m[0m [0m[0m[0m   $0.6 / $3.0[0m [0m[0m [0m[0m[0m  50 tok/s[0m [0m
++[0m[0m [0m[0m[0mglm-4.7                           [0m [0m[0m [0m[0m[0mzai      [0m [0m[0m [0m[0m[0mglm, glm4                                         [0m [0m[0m [0m[0m[0m   203k[0m [0m[0m [0m[0m[0m   $0.6 / $2.2[0m [0m[0m [0m[0m[0m 100 tok/s[0m [0m
++[0m[0m [0m[0m[0mminimax-m2.5                      [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mminimax                                           [0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m   $0.3 / $1.2[0m [0m[0m [0m[0m[0m  45 tok/s[0m [0m
++[0m[0m [0m[0m[0mMiniMax-M2.7-highspeed            [0m [0m[0m [0m[0m[0mminimax  [0m [0m[0m [0m[0m[0mMiniMax-M2.7, minimax-m2.7, minimax-m2.7-highspeed[0m [0m[0m [0m[0m[0m   197k[0m [0m[0m [0m[0m[0m         - / -[0m [0m[0m [0m[0m[0m  80 tok/s[0m [0m
++[0m[0m [0m[0m[0mmercury-2                         [0m [0m[0m [0m[0m[0minception[0m [0m[0m [0m[0m[0mmercury                                           [0m [0m[0m [0m[0m[0m   131k[0m [0m[0m [0m[0m[0m   $0.2 / $0.8[0m [0m[0m [0m[0m[0m1000 tok/s[0m [0m
+ [0m
+ ```
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index df49e969..f0fc954b 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -31,6 +31,10 @@ pub struct ReconcileRequest<'a> {
+     pub blueprint: &'a ProgramBlueprint,
+     pub current_repo: &'a Path,
+     pub output_repo: &'a Path,
++    /// When true, skip writing implementation follow-ons to output_repo.
++    /// Used by `synth evolve --preview-root` to keep the preview bounded to
++    /// the manifest and steering report without extra generated programs.
++    pub preview_mode: bool,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -201,7 +205,13 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
+         program: &req.blueprint.program.id,
+     })?;
+     let evolved = refine_blueprint_from_evidence(req.blueprint, req.current_repo);
+-    let evolved = augment_with_implementation_follow_on_units(evolved, req.current_repo)?;
++    // In preview mode, skip augmentation so the preview stays bounded to the
++    // current manifest without extra implementation follow-on units.
++    let evolved = if req.preview_mode {
++        evolved
++    } else {
++        augment_with_implementation_follow_on_units(evolved, req.current_repo)?
++    };
+ 
+     let mut findings = diff_blueprints(&current, &evolved);
+     findings.extend(input_findings(&evolved, req.current_repo));
+@@ -221,13 +231,17 @@ pub fn reconcile_blueprint(req: ReconcileRequest<'_>) -> Result<ReconcileReport,
+ 
+     let recommendations = evolve_recommendations(&evolved, req.current_repo, &findings);
+     let mut report = render_evolved_blueprint(&evolved, &current, req.output_repo)?;
+-    report
+-        .written_files
+-        .extend(render_implementation_follow_ons(
+-            &evolved,
+-            req.current_repo,
+-            req.output_repo,
+-        )?);
++    // In preview mode, skip rendering implementation follow-ons so the preview
++    // only contains the manifest and steering report.
++    if !req.preview_mode {
++        report
++            .written_files
++            .extend(render_implementation_follow_ons(
++                &evolved,
++                req.current_repo,
++                req.output_repo,
++            )?);
++    }
+     Ok(ReconcileReport {
+         findings,
+         recommendations,
+@@ -1536,6 +1550,7 @@ fn render_evolved_blueprint(
+         .map(|unit| (&unit.id, unit))
+         .collect::<BTreeMap<_, _>>();
+ 
++    let mut any_lane_changed = false;
+     for unit in &desired.units {
+         let current_unit = current_units.get(&unit.id);
+         for lane in &unit.lanes {
+@@ -1546,13 +1561,19 @@ fn render_evolved_blueprint(
+                     continue;
+                 }
+             }
++            any_lane_changed = true;
+ 
+             let files = render_lane(desired, &layout, &unit.id, lane)?;
+             written_files.extend(files);
+         }
+     }
+ 
+-    written_files.push(write_manifest(desired, &layout)?);
++    // Only write the manifest if something actually changed.
++    // This keeps preview roots bounded to the seeded content when
++    // no reconciliation differences exist.
++    if any_lane_changed {
++        written_files.push(write_manifest(desired, &layout)?);
++    }
+     Ok(RenderReport { written_files })
+ }
+ 
+diff --git a/lib/crates/fabro-synthesis/tests/synthesis.rs b/lib/crates/fabro-synthesis/tests/synthesis.rs
+index 8f07aba8..b25131b1 100644
+--- a/lib/crates/fabro-synthesis/tests/synthesis.rs
++++ b/lib/crates/fabro-synthesis/tests/synthesis.rs
+@@ -125,6 +125,7 @@ fn reconcile_blueprint_reports_drift_and_writes_patch() {
+         blueprint: &blueprint,
+         current_repo: &current,
+         output_repo: &current,
++        preview_mode: false,
+     })
+     .expect("reconcile blueprint");
+ 
+@@ -211,6 +212,7 @@ fn reconcile_blueprint_emits_service_follow_on_with_health_gate() {
+         blueprint: &blueprint,
+         current_repo: &current,
+         output_repo: &current,
++        preview_mode: false,
+     })
+     .expect("reconcile blueprint");
+ 
+@@ -247,6 +249,7 @@ fn reconcile_blueprint_does_not_clobber_files_when_reusing_same_repo() {
+         blueprint: &blueprint,
+         current_repo: &current,
+         output_repo: &current,
++        preview_mode: false,
+     })
+     .expect("reconcile blueprint");
+ 
