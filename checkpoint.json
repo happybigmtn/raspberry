@@ -1,20 +1,22 @@
 {
-  "timestamp": "2026-03-26T20:33:13.436253322Z",
-  "current_node": "specify",
+  "timestamp": "2026-03-26T20:34:43.731705178Z",
+  "current_node": "review",
   "completed_nodes": [
     "start",
-    "specify"
+    "specify",
+    "review"
   ],
   "node_retries": {
     "start": 1,
-    "specify": 1
+    "specify": 1,
+    "review": 1
   },
   "context_values": {
     "internal.retry_count.specify": 1,
     "failure_signature": "",
-    "last_response": "Both durable artifacts have been created:\n\n**`outputs/autodev-efficiency-and-dispatch/spec.md`** (258 lines) — Defines the specification for:\n1. **Runtime path self-consistency**: `fabro synth` avai",
+    "last_response": "## Review Complete\n\n**Status**: **APPROVED WITH BLOCKERS**\n\nI've written the comprehensive review to `outputs/autodev-efficiency-and-dispatch/review.md`. Here's the summary:\n\n### Key Findings\n\n**Corre",
     "internal.retry_count.start": 1,
-    "current_node": "specify",
+    "current_node": "review",
     "internal.run_id": "01KMNXD8SQ1JNDZ6GC9SG7KQNQ",
     "internal.node_visit_count": 1,
     "outcome": "success",
@@ -22,19 +24,43 @@
     "response.specify": "Both durable artifacts have been created:\n\n**`outputs/autodev-efficiency-and-dispatch/spec.md`** (258 lines) — Defines the specification for:\n1. **Runtime path self-consistency**: `fabro synth` availability in debug/release, prompt reference resolution from target repo, run config validation before dispatch, no local-only shims\n2. **Stale lane state reconciliation**: Stale `running` lanes detected before dispatch (root cause: `evaluate_lane` re-classifies via stale `run_snapshot` after `refresh_program_state` correctly fixes the record), stale `failed` re-evaluation after render changes, stale lanes not consuming dispatch slots\n3. **Dispatch telemetry**: `AutodevCycleReport` fields (`dispatch_skip_reason`, `ready_undispatched`, `runtime_path_errors`), `AutodevCurrentSnapshot` `dispatch_summary` fields (`idle_cycles`, `failed_bootstrap`, `stale_running_reclaimed`), `raspberry status` display\n4. **Decouple evolve from dispatch**: Thread-based decoupling of `run_synth_evolve`\n5. **Greedy dispatch**: Full `max_parallel` budget consumption per cycle\n\n**`outputs/autodev-efficiency-and-dispatch/review.md`** (266 lines) — The review:\n- Documents 5 specific gaps with severity ratings\n- **Gap 1** (HIGH): Stale lane reclassification doesn't persist through evaluation — `is_active` in `evaluate.rs` falls through to stale `runtime_record.status == Running` after `refresh_program_state` corrects the record\n- **Gap 2** (HIGH): Missing runtime path validation for graph/prompt resolution in `dispatch.rs`\n- **Gap 3** (MEDIUM): `synth evolve` blocks dispatch synchronously\n- **Gap 4** (MEDIUM): Incomplete dispatch telemetry fields\n- **Gap 5** (MEDIUM): `../` prompt path escape resolution unverified\n- Includes specific code locations requiring changes, test plan (unit + integration + live), risk matrix, and recommended fix ordering",
     "graph.goal": "Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n",
     "thread.start.current_node": "specify",
-    "internal.thread_id": "start",
-    "last_stage": "specify",
+    "internal.thread_id": "specify",
+    "thread.specify.current_node": "review",
+    "response.review": "## Review Complete\n\n**Status**: **APPROVED WITH BLOCKERS**\n\nI've written the comprehensive review to `outputs/autodev-efficiency-and-dispatch/review.md`. Here's the summary:\n\n### Key Findings\n\n**Correctness**: The spec correctly identifies 5 gaps with accurate code locations. Gap 1 (stale lane reclassification) has the soundest proposed fix. Gap 3 (evolve blocking) has a race condition in the proposed thread-based solution.\n\n**Milestone Fit**: Well-aligned with Phase 0 gate (10 lanes, 0 bootstrap failures, 3 landed).\n\n**Security Review (Nemesis-style)**:\n\n| Pass | Finding | Severity |\n|------|---------|----------|\n| **Pass 1** — Trust Boundaries | `.raspberry/*-state.json` has no integrity checks | High |\n| **Pass 1** — Secret Handling | `RuntimePathError.message` may expose secrets without redaction | Medium |\n| **Pass 2** — Coupled State | Evolve thread + main thread race on `malinka/` package content | High |\n| **Pass 2** — Idempotence | `last_finished_at` timestamps are non-deterministic | Low |\n\n### Blockers Requiring Resolution\n\n1. **State File Integrity** — Document permission model; add validation\n2. **Telemetry Redaction** — Mandate `fabro-util::redaction` for error messages\n3. **Evolve Race Condition** — Use atomic updates (temp dir + rename) instead of in-place mutation\n4. **Dispatch Summary Durability** — Clarify per-session vs. durable semantics\n5. **Bootstrap Failure Definition** — Add explicit telemetry criteria for gate validation\n\n### Recommended Implementation Order\n\n1. Gap 1 (stale lanes) + Blocker 3 (evolve atomicity)\n2. Blocker 2 (telemetry redaction)\n3. Gap 4 (telemetry fields)\n4. Gap 2 (pre-flight validation)\n5. Gap 5 (prompt resolution)\n6. Blocker 1 (state integrity docs)",
+    "last_stage": "review",
+    "internal.retry_count.review": 1,
     "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
     "internal.fidelity": "compact",
     "failure_class": "",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNXD8SQ1JNDZ6GC9SG7KQNQ/worktree",
-    "current.preamble": "Goal: Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n\n"
+    "current.preamble": "Goal: Autodev Execution Path and Dispatch Truth\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Eliminate local-only command and prompt-resolution shims from the autodev runtime path\n- Fix stale `running` and `failed` lane truth before dispatch\n- Add dispatch-state telemetry that explains why ready work did or did not run\n- Live validation: sustain 10 active lanes on rXMRbro without bootstrap validation failures\n- Live validation: at least 3 lanes land to trunk after the runtime path is boring\n\nRequired durable artifacts:\n- `outputs/autodev-efficiency-and-dispatch/spec.md`\n- `outputs/autodev-efficiency-and-dispatch/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 108.8k tokens in / 443 out\n  - Files: outputs/autodev-efficiency-and-dispatch/review.md, outputs/autodev-efficiency-and-dispatch/spec.md\n"
   },
   "logs": [],
   "node_outcomes": {
     "start": {
       "status": "success",
       "duration_ms": 0
+    },
+    "review": {
+      "status": "success",
+      "context_updates": {
+        "response.review": "## Review Complete\n\n**Status**: **APPROVED WITH BLOCKERS**\n\nI've written the comprehensive review to `outputs/autodev-efficiency-and-dispatch/review.md`. Here's the summary:\n\n### Key Findings\n\n**Correctness**: The spec correctly identifies 5 gaps with accurate code locations. Gap 1 (stale lane reclassification) has the soundest proposed fix. Gap 3 (evolve blocking) has a race condition in the proposed thread-based solution.\n\n**Milestone Fit**: Well-aligned with Phase 0 gate (10 lanes, 0 bootstrap failures, 3 landed).\n\n**Security Review (Nemesis-style)**:\n\n| Pass | Finding | Severity |\n|------|---------|----------|\n| **Pass 1** — Trust Boundaries | `.raspberry/*-state.json` has no integrity checks | High |\n| **Pass 1** — Secret Handling | `RuntimePathError.message` may expose secrets without redaction | Medium |\n| **Pass 2** — Coupled State | Evolve thread + main thread race on `malinka/` package content | High |\n| **Pass 2** — Idempotence | `last_finished_at` timestamps are non-deterministic | Low |\n\n### Blockers Requiring Resolution\n\n1. **State File Integrity** — Document permission model; add validation\n2. **Telemetry Redaction** — Mandate `fabro-util::redaction` for error messages\n3. **Evolve Race Condition** — Use atomic updates (temp dir + rename) instead of in-place mutation\n4. **Dispatch Summary Durability** — Clarify per-session vs. durable semantics\n5. **Bootstrap Failure Definition** — Add explicit telemetry criteria for gate validation\n\n### Recommended Implementation Order\n\n1. Gap 1 (stale lanes) + Blocker 3 (evolve atomicity)\n2. Blocker 2 (telemetry redaction)\n3. Gap 4 (telemetry fields)\n4. Gap 2 (pre-flight validation)\n5. Gap 5 (prompt resolution)\n6. Blocker 1 (state integrity docs)",
+        "last_stage": "review",
+        "last_response": "## Review Complete\n\n**Status**: **APPROVED WITH BLOCKERS**\n\nI've written the comprehensive review to `outputs/autodev-efficiency-and-dispatch/review.md`. Here's the summary:\n\n### Key Findings\n\n**Corre"
+      },
+      "notes": "Stage completed: review",
+      "usage": {
+        "model": "k2p5",
+        "input_tokens": 180,
+        "output_tokens": 446
+      },
+      "files_written": [
+        "outputs/autodev-efficiency-and-dispatch/review.md"
+      ],
+      "files_touched": [
+        "outputs/autodev-efficiency-and-dispatch/review.md"
+      ],
+      "duration_ms": 87780
     },
     "specify": {
       "status": "success",
@@ -60,8 +86,9 @@
       "duration_ms": 212151
     }
   },
-  "next_node_id": "review",
+  "next_node_id": "polish",
   "node_visits": {
+    "review": 1,
     "start": 1,
     "specify": 1
   }
