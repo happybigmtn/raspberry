@@ -1,0 +1,9 @@
+{
+  "status": "fail",
+  "duration_ms": 41055,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T21:09:15.721309401+00:00",
+  "updated_at": "2026-03-26T21:09:15.721310938+00:00",
+  "failure_reason": "Script failed with exit code: 101\n\n## stderr\n    Blocking waiting for file lock on artifact directory\n   Compiling fabro-cli v0.176.2 (/home/r/.fabro/runs/20260326-01KMNT43GYY21C2A428TJY550Q/worktree/lib/crates/fabro-cli)\nerror[E0560]: struct `ReconcileRequest<'_>` has no field named `preview_mode`\n   --> lib/crates/fabro-cli/src/commands/synth.rs:893:13\n    |\n893 |             preview_mode,\n    |             ^^^^^^^^^^^^ `ReconcileRequest<'_>` does not have this field\n    |\n    = note: all struct fields are already assigned\n\nFor more information about this error, try `rustc --explain E0560`.\nerror: could not compile `fabro-cli` (bin \"fabro\") due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\nerror: could not compile `fabro-cli` (bin \"fabro\" test) due to 1 previous error\nerror: command `/home/r/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --message-format json-render-diagnostics --package fabro-cli` exited with code 101\n"
+}
