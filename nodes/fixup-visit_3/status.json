@@ -1,0 +1,28 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Patched the source lane harness so replayed reviews are durable instead of staying ephemeral: the review prompt now requires `.fabro-work/review.md`, treats a missing `.fabro-work/quality.md` as a wor",
+    "response.fixup": "Patched the source lane harness so replayed reviews are durable instead of staying ephemeral: the review prompt now requires `.fabro-work/review.md`, treats a missing `.fabro-work/quality.md` as a workflow-artifact failure, and the audit step now syncs `spec.md` and `review.md` alongside the existing verification/quality/promotion artifacts. The only touched surfaces were [review.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md#L200) and [test-coverage-critical-paths-ci-preservation-and-hardening.fabro](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro#L25).\n\nVerification: a direct `cargo check --workspace` first blocked on the shared `CARGO_TARGET_DIR` lock from concurrent builds in other worktrees, so I reran the same workspace check with an isolated target dir to remove the environment-only contention. `CARGO_TARGET_DIR=/tmp/fabro-check-cdM4cH cargo check --workspace` completed successfully and finished with `Finished 'dev' profile [unoptimized + debuginfo] target(s) in 2m 02s`.",
+    "last_stage": "fixup"
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 3269503,
+    "output_tokens": 13008,
+    "cost": 8.3688775
+  },
+  "files_written": [
+    "malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md",
+    "malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro"
+  ],
+  "files_touched": [
+    "malinka/prompts/implementation/test-coverage-critical-paths-ci-preservation-and-hardening/review.md",
+    "malinka/workflows/implementation/test-coverage-critical-paths-ci-preservation-and-hardening.fabro"
+  ],
+  "duration_ms": 447521,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T21:14:24.338549863+00:00",
+  "updated_at": "2026-03-26T21:14:24.338550956+00:00"
+}
