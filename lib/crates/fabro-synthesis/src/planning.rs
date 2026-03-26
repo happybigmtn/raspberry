@@ -781,7 +781,7 @@ fn derive_registry_plan_intents(
                 }
             }
         }
-        let family = registry_plan_family(&plan);
+        let family = registry_plan_family(plan);
         let parent_id = plan.plan_id.clone();
         let child_count = if !plan.children.is_empty() {
             plan.children.len()
@@ -793,7 +793,7 @@ fn derive_registry_plan_intents(
         let parent_dependency = if emit_parent_intent {
             let output_root = PathBuf::from("outputs").join(&plan.plan_id);
             let (kind, artifacts, milestones, produces, health_command, verify_command) =
-                registry_plan_contract(&plan, family, &output_root, target_repo);
+                registry_plan_contract(plan, family, &output_root, target_repo);
             let tasks = corpus
                 .plan_docs
                 .iter()
@@ -809,7 +809,7 @@ fn derive_registry_plan_intents(
                 &artifacts,
             );
             let prompt_context =
-                build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
+                build_registry_plan_prompt_context(corpus, plan, &tasks, &artifacts);
             let mut dependencies =
                 registry_plan_dependencies_from_ids(&plan_dependency_plan_ids, &registry.plans);
             // Inject scaffold dependencies for non-infrastructure parent intents
@@ -878,7 +878,7 @@ fn derive_registry_plan_intents(
 
         if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
             let effective_children = if plan.children.is_empty() {
-                infer_child_records_from_ids(target_repo, &plan)
+                infer_child_records_from_ids(target_repo, plan)
             } else {
                 plan.children.clone()
             };
@@ -1316,13 +1316,7 @@ fn registry_plan_dependencies_from_ids(
                     })
                 });
             let (resolved_unit, milestone) = match resolved_child_id {
-                Some(child_id) => {
-                    if child_id.starts_with(dependency) {
-                        (child_id, None)
-                    } else {
-                        (child_id, None)
-                    }
-                }
+                Some(child_id) => (child_id, None),
                 None => (dependency.clone(), Some("reviewed".to_string())),
             };
             LaneDependency {

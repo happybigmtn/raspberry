@@ -1,7 +1,7 @@
 {
   "schema_version": "raspberry.program.v2",
   "program": "myosu-bootstrap",
-  "updated_at": "2026-03-26T20:04:29.585104621Z",
+  "updated_at": "2026-03-26T20:23:44.780605283Z",
   "lanes": {
     "chain:runtime": {
       "lane_key": "chain:runtime",

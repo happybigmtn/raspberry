@@ -5607,10 +5607,7 @@ fn implementation_verify_command(
         return "true".to_string();
     }
     commands = normalize_verify_commands(lane, commands);
-    commands = commands
-        .into_iter()
-        .map(|command| portable_proof_command(command))
-        .collect();
+    commands = commands.into_iter().map(portable_proof_command).collect();
 
     format!("set -e\n{}", commands.join("\n"))
 }
@@ -9441,7 +9438,7 @@ fn chain_sibling_surfaces(manifest: &mut ManifestOut, blueprint: &ProgramBluepri
 
     // For each surface with 2+ lanes, chain them: lane[1] depends on lane[0], etc.
     let mut injected = 0;
-    for (_surface, lanes) in &surface_to_lanes {
+    for lanes in surface_to_lanes.values() {
         if lanes.len() < 2 {
             continue;
         }

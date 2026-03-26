@@ -894,12 +894,14 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
             &program,
             &manifest_path,
             &report_path,
-            &recent_output_lines,
             &runtime_summary,
             &autodev_summary,
-            &reconcile_report.findings,
-            &reconcile_report.recommendations,
-            &reconcile_report.written_files,
+            &SteeringReportContext {
+                recent_outputs: &recent_output_lines,
+                findings: &reconcile_report.findings,
+                recommendations: &reconcile_report.recommendations,
+                written_files: &reconcile_report.written_files,
+            },
         )?;
         println!("Program: {program}");
         println!("Mode: evolve (deterministic reconcile)");
@@ -1148,19 +1150,23 @@ fn summarize_autodev_report(
     ))
 }
 
+struct SteeringReportContext<'a> {
+    recent_outputs: &'a [String],
+    findings: &'a [String],
+    recommendations: &'a [String],
+    written_files: &'a [PathBuf],
+}
+
 fn deterministic_steering_report(
     program: &str,
     manifest_path: &std::path::Path,
     report_path: &std::path::Path,
-    recent_outputs: &[String],
     runtime_summary: &str,
     autodev_summary: &str,
-    findings: &[String],
-    recommendations: &[String],
-    written_files: &[PathBuf],
+    ctx: &SteeringReportContext,
 ) -> String {
-    let findings = summarize_deterministic_findings(findings);
-    let recommendations = summarize_deterministic_recommendations(recommendations);
+    let findings = summarize_deterministic_findings(ctx.findings);
+    let recommendations = summarize_deterministic_recommendations(ctx.recommendations);
     let mut body = String::new();
     body.push_str(&format!("# Steering Review for {program}\n\n"));
     body.push_str("## Verdict\n\n");
@@ -1173,17 +1179,17 @@ fn deterministic_steering_report(
     body.push_str(&format!("- Report path: `{}`\n", report_path.display()));
     body.push_str(&format!("- Runtime summary: {runtime_summary}\n"));
     body.push_str(&format!("- Autodev summary: {autodev_summary}\n"));
-    if !recent_outputs.is_empty() {
+    if !ctx.recent_outputs.is_empty() {
         body.push_str("- Recent outputs:\n");
-        for line in recent_outputs {
+        for line in ctx.recent_outputs {
             body.push_str(&format!("  - {line}\n"));
         }
     }
     body.push_str("\n## Changes Made\n\n");
-    if written_files.is_empty() {
+    if ctx.written_files.is_empty() {
         body.push_str("- No malinka files changed during deterministic reconcile.\n");
     } else {
-        for path in written_files {
+        for path in ctx.written_files {
             body.push_str(&format!("- `{}`\n", path.display()));
         }
     }
@@ -1363,23 +1369,17 @@ fn write_deterministic_steering_report(
     program: &str,
     manifest_path: &std::path::Path,
     report_path: &std::path::Path,
-    recent_outputs: &[String],
     runtime_summary: &str,
     autodev_summary: &str,
-    findings: &[String],
-    recommendations: &[String],
-    written_files: &[PathBuf],
+    ctx: &SteeringReportContext,
 ) -> anyhow::Result<()> {
     let body = deterministic_steering_report(
         program,
         manifest_path,
         report_path,
-        recent_outputs,
         runtime_summary,
         autodev_summary,
-        findings,
-        recommendations,
-        written_files,
+        ctx,
     );
     fabro_workflows::write_text_atomic(report_path, &body, "steering report")
         .map_err(|error| anyhow::anyhow!(error.to_string()))

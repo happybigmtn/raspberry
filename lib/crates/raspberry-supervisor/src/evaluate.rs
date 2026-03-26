@@ -64,6 +64,12 @@ pub struct EvaluatedProgram {
     pub lanes: Vec<EvaluatedLane>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LaneRef<'a> {
+    unit_id: &'a str,
+    lane_id: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluatedLane {
     pub lane_key: String,
@@ -332,8 +338,7 @@ pub fn evaluate_with_state(
             lanes.push(evaluate_lane(
                 manifest_path,
                 manifest,
-                unit_id,
-                lane_id,
+                &LaneRef { unit_id, lane_id },
                 &satisfied,
                 unit_statuses
                     .get(unit_id)
@@ -624,16 +629,15 @@ fn trunk_delivery_state_for_lane(lane: &EvaluatedLane) -> Option<(String, String
 fn evaluate_lane(
     manifest_path: &Path,
     manifest: &ProgramManifest,
-    unit_id: &str,
-    lane_id: &str,
+    lane_ref: &LaneRef,
     satisfied: &BTreeSet<String>,
     unit_status: &UnitStatus,
     runtime_record: Option<&LaneRuntimeRecord>,
     command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
 ) -> EvaluatedLane {
-    let unit = &manifest.units[unit_id];
-    let lane = &unit.lanes[lane_id];
-    let key = lane_key(unit_id, lane_id);
+    let unit = &manifest.units[lane_ref.unit_id];
+    let lane = &unit.lanes[lane_ref.lane_id];
+    let key = lane_key(lane_ref.unit_id, lane_ref.lane_id);
     let should_load_run_snapshot = runtime_record
         .map(|record| {
             record.current_run_id.is_some()
@@ -643,7 +647,7 @@ fn evaluate_lane(
         .unwrap_or(false);
     let run_snapshot = if should_load_run_snapshot {
         manifest
-            .resolve_lane_run_dir(manifest_path, unit_id, lane_id)
+            .resolve_lane_run_dir(manifest_path, lane_ref.unit_id, lane_ref.lane_id)
             .map(|run_dir| load_run_snapshot(&run_dir))
             .unwrap_or_default()
     } else {
@@ -686,9 +690,9 @@ fn evaluate_lane(
 
     EvaluatedLane {
         lane_key: key,
-        unit_id: unit_id.to_string(),
+        unit_id: lane_ref.unit_id.to_string(),
         unit_title: unit.title.clone(),
-        lane_id: lane_id.to_string(),
+        lane_id: lane_ref.lane_id.to_string(),
         lane_title: lane.title.clone(),
         lane_kind: lane.kind,
         status,
@@ -700,7 +704,7 @@ fn evaluate_lane(
         managed_milestone: lane.managed_milestone.clone(),
         proof_profile: lane.proof_profile.clone(),
         run_config: manifest
-            .resolve_lane_run_config(manifest_path, unit_id, lane_id)
+            .resolve_lane_run_config(manifest_path, lane_ref.unit_id, lane_ref.lane_id)
             .unwrap_or_else(|| lane.run_config.clone()),
         run_id: runtime_record
             .and_then(|record| record.current_fabro_run_id.clone())
