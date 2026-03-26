@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "minimax",
+  "requested_model": "MiniMax-M2.7-highspeed",
+  "provider": "minimax",
+  "model": "MiniMax-M2.7-highspeed",
+  "served_model": "MiniMax-M2.7-highspeed",
+  "fallback_reason": null,
+  "codex_slot": null,
+  "command": "prompt=\"$(cat '/home/r/.fabro/cli/run.fHcPMH/prompt.txt')\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,grep,find,ls --model MiniMax-M2.7-highspeed --thinking medium --append-system-prompt 'You are executing an ADVERSARIAL CHALLENGE. SPECIFICALLY CHECK: (1) Functions that compile but do nothing meaningful — e.g. a Hit action that does not draw a card, a settle function that returns hardcoded values. Read every match arm and verify it performs real work. (2) Tests that only verify derive macros (Display, Clone, PartialEq) — count how many tests exercise actual business logic vs formatting. (3) State machines that never reach their terminal state through normal gameplay. Run through the lifecycle mentally: can a user actually play the game from start to finish? (4) Duplicate tests that inflate coverage without testing new behavior. (5) DESIGN PATTERN CONFORMANCE: Read AGENTS.md and verify the code follows the mandatory conventions — especially settlement arithmetic (must widen to i32, no bare f64-to-i16 casts), error types (must use shared GameError/VerifyError), and state machine patterns ({Game}Phase enum, is_terminal()). Flag every issue with file:line. Write findings to verification.md. Do NOT approve.' \"$prompt\""
+}
