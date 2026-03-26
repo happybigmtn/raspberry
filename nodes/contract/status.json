@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.contract": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`, plus CI workflow verification\n- **8 acceptance criteria** all verifiable via `cargo nextest run`, `cargo fmt`, and `cargo clippy` commands\n- **Out of scope** excludes fabro-mcp/fabro-github tests, fabro-types (auto-generated), CI infrastructure changes, benchmarks, and docs",
+    "last_stage": "contract",
+    "last_response": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 14663,
+    "output_tokens": 249
+  },
+  "duration_ms": 67213,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T18:29:07.494264783+00:00",
+  "updated_at": "2026-03-26T18:29:07.494277900+00:00"
+}

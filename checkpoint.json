@@ -1,12 +1,14 @@
 {
-  "timestamp": "2026-03-26T18:27:58.520734393Z",
-  "current_node": "preflight",
+  "timestamp": "2026-03-26T18:29:07.495102430Z",
+  "current_node": "contract",
   "completed_nodes": [
     "start",
-    "preflight"
+    "preflight",
+    "contract"
   ],
   "node_retries": {
     "start": 1,
+    "contract": 1,
     "preflight": 1
   },
   "context_values": {
@@ -16,17 +18,22 @@
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNPED2462E3SCW1CQCBHRA4/worktree",
     "internal.retry_count.preflight": 1,
     "command.stderr": "",
+    "thread.preflight.current_node": "contract",
+    "internal.retry_count.contract": 1,
     "internal.fidelity": "compact",
+    "response.contract": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`, plus CI workflow verification\n- **8 acceptance criteria** all verifiable via `cargo nextest run`, `cargo fmt`, and `cargo clippy` commands\n- **Out of scope** excludes fabro-mcp/fabro-github tests, fabro-types (auto-generated), CI infrastructure changes, benchmarks, and docs",
     "failure_class": "",
     "graph.goal": "Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
     "internal.retry_count.start": 1,
     "outcome": "success",
     "thread.start.current_node": "preflight",
-    "current.preamble": "Goal: Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "current.preamble": "Goal: Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\ntrue\ntrue`\n  - Stdout: (empty)\n  - Stderr: (empty)\n",
     "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
-    "current_node": "preflight",
-    "internal.thread_id": "start",
+    "current_node": "contract",
+    "internal.thread_id": "preflight",
     "command.output": "",
+    "last_stage": "contract",
+    "last_response": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`",
     "internal.run_id": "01KMNPED2462E3SCW1CQCBHRA4"
   },
   "logs": [],
@@ -34,6 +41,21 @@
     "start": {
       "status": "success",
       "duration_ms": 0
+    },
+    "contract": {
+      "status": "success",
+      "context_updates": {
+        "response.contract": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`, plus CI workflow verification\n- **8 acceptance criteria** all verifiable via `cargo nextest run`, `cargo fmt`, and `cargo clippy` commands\n- **Out of scope** excludes fabro-mcp/fabro-github tests, fabro-types (auto-generated), CI infrastructure changes, benchmarks, and docs",
+        "last_stage": "contract",
+        "last_response": "Written `.fabro-work/contract.md` defining the contract for this lane.\n\n**Summary:**\n\n- **8 deliverables** covering new tests for `fabro-db`, `raspberry-supervisor`, `fabro-synthesis`, and `fabro-cli`"
+      },
+      "notes": "Stage completed: contract",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 14663,
+        "output_tokens": 249
+      },
+      "duration_ms": 67213
     },
     "preflight": {
       "status": "success",
@@ -45,9 +67,10 @@
       "duration_ms": 2
     }
   },
-  "next_node_id": "contract",
+  "next_node_id": "implement",
   "node_visits": {
     "start": 1,
+    "contract": 1,
     "preflight": 1
   }
 }
