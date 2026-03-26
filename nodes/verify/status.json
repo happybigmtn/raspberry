@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 2562,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:14:56.855559331+00:00",
+  "updated_at": "2026-03-26T20:14:56.855560403+00:00",
+  "notes": "Script completed: if cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- greenfield_rust\nelse\n  cargo test -p fabro-synthesis -- greenfield_rust\nfi"
+}
