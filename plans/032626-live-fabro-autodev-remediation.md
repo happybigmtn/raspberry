@@ -44,8 +44,12 @@ test fan-out.
       threaded that normalization through explicit serialized verify commands.
 - [x] (2026-03-26 19:32Z) Rebuilt release binaries and rerendered the checked
       `fabro` package from the updated blueprint.
-- [ ] Run one final 10-slot autodev pass from a clean, dispatchable `fabro`
-      checkout and record the post-fix frontier behavior.
+- [x] (2026-03-26 19:32Z) Committed the framework and generated package fixes on
+      `main` as `87c230ba`, then fast-forwarded from `origin/main` so the local
+      checkout became dispatchable.
+- [x] (2026-03-26 19:39Z) Restarted the `fabro` supervisor with
+      `--max-parallel 10` from the clean local-ahead checkout and confirmed it
+      is sustaining 10 active lanes.
 
 ## Surprises & Discoveries
 
@@ -117,6 +121,42 @@ test fan-out.
   `git status -sb` shows the checkout is still `main...origin/main [behind 1]`
   with tracked changes from this repair pass, so the controller is correctly
   refusing to dispatch from a dirty branch.
+
+- Observation: After committing the repair on `main` and restarting the
+  supervisor, the framework now sustains the full 10 running lanes instead of
+  stalling on repo freshness.
+  Evidence:
+  [`.raspberry/fabro-autodev.json`](/home/r/coding/fabro/.raspberry/fabro-autodev.json)
+  shows `max_parallel: 10`, `running: 10`, `ready: 5`, `failed: 1`, with active
+  work across `autodev-efficiency-and-dispatch`,
+  `greenfield-bootstrap-reliability`,
+  `provider-policy-stabilization`, and multiple
+  `test-coverage-critical-paths` children.
+
+- Observation: The portable proof fallback is working in live lanes.
+  Evidence: Current run logs for `01KMNT43GY4EVV8YYR6SM2CZT0` and
+  `01KMNT43GYBNGVHW1CAE9EY75N` show `preflight` scripts of the form
+  `if cargo nextest --version ... else cargo test ... fi`, and those preflight
+  stages completed successfully instead of failing immediately on missing
+  `cargo nextest`.
+
+- Observation: The patched run is progressing through later workflow stages, not
+  just starting workers.
+  Evidence: During observation,
+  `autodev-efficiency-and-dispatch`,
+  `greenfield-bootstrap-reliability`, and
+  `provider-policy-stabilization` advanced into `review` and `polish`;
+  `greenfield-bootstrap-reliability-bootstrap-verification-gate` advanced into
+  `implement`; and the active `test-coverage-critical-paths` lanes advanced
+  through `preflight` and `contract` into `implement`.
+
+- Observation: One old failed lane remains in failed state while its unblock
+  lane is running, which is acceptable but slightly confusing in operator truth.
+  Evidence:
+  `test-coverage-critical-paths-ci-preservation-and-hardening` remains
+  `failed` with `failure_kind=regenerate_noop`, while
+  `test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock`
+  is actively running in the current 10-lane wave.
 
 ## Decision Log
 

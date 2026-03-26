@@ -544,13 +544,11 @@ pub fn orchestrate_program(
             .filter(|lane| lane.status == LaneExecutionStatus::Running)
             .count();
         let available_slots = max_parallel.saturating_sub(current_running);
-        let replayed_lanes = replayable_failures
-            .iter()
-            .take(available_slots)
-            .cloned()
-            .collect::<Vec<_>>();
+        let replayed_lanes =
+            select_replayed_lanes_for_dispatch(&program, &replayable_failures, available_slots);
         let remaining_slots = available_slots.saturating_sub(replayed_lanes.len());
-        let selected_ready_lanes = select_ready_lanes_for_dispatch(&program, remaining_slots);
+        let selected_ready_lanes =
+            select_ready_lanes_for_dispatch(&program, remaining_slots, &replayed_lanes);
         let mut lanes_to_dispatch = replayed_lanes.clone();
         lanes_to_dispatch.extend(selected_ready_lanes);
         autodev_debug_step(
@@ -984,6 +982,7 @@ fn prioritized_lane_keys(lanes: Vec<&crate::evaluate::EvaluatedLane>) -> Vec<Str
 fn select_ready_lanes_for_dispatch(
     program: &crate::evaluate::EvaluatedProgram,
     available_slots: usize,
+    already_selected: &[String],
 ) -> Vec<String> {
     if available_slots == 0 {
         return Vec::new();
@@ -1023,7 +1022,14 @@ fn select_ready_lanes_for_dispatch(
     }
 
     let mut selected = Vec::new();
-    let mut seen_families = BTreeSet::new();
+    let mut seen_families = already_selected
+        .iter()
+        .filter_map(|lane_key| {
+            lane_map
+                .get(lane_key)
+                .map(|lane| lane_root_plan_family(lane, &unit_ids))
+        })
+        .collect::<BTreeSet<_>>();
     for lane_key in ordered {
         if selected.len() >= available_slots {
             break;
@@ -1034,6 +1040,59 @@ fn select_ready_lanes_for_dispatch(
         let family = lane_root_plan_family(lane, &unit_ids);
         if seen_families.insert(family) {
             selected.push(lane_key);
+        }
+    }
+    selected
+}
+
+fn select_replayed_lanes_for_dispatch(
+    program: &crate::evaluate::EvaluatedProgram,
+    replayable_failures: &[String],
+    available_slots: usize,
+) -> Vec<String> {
+    if available_slots == 0 || replayable_failures.is_empty() {
+        return Vec::new();
+    }
+
+    let lane_map = program
+        .lanes
+        .iter()
+        .map(|lane| (lane.lane_key.clone(), lane))
+        .collect::<BTreeMap<_, _>>();
+    let unit_ids = program
+        .lanes
+        .iter()
+        .map(|lane| lane.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    let distinct_families = replayable_failures
+        .iter()
+        .filter_map(|lane_key| {
+            lane_map
+                .get(lane_key)
+                .map(|lane| lane_root_plan_family(lane, &unit_ids))
+        })
+        .collect::<BTreeSet<_>>();
+
+    if distinct_families.len() <= 1 {
+        return replayable_failures
+            .iter()
+            .take(available_slots)
+            .cloned()
+            .collect();
+    }
+
+    let mut selected = Vec::new();
+    let mut seen_families = BTreeSet::new();
+    for lane_key in replayable_failures {
+        if selected.len() >= available_slots {
+            break;
+        }
+        let Some(lane) = lane_map.get(lane_key) else {
+            continue;
+        };
+        let family = lane_root_plan_family(lane, &unit_ids);
+        if seen_families.insert(family) {
+            selected.push(lane_key.clone());
         }
     }
     selected
@@ -1786,6 +1845,7 @@ fn current_snapshot(
     let mut ready_lanes = Vec::new();
     let mut running_lanes = Vec::new();
     let mut failed_lanes = Vec::new();
+    let recovering_failed_lanes = recovering_failed_lane_keys(program);
 
     for lane in &program.lanes {
         match lane.status {
@@ -1799,8 +1859,12 @@ fn current_snapshot(
             }
             LaneExecutionStatus::Blocked => blocked += 1,
             LaneExecutionStatus::Failed => {
-                failed += 1;
-                failed_lanes.push(lane.lane_key.clone());
+                if recovering_failed_lanes.contains(&lane.lane_key) {
+                    blocked += 1;
+                } else {
+                    failed += 1;
+                    failed_lanes.push(lane.lane_key.clone());
+                }
             }
             LaneExecutionStatus::Complete => complete += 1,
         }
@@ -1855,6 +1919,33 @@ fn current_snapshot(
         failed_lanes,
         critical_blockers,
     }
+}
+
+fn recovering_failed_lane_keys(program: &crate::evaluate::EvaluatedProgram) -> BTreeSet<String> {
+    program
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == LaneExecutionStatus::Running)
+        .filter_map(|lane| source_lane_key_for_codex_unblock(program, lane))
+        .collect()
+}
+
+fn source_lane_key_for_codex_unblock(
+    program: &crate::evaluate::EvaluatedProgram,
+    running_lane: &crate::evaluate::EvaluatedLane,
+) -> Option<String> {
+    if !running_lane.lane_key.ends_with("-codex-unblock") {
+        return None;
+    }
+    program
+        .lanes
+        .iter()
+        .find(|candidate| {
+            candidate.lane_key != running_lane.lane_key
+                && codex_unblock_lane_key(&candidate.unit_id, &candidate.lane_id)
+                    == running_lane.lane_key
+        })
+        .map(|candidate| candidate.lane_key.clone())
 }
 
 fn nested_child_running_from_detail(detail: &str) -> (usize, Vec<String>) {
@@ -3451,7 +3542,7 @@ units:
             ],
         };
 
-        let selected = select_ready_lanes_for_dispatch(&program, 10);
+        let selected = select_ready_lanes_for_dispatch(&program, 10, &[]);
 
         assert_eq!(selected.len(), 4);
         assert!(selected.contains(
@@ -3465,6 +3556,82 @@ units:
         assert!(selected.contains(
             &"test-coverage-critical-paths-synthesis-runtime-regression-tests:test-coverage-critical-paths-synthesis-runtime-regression-tests".to_string()
         ));
+    }
+
+    #[test]
+    fn replayed_lanes_cap_same_family_ready_expansion() {
+        let replayed = vec![
+            "test-coverage-critical-paths-autodev-integration-test:test-coverage-critical-paths-autodev-integration-test"
+                .to_string(),
+            "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock:test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock"
+                .to_string(),
+        ];
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "fabro".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![
+                ready_lane(
+                    "autodev-efficiency-and-dispatch:autodev-efficiency-and-dispatch",
+                    "autodev-efficiency-and-dispatch",
+                    "autodev-efficiency-and-dispatch",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "greenfield-bootstrap-reliability:greenfield-bootstrap-reliability",
+                    "greenfield-bootstrap-reliability",
+                    "greenfield-bootstrap-reliability",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "provider-policy-stabilization:provider-policy-stabilization",
+                    "provider-policy-stabilization",
+                    "provider-policy-stabilization",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests:test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-fabro-db-baseline-tests:test-coverage-critical-paths-fabro-db-baseline-tests",
+                    "test-coverage-critical-paths-fabro-db-baseline-tests",
+                    "test-coverage-critical-paths-fabro-db-baseline-tests",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github:test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github",
+                    "test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github",
+                    "test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-autodev-integration-test:test-coverage-critical-paths-autodev-integration-test",
+                    "test-coverage-critical-paths-autodev-integration-test",
+                    "test-coverage-critical-paths-autodev-integration-test",
+                    LaneKind::Integration,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock:test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock",
+                    "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock",
+                    "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock",
+                    LaneKind::Platform,
+                ),
+            ],
+        };
+
+        let selected = select_ready_lanes_for_dispatch(&program, 8, &replayed);
+
+        assert_eq!(
+            selected,
+            vec![
+                "autodev-efficiency-and-dispatch:autodev-efficiency-and-dispatch".to_string(),
+                "greenfield-bootstrap-reliability:greenfield-bootstrap-reliability".to_string(),
+                "provider-policy-stabilization:provider-policy-stabilization".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -4214,6 +4381,111 @@ units:
             snapshot.running_lanes,
             vec!["child:lane@Review".to_string()]
         );
+        assert_eq!(snapshot.blocked, 1);
+    }
+
+    #[test]
+    fn current_snapshot_hides_failed_source_lane_while_unblock_runs() {
+        let source = EvaluatedLane {
+            lane_key:
+                "test-coverage-critical-paths-ci-preservation-and-hardening:test-coverage-critical-paths-ci-preservation-and-hardening"
+                    .to_string(),
+            unit_id: "test-coverage-critical-paths-ci-preservation-and-hardening".to_string(),
+            unit_title: "CI Preservation".to_string(),
+            lane_id: "test-coverage-critical-paths-ci-preservation-and-hardening".to_string(),
+            lane_title: "CI Preservation".to_string(),
+            lane_kind: LaneKind::Platform,
+            status: LaneExecutionStatus::Failed,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: "failed".to_string(),
+            managed_milestone: "integrated".to_string(),
+            proof_profile: None,
+            run_config: PathBuf::from("ci.toml"),
+            run_id: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage: None,
+            last_run_id: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: Some(1),
+            last_error: Some("failed".to_string()),
+            failure_kind: Some(FailureKind::RegenerateNoop),
+            recovery_action: Some(FailureRecoveryAction::SurfaceBlocked),
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        };
+        let unblock = EvaluatedLane {
+            lane_key:
+                "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock:test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock"
+                    .to_string(),
+            unit_id:
+                "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock"
+                    .to_string(),
+            unit_title: "CI Preservation Codex Unblock".to_string(),
+            lane_id:
+                "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock"
+                    .to_string(),
+            lane_title: "CI Preservation Codex Unblock".to_string(),
+            lane_kind: LaneKind::Platform,
+            status: LaneExecutionStatus::Running,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: String::new(),
+            managed_milestone: "done".to_string(),
+            proof_profile: Some("unblock".to_string()),
+            run_config: PathBuf::from("ci-unblock.toml"),
+            run_id: None,
+            current_run_id: Some("run-123".to_string()),
+            current_fabro_run_id: Some("run-123".to_string()),
+            current_stage: None,
+            last_run_id: Some("run-123".to_string()),
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        };
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![source, unblock],
+        };
+
+        let snapshot = current_snapshot(&program, Some(10));
+
+        assert_eq!(snapshot.running, 1);
+        assert_eq!(snapshot.failed, 0);
+        assert!(snapshot.failed_lanes.is_empty());
         assert_eq!(snapshot.blocked, 1);
     }
 
