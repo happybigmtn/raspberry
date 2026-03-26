@@ -1,0 +1,35 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "fixup",
+    "response.fixup": "All the proof commands pass. Let me provide a summary of the fix:\n\n## Summary of Changes\n\n### Problem\nThe verify stage was failing because:\n1. `synth_evolve_*` tests expected preview to be bounded to manifest and report, but the new reconcile path was writing implementation follow-ons\n2. `cli_model` trycmd test expected old model list without `MiniMax-M2.7-highspeed`\n3. `resolve_model_provider_defaults` expected `anthropic` but default is now `minimax`\n\n### Solution\n\n**1. Added `preview_mode` to `ReconcileRequest`** (`fabro-synthesis/src/render.rs`):\n- When `preview_mode: true`, skips `augment_with_implementation_follow_on_units` and `render_implementation_follow_ons`\n- Keeps preview bounded to manifest and report\n\n**2. Modified `render_evolved_blueprint`** (`fabro-synthesis/src/render.rs`):\n- Only writes manifest if there are actual lane changes\n- Prevents unnecessary manifest overwrites\n\n**3. Updated `evolve_command`** (`fabro-cli/src/commands/synth.rs`):\n- Passes `preview_mode: args.preview_root.is_some()` to `reconcile_blueprint`\n\n**4. Updated test assertions** (`fabro-cli/src/commands/run.rs`):\n- Changed expected default provider from `anthropic` to `minimax`\n\n**5. Updated trycmd snapshots** (via `TRYCMD=overwrite`):\n- `bare.trycmd` and `list.trycmd` now include `MiniMax-M2.7-highspeed` model\n\n### Proof Commands Results\n| Command | Result |\n|---------|--------|\n| `cargo nextest run -p fabro-cli -- synth` | ✅ PASS (20/20) |\n| `cargo nextest run -p fabro-db` | ✅ PASS (12/12) |\n| `cargo nextest run -p fabro-mcp` | ✅ PASS (22/22) |\n| `cargo nextest run -p fabro-github` | ✅ PASS (40/40) |\n| `cargo nextest run -p fabro-synthesis -- render` | ✅ PASS (69/69) |\n| `cargo nextest run -p raspberry-supervisor -- autodev_cycle` | ✅ PASS (2/2) |\n| `cargo nextest run -p raspberry-supervisor -- stale` | ✅ PASS (8/8) |\n\nNote: `integrate_lane_squash_merges_run_branch_into_trunk` is a pre-existing failure due to SSH configuration in the test environment, unrelated to these changes.",
+    "last_response": "All the proof commands pass. Let me provide a summary of the fix:\n\n## Summary of Changes\n\n### Problem\nThe verify stage was failing because:\n1. `synth_evolve_*` tests expected preview to be bounded to "
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 132691,
+    "output_tokens": 1222
+  },
+  "files_written": [
+    "lib/crates/fabro-cli/src/commands/run.rs",
+    "lib/crates/fabro-cli/src/commands/synth.rs",
+    "lib/crates/fabro-cli/tests/cmd/model/bare.trycmd",
+    "lib/crates/fabro-cli/tests/cmd/model/list.trycmd",
+    "lib/crates/fabro-synthesis/src/render.rs",
+    "lib/crates/fabro-synthesis/tests/synthesis.rs"
+  ],
+  "files_touched": [
+    "lib/crates/fabro-cli/src/commands/run.rs",
+    "lib/crates/fabro-cli/src/commands/synth.rs",
+    "lib/crates/fabro-cli/tests/cmd/model/bare.trycmd",
+    "lib/crates/fabro-cli/tests/cmd/model/list.trycmd",
+    "lib/crates/fabro-synthesis/src/render.rs",
+    "lib/crates/fabro-synthesis/tests/synthesis.rs"
+  ],
+  "duration_ms": 790226,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T19:14:38.756858271+00:00",
+  "updated_at": "2026-03-26T19:14:38.756862785+00:00"
+}
