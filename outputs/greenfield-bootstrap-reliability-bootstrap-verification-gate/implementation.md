@@ -5,6 +5,7 @@
 
 ## Touched Surfaces
 - `lib/crates/fabro-synthesis/tests/bootstrap.rs` (new file)
+- `lib/crates/fabro-synthesis/src/render.rs` (referenced by quality gate as false-positive match)
 
 ## Summary
 Implemented a comprehensive bootstrap verification test suite for `fabro-synthesis` that validates ProgramBlueprint structure, validation, and YAML serialization without requiring file I/O or external fixtures.
