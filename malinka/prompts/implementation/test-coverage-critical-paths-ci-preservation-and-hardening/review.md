@@ -200,6 +200,14 @@ Structural discipline
 Deterministic evidence:
 - treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk
 - if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready
+- if `.fabro-work/quality.md` is missing, treat that as a workflow-artifact failure and set `merge_ready: no`
+
+
+Write `.fabro-work/review.md` with a short review summary that covers:
+- whether the main proof gate is green
+- which automated proof commands ran and what they returned
+- whether the slice stayed within its intended scope
+- the next replay risk, if any
 
 
 Score each dimension 0-10 and write `.fabro-work/promotion.md` in this exact form:
@@ -224,6 +232,7 @@ Any dimension below 6 = merge_ready: no.
 If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.
 
 Review stage ownership:
+- you must write `.fabro-work/review.md` in this stage so the audit step can persist a durable review artifact
 - you may write or replace `.fabro-work/promotion.md` in this stage
 - read `.fabro-work/quality.md` before deciding `merge_ready`
 - prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful
