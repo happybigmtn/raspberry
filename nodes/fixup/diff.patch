@@ -1,0 +1,58 @@
+diff --git a/lib/crates/fabro-cli/tests/synth.rs b/lib/crates/fabro-cli/tests/synth.rs
+index 923831f1..69852a0b 100644
+--- a/lib/crates/fabro-cli/tests/synth.rs
++++ b/lib/crates/fabro-cli/tests/synth.rs
+@@ -310,7 +310,7 @@ fn synth_evolve_updates_existing_package() {
+         .assert()
+         .success()
+         .stdout(predicate::str::contains(
+-            "Mode: evolve (deterministic steering report)",
++            "Mode: evolve (deterministic reconcile)",
+         ))
+         .stdout(predicate::str::contains("Preview root:"))
+         .stdout(predicate::str::contains("Report:"));
+@@ -379,7 +379,7 @@ fn synth_evolve_can_import_current_package_without_blueprint_flag() {
+         .assert()
+         .success()
+         .stdout(predicate::str::contains(
+-            "Mode: evolve (deterministic steering report)",
++            "Mode: evolve (deterministic reconcile)",
+         ))
+         .stdout(predicate::str::contains("Preview root:"))
+         .stdout(predicate::str::contains("Report:"));
+@@ -413,7 +413,7 @@ fn synth_evolve_preview_stays_bounded_to_manifest_and_report() {
+         .assert()
+         .success()
+         .stdout(predicate::str::contains(
+-            "Mode: evolve (deterministic steering report)",
++            "Mode: evolve (deterministic reconcile)",
+         ));
+ 
+     assert!(preview
+diff --git a/lib/crates/fabro-model/src/catalog.rs b/lib/crates/fabro-model/src/catalog.rs
+index 72337039..2e1fb1ad 100644
+--- a/lib/crates/fabro-model/src/catalog.rs
++++ b/lib/crates/fabro-model/src/catalog.rs
+@@ -681,7 +681,7 @@ mod tests {
+     #[test]
+     fn minimax_m2_7_resolves_to_highspeed() {
+         let m = get_model_info("MiniMax-M2.7").unwrap();
+-        assert_eq!(m.provider, "minimax");
++        assert_eq!(m.provider, Provider::Minimax);
+         assert_eq!(m.id, "MiniMax-M2.7-highspeed");
+     }
+ 
+diff --git a/lib/crates/raspberry-tui/src/app.rs b/lib/crates/raspberry-tui/src/app.rs
+index 4d988a45..617a74b8 100644
+--- a/lib/crates/raspberry-tui/src/app.rs
++++ b/lib/crates/raspberry-tui/src/app.rs
+@@ -1274,8 +1274,7 @@ mod tests {
+             ready_checks_failing: Vec::new(),
+             running_checks_passing: Vec::new(),
+             running_checks_failing: Vec::new(),
+-            failure_kind: None,
+-            recovery_action: None,
++            consecutive_failures: 0,
+         }
+     }
+ 
