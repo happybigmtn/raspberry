@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-03-26T20:25:40.110112247Z",
+  "current_node": "fork",
+  "completed_nodes": [
+    "start",
+    "fork"
+  ],
+  "node_retries": {
+    "fork": 1,
+    "start": 1
+  },
+  "context_values": {
+    "thread.start.current_node": "fork",
+    "outcome": "success",
+    "parallel.results": [
+      {
+        "id": "branch1",
+        "status": "success"
+      },
+      {
+        "id": "branch2",
+        "status": "success"
+      }
+    ],
+    "internal.thread_id": "start",
+    "graph.goal": "Test parallel and fan-in execution",
+    "internal.retry_count.fork": 1,
+    "internal.run_id": "01KMNX599ZN8Q4H5BYX1ADKDEB",
+    "parallel.branch_count": 2,
+    "internal.node_visit_count": 1,
+    "failure_signature": "",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX599ZN8Q4H5BYX1ADKDEB/worktree",
+    "failure_class": "",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n",
+    "current_node": "fork",
+    "internal.fidelity": "compact",
+    "internal.retry_count.start": 1
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 1
+    },
+    "fork": {
+      "status": "success",
+      "notes": "[Simulated] Parallel node dispatched 2 branches",
+      "jump_to_node": "merge",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "merge",
+  "node_visits": {
+    "start": 1,
+    "fork": 1
+  }
+}
