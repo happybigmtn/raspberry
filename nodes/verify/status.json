@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 13,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T18:38:33.236669910+00:00",
+  "updated_at": "2026-03-26T18:38:33.236673877+00:00",
+  "notes": "Script completed: true"
+}
