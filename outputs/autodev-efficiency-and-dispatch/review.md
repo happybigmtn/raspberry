@@ -1,266 +1,282 @@
 # Autodev Execution Path and Dispatch Truth — Review
 
-## Scope of This Review
+## Review Status: **APPROVED WITH BLOCKERS**
 
-This review evaluates the first slice of the autodev execution path and dispatch truth work. The lane is scoped to:
+This review evaluates the specification for the first slice of autodev execution path and dispatch truth work (Plan 003, Phase 0). The spec is well-researched and identifies real gaps. However, **security review reveals trust boundary concerns that must be addressed before implementation proceeds.**
 
-1. Runtime-path self-consistency (no local-only shims, prompt resolution from target repo)
-2. Stale `running`/`failed` lane truth reconciliation before dispatch
-3. Dispatch-state telemetry
-4. Decoupling `synth evolve` from dispatch
-5. Greedy dispatch consumption
+---
 
-## What the Codebase Already Does Well
+## Summary Assessment
 
-### Stale Detection Infrastructure
+| Criterion | Rating | Evidence |
+|-----------|--------|----------|
+| Correctness | ✓ Good | Identifies 5 concrete gaps with code locations |
+| Milestone Fit | ✓ Good | Aligns with Phase 0 gate (10 lanes, 0 bootstrap failures) |
+| Remaining Blockers | △ Medium | Security gaps in trust boundaries; threading race conditions |
 
-The `program_state.rs` module already has sophisticated stale lane detection:
+---
 
-- `STALE_RUNNING_GRACE_SECS` (30s) for worker-process disappearance detection
-- `ACTIVE_STALL_TIMEOUT_SECS` (1800s) for stall watchdog detection
-- `stale_failure_superseded_by_render()` for stale failures that are superseded by re-renders
-- `worker_process_alive()` using `/proc/<pid>/` on Linux
-- `refresh_program_state()` already updates lane status to `Failed` with `TransientLaunchFailure` for stale runs
+## Correctness Review
 
-The `FailureKind` enum in `failure.rs` is comprehensive and covers all observed failure modes (17 variants with appropriate default recovery actions).
+### Gap 1: Stale Lane Reclassification (Section 2.1)
+**Verdict**: Correct diagnosis. The spec correctly identifies that `refresh_program_state` updates stale lanes to `Failed`, but `evaluate_program` re-classifies them as `Running` because `evaluate_lane` loads a fresh `run_snapshot` from an absent run directory.
 
-### Dispatch Selection Logic
+**Proposed Fix Assessment**: The fix in `evaluate.rs` to check staleness when building `run_snapshot` is sound. However, the alternative fix (preferring runtime record over snapshot) is **riskier**—it creates a second source of truth that could diverge.
 
-The dispatch selection in `autodev.rs` is thoughtful:
+**Recommendation**: Implement the first fix (snapshot-level staleness detection) and add a consistency assertion that `runtime_record.status` and `run_snapshot.status` must agree after refresh.
 
-- Family diversity constraint (`lane_root_plan_family`) prevents concentrating work from one plan in a single dispatch round
-- Priority scoring (`lane_dispatch_priority_score`) boosts Phase 0 plans (autodev-efficiency, greenfield-bootstrap, etc.)
-- Replay failures are selected before new ready lanes (`replayed_lanes` then `selected_ready_lanes`)
-- `select_ready_lanes_for_dispatch` enforces the family diversity constraint
+### Gap 2: Runtime Path Validation (Section 2.2)
+**Verdict**: Correct diagnosis. Pre-flight validation should catch missing graphs before dispatch consumes a slot.
 
-### Telemetry Infrastructure
+**Concern**: The proposed `DispatchError::RuntimePathInvalid` variant needs careful error classification—is this a `TransientLaunchFailure` (retryable) or `PermanentSetupFailure` (requires operator intervention)?
 
-`AutodevReport` and `AutodevCycleReport` provide a solid foundation for telemetry. The `current_snapshot` function already computes running counts, ready lanes, critical blockers, and nested child running lanes.
+### Gap 3: Evolve Blocking (Section 4)
+**Verdict**: Correct diagnosis. Synchronous `synth evolve` blocks dispatch.
 
-### CLI Registration
+**Concern**: See Security Pass 2 (Coupled State) for race condition analysis.
 
-The `fabro synth` command tree is properly registered in `main.rs` with all subcommands (Import, Create, Evolve, Review, Genesis).
+### Gap 4: Telemetry Completeness (Section 3)
+**Verdict**: Correct and necessary. The proposed `AutodevCycleReport` extensions are well-designed.
 
-## Identified Gaps and Risks
+### Gap 5: Prompt Resolution (Section 1.2)
+**Verdict**: Partial. The spec acknowledges three resolution strategies but does not mandate which one to implement.
 
-### Gap 1: Stale Lane Reclassification Does Not Persist Through Evaluation
+**Risk**: Without a mandated strategy, different code paths may implement different resolutions, leading to inconsistent behavior.
 
-**Severity**: High — causes dispatch slot consumption by stale lanes.
+---
 
-**Description**: As analyzed in Section 2.1 of the spec, `refresh_program_state` correctly updates a stale lane's record to `Failed`, but the subsequent `evaluate_program` call re-classifies it as `Running` because `evaluate_lane` loads a fresh `run_snapshot` from the (absent) run directory and `classify_lane` uses `is_active(run_snapshot, runtime_record)` where the snapshot is empty/dne, falling through to the stale `runtime_record.status == Running` check.
+## Milestone Fit Review
 
-**Evidence**:
-- `evaluate.rs` lines ~830-840: `is_active` returns `true` when `run_snapshot.status` is `None` and `runtime_record` has `status == Running && last_finished_at.is_none()`.
-- `refresh_program_state` (program_state.rs) correctly sets `status = Failed` and `last_finished_at = Some(now)` for stale lanes.
-- After `refresh_program_state`, `evaluate_program` is called again, re-classifying based on the fresh snapshot.
+### Phase 0 Gate Alignment
 
-**Fix required**: In `evaluate_lane`, when building `run_snapshot`, check whether the run directory exists and the worker is alive. If not, populate `run_snapshot.status = Some(RunStatus::Dead)` so that `is_active` returns `false` and `is_failed` returns `true`. This ensures `classify_lane` sees the correct status without needing to reach into the runtime record.
+The 180-Day Plan (genesis/plans/001-master-plan.md) defines the Phase 0 gate as:
+> "On a proving-ground repo, `raspberry autodev --max-parallel 10` sustains 10 running lanes for at least 20 cycles, produces zero bootstrap-time validation failures caused by missing CLI subcommands or unresolved prompt/workflow refs, and lands at least 3 lanes to trunk."
 
-**Alternative fix**: In `classify_lane`, check `runtime_record.map(|r| r.status != LaneExecutionStatus::Running)` before trusting the snapshot.
+**Alignment Check**:
 
-### Gap 2: Runtime Path Validation Is Missing for Graph and Prompt Resolution
+| Gate Requirement | Spec Coverage | Verdict |
+|------------------|---------------|---------|
+| 10 lanes sustained | Section 2.3 (stale lanes don't consume slots) | ✓ Covered |
+| 0 bootstrap failures | Sections 1.1, 1.2, 1.3 (runtime path validation) | ✓ Covered |
+| 3 lanes to trunk | Indirect—requires correct execution | ✓ Implicit |
 
-**Severity**: High — causes bootstrap failures in generated packages.
+**Gap**: The spec does not explicitly define "bootstrap validation failure" telemetry. The acceptance criteria should specify that `runtime_path_errors` in the cycle report must remain empty for 20 consecutive cycles.
 
-**Description**: `run_fabro` in `dispatch.rs` validates that `run_config.exists()` but does not validate:
-- That the graph file referenced by the run config exists
-- That referenced prompts are resolvable from `target_repo`
-- That the copied graph (if any) has correct relative paths
+---
 
-The `fabro run --detach` command will fail at runtime if these are missing, but the dispatch slot is consumed and the lane goes through a slow failure path.
+## Nemesis-Style Security Review
 
-**Fix required**: Add a pre-flight validation step in `execute_selected_lanes` or `run_fabro` that:
-1. Loads the run config
-2. Resolves the graph path via `resolve_graph_path`
-3. Checks the graph file exists
-4. Optionally checks prompt references are resolvable
+### Pass 1: First-Principles Challenge
 
-Return `DispatchError::MissingRunConfig` or a new `DispatchError::RuntimePathInvalid` variant if validation fails.
+#### Trust Boundaries
 
-### Gap 3: `synth evolve` Blocks Dispatch on Every Triggered Cycle
+**Question**: Who can trigger the dangerous actions this slice enables?
 
-**Severity**: Medium — reduces effective dispatch rate.
+| Action | Current Authority | Risk |
+|--------|-------------------|------|
+| Dispatch lane execution | `raspberry autodev` or `raspberry execute` | Low—requires local manifest access |
+| Mark lane as stale/failed | `refresh_program_state()` internal | **Medium—no audit trail** |
+| Trigger `synth evolve` | `should_trigger_evolve()` logic | **Medium—can mutate checked-in package** |
+| Modify `program_state.json` | Any process with write access to `.raspberry/` | **High—no integrity checks** |
 
-**Description**: When `should_trigger_evolve` returns `true`, `run_synth_evolve` runs synchronously before dispatch. For a 120-second timeout (`SYNTH_EVOLVE_TIMEOUT_SECS`), this can block the entire dispatch cycle.
+**Finding**: The spec does not address integrity of `.raspberry/*-state.json` files. A malicious or buggy process could:
+1. Mark a completed lane as `Ready` to trigger re-execution
+2. Clear `failed` status to bypass failure classification
+3. Modify `last_evolve_at` to force or skip evolution
 
-The `should_trigger_evolve` logic already has a fast-track for regenerate (`should_fast_track_regenerate_evolve`) that bypasses some checks, but it still runs synchronously.
+**Recommendation**: Add a section on state file integrity—at minimum, document that `.raspberry/` should be writable only by the autodev operator user.
 
-**Fix required**: Move `run_synth_evolve` to a spawned thread. Store the evolve result in an `Arc<Mutex<Option<EvolveResult>>>` that the next cycle checks. Dispatch proceeds without waiting.
+#### Authority Assumptions
 
-### Gap 4: Dispatch Telemetry Is Incomplete
+**Question**: What authority does the autodev loop assume it has?
 
-**Severity**: Medium — operators cannot diagnose why work did not run.
+The spec assumes:
+- Write access to `~/.fabro/runs/<run-id>/` (run directories)
+- Write access to `.raspberry/*-state.json` (program state)
+- Execute permission on `fabro_bin` (CLI binary)
+- Read access to target repo
 
-**Description**: `AutodevCycleReport` captures `dispatched` outcomes but does not capture:
-- Why ready lanes were not selected (family diversity, slot exhaustion, skip reasons)
-- Runtime path errors during dispatch
-- Rolling idle cycle count
+**Missing**: The spec does not specify what happens when any of these assumptions are violated. The error handling should be explicit:
+- Permission denied on state file → `PermanentSetupFailure` with operator alert
+- `fabro_bin` not executable → `TransientLaunchFailure` (may be temporary build issue)
+- Run directory not creatable → `PermanentSetupFailure`
 
-**Fix required**: Add the fields defined in Section 3.1 of the spec to `AutodevCycleReport` and populate them in the dispatch decision logic.
+#### Secret Handling
 
-### Gap 5: Prompt Resolution Path Is Unverified
+**Question**: Are secrets exposed in the new telemetry fields?**
 
-**Severity**: Medium — may cause silent failures.
-
-**Description**: The plan references that `@../../prompts/...` paths resolve under `~/.fabro/` at runtime. The fix should ensure that either:
-- Paths are made absolute at render time
-- Prompt files are copied alongside the graph
-- `fabro run` is invoked with the correct `current_dir` (it is — `target_repo`)
-
-The last point means that if the graph contains `@prompts/...` (relative to target repo root), and `fabro run` is invoked with `current_dir = target_repo`, the paths resolve correctly. The issue was specifically with `../` segments in the path that went above the target repo.
-
-**Fix required**: In `fabro-synthesis/src/render.rs`, when resolving prompt references in rendered graphs, strip any `../` segments that would escape the target repo, or convert relative paths to be anchored at the target repo root.
-
-## Specific Code Locations Requiring Changes
-
-### 1. `lib/crates/raspberry-supervisor/src/evaluate.rs`
-
-**Change 1**: In `load_run_snapshot`, add staleness detection:
-
+Review of proposed `RuntimePathError`:
 ```rust
-fn load_run_snapshot(run_dir: &Path) -> RunSnapshot {
-    // Existing: load status, live_state
-    // New: check if run_dir exists and worker is alive
-    let status = RunStatusRecord::load(&run_dir.join("status.json"))
-        .ok()
-        .map(|record| record.status);
-    
-    let live_state = RunLiveState::load(&run_dir.join("state.json")).ok();
-    
-    // New: if directory doesn't exist or worker is dead, mark as Dead
-    let status = status.or_else(|| {
-        if !run_dir.exists() {
-            Some(RunStatus::Dead)
-        } else if worker_process_alive(run_dir) == Some(false) {
-            Some(RunStatus::Dead)
-        } else {
-            None
-        }
-    });
-    
-    RunSnapshot { status, ... }
+pub struct RuntimePathError {
+    pub lane_key: String,
+    pub error_type: String,
+    pub message: String,
 }
 ```
 
-**Change 2**: In `is_active`, prefer the snapshot's explicit non-active status:
+**Risk**: If `message` contains:
+- File paths that include home directory (PII)
+- Environment variable dumps
+- Command-line arguments with tokens
 
+**Recommendation**: Add a requirement that `RuntimePathError.message` must be redacted via `fabro-util::redaction` before serialization.
+
+### Pass 2: Coupled-State Review
+
+#### Paired State Surfaces
+
+**Paired Surface 1: `program_state.json` ↔ `~/.fabro/runs/<run-id>/`**
+
+These two state surfaces must agree:
+- `program_state` records which run ID is current for a lane
+- Run directory contains the actual run state
+
+**Inconsistency Scenario**:
+1. `refresh_program_state` detects stale run, updates record to `Failed`
+2. Before `program_state.json` is written, process crashes
+3. On restart, `program_state` still shows `Running`, run directory is gone
+4. `evaluate_program` loads fresh snapshot from absent directory → reclassifies as `Running`
+
+**Mitigation in Spec**: The spec's Gap 1 fix (snapshot-level staleness detection) helps, but **does not eliminate the window** between state file write and evaluation.
+
+**Recommendation**: Add idempotency requirement—`evaluate_program` must produce the same classification if run twice with the same inputs, even if state file is mid-write.
+
+**Paired Surface 2: `last_evolve_at` ↔ `malinka/` package content**
+
+When `synth evolve` runs in a background thread (Gap 3 fix):
+- Main thread sets `last_evolve_at = Some(now)` optimistically
+- Evolve thread mutates `malinka/` files
+- If evolve fails, `malinka/` is in partially-evolved state
+
+**Race Condition**:
+```
+Cycle N:   Evolve starts, sets last_evolve_at
+Cycle N+1: Dispatch uses evolved package (may be partial)
+Cycle N+2: Evolve fails, package reverted (or not)
+```
+
+**Finding**: The spec's "Option 1 (thread-based)" approach has a **serious consistency issue**—the next cycle may see partially-evolved package state.
+
+**Recommendation**: Change the threading model:
+- Option A: Evolve to temp directory, atomic rename on success
+- Option B: Evolve produces a manifest hash; dispatch validates hash before using
+- Option C: Block only on first evolve (package creation), not subsequent evolves
+
+**Paired Surface 3: `dispatch_summary` ↔ actual dispatch history**
+
+Rolling statistics in `AutodevCurrentSnapshot.dispatch_summary` are derived state:
 ```rust
-fn is_active(run_snapshot: &RunSnapshot, runtime_record: Option<&LaneRuntimeRecord>) -> bool {
-    // If snapshot says not active, believe it
-    if run_snapshot.status.map(|s| !s.is_active()).unwrap_or(false) {
-        return false;
-    }
-    // Fall through to runtime record check
-    runtime_record
-        .map(|record| {
-            record.status == LaneExecutionStatus::Running && record.last_finished_at.is_none()
-        })
-        .unwrap_or(false)
+pub struct DispatchSummary {
+    pub cycles_with_dispatch: usize,
+    pub idle_cycles: usize,
+    pub total_dispatched: usize,
+    pub failed_bootstrap: usize,
+    pub stale_running_reclaimed: usize,
 }
 ```
 
-### 2. `lib/crates/raspberry-supervisor/src/dispatch.rs`
+**Risk**: If the autodev process restarts, these counters reset to zero. An operator monitoring `idle_cycles` would see a sudden drop, misinterpreting it as recovery.
 
-**Change**: In `run_fabro`, add pre-flight validation:
+**Recommendation**: Either:
+1. Persist `dispatch_summary` to `.raspberry/dispatch-summary.json` across restarts
+2. Change to timestamp-based metrics ("idle cycles in last hour") that are recomputed from run history
+3. Document that these are per-session metrics, not durable truth
 
-```rust
-fn run_fabro(...) -> Result<DispatchOutcome, DispatchError> {
-    // Existing: check run_config.exists()
-    if !run_config.exists() { ... }
-    
-    // New: validate graph file exists
-    let config = load_run_config(run_config).map_err(...)?;
-    let graph_path = resolve_graph_path(run_config, &config.graph);
-    if !graph_path.exists() {
-        return Err(DispatchError::MissingRunConfig { 
-            lane: lane_key.to_string(), 
-            path: graph_path 
-        });
-    }
-    
-    // ... continue with dispatch
-}
-```
+#### Idempotence and Pairing Behavior
 
-### 3. `lib/crates/raspberry-supervisor/src/autodev.rs`
+**Question**: Is every mutation path idempotent?**
 
-**Change 1**: Add new telemetry fields to `AutodevCycleReport`.
+| Mutation | Idempotent? | Evidence |
+|----------|-------------|----------|
+| `refresh_program_state` → stale lane to Failed | **No** | Sets `last_finished_at = Some(now)`; re-running would set different timestamp |
+| `run_fabro` → spawn worker | **Yes** | Uses UUID-based run ID; duplicate spawns would have different IDs |
+| `stale_failure_superseded_by_render` → reset to Blocked | **Yes** | Deterministic check of file mtime vs `last_finished_at` |
 
-**Change 2**: Spawn `run_synth_evolve` in a thread:
+**Concern**: Non-idempotent `last_finished_at` assignment means crash-recovery may see different timestamps for the same logical event. This affects:
+- `stale_failure_superseded_by_render` logic (compares mtimes)
+- Human auditing of when failures occurred
 
-```rust
-// Instead of:
-run_synth_evolve(&manifest_path, &manifest, settings)?;
+**Recommendation**: Consider using the run directory's deletion timestamp (if available) or a deterministic timestamp based on the state file's own mtime.
 
-// Do:
-let evolve_handle = thread::spawn({
-    let manifest_path = manifest_path.clone();
-    let manifest = manifest.clone();
-    let settings = settings.clone();
-    move || run_synth_evolve(&manifest_path, &manifest, &settings)
-});
+#### Privilege Escalation Paths
 
-// Dispatch proceeds immediately
-// ... dispatch logic ...
+**Question**: Can this slice enable privilege escalation?**
 
-// After dispatch, check evolve
-let evolve_result = evolve_handle.join().unwrap_or(Err(...));
-```
+**Path 1: Symlink Attack on Run Directory**
 
-### 4. `lib/crates/fabro-synthesis/src/render.rs`
+The spec mentions eliminating "local-only shims" including symlinks. However, the autodev loop creates directories under `~/.fabro/runs/<run-id>/`. If an attacker can:
+1. Predict or control the run ID
+2. Create a symlink at that path pointing to a sensitive directory
+3. The autodev loop writes worker output to that path
 
-**Change**: In prompt path resolution, handle `../` escape attempts. The specific change depends on how prompt references are currently resolved in the rendered graph. If paths use `@prompts/...` (relative to target repo root) and `fabro run` uses `current_dir = target_repo`, the paths already resolve correctly. The issue is specifically with paths containing `../` that escape the target repo.
+**Mitigation**: The spec does not address run ID generation. UUIDv4 (random) is safer than predictable sequences.
 
-## Test Plan
+**Path 2: Command Injection via `fabro_bin` Path**
 
-### Unit Tests
+`AutodevSettings.fabro_bin` is a path string passed to `Command::new`. If this path contains shell metacharacters, it could execute unintended commands.
 
-1. **`evaluate_lane` with stale run snapshot**: Create a scenario where a lane has a runtime record with `status = Running` but the run directory does not exist. Assert that `evaluate_lane` returns `LaneExecutionStatus::Failed`.
+**Mitigation**: The spec should require that `fabro_bin` is validated as an absolute path to an executable file before use.
 
-2. **`dispatch.rs` pre-flight validation**: Dispatch a lane whose run config references a non-existent graph. Assert that `DispatchError::MissingRunConfig` or `RuntimePathInvalid` is returned, not a silent bootstrap failure.
+---
 
-3. **Telemetry fields round-trip**: Serialize and deserialize an `AutodevCycleReport` with all new telemetry fields. Assert no fields are dropped.
+## Remaining Blockers
 
-### Integration Tests
+### Blocker 1: Security — State File Integrity
+**Severity**: High
+**Requirement**: Add integrity requirements for `.raspberry/*-state.json`:
+- Document permission model (owner-write-only)
+- Add optional checksum or consider append-only log structure
+- Validate state file on load, fail closed on corruption
 
-4. **Stale lane does not consume dispatch slot**: Start autodev with `max_parallel = 2`. Create 2 lanes: one genuinely running, one stale (run dir deleted). Assert that only 1 slot is consumed and the stale lane is reported as failed.
+### Blocker 2: Security — Telemetry Redaction
+**Severity**: Medium
+**Requirement**: Mandate that `RuntimePathError.message` is redacted before serialization to prevent accidental secret exposure.
 
-5. **Evolve does not block dispatch**: With `evolve_every_seconds = 60`, trigger evolve and verify dispatch occurs within the same cycle (before evolve completes). This requires mocking `run_synth_evolve` to take > 1 second.
+### Blocker 3: Correctness — Evolve Race Condition
+**Severity**: High
+**Requirement**: Revise Gap 3 fix to use atomic package updates (temp directory + rename) rather than in-place mutation.
 
-6. **Prompt resolution**: Create a workflow that references `@prompts/review.md`. Verify the prompt resolves from the target repo, not `~/.fabro/prompts`.
+### Blocker 4: Correctness — Dispatch Summary Durability
+**Severity**: Low
+**Requirement**: Clarify whether `dispatch_summary` is per-session or durable. If per-session, document this explicitly. If durable, specify persistence mechanism.
 
-### Live Validation (rXMRbro)
+### Blocker 5: Completeness — Bootstrap Failure Definition
+**Severity**: Low
+**Requirement**: Add explicit definition of "bootstrap validation failure" to acceptance criteria, with telemetry field that must remain zero for gate success.
 
-7. `raspberry autodev --max-parallel 10 --max-cycles 20` — sustain 10 active lanes for 20 cycles without bootstrap failures.
+---
 
-8. After 20 cycles, `raspberry status` shows `dispatch_summary` with `idle_cycles < total_cycles * 0.5` (less than 50% idle cycles).
+## Recommendations for Implementation Order
 
-9. At least 3 lanes land to trunk (integration lane reaches `landed` state in `trunk_landing` telemetry).
+1. **Gap 1** (stale lane reclassification) + **Blocker 3** (evolve atomicity) — These fix slot consumption and package consistency
+2. **Blocker 2** (telemetry redaction) — Security hygiene
+3. **Gap 4** (telemetry fields) — Enables observability for gate validation
+4. **Gap 2** (pre-flight validation) — Reduces bootstrap failures
+5. **Gap 5** (prompt resolution) — Polish, can be deferred if temporary symlink works
+6. **Blocker 1** (state integrity) — Documentation and validation, can be post-Phase 0
 
-## Risks and Mitigations
+---
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Fixing `is_active` in `evaluate_lane` changes behavior for non-stale lanes | Low | Medium | Add test coverage for non-stale running lanes to ensure they remain `Running` |
-| Pre-flight validation changes dispatch error handling behavior | Medium | Medium | The new validation returns the same `DispatchError::MissingRunConfig` variant; behavior is additive |
-| Threading `synth evolve` introduces race conditions | Low | High | Use `Arc<Mutex<Option<EvolveResult>>>` shared state; validate evolve result is consumed before next cycle's dispatch |
-| Prompt resolution fix breaks existing working paths | Low | High | Verify existing tests pass; add specific tests for the `../` escape case |
+## Open Questions from Spec
 
-## Open Questions (for operator decision)
+| Question | Reviewer Response |
+|----------|-------------------|
+| Priority dispatch vs. family diversity? | Document that `ready_undispatched` includes diversity-skipped lanes; no change needed |
+| Evolve blocking on first cycle? | Acceptable for Phase 0; first-cycle latency is not the gate metric |
+| Stale grace period (30s vs 0s)? | 30s is conservative; consider 10s for faster slot recovery without risking slow-start misclassification |
 
-1. **Stale grace period**: 30 seconds may be too long for a 5-second poll interval. Consider reducing to 0 for immediate detection, or adding a separate "long-running" check (e.g., 30s for stale, 1800s for stall watchdog).
-
-2. **Evolve decoupling**: The thread-based approach requires handling evolve failures in the next cycle. Ensure the error handling path (`last_evolve_at = Some(Instant::now())` on error) is preserved.
-
-3. **Telemetry verbosity**: `ready_undispatched` could be large on programs with many ready lanes. Consider capping the list to the first 20 lane keys to avoid report bloat.
+---
 
 ## Conclusion
 
-The codebase has strong foundations for stale detection, failure classification, and dispatch selection. The primary gap is the persistence of stale lane corrections through the evaluation pipeline. The secondary gaps are pre-flight runtime path validation, evolve decoupling, and telemetry field completeness. The fixes are well-scoped and testable.
+The specification is technically sound and well-aligned with the Phase 0 gate. The security review identified **trust boundary and coupled-state issues** that should be addressed before or during implementation:
 
-The review recommends proceeding with:
-1. Fix Gap 1 (stale lane reclassification) first — highest impact, clearest fix
-2. Fix Gap 4 (telemetry) second — enables live validation observability
-3. Fix Gap 2 (pre-flight validation) third — prevents silent bootstrap failures
-4. Fix Gap 3 (evolve decoupling) fourth — moderate complexity, good dispatch rate improvement
-5. Fix Gap 5 (prompt resolution) fifth — depends on understanding the specific escape path
+1. State file integrity and permission model
+2. Telemetry redaction requirements
+3. Atomic evolve updates to prevent race conditions
+
+**Approval**: The spec is approved for implementation with the blockers noted above. The implementation PR should include:
+- Evidence that `runtime_path_errors` remains empty for 20 cycles on rXMRbro
+- Evidence that stale lanes are correctly reclassified (unit test)
+- Evidence that evolve does not block dispatch (timing logs)
+- Security review sign-off on telemetry and state handling
