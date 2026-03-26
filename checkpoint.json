@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-03-26T18:27:58.520734393Z",
+  "current_node": "preflight",
+  "completed_nodes": [
+    "start",
+    "preflight"
+  ],
+  "node_retries": {
+    "start": 1,
+    "preflight": 1
+  },
+  "context_values": {
+    "internal.node_visit_count": 1,
+    "graph.rankdir": "LR",
+    "failure_signature": "",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNPED2462E3SCW1CQCBHRA4/worktree",
+    "internal.retry_count.preflight": 1,
+    "command.stderr": "",
+    "internal.fidelity": "compact",
+    "failure_class": "",
+    "graph.goal": "Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+    "internal.retry_count.start": 1,
+    "outcome": "success",
+    "thread.start.current_node": "preflight",
+    "current.preamble": "Goal: Ci Preservation And Hardening\n\nChild work item of plan: Test Coverage for Critical Paths\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
+    "current_node": "preflight",
+    "internal.thread_id": "start",
+    "command.output": "",
+    "internal.run_id": "01KMNPED2462E3SCW1CQCBHRA4"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    },
+    "preflight": {
+      "status": "success",
+      "context_updates": {
+        "command.stderr": "",
+        "command.output": ""
+      },
+      "notes": "Script completed: set +e\ntrue\ntrue",
+      "duration_ms": 2
+    }
+  },
+  "next_node_id": "contract",
+  "node_visits": {
+    "start": 1,
+    "preflight": 1
+  }
+}
