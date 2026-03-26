@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNT43GY4EVV8YYR6SM2CZT0",
+  "workflow_name": "TestCoverageCriticalPathsAutodevIntegrationTest",
+  "goal": "Autodev Integration Test\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run --workspace`\n- `cargo nextest run -p fabro-cli -- synth`\n- `cargo nextest run -p fabro-db`\n- `cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github`\n- `cargo nextest run -p fabro-synthesis -- render`\n- `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle`\n- `cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-26T19:32:19.663716378Z",
+  "node_count": 11,
+  "edge_count": 15,
+  "run_branch": "fabro/run/01KMNT43GY4EVV8YYR6SM2CZT0",
+  "base_sha": "87c230ba6702fbbc79ab9bdc694c2dacd7656e21",
+  "base_branch": "main",
+  "workflow_slug": "test-coverage-critical-paths-autodev-integration-test",
+  "host_repo_path": "/home/r/coding/fabro"
+}
