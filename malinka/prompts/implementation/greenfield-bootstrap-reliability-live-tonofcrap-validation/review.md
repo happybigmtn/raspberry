@@ -129,6 +129,9 @@ Proof command:
 
 Regenerate tonofcrap package and run 30-cycle autodev. Scaffold must complete first. Feature lanes must not fail due to missing infrastructure.
 
+Review rule:
+- A 5-cycle or similarly short smoke run can support diagnosis, but it is not sufficient evidence to mark this milestone complete.
+
 Proof command:
 
     target-local/release/fabro --no-upgrade-check synth create \
@@ -177,6 +180,11 @@ Artifacts to write:
 
 Verification artifact must cover
 - summarize the automated proof commands that ran and their outcomes
+
+Evidence discipline
+- Treat any smoke run shorter than the contract's 30-cycle `raspberry autodev` proof as partial evidence only.
+- Do not score Milestone 5 complete, or bless the live-validation acceptance criteria as satisfied, unless a real `raspberry autodev --max-cycles 30` run was executed and summarized.
+- If the verification artifact claims full success from only a shorter run or from static artifact inspection, record that as a blocking finding.
 
 Nemesis-style security review
 - Pass 1 — first-principles challenge: question trust boundaries, authority assumptions, and who can trigger the slice's dangerous actions

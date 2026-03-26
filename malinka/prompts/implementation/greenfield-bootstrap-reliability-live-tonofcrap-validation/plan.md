@@ -18,6 +18,11 @@ Required durable artifacts:
 Verification artifact must cover
 - summarize the automated proof commands that ran and their outcomes
 
+Evidence discipline
+- A smoke run shorter than the contract's 30-cycle `raspberry autodev` proof is partial evidence only.
+- Do not report Milestone 5 complete, or mark the live-validation acceptance criteria satisfied, unless a real `raspberry autodev --max-cycles 30` run was executed and summarized.
+- If only a shorter smoke run or static artifact inspection was possible, say so explicitly and keep Milestone 5 open.
+
 Layout/domain invariant tests (required for this slice even if not called out above):
 - layout invariant test proving the rendered board/grid contains no duplicate domain values
 
@@ -180,6 +185,9 @@ Proof command:
 ### Milestone 5: Live tonofcrap validation
 
 Regenerate tonofcrap package and run 30-cycle autodev. Scaffold must complete first. Feature lanes must not fail due to missing infrastructure.
+
+Reporting rule:
+- A 5-cycle or similarly short smoke run may help diagnose failures, but it does not satisfy Milestone 5 and must not be written up as full validation success.
 
 Proof command:
 
