@@ -1148,6 +1148,7 @@ fn summarize_autodev_report(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deterministic_steering_report(
     program: &str,
     manifest_path: &std::path::Path,
@@ -1359,6 +1360,7 @@ fn summarize_lane_list(lanes: &[String], limit: usize) -> String {
     format!("{} (+{} more)", head.join(", "), lanes.len() - limit)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_deterministic_steering_report(
     program: &str,
     manifest_path: &std::path::Path,

@@ -9372,7 +9372,7 @@ fn chain_sibling_surfaces(manifest: &mut ManifestOut, blueprint: &ProgramBluepri
 
     // For each surface with 2+ lanes, chain them: lane[1] depends on lane[0], etc.
     let mut injected = 0;
-    for (_surface, lanes) in &surface_to_lanes {
+    for lanes in surface_to_lanes.values() {
         if lanes.len() < 2 {
             continue;
         }
