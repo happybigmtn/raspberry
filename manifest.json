@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNX3H1P4201TNZFBP9AMDHT",
+  "workflow_name": "Parallel",
+  "goal": "Test parallel and fan-in execution",
+  "start_time": "2026-03-26T20:24:25.109796676Z",
+  "node_count": 7,
+  "edge_count": 7,
+  "run_branch": "fabro/run/01KMNX3H1P4201TNZFBP9AMDHT",
+  "base_sha": "1be5604f378017f5fd9a8fbaf1541a8bc140a32e",
+  "base_branch": "fabro/run/01KMNT43GY5T3AG67J2TSNF09H",
+  "workflow_slug": "parallel",
+  "host_repo_path": "/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli"
+}
