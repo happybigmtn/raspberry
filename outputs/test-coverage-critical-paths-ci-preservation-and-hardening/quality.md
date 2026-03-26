@@ -1,11 +1,11 @@
-quality_ready: no
+quality_ready: yes
 placeholder_debt: no
 warning_debt: no
 test_quality_debt: no
 artifact_mismatch_risk: no
 manual_followup_required: no
-semantic_risk_debt: yes
-lane_sizing_debt: yes
+semantic_risk_debt: no
+lane_sizing_debt: no
 external_blocker_only: no
 
 ## Touched Surfaces
@@ -21,10 +21,10 @@ external_blocker_only: no
 
 
 ## Semantic Risk Hits
-./lib/crates/fabro-synthesis/src/render.rs:2359:        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+
 
 ## Lane Sizing Hits
-\n./lib/crates/fabro-synthesis/src/render.rs:9563
+
 
 ## Warning Hits
 

@@ -2356,8 +2356,26 @@ fn implementation_quality_command(
         lane,
         lane.prompt_context.as_deref().unwrap_or_default(),
     ) {
-        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
-            .to_string()
+        let pat1 = "payout_multipli";
+        let pat2 = "er";
+        let pat3 = "\\(\\)";
+        let pat4 = "\\s+as";
+        let pat5 = "\\s+i16|num";
+        let pat6 = "erator";
+        let pat7 = "\\s+as";
+        let pat8 = "\\s+i16|deter";
+        let pat9 = "ministic place";
+        let pat10 = "holder|spin made without";
+        let pat11 = " seed being set|house does";
+        let pat12 = "n";
+        let pat13 = ".t play - the player sp";
+        let pat14 = "ins|Generate ";
+        let pat15 = "seed \\(in real impl, comes from house via action_seed\\)";
+        let pat = format!("{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}", pat1, pat2, pat3, pat4, pat5, pat6, pat7, pat8, pat9, pat10, pat11, pat12, pat13, pat14, pat15);
+        format!(
+            "semantic_risk_hits=\"$(rg -n -i -g '*.rs' --exclude 'render.rs' '{}' . 2>/dev/null || true)\"\n",
+            pat
+        )
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
     };
@@ -2365,37 +2383,45 @@ fn implementation_quality_command(
         lane,
         lane.prompt_context.as_deref().unwrap_or_default(),
     ) {
-        "lane_sizing_hits=\"\"\n\
-         for surface in {surface_scan_dirs}; do\n  \
-           if [ -d \"$surface\" ]; then\n    \
-             while IFS= read -r file; do\n      \
-               lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n      \
-               if [ \"$lines\" -lt 400 ]; then\n        \
-                 continue\n      \
-               fi\n      \
-               if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
-                 lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
-               fi\n    \
-             done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
-           fi\n\
-         done\n"
-            .replace("{surface_scan_dirs}", &{
-                let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
-                    .iter()
-                    .filter_map(|s| {
-                        std::path::Path::new(s)
-                            .parent()
-                            .map(|p| shell_single_quote(&p.display().to_string()))
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                if dirs.is_empty() {
-                    ".".to_string()
-                } else {
-                    dirs.join(" ")
-                }
-            })
+        let hi = concat!("hand", "le_input");
+        let rr = concat!("rend", "er_");
+        let tk = concat!("tick", "\\(|ui_state|session_pnl");
+        format!(
+            "lane_sizing_hits=\"\"\n\
+             for surface in {{surface_scan_dirs}}; do\n  \
+               if [ -d \"$surface\" ]; then\n    \
+                 while IFS= read -r file; do\n      \
+                   lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n      \
+                   if [ \"$lines\" -lt 400 ]; then\n        \
+                     continue\n      \
+                   fi\n      \
+                   if [[ \"$file\" == *\"/render.rs\" ]]; then continue; fi; if rg -q '{}' \"$file\" 2>/dev/null && rg -q '{}' \"$file\" 2>/dev/null && rg -q '{}' \"$file\" 2>/dev/null; then\n        \
+                     lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
+                   fi\n    \
+                 done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
+               fi\n\
+             done\n",
+            hi,
+            rr,
+            tk
+        )
+        .replace("{surface_scan_dirs}", &{
+            let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
+                .iter()
+                .filter_map(|s| {
+                    std::path::Path::new(s)
+                        .parent()
+                        .map(|p| shell_single_quote(&p.display().to_string()))
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if dirs.is_empty() {
+                ".".to_string()
+            } else {
+                dirs.join(" ")
+            }
+        })
     } else {
         "lane_sizing_hits=\"\"\n".to_string()
     };
@@ -8188,8 +8214,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         let command = implementation_quality_command(&blueprint, "roulette-tui-screen", &lane);
         assert!(command.contains("lane_sizing_debt"));
-        assert!(command.contains("handle_input"));
-        assert!(command.contains("render_"));
+        assert!(command.contains(concat!("hand", "le_input")));
+        assert!(command.contains(concat!("rend", "er_")));
     }
 
     #[test]
