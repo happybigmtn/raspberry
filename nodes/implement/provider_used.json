@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "minimax",
+  "requested_model": "MiniMax-M2.7-highspeed",
+  "provider": "anthropic",
+  "model": "claude-opus-4-6",
+  "served_model": null,
+  "fallback_reason": "fallback from minimax:MiniMax-M2.7-highspeed via central automation policy",
+  "codex_slot": null,
+  "command": "cat '/home/r/.fabro/cli/run.j9odJL/prompt.txt' | env -u ANTHROPIC_API_KEY CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6"
+}
