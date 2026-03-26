@@ -1,0 +1,13 @@
+diff --git a/.raspberry/portfolio/test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock/quality.md b/.raspberry/portfolio/test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock/quality.md
+index 7c8354fd..74d022a0 100644
+--- a/.raspberry/portfolio/test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock/quality.md
++++ b/.raspberry/portfolio/test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock/quality.md
+@@ -6,7 +6,7 @@ artifact_mismatch_risk: no
+ manual_followup_required: no
+ semantic_risk_debt: no
+ lane_sizing_debt: no
+-external_blocker_only: no
++external_blocker_only: yes
+ 
+ ## Touched Surfaces
+ - (none declared)
