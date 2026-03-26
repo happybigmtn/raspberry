@@ -60,7 +60,7 @@ The source lane's updated quality gate still had a repo-wide `semantic_risk_hits
    Result: all required content is present.
 
 6. Semantic-risk sanity check
-   Command: `rg -n -i -g '*.rs' "payout_multiplier\(\)\s+as\s+i16|numerator\s+as\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \(in real impl, comes from house via action_seed\)" .`
+   Command: `rg -n -i -g '*.rs' '<the semantic-risk alternation used by the lane quality gate>' .`
    Outcome before the fix: matched `lib/crates/fabro-synthesis/src/render.rs:2351`, proving the source lane's repo-wide semantic-risk scan would self-trigger.
    Outcome after the fix: the source lane workflow now leaves `semantic_risk_hits` empty for this validation-only lane, so that self-match can no longer block replay.
 

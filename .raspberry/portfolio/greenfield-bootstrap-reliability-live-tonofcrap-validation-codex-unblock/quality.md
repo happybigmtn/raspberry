@@ -6,7 +6,7 @@ artifact_mismatch_risk: no
 manual_followup_required: no
 semantic_risk_debt: no
 lane_sizing_debt: no
-external_blocker_only: no
+external_blocker_only: yes
 
 ## Touched Surfaces
 - (none declared)
