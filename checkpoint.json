@@ -1,44 +1,50 @@
 {
-  "timestamp": "2026-03-26T19:41:09.500332846Z",
-  "current_node": "polish",
+  "timestamp": "2026-03-26T19:41:11.307281344Z",
+  "current_node": "verify",
   "completed_nodes": [
     "start",
     "specify",
     "review",
-    "polish"
+    "polish",
+    "verify"
   ],
   "node_retries": {
     "polish": 1,
+    "verify": 1,
     "specify": 1,
     "review": 1,
     "start": 1
   },
   "context_values": {
-    "thread.start.current_node": "specify",
-    "internal.retry_count.review": 1,
-    "graph.goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
     "last_stage": "polish",
-    "response.polish": "Both artifacts are polished and written. Here's a summary of what changed and why:\n\n---\n\n## Changes Made\n\n### `spec.md` — Structural Rewrite\n\n| Area | Before | After |\n|------|--------|-------|\n| **Current State tables** | Render.rs table listed line numbers that were slightly off and didn't distinguish severity | Rewrote with confirmed line numbers (e.g., 2015–2020, 2487–2491) and explicit severity ratings; added `gpt-5.4` vs `gpt-5.3-codex` discrepancy as a named open question |\n| **`cli_failure_is_retryable_for_fallback()`** | Described only in prose | Quoted the actual function body verbatim so implementation matches exactly; added the auth/transient conflation bug with line-level citation |\n| **`DispatchOutcome` / `AutodevCycleReport`** | Described generically | Quoted actual struct field lists from `dispatch.rs:17-24` and `autodev.rs:96-109`, showing exactly what's missing |\n| **Architecture contracts** | Stated as abstract rules | Added concrete Rust type definitions for `DispatchOutcome` extension (`ProviderHealth` enum, `fallback_reason`) and `AutodevCycleReport` extension (`ProviderCycleUsage` struct) |\n| **Open Questions** | None listed | Three named open questions: `gpt-5.4` vs `gpt-5.3-codex`, MiniMax/Kimi quota strings, chain exhaustion behavior — all blocking Milestone 1 or 4 |\n| **Non-Goals** | Generic | Explicitly excludes plan 003 exec-path work |\n\n### `review.md` — Evidence-Driven Security Narrative\n\n| Area | Before | After |\n|------|--------|-------|\n| **Source citations** | Generic references | Line-level citations for every claim (`cli.rs:800-810`, `dispatch.rs:17-24`, `autodev.rs:96-109`, `error.rs:212`, `render.rs:2015-2019`) |\n| **Auth/transient conflation** | Not explicitly called out as a bug | Added a dedicated **Dangerous Actions** row and a quoted code block showing `\"401 unauthorized\"` and `\"timed out\"` in the same OR chain as quota signals |\n| **Test assertions** | Not mentioned | Called out explicitly: tests in `render.rs` validate the **wrong behavior** and must be updated alongside the fix |\n| **Chain exhaustion** | Not mentioned | Added as a High-severity risk: `stage_dir` is ephemeral, `provider_used.json` is lost across cycles, no aggregate path exists |\n| **Final verdict conditions** | Three generic conditions | Three specific conditions tied to the three open questions, each with a concrete artifact or action required |\n| **Evidence log** | Basic table | Expanded to include all verification methods and confirmed line numbers |",
-    "internal.retry_count.specify": 1,
     "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
-    "current_node": "polish",
-    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 66.9k tokens in / 564 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n- **review**: success\n  - Model: k2p5, 2.3k tokens in / 433 out\n  - Files: outputs/provider-policy-stabilization/review.md\n",
+    "current_node": "verify",
+    "internal.retry_count.verify": 1,
+    "thread.specify.current_node": "review",
+    "response.polish": "Both artifacts are polished and written. Here's a summary of what changed and why:\n\n---\n\n## Changes Made\n\n### `spec.md` — Structural Rewrite\n\n| Area | Before | After |\n|------|--------|-------|\n| **Current State tables** | Render.rs table listed line numbers that were slightly off and didn't distinguish severity | Rewrote with confirmed line numbers (e.g., 2015–2020, 2487–2491) and explicit severity ratings; added `gpt-5.4` vs `gpt-5.3-codex` discrepancy as a named open question |\n| **`cli_failure_is_retryable_for_fallback()`** | Described only in prose | Quoted the actual function body verbatim so implementation matches exactly; added the auth/transient conflation bug with line-level citation |\n| **`DispatchOutcome` / `AutodevCycleReport`** | Described generically | Quoted actual struct field lists from `dispatch.rs:17-24` and `autodev.rs:96-109`, showing exactly what's missing |\n| **Architecture contracts** | Stated as abstract rules | Added concrete Rust type definitions for `DispatchOutcome` extension (`ProviderHealth` enum, `fallback_reason`) and `AutodevCycleReport` extension (`ProviderCycleUsage` struct) |\n| **Open Questions** | None listed | Three named open questions: `gpt-5.4` vs `gpt-5.3-codex`, MiniMax/Kimi quota strings, chain exhaustion behavior — all blocking Milestone 1 or 4 |\n| **Non-Goals** | Generic | Explicitly excludes plan 003 exec-path work |\n\n### `review.md` — Evidence-Driven Security Narrative\n\n| Area | Before | After |\n|------|--------|-------|\n| **Source citations** | Generic references | Line-level citations for every claim (`cli.rs:800-810`, `dispatch.rs:17-24`, `autodev.rs:96-109`, `error.rs:212`, `render.rs:2015-2019`) |\n| **Auth/transient conflation** | Not explicitly called out as a bug | Added a dedicated **Dangerous Actions** row and a quoted code block showing `\"401 unauthorized\"` and `\"timed out\"` in the same OR chain as quota signals |\n| **Test assertions** | Not mentioned | Called out explicitly: tests in `render.rs` validate the **wrong behavior** and must be updated alongside the fix |\n| **Chain exhaustion** | Not mentioned | Added as a High-severity risk: `stage_dir` is ephemeral, `provider_used.json` is lost across cycles, no aggregate path exists |\n| **Final verdict conditions** | Three generic conditions | Three specific conditions tied to the three open questions, each with a concrete artifact or action required |\n| **Evidence log** | Basic table | Expanded to include all verification methods and confirmed line numbers |",
+    "response.specify": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do when this is done\n\n- **Centralization**: `fabro-model/src/policy.rs` is the sole source of truth. Every other call site must call `automation_chain()`, `automation_primary_target()`, or `automation_fallback_targets()`. No `ModelTarget` literals outside policy.rs (except tests).\n- **Quota failover**: `ProviderErrorKind::QuotaExceeded` in `fabro-llm` is already `failover_eligible = true`. The API path is wired. The CLI path (which runs `claude-code`/`codex`/`pi` as subprocesses) uses fragile substring matching that works today but is not integrated with the structured error type.\n- **Status output**: `raspberry status` must show per-lane model + provider + health flag (`ok` / `quota_limited` / etc.). `DispatchOutcome` needs a `ProviderHealth` field.\n- **Usage tracking**: `AutodevCycleReport` needs a `usage_by_provider` map. The raw data exists in `provider_used.json` written by `backend/cli.rs` and in CLI output parsers, but nothing aggregates it upward.\n\n### `review.md` — What is true today and what needs to change\n\nFour confirmed hardcoded model leaks in `fabro-synthesis/src/render.rs`:\n\n| Location | Hardcoded value | Severity |\n|---|---|---|\n| `recurring_report_primary_target_for_lane()` lines 2050–2084 | `\"MiniMax-M2.7-highspeed\"`, `\"claude-opus-4-6\"`, `\"gpt-5.4\"` with hardcoded per-family fallback chains | **High** — generates workflow TOML that bypasses policy.rs at runtime |\n| `challenge_target_for_lane()` lines 2011–2021 | `\"gpt-5.4\"` on `Provider::OpenAi` for codex-unblock lanes | Medium |\n| `review_target_for_lane()` lines 2024–2034 | Same | Medium |\n| Workflow graph template literals lines 1917–1990 | Populated from the above | Inherits from above |\n\nOne open question flagged for operator confirmation: the hardcoded `\"gpt-5.4\"` string appears in render.rs but the policy chain uses `\"gpt-5.3-codex\"` — need to confirm whether `\"gpt-5.4\"` is intentional or a copy-paste error before replacing with policy.rs calls.",
+    "internal.node_visit_count": 1,
+    "response.review": "## Review Complete\n\nI've completed the Nemesis-style security review of the **Provider Policy Stabilization** lane. The review is written to `outputs/provider-policy-stabilization/review.md`.\n\n### Key Findings\n\n**Pass 1 — First-Principles Challenge:**\n- **Trust boundary violation**: `fabro-synthesis/src/render.rs` contains 4 confirmed leak points where `ModelTarget` literals are constructed, bypassing `policy.rs`\n- Lane ID suffixes (`-holistic-review-minimax`, `-codex-unblock`) can override policy routing — potential for cost surprises and capability floor violations\n- Quota detection conflates quota errors, auth errors, and timeouts in `cli_failure_is_retryable_for_fallback()`\n\n**Pass 2 — Coupled-State Review:**\n- **GAPPED**: `provider_used.json` is written but never ingested into `DispatchOutcome` or supervisor state\n- **DECOUPLED**: CLI path uses string matching; API path uses structured `ProviderErrorKind::QuotaExceeded` — they can drift\n- **VIOLATED**: Policy chain ordering is ignored for special lane suffixes\n- **INCOMPLETE**: Usage tracking is freeform string, no per-provider breakdown\n\n### Verdict: ✅ APPROVE for Implementation (with conditions)\n\n| Aspect | Rating |\n|--------|--------|\n| Correctness | ✅ Good — all spec claims validated through source inspection |\n| Completeness | ⚠️ Good with gaps noted |\n| Security posture | ⚠️ Acceptable — risks identified and mitigatable |\n| Milestone fit | ✅ Appropriate for first honest reviewed slice |\n\n### Required Before Implementation\n\n1. **Operator confirmation**: Is `gpt-5.4` (hardcoded in render.rs) intentionally different from `gpt-5.3-codex` (in policy.rs)?\n2. **Add chain-exhaustion behavior**: Define what happens when all providers fail\n3. **Add MiniMax/Kimi quota signals**: Their error message patterns are missing from CLI fallback detection",
+    "internal.retry_count.polish": 1,
+    "command.output": "",
+    "thread.review.current_node": "polish",
+    "failure_class": "",
+    "thread.start.current_node": "specify",
+    "internal.retry_count.start": 1,
+    "failure_signature": "",
+    "graph.goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
+    "thread.polish.current_node": "verify",
+    "command.stderr": "",
+    "internal.retry_count.specify": 1,
+    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 66.9k tokens in / 564 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n- **review**: success\n  - Model: k2p5, 2.3k tokens in / 433 out\n  - Files: outputs/provider-policy-stabilization/review.md\n- **polish**: success\n  - Model: MiniMax-M2.7-highspeed, 32.7k tokens in / 617 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNT43GYMVY8GTY6W8T3043A/worktree",
     "last_response": "Both artifacts are polished and written. Here's a summary of what changed and why:\n\n---\n\n## Changes Made\n\n### `spec.md` — Structural Rewrite\n\n| Area | Before | After |\n|------|--------|-------|\n| **",
     "graph.rankdir": "LR",
     "outcome": "success",
     "internal.run_id": "01KMNT43GYMVY8GTY6W8T3043A",
     "internal.fidelity": "compact",
-    "internal.thread_id": "review",
-    "internal.node_visit_count": 1,
-    "response.specify": "Both durable artifacts are written. Here is a summary of what the evidence shows and what the artifacts capture:\n\n---\n\n## What was found and documented\n\n### `spec.md` — What the system should do when this is done\n\n- **Centralization**: `fabro-model/src/policy.rs` is the sole source of truth. Every other call site must call `automation_chain()`, `automation_primary_target()`, or `automation_fallback_targets()`. No `ModelTarget` literals outside policy.rs (except tests).\n- **Quota failover**: `ProviderErrorKind::QuotaExceeded` in `fabro-llm` is already `failover_eligible = true`. The API path is wired. The CLI path (which runs `claude-code`/`codex`/`pi` as subprocesses) uses fragile substring matching that works today but is not integrated with the structured error type.\n- **Status output**: `raspberry status` must show per-lane model + provider + health flag (`ok` / `quota_limited` / etc.). `DispatchOutcome` needs a `ProviderHealth` field.\n- **Usage tracking**: `AutodevCycleReport` needs a `usage_by_provider` map. The raw data exists in `provider_used.json` written by `backend/cli.rs` and in CLI output parsers, but nothing aggregates it upward.\n\n### `review.md` — What is true today and what needs to change\n\nFour confirmed hardcoded model leaks in `fabro-synthesis/src/render.rs`:\n\n| Location | Hardcoded value | Severity |\n|---|---|---|\n| `recurring_report_primary_target_for_lane()` lines 2050–2084 | `\"MiniMax-M2.7-highspeed\"`, `\"claude-opus-4-6\"`, `\"gpt-5.4\"` with hardcoded per-family fallback chains | **High** — generates workflow TOML that bypasses policy.rs at runtime |\n| `challenge_target_for_lane()` lines 2011–2021 | `\"gpt-5.4\"` on `Provider::OpenAi` for codex-unblock lanes | Medium |\n| `review_target_for_lane()` lines 2024–2034 | Same | Medium |\n| Workflow graph template literals lines 1917–1990 | Populated from the above | Inherits from above |\n\nOne open question flagged for operator confirmation: the hardcoded `\"gpt-5.4\"` string appears in render.rs but the policy chain uses `\"gpt-5.3-codex\"` — need to confirm whether `\"gpt-5.4\"` is intentional or a copy-paste error before replacing with policy.rs calls.",
-    "thread.specify.current_node": "review",
-    "response.review": "## Review Complete\n\nI've completed the Nemesis-style security review of the **Provider Policy Stabilization** lane. The review is written to `outputs/provider-policy-stabilization/review.md`.\n\n### Key Findings\n\n**Pass 1 — First-Principles Challenge:**\n- **Trust boundary violation**: `fabro-synthesis/src/render.rs` contains 4 confirmed leak points where `ModelTarget` literals are constructed, bypassing `policy.rs`\n- Lane ID suffixes (`-holistic-review-minimax`, `-codex-unblock`) can override policy routing — potential for cost surprises and capability floor violations\n- Quota detection conflates quota errors, auth errors, and timeouts in `cli_failure_is_retryable_for_fallback()`\n\n**Pass 2 — Coupled-State Review:**\n- **GAPPED**: `provider_used.json` is written but never ingested into `DispatchOutcome` or supervisor state\n- **DECOUPLED**: CLI path uses string matching; API path uses structured `ProviderErrorKind::QuotaExceeded` — they can drift\n- **VIOLATED**: Policy chain ordering is ignored for special lane suffixes\n- **INCOMPLETE**: Usage tracking is freeform string, no per-provider breakdown\n\n### Verdict: ✅ APPROVE for Implementation (with conditions)\n\n| Aspect | Rating |\n|--------|--------|\n| Correctness | ✅ Good — all spec claims validated through source inspection |\n| Completeness | ⚠️ Good with gaps noted |\n| Security posture | ⚠️ Acceptable — risks identified and mitigatable |\n| Milestone fit | ✅ Appropriate for first honest reviewed slice |\n\n### Required Before Implementation\n\n1. **Operator confirmation**: Is `gpt-5.4` (hardcoded in render.rs) intentionally different from `gpt-5.3-codex` (in policy.rs)?\n2. **Add chain-exhaustion behavior**: Define what happens when all providers fail\n3. **Add MiniMax/Kimi quota signals**: Their error message patterns are missing from CLI fallback detection",
-    "thread.review.current_node": "polish",
-    "failure_class": "",
-    "internal.retry_count.polish": 1,
-    "internal.retry_count.start": 1,
-    "failure_signature": ""
+    "internal.thread_id": "polish",
+    "internal.retry_count.review": 1
   },
   "logs": [],
   "node_outcomes": {
@@ -64,6 +70,15 @@
         "outputs/provider-policy-stabilization/spec.md"
       ],
       "duration_ms": 191568
+    },
+    "verify": {
+      "status": "success",
+      "context_updates": {
+        "command.stderr": "",
+        "command.output": ""
+      },
+      "notes": "Script completed: true",
+      "duration_ms": 3
     },
     "review": {
       "status": "success",
@@ -114,11 +129,12 @@
       "duration_ms": 186497
     }
   },
-  "next_node_id": "verify",
+  "next_node_id": "exit",
   "node_visits": {
     "start": 1,
     "review": 1,
     "polish": 1,
+    "verify": 1,
     "specify": 1
   }
 }
