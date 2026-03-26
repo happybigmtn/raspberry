@@ -1,11 +1,13 @@
 {
-  "timestamp": "2026-03-26T20:24:25.210956639Z",
-  "current_node": "fork",
+  "timestamp": "2026-03-26T20:24:25.334877043Z",
+  "current_node": "merge",
   "completed_nodes": [
     "start",
-    "fork"
+    "fork",
+    "merge"
   ],
   "node_retries": {
+    "merge": 1,
     "start": 1,
     "fork": 1
   },
@@ -13,15 +15,17 @@
     "outcome": "success",
     "internal.fidelity": "compact",
     "internal.retry_count.fork": 1,
+    "parallel.fan_in.best_outcome": "success",
     "parallel.branch_count": 2,
     "thread.start.current_node": "fork",
+    "internal.retry_count.merge": 1,
     "internal.run_id": "01KMNX3H1P4201TNZFBP9AMDHT",
     "internal.retry_count.start": 1,
-    "current_node": "fork",
+    "current_node": "merge",
     "graph.goal": "Test parallel and fan-in execution",
     "failure_signature": "",
-    "current.preamble": "Goal: Test parallel and fan-in execution\n",
-    "internal.thread_id": "start",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
+    "internal.thread_id": "fork",
     "parallel.results": [
       {
         "id": "branch1",
@@ -32,12 +36,23 @@
         "status": "success"
       }
     ],
+    "thread.fork.current_node": "merge",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX3H1P4201TNZFBP9AMDHT/worktree",
     "failure_class": "",
+    "parallel.fan_in.best_id": "branch1",
     "internal.node_visit_count": 1
   },
   "logs": [],
   "node_outcomes": {
+    "merge": {
+      "status": "success",
+      "context_updates": {
+        "parallel.fan_in.best_id": "branch1",
+        "parallel.fan_in.best_outcome": "success"
+      },
+      "notes": "[Simulated] Selected best candidate: branch1",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
@@ -50,8 +65,9 @@
       "duration_ms": 1
     }
   },
-  "next_node_id": "merge",
+  "next_node_id": "review",
   "node_visits": {
+    "merge": 1,
     "start": 1,
     "fork": 1
   }
