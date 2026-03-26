@@ -1,0 +1,492 @@
+diff --git a/outputs/greenfield-bootstrap-reliability/review.md b/outputs/greenfield-bootstrap-reliability/review.md
+index 6b9c4716..967e5801 100644
+--- a/outputs/greenfield-bootstrap-reliability/review.md
++++ b/outputs/greenfield-bootstrap-reliability/review.md
+@@ -2,151 +2,159 @@
+ 
+ **Review Date**: 2026-03-26  
+ **Reviewer**: Genesis / Nemesis Security Review  
+-**Plan**: 004-greenfield-bootstrap-reliability  
++**Plan**: `004-greenfield-bootstrap-reliability`  
++**Stage**: Polish (Durable Artifact)
+ 
+-## Executive Summary
++---
+ 
+-This lane addresses critical bootstrap-time failures observed on the tonofcrap project where agents wrote TypeScript code into repos lacking `package.json` or `tsconfig.json`. The scaffold-first ordering is **correctly implemented**, but **bootstrap verification gates and TypeScript-specific quality checks remain incomplete**. The runtime asset resolution approach is sound but relies on convention-based paths rather than explicit validation.
++## Verdict
+ 
+-**Verdict**: Partial implementation — ready for Phase 0 continuation but NOT ready for Phase 0 gate.
++**Phase 0 gate: NOT READY.**  
++The scaffold-first ordering is correctly implemented. The bootstrap verification gate and TypeScript quality checks are not implemented. Runtime-stable asset resolution is convention-only with no explicit validation.
++
++---
+ 
+ ## Pass 1: First-Principles Challenge
+ 
+ ### Trust Boundaries
+ 
+-| Boundary | Assessment | Finding |
+-|----------|------------|---------|
+-| Plan categorization | **Risk**: `PlanCategory::Infrastructure` is trusted without verification | Categories come from YAML contract; could be mislabeled |
+-| Scaffold detection | **Risk**: String matching on `"project-scaffold"` plan_id | Acceptable — only affects dependency injection, not security |
+-| Prompt path resolution | **Risk**: `@malinka/prompts/` paths assumed to exist | No runtime validation that prompts are copied to run context |
++| Boundary | Trust Level | Finding |
++|----------|-------------|---------|
++| `PlanCategory::Infrastructure` metadata | Medium | Comes from YAML contract; mislabeling bypasses scaffold ordering |
++| `"project-scaffold"` / `"workspace-setup"` plan ID strings | Low risk | String match only; affects dependency injection, not code execution |
++| `@malinka/prompts/` path convention | Risk | No runtime validation that the path resolves or assets are copied |
+ 
+-**Finding**: The `scaffold_plan_ids` filter at planning.rs:753-761 trusts `p.category` and `p.plan_id` without secondary validation. A mislabeled plan could skip scaffold ordering.
++**Finding**: `scaffold_plan_ids` filter (planning.rs:761–770) trusts both `category` and `plan_id` without secondary validation. A mislabeled plan bypasses scaffold-first ordering.
+ 
+ ### Authority Assumptions
+ 
+-- **Assumption**: Only `PlanMappingSource::Contract` plans participate in scaffold ordering
+-- **Risk**: Legacy master-plan projects bypass scaffold-first logic entirely
+-- **Mitigation**: Documented in code comments; acceptable for Phase 0
++- Only `PlanMappingSource::Contract` plans participate in scaffold detection — legacy master-plan projects are intentionally excluded. This is documented and acceptable.
+ 
+-### Dangerous Action Triggers
++### Dangerous Action Surface
+ 
+-| Action | Who Can Trigger | Safeguard | Assessment |
+-|--------|-----------------|-----------|------------|
+-| Scaffold dependency injection | Any blueprint with YAML plan-mappings | Category metadata check | ✅ Acceptable |
+-| Preflight command execution | Workflow engine | `set +e` prefix prevents fail-stop | ⚠️ Preflight doesn't actually verify bootstrap state |
+-| Quality command execution | Workflow engine | Runs in sandbox | ✅ Acceptable |
++| Action | Trigger | Safeguard | Assessment |
++|--------|---------|-----------|------------|
++| Scaffold dependency injection | Any YAML-mapped plan | Category metadata check | ✅ Low risk |
++| Preflight command execution | Workflow engine | `set +e` + `true` suffix | ✅ Non-failing by design |
++| Quality command execution | Workflow engine | Sandboxed shell | ✅ Low risk |
++
++### What Can Go Wrong
++
++1. **Wrong**: A feature plan with `category: Infrastructure` gets treated as a scaffold, blocking all downstream lanes.
++2. **Wrong**: A composite scaffold with one child marked as feature gets last-child resolution wrong.
++3. **Wrong**: `@../../../etc/passwd` prompt path traversal — no validation at render time or runtime.
++4. **Wrong**: Bootstrap verify command is a no-op — `preflight_command` wraps `true`, scaffold lane completes, feature lanes dispatch before `package.json` exists.
++
++---
+ 
+ ## Pass 2: Coupled-State Review
+ 
+-### State Pairs and Consistency
++### State Pair Consistency
+ 
+-| State A | State B | Consistency Check | Status |
+-|---------|---------|-------------------|--------|
+-| `plan.category` | Scaffold dependency injection | Category checked before injection | ✅ Consistent |
+-| `scaffold_plan_ids` | Lane dependencies | Each non-infra plan gets scaffold deps | ✅ Consistent |
+-| Composite scaffold | Resolved child lane | Last child selected via `children.last()` | ⚠️ **Fragile** — assumes child ordering |
+-| Prompt path `@malinka/...` | File existence at runtime | **NO VALIDATION** | ❌ **Gap** |
+-| Worktree root | Prompt resolution base | Implicit in direct_integration.rs | ⚠️ Convention, not contract |
+-
+-### Secret Handling
+-
+-- No secrets in scaffold detection logic
+-- Quality command may log file contents; uses shell-quoted paths via `shell_single_quote()`
++| State A | State B | Consistency | Notes |
++|---------|---------|-------------|-------|
++| `plan.category == Infrastructure` | Scaffold deps injected | ✅ Consistent | Checked in both detection and injection sites |
++| `scaffold_plan_ids` | Lane dependencies | ✅ Consistent | Each non-scaffold plan gets all scaffold deps |
++| Composite scaffold | Resolved to `children.last()` | ⚠️ Fragile | Assumes last child = last to complete; no ordering metadata |
++| `@malinka/prompts/` path | File existence at runtime | ❌ **Gap** | No validation; path may not survive runtime handoff |
++| `preflight_command` output | Actual bootstrap state | ❌ **Gap** | `set +e` + `true` always exits 0 |
+ 
+ ### Capability Scoping
+ 
+ | Capability | Scope | Assessment |
+ |------------|-------|------------|
+-| Scaffold injection | Planning phase only | ✅ Scoped to intent derivation |
+-| Bootstrap verification | **NOT IMPLEMENTED** | ❌ Gap — preflight is no-op |
+-| Quality enforcement | Per-lane shell script | ✅ Scoped to lane-owned surfaces |
++| Scaffold injection | Planning phase only | ✅ Contained |
++| Bootstrap verification | **Not implemented** | ❌ Gap |
++| Quality enforcement | Per-lane shell, read-only | ✅ Contained |
+ 
+-### Pairing/Idempotence
++### Pairing / Idempotence
+ 
+-- Scaffold dependency injection is idempotent — same deps added on re-plan
+-- `dependencies.push()` may create duplicates if plan regenerated multiple times; acceptable as set semantics in manifest
++- Scaffold injection is idempotent (may add duplicate deps; manifest loader deduplicates).
++- `preflight_command` is idempotent — always returns 0.
++- Quality command generates deterministic `quality.md` report.
+ 
+ ### Privilege Escalation Paths
+ 
+ | Path | Assessment |
+ |------|------------|
+-| Malicious plan category | Could bypass scaffold ordering, not a security escalation |
+-| Malicious scaffold plan_id | Injection only adds dependencies; no code execution |
+-| Prompt path traversal | `@../../../etc/passwd` — **NOT VALIDATED** |
++| Malicious `category: Infrastructure` label | Bypasses scaffold ordering; no privilege escalation |
++| Malicious `plan_id == "project-scaffold"` | Dependency injection only; no code execution |
++| `@../../../../../etc/passwd` in prompt ref | ❌ **Not validated** — path could escape worktree |
+ 
+-**Finding**: The `@malinka/prompts/` path convention is not validated. A malicious workflow could reference `@../../../sensitive/file`.
+-
+-## External Process Control
++### External Process Control
+ 
+ | Process | Control | Safety |
+ |---------|---------|--------|
+ | `cargo check` | Quality gate | Sandboxed |
+ | `rg` (ripgrep) | Quality scan | Read-only, sandboxed |
+-| `python3 -m py_compile` | Python syntax check | Sandboxed |
+-| `npx` / `npm` | **NOT CALLED** — bootstrap verification missing | N/A |
++| `python3 -m py_compile` | Python syntax | Sandboxed |
++| `npx` / `npm` | ❌ Not called — bootstrap verification missing | N/A |
+ 
+-### Operator Safety
++### Failure Mode Summary
+ 
+-- No interactive prompts in bootstrap logic
+-- `preflight_command()` uses `set +e` to prevent early exit; runs `true` at end
++| Failure | Detected? | Recovery | Status |
++|---------|-----------|----------|--------|
++| Scaffold plan missing | Warning logged only | Lane proceeds anyway | ⚠️ Should fail fast |
++| Prompt path not found at runtime | ❌ No | Runtime agent error | ❌ Gap |
++| Bootstrap verify fail | ❌ No (not implemented) | N/A | ❌ Gap |
++| Quality gate fail | ✅ Yes | `quality_ready: no` → fixup loop | ✅ Handled |
+ 
+-### Idempotent Retries
+-
+-- Scaffold injection: idempotent (may add duplicate deps, manifest loading deduplicates)
+-- Preflight: non-failing by design
+-- Quality: generates deterministic `quality.md` report
+-
+-### Failure Modes
+-
+-| Failure | Detection | Recovery | Assessment |
+-|---------|-----------|----------|------------|
+-| Scaffold plan missing | Planning warning logged | Lane proceeds anyway | ⚠️ Should fail fast |
+-| Prompt path not found | **NOT DETECTED** | Runtime agent error | ❌ Gap |
+-| Bootstrap verify fail | **NOT IMPLEMENTED** | N/A | ❌ Gap |
+-| Quality gate fail | `quality_ready: no` | Fixup loop | ✅ Handled |
++---
+ 
+ ## Remaining Blockers for Phase 0 Gate
+ 
+-| Blocker | Severity | Owner |
+-|---------|----------|-------|
+-| TypeScript `any[]` detection missing | Medium | Implementation needed |
+-| Import verification missing | Medium | Implementation needed |
+-| Prompt path traversal validation | Low | Hardening recommended |
+-| Bootstrap verification gate (language-specific) | **High** | **Required for Phase 0** |
+-| tonofcrap 30-cycle validation | **High** | **Required for Phase 0** |
+-| Fresh Rust project validation | **High** | **Required for Phase 0** |
++All four are required before Phase 0 can be considered complete:
++
++| Blocker | Severity | Status | Owner |
++|---------|----------|--------|-------|
++| Bootstrap verification gate (language-specific) | **High** | Not implemented | Required |
++| `bootstrap_verify` test | **High** | Test does not exist | Required |
++| `scaffold_first` test | **High** | Test does not exist | Required |
++| `quality_typescript` test | Medium | Test does not exist | Required |
++| `greenfield_rust` test | **High** | Test does not exist | Required |
++| tonofcrap 30-cycle validation | **High** | Not run | Required |
++| Prompt path traversal validation | Low | Not implemented | Hardening |
++| Runtime-stable asset copy/validation | Medium | Convention only | Required |
++
++---
+ 
+ ## Recommendations
+ 
+ ### Immediate (Before Phase 0 Gate)
+ 
+-1. **Implement bootstrap verification gate**: Extend `preflight_command()` or add new `bootstrap_verify_command()` that checks:
+-   - TypeScript: `package.json`, `node_modules`, `tsconfig.json`
+-   - Rust: `Cargo.toml`, `cargo check --workspace` passes
+-   - Python: `pyproject.toml` or `requirements.txt`
++1. **Implement bootstrap verification gate**: Extend `preflight_command()` or add `bootstrap_verify_command()` that checks:
++   - TypeScript: `test -f package.json && test -d node_modules && test -f tsconfig.json`
++   - Rust: `test -f Cargo.toml && cargo check --workspace --quiet`
++   - Python: `test -f pyproject.toml || test -f requirements.txt`
+ 
+-2. **Add prompt path validation**: In `render_prompt()` or workflow loading, validate `@` paths stay within `malinka/prompts/` or declared surfaces.
++2. **Write `scaffold_first` test**: Create a test blueprint with infrastructure and feature plans. Assert that infrastructure plan IDs appear as dependencies of all feature plans.
+ 
+-3. **Complete tonofcrap validation**: Run 30-cycle autodev and measure scaffold-first effectiveness.
++3. **Write `bootstrap_verify` test**: Create TypeScript and Rust fixtures. Assert bootstrap gate correctly passes/fails based on fixture state.
+ 
+-### Near-term (Phase 0-1)
++4. **Validate `@malinka/prompts/` path scope**: Ensure paths prefixed with `@` cannot escape the worktree. Validate in `render_prompt()` or `agent.rs` before using.
+ 
+-4. **TypeScript-specific quality checks**: Extend `implementation_quality_command()` with:
++### Near-term (Phase 0–1)
++
++5. **Add TypeScript quality checks** to `implementation_quality_command()`:
+    ```bash
+-   # Check for any in exported signatures
+    rg -n 'export.*:\s*any(\[\])?' -g '*.ts' -g '*.tsx'
+-   # Check test files import from implemented module
+    rg -n 'from.*\.\./' -g '*.test.ts' -g '*.spec.ts'
+    ```
+ 
+-5. **Composite scaffold ordering**: Validate that `children.last()` is correct (last child = last to complete), or use explicit ordering metadata.
++6. **Fix composite scaffold assumption**: Add explicit ordering metadata to composite scaffold children, or validate `children.last()` semantics with a test.
++
++7. **Implement explicit asset copying**: When dispatching a run, copy `@malinka/prompts/` assets into the run context, or validate all referenced paths exist before dispatch.
++
++---
+ 
+ ## Conclusion
+ 
+-The scaffold-first ordering implementation is **correct and well-structured**. The decision to limit scaffold detection to `PlanMappingSource::Contract` plans is appropriately conservative. However, **the bootstrap verification gate is not implemented** — the current `preflight_command()` is a pass-through that doesn't verify project health. This is the critical gap blocking Phase 0 gate.
++The scaffold-first ordering implementation is **structurally correct** — the detection logic, dependency injection, and composite resolution are all consistent and well-commented. The decision to scope to `PlanMappingSource::Contract` is appropriately conservative.
+ 
+-**Security posture**: Acceptable for development use. No privilege escalation paths identified. Prompt path traversal should be validated before production deployment.
++The **bootstrap verification gate is not implemented**. The current `preflight_command` is a pass-through that never fails. This is the primary blocker.
+ 
+-**Milestone fit**: Partial. Core ordering logic is complete. Verification and quality gates need completion before Phase 0 gate.
++The **runtime asset resolution is convention-only**. The `@malinka/prompts/` prefix is a reasonable approach, but there is no validation that those paths survive the runtime handoff or stay within the worktree.
+ 
+-**Next action**: Implement language-specific bootstrap verification in `render.rs` and validate against tonofcrap with 30-cycle autodev.
++**Security posture**: Acceptable for development use. No privilege escalation paths. Prompt path traversal is the one unmitigated risk that should be addressed before production use.
++
++**Next action**: Implement language-specific bootstrap verification in `render.rs` and write the four required tests (`scaffold_first`, `bootstrap_verify`, `quality_typescript`, `greenfield_rust`) before re-reviewing for Phase 0 gate.
+diff --git a/outputs/greenfield-bootstrap-reliability/spec.md b/outputs/greenfield-bootstrap-reliability/spec.md
+index 710b37e0..2091f74e 100644
+--- a/outputs/greenfield-bootstrap-reliability/spec.md
++++ b/outputs/greenfield-bootstrap-reliability/spec.md
+@@ -1,25 +1,27 @@
+-# Greenfield Bootstrap and Runtime Asset Reliability
++# Greenfield Bootstrap and Runtime Asset Reliability — Lane Spec
+ 
+-**Status**: Specification Complete  
+-**Plan**: [genesis/plans/004-greenfield-bootstrap-reliability.md](../../genesis/plans/004-greenfield-bootstrap-reliability.md)
++**Status**: Phase 0 — In Progress  
++**Plan**: `genesis/plans/004-greenfield-bootstrap-reliability.md`  
++**Reviewed**: 2026-03-26
+ 
+ ## Purpose
+ 
+-After this change, `fabro synth create` on a new repo produces a package where:
+-1. The scaffold/infrastructure lane completes before any feature lane dispatches
+-2. Generated runtime assets (prompts, workflows) resolve correctly when copied to `~/.fabro/runs/`
+-3. Agents never write TypeScript into a repo with no `package.json`, Rust code with no `Cargo.toml`, or prompt references that only work from the original repo checkout
++Ensure `fabro synth create` on a fresh repo produces a package where:
++1. **Scaffold-first ordering**: infrastructure/scaffold lanes complete before any feature lane dispatches
++2. **Bootstrap verification**: language-specific project health is confirmed before downstream lanes run
++3. **Runtime-stable assets**: generated prompt/workflow references resolve correctly in `~/.fabro/runs/` (detached from the original checkout)
++4. **Type-aware quality**: TypeScript projects are checked for `any[]` usage, missing imports, and type-safe exports
++
++This lane addresses the tonofcrap failure mode: agents writing `.ts` files into a repo with no `package.json`, causing `npx convex dev --typecheck` to fail because `npx` has nothing to run.
+ 
+ ## Architecture
+ 
+-### Scaffold-First Ordering
++### 1. Scaffold-First Ordering — `planning.rs`
+ 
+-The scaffold-first ordering is implemented in `derive_registry_plan_intents()` in `lib/crates/fabro-synthesis/src/planning.rs` (lines ~750-850).
++Implemented in `derive_registry_plan_intents()` (`lib/crates/fabro-synthesis/src/planning.rs`, lines ~756–900).
+ 
+-Key implementation:
++**Detection logic:**
+ ```rust
+-// Identify scaffold plans: only plans explicitly categorized as Infrastructure
+-// or with "project-scaffold" in their ID.
+ let scaffold_plan_ids: Vec<String> = registry
+     .plans
+     .iter()
+@@ -33,100 +35,141 @@ let scaffold_plan_ids: Vec<String> = registry
+     .collect();
+ ```
+ 
+-Scaffold dependencies are injected for all non-infrastructure plans, with composite scaffolds resolved to their last child.
++- Only `PlanMappingSource::Contract` plans participate (YAML-mapped, Opus-decomposed). Legacy master-plan projects are excluded by design.
++- Composite scaffold plans resolve to their last child (`children.last()`) as the actual dependency.
++- Every non-infrastructure, non-scaffold plan gets scaffold dependencies injected.
+ 
+-### Bootstrap Verification Gate
++**Current status**: ✅ Implemented and structurally sound.
+ 
+-The preflight command in `render.rs` provides non-failing preflight validation. However, **language-specific bootstrap verification is NOT yet implemented**. The plan calls for:
++### 2. Bootstrap Verification Gate — `render.rs`
+ 
+-- Node.js/TypeScript: `package.json` exists, `node_modules/` populated, `tsconfig.json` present
+-- Rust: `Cargo.toml` valid, `cargo check` passes
+-- Python: `pyproject.toml` or `requirements.txt` exists
++The current `preflight_command()` (line 2167) is a **non-failing wrapper** around verify commands:
++```rust
++fn preflight_command(verify_command: &str) -> String {
++    format!("set +e\n{}\ntrue", body)
++}
++```
+ 
+-Current `preflight_command()` (lines 2167-2175) only wraps verify commands without bootstrap checks.
++It strips `set -e`, runs the verify command with `set +e`, and exits with `true`. This prevents early workflow exit but does **not** perform language-specific bootstrap validation.
+ 
+-### Runtime-Stable Asset Resolution
++**What the plan calls for** (not yet implemented):
++| Language | Checks |
++|----------|--------|
++| TypeScript | `package.json` exists, `node_modules/` populated, `tsconfig.json` present |
++| Rust | `Cargo.toml` valid, `cargo check --workspace` passes |
++| Python | `pyproject.toml` or `requirements.txt` exists |
+ 
+-Generated workflows use `@malinka/prompts/{family}/{slug}/{stage}.md` references (line ~1907 in render.rs). These paths are:
+-- Relative to the repo root
+-- Copied into run context during workflow dispatch
+-- Resolved against the worktree, not `~/.fabro/`
++**Current status**: ❌ Not implemented. This is the primary blocker for Phase 0 gate.
+ 
+-The `@` prefix convention indicates a repo-relative path that survives the runtime handoff.
++### 3. Runtime-Stable Asset Resolution — `render.rs`, `agent.rs`, `run.rs`
+ 
+-### Type-Aware Quality Checks
++Generated workflows reference prompts via `@malinka/prompts/{family}/{slug}/{stage}.md` paths (line ~1907 in `render.rs`). The `@` prefix is a repo-relative convention intended to survive the runtime handoff when `graph.fabro` is copied into `~/.fabro/runs/`.
+ 
+-The `implementation_quality_command()` in render.rs (lines 2224+) includes:
++**What the plan calls for**:
++- Prompt assets must be explicitly copied into the run context, OR
++- `@` paths must resolve against the worktree, not `~/.fabro/`
++
++**Current status**: ⚠️ Convention only — no explicit asset-copying or runtime validation implemented. Prompts are assumed to exist at the referenced path.
++
++### 4. Type-Aware Quality Checks — `render.rs`
++
++`implementation_quality_command()` (line 2224) includes:
+ - Placeholder/stub detection across `.rs`, `.ts`, `.tsx`, `.py`, `.js`
+ - Missing owned surface detection
+-- Root artifact shadow detection
+-- Security semantic risk scanning (settlement code patterns)
++- Security semantic risk scanning
+ - Lane sizing debt for TUI layout files
+ - Python syntax and duplicate function detection
+ - Contract deliverable verification
+ 
+-**TypeScript-specific checks for `any[]` and missing imports are NOT yet implemented** - the current implementation has generic placeholder detection but no TypeScript type-aware quality enforcement.
++**What the plan calls for** (not yet implemented):
++```bash
++# TypeScript any[] in exported signatures
++rg -n 'export.*:\s*any(\[\])?' -g '*.ts' -g '*.tsx'
++# Test files importing from tested module
++rg -n 'from.*\.\./' -g '*.test.ts' -g '*.spec.ts'
++```
++
++**Current status**: ❌ TypeScript-specific checks not implemented.
+ 
+ ## Acceptance Criteria
+ 
+-| Criterion | Status | Evidence |
+-|-----------|--------|----------|
+-| Scaffold plans identified by category | ✅ Implemented | `planning.rs` lines 750-760 |
+-| Scaffold injected as implicit deps | ✅ Implemented | `planning.rs` lines 780-810 |
+-| Composite scaffold resolved to last child | ✅ Implemented | `planning.rs` lines 800-815 |
+-| Preflight command non-failing | ✅ Implemented | `render.rs` lines 2167-2175 |
+-| Runtime-stable prompt refs | ✅ Implemented | `@malinka/prompts/` convention |
+-| Placeholder/stub detection | ✅ Implemented | `implementation_quality_command()` |
+-| Bootstrap verification (language-specific) | ❌ NOT Implemented | Missing from `preflight_command()` |
+-| TypeScript `any[]` detection | ❌ NOT Implemented | Missing from quality command |
+-| Import verification | ❌ NOT Implemented | Missing from quality command |
++| Criterion | Status | Notes |
++|-----------|--------|-------|
++| Scaffold detection by category/ID | ✅ Implemented | `planning.rs` lines 761–770 |
++| Scaffold deps injected for non-infra plans | ✅ Implemented | `planning.rs` lines 816–840 |
++| Composite scaffold resolved to last child | ✅ Implemented | `planning.rs` lines 821–833 |
++| Preflight non-failing wrapper | ✅ Implemented | `render.rs` lines 2167–2175 |
++| Bootstrap verification (language-specific) | ❌ NOT Implemented | Blocked |
++| Runtime-stable `@malinka/prompts/` asset refs | ⚠️ Convention only | No explicit copy/validation |
++| TypeScript `any[]` detection | ❌ NOT Implemented | Blocked |
++| Import verification | ❌ NOT Implemented | Blocked |
+ 
+ ## Test Coverage
+ 
+-Existing tests:
+-- `bootstrap_workflow_retries_verify_via_polish()` - Bootstrap template verify retry behavior
+-- `service_bootstrap_workflow_retries_verify_outputs_via_polish()` - Service bootstrap verify behavior
++**Existing tests** (named and confirmed present):
++- `bootstrap_workflow_retries_verify_via_polish` — Bootstrap template verify retry
++- `service_bootstrap_workflow_retries_verify_outputs_via_polish` — Service bootstrap verify outputs
++- `implementation_quality_command_does_not_treat_future_slice_wording_as_artifact_mismatch` — Quality false-positive guard
++- `implementation_quality_command_flags_lane_sizing_debt_for_layout_slices` — TUI layout sizing debt detection
+ 
+-Missing tests (from plan milestones):
+-- `scaffold_first` - Verify scaffold plans are ordered before feature plans
+-- `bootstrap_verify` - Verify language-specific bootstrap gates
+-- `quality_typescript` - Verify TypeScript-specific quality checks
+-- `greenfield_rust` - End-to-end fresh Rust project validation
++**Required tests** (do not yet exist — from plan Milestones 1, 2, 4, 6):
++| Test | Plan Milestone | Purpose |
++|------|----------------|---------|
++| `scaffold_first` | Milestone 1 | Verify scaffold plans ordered before feature plans |
++| `bootstrap_verify` | Milestone 2 | Verify language-specific bootstrap gates |
++| `quality_typescript` | Milestone 4 | Verify TypeScript-specific quality checks |
++| `greenfield_rust` | Milestone 6 | End-to-end fresh Rust project validation |
++
++**Current status**: Required tests do not exist. Writing them is the primary Phase 0 gate activity.
+ 
+ ## Dependencies
+ 
+-- Blocked by: None (Phase 0 plan)
+-- Blocks: Plan 003 (autodev efficiency - needs reliable bootstrap)
++- **Blocked by**: None (Phase 0 greenfield plan)
++- **Blocks**: Plan 003 (autodev efficiency — needs reliable bootstrap before autodev can be measured)
+ 
+ ## Risk Assessment
+ 
+ | Risk | Likelihood | Impact | Mitigation |
+ |------|------------|--------|------------|
+-| False positive infrastructure detection | Medium | Medium | Category metadata check implemented |
+-| Bootstrap passes in-repo but fails detached | Low | High | Runtime-stable refs verified; asset copying TBD |
++| False positive infrastructure detection (mislabeled category) | Medium | Medium | `PlanMappingSource::Contract` filter; only YAML-mapped plans affected |
++| Composite scaffold last-child assumption wrong | Low | Medium | Last child = last to complete; explicit ordering metadata TBD |
++| `@malinka/prompts/` path not found at runtime | Medium | High | Convention only — no explicit copy/validation yet |
++| `preflight_command` masks real verify failures | Low | High | Non-failing by design; verify result still recorded |
+ | TypeScript quality gaps | Medium | Medium | Generic placeholder detection catches some issues |
+ 
+ ## Implementation Phases
+ 
+-### Phase 0 (Current - Days 1-30)
+-- [x] Scaffold-first ordering implemented
+-- [ ] Bootstrap verification gate (language-specific)
+-- [ ] TypeScript type-aware quality checks
+-- [ ] 30-cycle tonofcrap validation
++### Phase 0 (Current)
++- [x] Scaffold-first ordering in `planning.rs`
++- [ ] Bootstrap verification gate in `render.rs` (language-specific)
++- [ ] Runtime-stable asset copying/validation
++- [ ] TypeScript `any[]` and import quality checks
++- [ ] `scaffold_first` test
++- [ ] `bootstrap_verify` test
++- [ ] `quality_typescript` test
++- [ ] `greenfield_rust` test
++- [ ] tonofcrap 30-cycle validation
+ - [ ] Fresh Rust project validation
+ 
+-### Phase 1 (Days 31-90)
+-- Hardening based on Phase 0 findings
++### Phase 1 (TBD — hardening)
++- Prompt path traversal guard
++- Composite scaffold explicit ordering metadata
++- Full runtime asset validation in detached run context
+ 
+-## Related Files
++## Key Files
+ 
+-- `lib/crates/fabro-synthesis/src/planning.rs` - Scaffold-first ordering
+-- `lib/crates/fabro-synthesis/src/render.rs` - Verification gates, quality commands
+-- `lib/crates/fabro-workflows/src/handler/agent.rs` - Runtime prompt resolution
+-- `lib/crates/fabro-cli/src/commands/run.rs` - Run dispatch, worktree setup
++| File | Role |
++|------|------|
++| `lib/crates/fabro-synthesis/src/planning.rs` | Scaffold-first dependency injection |
++| `lib/crates/fabro-synthesis/src/render.rs` | Preflight wrapper, quality commands, prompt refs |
++| `lib/crates/fabro-workflows/src/handler/agent.rs` | Runtime prompt resolution |
++| `lib/crates/fabro-cli/src/commands/run.rs` | Run dispatch, worktree setup |
+ 
+ ## Decision Log
+ 
+-- **Runtime asset resolution**: Using `@malinka/prompts/` prefix for repo-relative paths that survive runtime handoff
+-- **Scaffold detection**: Only applies to `PlanMappingSource::Contract` (YAML-mapped) plans to avoid false positives on legacy master-plan projects
+-- **Composite resolution**: Scaffold plans with children resolve to last child lane for dependency
++| Decision | Rationale | Date |
++|----------|-----------|------|
++| Limit scaffold detection to `PlanMappingSource::Contract` | Avoids false positives on legacy master-plan projects | 2026-03-26 |
++| Resolve composite scaffold to last child | Last child = last lane to complete; dependency semantics | 2026-03-26 |
++| Use `@malinka/prompts/` prefix for repo-relative paths | Convention survives runtime handoff without global symlinks | 2026-03-26 |
++| `preflight_command` is non-failing | Workflow should not exit on preflight; result is recorded separately | 2026-03-26 |
