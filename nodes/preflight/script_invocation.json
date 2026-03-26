@@ -1,0 +1,5 @@
+{
+  "command": "set +e\ncargo check --workspace\ntrue",
+  "language": "shell",
+  "timeout_ms": null
+}
