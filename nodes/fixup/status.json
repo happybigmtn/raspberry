@@ -1,0 +1,38 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "fixup",
+    "last_response": "Patched the lane-owned audit harness in [greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/malinka/workfl",
+    "response.fixup": "Patched the lane-owned audit harness in [greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro):26 so `audit` now hydrates `spec.md`, `review.md`, and `promotion.md` from the authoritative `.fabro-work` artifacts before validating the portfolio bundle. I also refreshed the slice evidence in [verification.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md):24 plus the companion writeups in [implementation.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md) and [integration.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md) so they match the actual fixup state.\n\nVerification passed: `cargo check --workspace` exited 0, and the updated audit predicate exited 0 after materializing `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/spec.md`, `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/review.md`, and `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/promotion.md`."
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 2420865,
+    "output_tokens": 18754,
+    "cost": 6.3334725
+  },
+  "files_written": [
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/promotion.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/review.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/spec.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md",
+    "malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro"
+  ],
+  "files_touched": [
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/promotion.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/review.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/spec.md",
+    ".raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md",
+    "malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro"
+  ],
+  "duration_ms": 689619,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T23:20:19.741310747+00:00",
+  "updated_at": "2026-03-26T23:20:19.741317241+00:00"
+}
