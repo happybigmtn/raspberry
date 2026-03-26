@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-03-26T22:36:15.137574278Z",
+  "current_node": "preflight",
+  "completed_nodes": [
+    "start",
+    "preflight"
+  ],
+  "node_retries": {
+    "start": 1,
+    "preflight": 1
+  },
+  "context_values": {
+    "internal.fidelity": "compact",
+    "command.stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on artifact directory\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZV4Q54Q4C25V8RJ64/worktree/lib/crates/raspberry-supervisor)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s\n────────────\n Nextest run ID a0c0f8d4-b5f6-44cc-a361-fb2d6ad6bf1d with nextest profile: default\n    Starting 5 tests across 1 binary (114 tests skipped)\n        PASS [   0.003s] (1/5) raspberry-supervisor failure::tests::classify_failure_detects_integration_conflicts\n        PASS [   0.004s] (2/5) raspberry-supervisor failure::tests::classify_failure_detects_integration_target_unavailable\n        PASS [   0.004s] (3/5) raspberry-supervisor autodev::tests::integration_replay_targets_source_lane_when_run_was_branchless\n        PASS [   0.005s] (4/5) raspberry-supervisor autodev::tests::replayable_failed_lanes_replay_source_lane_for_failed_integration_program\n        FAIL [   0.505s] (5/5) raspberry-supervisor integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\n  stdout ───\n\n    running 1 test\n    test integration::tests::integrate_lane_squash_merges_run_branch_into_trunk ... FAILED\n\n    failures:\n\n    failures:\n        integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\n\n    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.50s\n\n  stderr ───\n\n    thread 'integration::tests::integrate_lane_squash_merges_run_branch_into_trunk' (3409727) panicked at lib/crates/raspberry-supervisor/src/integration.rs:268:10:\n    integration succeeds: Direct(Git { step: \"resolve ssh push url\", repo: \"/home/r/.cache/rust-tmp/fabro-direct-integration-29bb3659-50a0-476e-a9dc-544753f9b49a\", message: \"Engine error: remote `origin` must use SSH or be convertible from GitHub HTTPS, got `/home/r/.cache/rust-tmp/.tmphG3RbA/remote.git`\" })\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n  Cancelling due to test failure: \n────────────\n     Summary [   0.505s] 5 tests run: 4 passed, 1 failed, 114 skipped\n        FAIL [   0.505s] (5/5) raspberry-supervisor integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\nerror: test run failed\n",
+    "internal.node_visit_count": 1,
+    "internal.retry_count.start": 1,
+    "outcome": "success",
+    "failure_class": "",
+    "thread.start.current_node": "preflight",
+    "internal.run_id": "01KMP4JS1ZV4Q54Q4C25V8RJ64",
+    "internal.retry_count.preflight": 1,
+    "command.output": "",
+    "current_node": "preflight",
+    "graph.goal": "Raspberry Supervisor Edge Case Tests\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle`\n- `cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+    "internal.thread_id": "start",
+    "current.preamble": "Goal: Raspberry Supervisor Edge Case Tests\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle`\n- `cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "graph.rankdir": "LR",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMP4JS1ZV4Q54Q4C25V8RJ64/worktree",
+    "failure_signature": "",
+    "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        "
+  },
+  "logs": [],
+  "node_outcomes": {
+    "preflight": {
+      "status": "success",
+      "context_updates": {
+        "command.stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on artifact directory\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZV4Q54Q4C25V8RJ64/worktree/lib/crates/raspberry-supervisor)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s\n────────────\n Nextest run ID a0c0f8d4-b5f6-44cc-a361-fb2d6ad6bf1d with nextest profile: default\n    Starting 5 tests across 1 binary (114 tests skipped)\n        PASS [   0.003s] (1/5) raspberry-supervisor failure::tests::classify_failure_detects_integration_conflicts\n        PASS [   0.004s] (2/5) raspberry-supervisor failure::tests::classify_failure_detects_integration_target_unavailable\n        PASS [   0.004s] (3/5) raspberry-supervisor autodev::tests::integration_replay_targets_source_lane_when_run_was_branchless\n        PASS [   0.005s] (4/5) raspberry-supervisor autodev::tests::replayable_failed_lanes_replay_source_lane_for_failed_integration_program\n        FAIL [   0.505s] (5/5) raspberry-supervisor integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\n  stdout ───\n\n    running 1 test\n    test integration::tests::integrate_lane_squash_merges_run_branch_into_trunk ... FAILED\n\n    failures:\n\n    failures:\n        integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\n\n    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.50s\n\n  stderr ───\n\n    thread 'integration::tests::integrate_lane_squash_merges_run_branch_into_trunk' (3409727) panicked at lib/crates/raspberry-supervisor/src/integration.rs:268:10:\n    integration succeeds: Direct(Git { step: \"resolve ssh push url\", repo: \"/home/r/.cache/rust-tmp/fabro-direct-integration-29bb3659-50a0-476e-a9dc-544753f9b49a\", message: \"Engine error: remote `origin` must use SSH or be convertible from GitHub HTTPS, got `/home/r/.cache/rust-tmp/.tmphG3RbA/remote.git`\" })\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n  Cancelling due to test failure: \n────────────\n     Summary [   0.505s] 5 tests run: 4 passed, 1 failed, 114 skipped\n        FAIL [   0.505s] (5/5) raspberry-supervisor integration::tests::integrate_lane_squash_merges_run_branch_into_trunk\nerror: test run failed\n",
+        "command.output": ""
+      },
+      "notes": "Script completed: set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p raspberry-supervisor -- integration autodev_cycle && cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nelse\n  cargo test -p raspberry-supervisor -- integration autodev_cycle && cargo test -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed\nfi\ntrue",
+      "duration_ms": 72756
+    },
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "contract",
+  "node_visits": {
+    "preflight": 1,
+    "start": 1
+  }
+}
