@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNXTEVY0XVBG8H2P2AFC7XT",
+  "workflow_name": "GreenfieldBootstrapReliabilityLiveTonofcrapValidationCodexUnblock",
+  "goal": "Use Codex to unblock implementation lane `greenfield-bootstrap-reliability-live-tonofcrap-validation:greenfield-bootstrap-reliability-live-tonofcrap-validation`.\n\nInspect the source lane's most recent failure/remediation context and apply the minimal code or harness changes needed so the source lane can pass its next replay.\n\nProof commands:\n- `cargo check --workspace`\n",
+  "start_time": "2026-03-26T20:36:52.823534497Z",
+  "node_count": 13,
+  "edge_count": 20,
+  "run_branch": "fabro/run/01KMNXTEVY0XVBG8H2P2AFC7XT",
+  "base_sha": "f035a0e637d93ed0f1482197961e60ad67f43c4f",
+  "base_branch": "main",
+  "workflow_slug": "greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock",
+  "host_repo_path": "/home/r/coding/fabro"
+}
