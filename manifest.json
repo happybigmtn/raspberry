@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNX3H29YVJ04Q412H8MT9E1",
+  "workflow_name": "Conditions",
+  "goal": "Test condition evaluation with OR and parentheses",
+  "start_time": "2026-03-26T20:24:25.261130199Z",
+  "node_count": 5,
+  "edge_count": 5,
+  "run_branch": "fabro/run/01KMNX3H29YVJ04Q412H8MT9E1",
+  "base_sha": "1be5604f378017f5fd9a8fbaf1541a8bc140a32e",
+  "base_branch": "fabro/run/01KMNT43GY5T3AG67J2TSNF09H",
+  "workflow_slug": "conditions",
+  "host_repo_path": "/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli"
+}
