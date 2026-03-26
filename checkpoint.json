@@ -1,23 +1,27 @@
 {
-  "timestamp": "2026-03-26T19:01:54.159576704Z",
-  "current_node": "plan",
+  "timestamp": "2026-03-26T19:01:54.986131189Z",
+  "current_node": "implement",
   "completed_nodes": [
     "start",
-    "plan"
+    "plan",
+    "implement"
   ],
   "node_retries": {
     "start": 1,
-    "plan": 1
+    "plan": 1,
+    "implement": 1
   },
   "context_values": {
     "outcome": "success",
-    "last_stage": "plan",
+    "last_stage": "implement",
+    "internal.retry_count.implement": 1,
     "failure_class": "",
-    "last_response": "[Simulated] Response for stage: plan",
-    "current.preamble": "Goal: Implement and validate a feature\n",
+    "last_response": "[Simulated] Response for stage: implement",
+    "current.preamble": "Goal: Implement and validate a feature\n\n## Completed stages\n- **plan**: success\n",
     "internal.retry_count.start": 1,
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNRAQEYYN64PQM0YDZRKEBG/worktree",
     "graph.goal": "Implement and validate a feature",
+    "response.implement": "[Simulated] Response for stage: implement",
     "response.plan": "[Simulated] Response for stage: plan",
     "thread.start.current_node": "plan",
     "internal.node_visit_count": 1,
@@ -25,8 +29,9 @@
     "graph.rankdir": "LR",
     "internal.run_id": "01KMNRAQEYYN64PQM0YDZRKEBG",
     "internal.retry_count.plan": 1,
-    "current_node": "plan",
-    "internal.thread_id": "start",
+    "current_node": "implement",
+    "thread.plan.current_node": "implement",
+    "internal.thread_id": "plan",
     "internal.fidelity": "compact"
   },
   "logs": [],
@@ -41,15 +46,26 @@
       "notes": "[Simulated] plan",
       "duration_ms": 0
     },
+    "implement": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "[Simulated] Response for stage: implement",
+        "last_stage": "implement",
+        "response.implement": "[Simulated] Response for stage: implement"
+      },
+      "notes": "[Simulated] implement",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
       "duration_ms": 0
     }
   },
-  "next_node_id": "implement",
+  "next_node_id": "validate",
   "node_visits": {
     "plan": 1,
-    "start": 1
+    "start": 1,
+    "implement": 1
   }
 }
