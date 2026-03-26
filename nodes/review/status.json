@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.review": "No review findings. The source-lane blocker identified in [greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro#L25) is already fixed on this branch: its `audit` gate now checks the required durable artifacts plus `quality_ready: yes` and no longer depends on an unconditional repo-diff count. I recorded the review verdict in [promotion.md](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/.fabro-work/promotion.md).\n\nProof is green: `cargo check --workspace` passed, and the contract checks confirmed the workflow still targets `greenfield-bootstrap-reliability-live-tonofcrap-validation`, still requires `implementation.md`/`verification.md`/`quality.md`/`promotion.md`/`integration.md`, and no unconditional diff gate remains. The right next step is to replay `greenfield-bootstrap-reliability-live-tonofcrap-validation` so it can emit fresh artifacts under the updated audit condition.",
+    "last_stage": "review",
+    "last_response": "No review findings. The source-lane blocker identified in [greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/malinka/wo"
+  },
+  "notes": "Stage completed: review",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 612065,
+    "output_tokens": 8936,
+    "cost": 1.6642025
+  },
+  "duration_ms": 190402,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:59:14.494788602+00:00",
+  "updated_at": "2026-03-26T20:59:14.494790005+00:00"
+}
