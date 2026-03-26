@@ -43,4 +43,8 @@ pub use plan_registry::{
 pub use plan_status::{
     load_plan_matrix, render_plan_matrix, PlanMatrix, PlanStatusError, PlanStatusRow,
 };
-pub use program_state::{refresh_program_state, LaneRuntimeRecord, ProgramRuntimeState};
+pub use program_state::{
+    ensure_lane_record, mark_lane_dispatch_failed, mark_lane_finished, mark_lane_started,
+    mark_lane_submitted, mark_lane_regenerate_noop, refresh_program_state,
+    LaneRuntimeRecord, ProgramRuntimeState,
+};

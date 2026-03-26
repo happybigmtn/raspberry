@@ -2281,4 +2281,125 @@ mod tests {
         assert!(rendered.contains("missing required plan_id"));
         assert!(rendered.contains("unknown [\"phase-1-devnet-endurance\"]"));
     }
+
+    #[test]
+    fn infer_lane_kind_marks_services_correctly() {
+        // miner-service contains "service" -> returns "service"
+        assert_eq!(
+            infer_lane_kind_from_child_id("miner-service"),
+            "service"
+        );
+        // house-agent contains "agent" -> returns "service"
+        assert_eq!(
+            infer_lane_kind_from_child_id("house-agent"),
+            "service"
+        );
+        // validator-oracle doesn't match any service patterns -> returns "platform"
+        assert_eq!(
+            infer_lane_kind_from_child_id("validator-oracle"),
+            "platform"
+        );
+    }
+
+    #[test]
+    fn infer_lane_kind_marks_interfaces_correctly() {
+        assert_eq!(
+            infer_lane_kind_from_child_id("tui-shell"),
+            "interface"
+        );
+        assert_eq!(
+            infer_lane_kind_from_child_id("web-dashboard"),
+            "interface"
+        );
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        let input = "test'value";
+        let quoted = shell_quote(input);
+        assert!(quoted.starts_with("'"));
+        assert!(quoted.ends_with("'"));
+        assert!(quoted.contains("\\'"));
+    }
+
+    #[test]
+    fn shell_quote_handles_empty_string() {
+        let quoted = shell_quote("");
+        assert_eq!(quoted, "''");
+    }
+
+    #[test]
+    fn automation_cli_command_anthropic_includes_max_turns() {
+        use fabro_model::Provider;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prompt_file = temp.path().join("prompt.txt");
+        std::fs::write(&prompt_file, "test prompt").expect("write");
+        
+        let cmd = automation_cli_command(
+            Provider::Anthropic,
+            "claude-3-5-sonnet",
+            &prompt_file,
+            10,
+            false,
+        );
+        
+        assert!(cmd.contains("--max-turns 10"));
+        assert!(cmd.contains("claude -p"));
+    }
+
+    #[test]
+    fn automation_cli_command_minimax_uses_pi() {
+        use fabro_model::Provider;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prompt_file = temp.path().join("prompt.txt");
+        std::fs::write(&prompt_file, "test prompt").expect("write");
+        
+        let cmd = automation_cli_command(
+            Provider::Minimax,
+            "MiniMax-M2.7-highspeed",
+            &prompt_file,
+            5,
+            false,
+        );
+        
+        assert!(cmd.contains("pi --provider minimax"));
+        assert!(cmd.contains("--model MiniMax-M2.7-highspeed"));
+    }
+
+    #[test]
+    fn automation_cli_command_openai_uses_codex() {
+        use fabro_model::Provider;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prompt_file = temp.path().join("prompt.txt");
+        std::fs::write(&prompt_file, "test prompt").expect("write");
+        
+        let cmd = automation_cli_command(
+            Provider::OpenAi,
+            "o4-mini",
+            &prompt_file,
+            5,
+            false,
+        );
+        
+        assert!(cmd.contains("codex exec"));
+        assert!(cmd.contains("-m o4-mini"));
+    }
+
+    #[test]
+    fn batch_decomposition_prompt_includes_all_required_sections() {
+        let plan_manifest = "- plan_id: test-plan\n  path: plans/test.md\n  category: foundation\n  dependency_plan_ids: []\n  output: malinka/plan-mappings/test.yaml";
+        let prompt = build_batch_decomposition_prompt(
+            plan_manifest,
+            Path::new("/tmp/repo"),
+            "opus-test",
+        );
+        
+        // The prompt contains these key sections
+        assert!(prompt.contains("YAML mapping contract format"));
+        assert!(prompt.contains("dependency_plan_ids"));
+        assert!(prompt.contains("bootstrap_required"));
+        assert!(prompt.contains("owned_surfaces"));
+        assert!(prompt.contains("Process them ALL"));
+        assert!(prompt.contains("parallel agents"));
+    }
 }

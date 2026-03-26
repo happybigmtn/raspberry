@@ -6498,10 +6498,10 @@ mod tests {
         inject_workspace_verify_lanes, inline_proof_command, looks_like_shell_command,
         manual_notes_from_markdown, normalize_blueprint_lane_kinds,
         observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
-        raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
-        review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
+        raw_lane_refs, render_blueprint, render_prompt, render_run_config, render_workflow_graph,
+        repo_relative_string, review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
         slice_notes_from_markdown, smoke_commands_from_markdown, trim_list_prefix,
-        ImplementationEvidence, LaneCatalogEntry, ReviewStageRequirement,
+        ImplementationEvidence, LaneCatalogEntry, RenderRequest, ReviewStageRequirement,
     };
 
     #[test]
@@ -9147,6 +9147,81 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("target_branch = \"main\""));
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression tests for render path edge cases
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn render_blueprint_normalizes_lane_kind_defaults() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "test".to_string(),
+                max_parallel: 1,
+                state_path: Some(PathBuf::from(".raspberry/test-state.json")),
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![crate::blueprint::BlueprintUnit {
+                id: "test".to_string(),
+                title: "Test".to_string(),
+                output_root: PathBuf::from("outputs/test"),
+                artifacts: vec![],
+                milestones: vec![],
+                lanes: vec![BlueprintLane {
+                    id: "default-lane".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Test Lane".to_string(),
+                    family: "test".to_string(),
+                    workflow_family: Some("bootstrap".to_string()),
+                    slug: Some("default-lane".to_string()),
+                    template: WorkflowTemplate::Bootstrap,
+                    goal: "Test goal".to_string(),
+                    managed_milestone: "reviewed".to_string(),
+                    dependencies: vec![],
+                    produces: vec![],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: vec![],
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: None,
+                    health_command: None,
+                }],
+            }],
+        };
+
+        // Normalize the blueprint
+        let normalized = normalize_blueprint_lane_kinds(blueprint);
+        
+        // Verify lane kinds are normalized
+        for unit in &normalized.units {
+            for lane in &unit.lanes {
+                // After normalization, lane kinds should be set (not remain as default)
+                assert_eq!(lane.kind, raspberry_supervisor::manifest::LaneKind::Platform);
+            }
+        }
+    }
+
+    #[test]
+    fn repo_relative_string_handles_deeply_nested_paths() {
+        let path = PathBuf::from("a/b/c/d/e/f/g.txt");
+        let result = repo_relative_string(&path, 3);
+        assert!(result.starts_with("../../../"));
+    }
+
+    #[test]
+    fn repo_relative_string_handles_shallow_paths() {
+        let path = PathBuf::from("file.txt");
+        let result = repo_relative_string(&path, 1);
+        assert_eq!(result, "../file.txt");
     }
 }
 
