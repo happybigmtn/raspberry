@@ -1,0 +1,285 @@
+diff --git a/lib/crates/fabro-cli/src/commands/synth.rs b/lib/crates/fabro-cli/src/commands/synth.rs
+index b7af8551..8a8355f3 100644
+--- a/lib/crates/fabro-cli/src/commands/synth.rs
++++ b/lib/crates/fabro-cli/src/commands/synth.rs
+@@ -894,12 +894,14 @@ pub fn evolve_command(args: &SynthEvolveArgs) -> anyhow::Result<()> {
+             &program,
+             &manifest_path,
+             &report_path,
+-            &recent_output_lines,
+             &runtime_summary,
+             &autodev_summary,
+-            &reconcile_report.findings,
+-            &reconcile_report.recommendations,
+-            &reconcile_report.written_files,
++            &SteeringReportContext {
++                recent_outputs: &recent_output_lines,
++                findings: &reconcile_report.findings,
++                recommendations: &reconcile_report.recommendations,
++                written_files: &reconcile_report.written_files,
++            },
+         )?;
+         println!("Program: {program}");
+         println!("Mode: evolve (deterministic reconcile)");
+@@ -1148,19 +1150,23 @@ fn summarize_autodev_report(
+     ))
+ }
+ 
++struct SteeringReportContext<'a> {
++    recent_outputs: &'a [String],
++    findings: &'a [String],
++    recommendations: &'a [String],
++    written_files: &'a [PathBuf],
++}
++
+ fn deterministic_steering_report(
+     program: &str,
+     manifest_path: &std::path::Path,
+     report_path: &std::path::Path,
+-    recent_outputs: &[String],
+     runtime_summary: &str,
+     autodev_summary: &str,
+-    findings: &[String],
+-    recommendations: &[String],
+-    written_files: &[PathBuf],
++    ctx: &SteeringReportContext,
+ ) -> String {
+-    let findings = summarize_deterministic_findings(findings);
+-    let recommendations = summarize_deterministic_recommendations(recommendations);
++    let findings = summarize_deterministic_findings(ctx.findings);
++    let recommendations = summarize_deterministic_recommendations(ctx.recommendations);
+     let mut body = String::new();
+     body.push_str(&format!("# Steering Review for {program}\n\n"));
+     body.push_str("## Verdict\n\n");
+@@ -1173,17 +1179,17 @@ fn deterministic_steering_report(
+     body.push_str(&format!("- Report path: `{}`\n", report_path.display()));
+     body.push_str(&format!("- Runtime summary: {runtime_summary}\n"));
+     body.push_str(&format!("- Autodev summary: {autodev_summary}\n"));
+-    if !recent_outputs.is_empty() {
++    if !ctx.recent_outputs.is_empty() {
+         body.push_str("- Recent outputs:\n");
+-        for line in recent_outputs {
++        for line in ctx.recent_outputs {
+             body.push_str(&format!("  - {line}\n"));
+         }
+     }
+     body.push_str("\n## Changes Made\n\n");
+-    if written_files.is_empty() {
++    if ctx.written_files.is_empty() {
+         body.push_str("- No malinka files changed during deterministic reconcile.\n");
+     } else {
+-        for path in written_files {
++        for path in ctx.written_files {
+             body.push_str(&format!("- `{}`\n", path.display()));
+         }
+     }
+@@ -1363,23 +1369,17 @@ fn write_deterministic_steering_report(
+     program: &str,
+     manifest_path: &std::path::Path,
+     report_path: &std::path::Path,
+-    recent_outputs: &[String],
+     runtime_summary: &str,
+     autodev_summary: &str,
+-    findings: &[String],
+-    recommendations: &[String],
+-    written_files: &[PathBuf],
++    ctx: &SteeringReportContext,
+ ) -> anyhow::Result<()> {
+     let body = deterministic_steering_report(
+         program,
+         manifest_path,
+         report_path,
+-        recent_outputs,
+         runtime_summary,
+         autodev_summary,
+-        findings,
+-        recommendations,
+-        written_files,
++        ctx,
+     );
+     fabro_workflows::write_text_atomic(report_path, &body, "steering report")
+         .map_err(|error| anyhow::anyhow!(error.to_string()))
+diff --git a/lib/crates/fabro-synthesis/src/planning.rs b/lib/crates/fabro-synthesis/src/planning.rs
+index 369eeea7..22bb2140 100644
+--- a/lib/crates/fabro-synthesis/src/planning.rs
++++ b/lib/crates/fabro-synthesis/src/planning.rs
+@@ -781,7 +781,7 @@ fn derive_registry_plan_intents(
+                 }
+             }
+         }
+-        let family = registry_plan_family(&plan);
++        let family = registry_plan_family(plan);
+         let parent_id = plan.plan_id.clone();
+         let child_count = if !plan.children.is_empty() {
+             plan.children.len()
+@@ -793,7 +793,7 @@ fn derive_registry_plan_intents(
+         let parent_dependency = if emit_parent_intent {
+             let output_root = PathBuf::from("outputs").join(&plan.plan_id);
+             let (kind, artifacts, milestones, produces, health_command, verify_command) =
+-                registry_plan_contract(&plan, family, &output_root, target_repo);
++                registry_plan_contract(plan, family, &output_root, target_repo);
+             let tasks = corpus
+                 .plan_docs
+                 .iter()
+@@ -809,7 +809,7 @@ fn derive_registry_plan_intents(
+                 &artifacts,
+             );
+             let prompt_context =
+-                build_registry_plan_prompt_context(corpus, &plan, &tasks, &artifacts);
++                build_registry_plan_prompt_context(corpus, plan, &tasks, &artifacts);
+             let mut dependencies =
+                 registry_plan_dependencies_from_ids(&plan_dependency_plan_ids, &registry.plans);
+             // Inject scaffold dependencies for non-infrastructure parent intents
+@@ -878,7 +878,7 @@ fn derive_registry_plan_intents(
+ 
+         if plan.composite && child_count > 1 && plan.category != PlanCategory::Meta {
+             let effective_children = if plan.children.is_empty() {
+-                infer_child_records_from_ids(target_repo, &plan)
++                infer_child_records_from_ids(target_repo, plan)
+             } else {
+                 plan.children.clone()
+             };
+@@ -1316,13 +1316,7 @@ fn registry_plan_dependencies_from_ids(
+                     })
+                 });
+             let (resolved_unit, milestone) = match resolved_child_id {
+-                Some(child_id) => {
+-                    if child_id.starts_with(dependency) {
+-                        (child_id, None)
+-                    } else {
+-                        (child_id, None)
+-                    }
+-                }
++                Some(child_id) => (child_id, None),
+                 None => (dependency.clone(), Some("reviewed".to_string())),
+             };
+             LaneDependency {
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index 72fb59ac..794e2849 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -5607,10 +5607,7 @@ fn implementation_verify_command(
+         return "true".to_string();
+     }
+     commands = normalize_verify_commands(lane, commands);
+-    commands = commands
+-        .into_iter()
+-        .map(|command| portable_proof_command(command))
+-        .collect();
++    commands = commands.into_iter().map(portable_proof_command).collect();
+ 
+     format!("set -e\n{}", commands.join("\n"))
+ }
+@@ -9441,7 +9438,7 @@ fn chain_sibling_surfaces(manifest: &mut ManifestOut, blueprint: &ProgramBluepri
+ 
+     // For each surface with 2+ lanes, chain them: lane[1] depends on lane[0], etc.
+     let mut injected = 0;
+-    for (_surface, lanes) in &surface_to_lanes {
++    for lanes in surface_to_lanes.values() {
+         if lanes.len() < 2 {
+             continue;
+         }
+diff --git a/lib/crates/raspberry-supervisor/src/evaluate.rs b/lib/crates/raspberry-supervisor/src/evaluate.rs
+index 9efd2f2d..9faba9b6 100644
+--- a/lib/crates/raspberry-supervisor/src/evaluate.rs
++++ b/lib/crates/raspberry-supervisor/src/evaluate.rs
+@@ -64,6 +64,12 @@ pub struct EvaluatedProgram {
+     pub lanes: Vec<EvaluatedLane>,
+ }
+ 
++#[derive(Debug, Clone, Copy)]
++struct LaneRef<'a> {
++    unit_id: &'a str,
++    lane_id: &'a str,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct EvaluatedLane {
+     pub lane_key: String,
+@@ -332,8 +338,7 @@ pub fn evaluate_with_state(
+             lanes.push(evaluate_lane(
+                 manifest_path,
+                 manifest,
+-                unit_id,
+-                lane_id,
++                &LaneRef { unit_id, lane_id },
+                 &satisfied,
+                 unit_statuses
+                     .get(unit_id)
+@@ -624,16 +629,15 @@ fn trunk_delivery_state_for_lane(lane: &EvaluatedLane) -> Option<(String, String
+ fn evaluate_lane(
+     manifest_path: &Path,
+     manifest: &ProgramManifest,
+-    unit_id: &str,
+-    lane_id: &str,
++    lane_ref: &LaneRef,
+     satisfied: &BTreeSet<String>,
+     unit_status: &UnitStatus,
+     runtime_record: Option<&LaneRuntimeRecord>,
+     command_probe_cache: &mut HashMap<String, Option<CommandProbeOutput>>,
+ ) -> EvaluatedLane {
+-    let unit = &manifest.units[unit_id];
+-    let lane = &unit.lanes[lane_id];
+-    let key = lane_key(unit_id, lane_id);
++    let unit = &manifest.units[lane_ref.unit_id];
++    let lane = &unit.lanes[lane_ref.lane_id];
++    let key = lane_key(lane_ref.unit_id, lane_ref.lane_id);
+     let should_load_run_snapshot = runtime_record
+         .map(|record| {
+             record.current_run_id.is_some()
+@@ -643,7 +647,7 @@ fn evaluate_lane(
+         .unwrap_or(false);
+     let run_snapshot = if should_load_run_snapshot {
+         manifest
+-            .resolve_lane_run_dir(manifest_path, unit_id, lane_id)
++            .resolve_lane_run_dir(manifest_path, lane_ref.unit_id, lane_ref.lane_id)
+             .map(|run_dir| load_run_snapshot(&run_dir))
+             .unwrap_or_default()
+     } else {
+@@ -686,9 +690,9 @@ fn evaluate_lane(
+ 
+     EvaluatedLane {
+         lane_key: key,
+-        unit_id: unit_id.to_string(),
++        unit_id: lane_ref.unit_id.to_string(),
+         unit_title: unit.title.clone(),
+-        lane_id: lane_id.to_string(),
++        lane_id: lane_ref.lane_id.to_string(),
+         lane_title: lane.title.clone(),
+         lane_kind: lane.kind,
+         status,
+@@ -700,7 +704,7 @@ fn evaluate_lane(
+         managed_milestone: lane.managed_milestone.clone(),
+         proof_profile: lane.proof_profile.clone(),
+         run_config: manifest
+-            .resolve_lane_run_config(manifest_path, unit_id, lane_id)
++            .resolve_lane_run_config(manifest_path, lane_ref.unit_id, lane_ref.lane_id)
+             .unwrap_or_else(|| lane.run_config.clone()),
+         run_id: runtime_record
+             .and_then(|record| record.current_fabro_run_id.clone())
+diff --git a/test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json b/test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json
+index 858eb00b..a91c7556 100644
+--- a/test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json
++++ b/test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": "raspberry.program.v2",
+   "program": "myosu-bootstrap",
+-  "updated_at": "2026-03-26T20:04:29.585104621Z",
++  "updated_at": "2026-03-26T20:23:44.780605283Z",
+   "lanes": {
+     "chain:runtime": {
+       "lane_key": "chain:runtime",
+diff --git a/test/fixtures/raspberry-supervisor/.raspberry/program-state.json b/test/fixtures/raspberry-supervisor/.raspberry/program-state.json
+index b4778aa1..62694137 100644
+--- a/test/fixtures/raspberry-supervisor/.raspberry/program-state.json
++++ b/test/fixtures/raspberry-supervisor/.raspberry/program-state.json
+@@ -1,7 +1,7 @@
+ {
+   "schema_version": "raspberry.program.v2",
+   "program": "raspberry-demo",
+-  "updated_at": "2026-03-26T20:04:29.587624276Z",
++  "updated_at": "2026-03-26T20:23:44.781065131Z",
+   "lanes": {
+     "consensus:chapter": {
+       "lane_key": "consensus:chapter",
