@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.deep_review": "I wrote the replay diagnosis to [.fabro-work/deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md). It explicitly classifies the repeated verify failure as external-only: inside lane-owned surface, no remaining blocker found; outside lane-owned surface, yes. The note tells fixup to replay the source lane unchanged first, then only fix external `lib/crates/**` debt or the `fabro-api` `nextest` linker environment if the `rust-lld`/`cc` signal 7 issue comes back.\n\nNo source-lane code or harness edit was added, because the owned workflow already preserves the intended fmt/clippy/workspace-nextest proof gate and the current evidence does not justify weakening it.\n\nVerification: `cargo check --workspace` passed.",
+    "last_stage": "deep_review",
+    "last_response": "I wrote the replay diagnosis to [.fabro-work/deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md). It explicitly classifies th"
+  },
+  "notes": "Stage completed: deep_review",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 592091,
+    "output_tokens": 5796,
+    "cost": 1.5671675
+  },
+  "duration_ms": 155416,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:19:41.971661765+00:00",
+  "updated_at": "2026-03-26T20:19:41.971663638+00:00"
+}
