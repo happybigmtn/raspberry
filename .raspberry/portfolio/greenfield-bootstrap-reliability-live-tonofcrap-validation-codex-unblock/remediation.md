@@ -1,0 +1,91 @@
+# Remediation Notes (auto-captured from failed audit)
+
+## Quality Gate
+quality_ready: yes
+placeholder_debt: no
+warning_debt: no
+test_quality_debt: no
+artifact_mismatch_risk: no
+manual_followup_required: no
+semantic_risk_debt: no
+lane_sizing_debt: no
+external_blocker_only: yes
+
+## Touched Surfaces
+- (none declared)
+
+## Placeholder Hits
+
+
+## Artifact Consistency Hits
+
+
+## Root Artifact Shadow Hits
+
+
+## Semantic Risk Hits
+
+
+## Lane Sizing Hits
+
+
+## Warning Hits
+
+
+## Manual Followup Hits
+
+
+## Verification Findings
+# Challenge Note
+
+- Slice size: still lane-local, but the earlier unblock writeup was too small because it missed a second owned-surface replay blocker in the same quality gate.
+- First proof gate: `cargo check --workspace` was green, but that alone did not prove replay safety because the source lane still had a repo-wide `semantic_risk_hits` scan that self-matched `lib/crates/fabro-synthesis/src/render.rs:2351`.
+- Touched surfaces: contained to the named slice. The only source edit is `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`.
+- Artifact honesty: the earlier unblock verification overstated completion until the semantic-risk self-match was fixed.
+- Tests/proof quality: this is still a harness-only fix, so there are no new behavioral tests; the meaningful checks are `cargo check --workspace` plus the targeted semantic-risk sanity check showing the false positive is gone from the lane script.
+- Next fixup target: landed now. Keep Milestone 5 open until a real 30-cycle `raspberry autodev` run exists; this slice only restores honest replayability of the source lane.
+
+## Deep Review Findings
+# Deep Review Findings
+
+## Classification
+
+- inside lane-owned surface: no remaining blocker found
+- outside lane-owned surface: historical yes
+- owned proof gate is already green
+
+## Evidence Reviewed
+
+- Failed source run `01KMNTNRQ98FRA9RZ7BWYBQ6AQ` recorded `quality_ready: no` because a repo-wide lane-sizing scan matched unrelated code in `lib/crates/fabro-synthesis/src/render.rs`.
+- The same source run's verification artifact incorrectly treated `raspberry autodev --max-cycles 5` as full Milestone 5 success even though the contract requires a real 30-cycle run.
+- Current `HEAD` already contains the lane-local remediation:
+  - [malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro) removes the repo-wide semantic-risk and lane-sizing scans for this validation-only lane.
+  - [malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/plan.md) and [malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md](/home/r/.fabro/runs/20260326-01KMP4JS1ZRV66RC5JXTQ76WJC/worktree/malinka/prompts/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation/review.md) now explicitly forbid claiming Milestone 5 completion from a smoke run.
+
+## Root Cause
+
+The repeated verify history was mixed:
+
+- External false positive: the source lane's old repo-wide quality scan failed on unrelated code outside the lane-owned surfaces.
+- Lane-owned harness/prompt gap: the source lane also allowed a misleading verification writeup that overstated a 5-cycle smoke run as full live-validation proof.
+
+Those lane-owned gaps are already fixed on the current branch, so there is no remaining lane-local blocker to patch in this turn.
+
+## Fix Plan For Fixup
+
+1. Do not invent new code edits inside this lane unless a fresh replay produces a new lane-local failure that is not already covered by the current workflow/prompt changes.
+2. Replay `greenfield-bootstrap-reliability-live-tonofcrap-validation` with the current branch state.
+3. If fixup sees a new failure from pre-existing external code, warnings, or dependency issues outside the lane-owned surfaces, treat that as an external blocker and fix that external surface directly rather than reopening this validation-only harness.
+4. Keep Milestone 5 open until verification includes a real `raspberry autodev --max-cycles 30` run; shorter smoke runs are diagnostic only.
+
+## Promotion Decision
+merge_ready: yes
+manual_proof_pending: no
+completeness: 9
+correctness: 9
+convention: 9
+test_quality: 7
+reason: The lane-local workflow and prompt fixes satisfy the contract, the regenerated quality gate is green, and `cargo check --workspace` passes without reopening unrelated surfaces.
+next_action: Replay `greenfield-bootstrap-reliability-live-tonofcrap-validation` on the current branch and keep Milestone 5 open until the separate 30-cycle tonofcrap validation is executed.
+layout_invariants_complete: yes
+slice_decomposition_respected: yes
