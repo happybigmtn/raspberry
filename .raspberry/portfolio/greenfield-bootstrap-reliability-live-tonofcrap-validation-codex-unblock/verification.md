@@ -29,26 +29,30 @@ The source lane's updated quality gate still had a repo-wide `semantic_risk_hits
 
 2. `git diff --name-only`
    Outcome: tracked edits are lane-local:
-   - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`
    - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md`
    - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md`
    - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md`
+   - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro`
 
-   Result: `lib/crates/fabro-synthesis/src/render.rs` is not part of this unblock change set.
+   Result: the remaining local diff is confined to this unblock lane's workflow and portfolio artifacts. `lib/crates/fabro-synthesis/src/render.rs` is not part of this fixup change set.
 
 3. `git status --short --untracked-files=all`
    Outcome: the full local change set is still lane-local:
    - modified tracked files:
-     - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation.fabro`
      - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/implementation.md`
      - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/integration.md`
      - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/verification.md`
+     - `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro`
+   - generated portfolio files:
+     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/promotion.md`
+     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/review.md`
+     - `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/spec.md`
 
    Result: `lib/crates/fabro-synthesis/src/render.rs` is absent here too.
 
 4. Portfolio file existence check
    Command: `find .raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock -maxdepth 1 -type f | sort`
-   Outcome: all three required portfolio files exist on disk.
+   Outcome: the full audit bundle now exists on disk, including `spec.md`, `review.md`, `verification.md`, `quality.md`, and `promotion.md`.
 
 5. Content audit
    Commands inspected the edited workflow and prompts for:
@@ -64,6 +68,11 @@ The source lane's updated quality gate still had a repo-wide `semantic_risk_hits
    Outcome before the fix: matched `lib/crates/fabro-synthesis/src/render.rs:2351`, proving the source lane's repo-wide semantic-risk scan would self-trigger.
    Outcome after the fix: the source lane workflow now leaves `semantic_risk_hits` empty for this validation-only lane, so that self-match can no longer block replay.
 
+7. Audit bundle hydration check
+   Command: the updated `audit` script from `malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro`
+   Outcome after the fix: it copies `.fabro-work/contract.md` to `spec.md`, `.fabro-work/deep-review-findings.md` to `review.md`, and `.fabro-work/promotion.md` to `promotion.md` inside `.raspberry/portfolio/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock/` before validating the portfolio bundle.
+   Result: the unblock lane no longer fails audit solely because those portfolio metadata files were never materialized.
+
 ## Outcome
 
-The replay blockers are removed in the lane workflow, and the prompt/review text now prevents the prior false-success writeup from recurring.
+The replay blockers are removed in the lane workflow, the prompt/review text now prevents the prior false-success writeup from recurring, and the unblock lane's own audit can now see the portfolio metadata it requires.
