@@ -1,0 +1,316 @@
+diff --git a/outputs/provider-policy-stabilization/review.md b/outputs/provider-policy-stabilization/review.md
+index 2ef986e9..13f72061 100644
+--- a/outputs/provider-policy-stabilization/review.md
++++ b/outputs/provider-policy-stabilization/review.md
+@@ -8,7 +8,7 @@
+ 
+ ## Executive Summary
+ 
+-This review validates the specification for provider policy stabilization against the live codebase. The **spec is sound** but the **implementation gap is critical**: model selection leaks in `render.rs` bypass the central policy entirely, creating authority drift that could route high-value review work to inappropriate models during failover scenarios.
++This review validates the specification for provider policy stabilization against the live codebase. The **spec is sound** but the **implementation gap is critical**: model selection leaks in `lib/crates/fabro-synthesis/src/render.rs` bypass the central policy entirely, creating authority drift that could route high-value review work to inappropriate models during failover scenarios.
+ 
+ **Verdict:** The specification correctly identifies the problem. The implementation work is scoped appropriately for Phase 0. No spec blockers.
+ 
+@@ -22,13 +22,13 @@ This review validates the specification for provider policy stabilization agains
+ 
+ **Findings:**
+ 
+-1. **Authority Drift in Synthesis Layer** (`fabro-synthesis/src/render.rs:2019-2090`)
+-   - The `recurring_report_primary_target_for_lane()` function constructs `ModelTarget` directly using `Provider::Minimax`, `Provider::Anthropic`, and `Provider::OpenAi`
++1. **Authority Drift in Synthesis Layer** (`lib/crates/fabro-synthesis/src/render.rs:2058-2080`)
++   - The `recurring_report_primary_target_for_lane()` function (line 2058) constructs `ModelTarget` directly using `Provider::Minimax`, `Provider::Anthropic`, and `Provider::OpenAi`
+    - **Trust boundary violation:** The synthesis layer (which generates workflow graphs) is making provider selection decisions that should belong exclusively to the policy layer
+    - **Attack surface:** Any compromise or bug in synthesis graph generation can force specific providers regardless of quota state or operator policy changes
+    - **Privilege assumption:** The code assumes MiniMax is appropriate for holistic review minimax lanes, but this is not validated against the actual policy chain for the `Review` profile
+ 
+-2. **CLI Backend String-Matching for Quota Detection** (`fabro-workflows/src/backend/cli.rs:799-817`)
++2. **CLI Backend String-Matching for Quota Detection** (`lib/crates/fabro-workflows/src/backend/cli.rs:799-817`)
+    - `cli_failure_is_retryable_for_fallback()` uses substring matching: `"you've hit your limit"`, `"usage limit has been reached"`
+    - **Trust boundary violation:** Error message text is not a stable interface. Provider CLI tools can change error messages without API versioning.
+    - **Authority assumption:** The CLI backend assumes it can classify errors without consulting the SDK's structured error types (`ProviderErrorKind::QuotaExceeded`)
+@@ -45,14 +45,14 @@ This review validates the specification for provider policy stabilization agains
+ 
+ 1. **Policy Chain vs. Synthesis Target Coupling**
+    - **Paired state:** `policy.rs` chains (`WRITE_CHAIN`, `REVIEW_CHAIN`, `SYNTH_CHAIN`) and `render.rs` lane target assignments
+-   - **Inconsistency path:** When `policy.rs` is updated (e.g., swapping Kimi and MiniMax order in REVIEW_CHAIN), `render.rs` hardcoded selections become **stale authorities**
+-   - **Current behavior:** The hardcoded `Provider::Minimax` for holistic review minimax lanes does NOT match the REVIEW_CHAIN ordering (Kimi first, MiniMax second)
++   - **Inconsistency path:** When `policy.rs` is updated (e.g., swapping Kimi and MiniMax order in `REVIEW_CHAIN`), `render.rs` hardcoded selections become **stale authorities**
++   - **Current behavior:** The hardcoded `Provider::Minimax` for holistic review minimax lanes does NOT match the `REVIEW_CHAIN` ordering (Kimi first, MiniMax second)
+    - **Risk:** This creates a **split-brain** scenario where the policy says one thing but synthesis does another
+ 
+ 2. **Quota State vs. Fallback Eligibility Coupling**
+    - **Paired state:** Provider quota exhaustion state and fallback chain traversal
+-   - **Correct behavior (API path):** `sdk_err.failover_eligible()` returns true for `QuotaExceeded`, triggering chain traversal
+-   - **Incorrect behavior (CLI path):** String matching may miss quota errors that don't match the specific phrases
++   - **Correct behavior (API path):** `sdk_err.failover_eligible()` returns `true` for `QuotaExceeded` (`fabro-llm/src/error.rs:216-221`), triggering chain traversal
++   - **Incorrect behavior (CLI path):** String matching in `cli_failure_is_retryable_for_fallback()` (line 799) may miss quota errors that don't match the specific phrases
+    - **State mutation path:** When provider A reports quota exhaustion, the system must:
+      1. Not consume retry budget (correct in both paths)
+      2. Advance to provider B in chain (correct in API path, potentially incorrect in CLI path)
+@@ -60,12 +60,12 @@ This review validates the specification for provider policy stabilization agains
+ 
+ 3. **Usage Tracking vs. Cost Attribution Coupling**
+    - **Paired state:** Per-provider token counts and per-lane cost attribution
+-   - **Gap:** `AutodevCycleReport` lacks `usage_by_provider`, meaning cost attribution cannot be reconciled
++   - **Gap:** `AutodevCycleReport` (`lib/crates/raspberry-supervisor/src/autodev.rs:96`) lacks `usage_by_provider`, meaning cost attribution cannot be reconciled
+    - **Risk:** Operator cannot verify that quota exhaustion predictions match actual usage
+ 
+ 4. **Lane State vs. Provider Assignment Coupling**
+-   - **Paired state:** Lane execution state (`Running`, `Blocked`, `Failed`) and the provider/model currently processing the lane
+-   - **Gap:** `AutodevCurrentSnapshot` does not include per-lane provider/model information
++   - **Paired state:** Lane execution state and the provider/model currently processing the lane
++   - **Gap:** `AutodevCurrentSnapshot` (`lib/crates/raspberry-supervisor/src/autodev.rs:70`) does not include per-lane provider/model information
+    - **Risk:** When a lane fails, operators cannot determine if the failure is provider-specific without manual log inspection
+ 
+ ---
+@@ -84,10 +84,10 @@ grep -rn "Provider::(Minimax|Anthropic|OpenAi|Kimi|Gemini)" \
+   | grep -v "policy.rs\|provider.rs"
+ ```
+ 
+-**Result:** 
+-- **CRITICAL:** `fabro-synthesis/src/render.rs:2058-2079` — `recurring_report_primary_target_for_lane()` hardcodes providers
+-- **CRITICAL:** `fabro-synthesis/src/render.rs:2026-2040` — `challenge_target_for_lane()` hardcodess `Provider::OpenAi` for codex-unblock lanes
+-- **Test-only:** `fabro-workflows/tests/` — fixtures using providers (acceptable)
++**Results:**
++- **CRITICAL:** `lib/crates/fabro-synthesis/src/render.rs:2058-2080` — `recurring_report_primary_target_for_lane()` hardcodes providers at lines 2061, 2067, 2075
++- **CRITICAL:** `lib/crates/fabro-synthesis/src/render.rs:2495-2499` — `Provider::OpenAi` hardcoded in model assignment
++- **Test-only:** `lib/crates/fabro-workflows/tests/` — fixtures using providers (acceptable)
+ 
+ **Verdict:** Spec correctly identifies the leak. AC1 will require refactoring `render.rs` to call `automation_primary_target(AutomationProfile::Review)` instead of constructing `ModelTarget` directly.
+ 
+@@ -95,37 +95,36 @@ grep -rn "Provider::(Minimax|Anthropic|OpenAi|Kimi|Gemini)" \
+ 
+ **Verification:**
+ 
+-1. **API path** (`fabro-workflows/src/backend/api.rs:367-407`):
+-   - Uses `sdk_err.failover_eligible()` which returns `true` for `QuotaExceeded`
++1. **API path** (`lib/crates/fabro-workflows/src/backend/api.rs:367-407`):
++   - Uses `sdk_err.failover_eligible()` at lines 367 and 407
+    - **Correct:** Properly triggers fallback chain traversal
+ 
+-2. **CLI path** (`fabro-workflows/src/backend/cli.rs:799-817`):
+-   - `cli_failure_is_retryable_for_fallback()` checks for `"you've hit your limit"` and `"usage limit has been reached"`
++2. **CLI path** (`lib/crates/fabro-workflows/src/backend/cli.rs:799-817`):
++   - `cli_failure_is_retryable_for_fallback()` checks for `"you've hit your limit"` (line 805) and `"usage limit has been reached"` (line 806)
+    - **Missing:** Does not check for `"quota"` or `"quota exceeded"` explicitly
+    - **Gap:** The fabro-llm SDK correctly classifies quota errors, but CLI path doesn't use SDK error classification
+ 
+-3. **SDK layer** (`fabro-llm/src/error.rs:212-220`):
+-   - `failover_eligible()` returns true for `QuotaExceeded`
++3. **SDK layer** (`lib/crates/fabro-llm/src/error.rs:212-221`):
++   - `failover_eligible()` returns `true` for `QuotaExceeded`
+    - **Correct:** As specified in spec
+ 
+-**Verdict:** Spec correctly identifies the CLI gap. AC2 requires adding "quota" to the retryable patterns in `cli_failure_is_retryable_for_fallback()`.
++**Verdict:** Spec correctly identifies the CLI gap. AC2 requires adding `"quota"` to the retryable patterns in `cli_failure_is_retryable_for_fallback()`.
+ 
+ ### AC3: Provider Health in Status
+ 
+ **Verification:**
+-- `AutodevCurrentSnapshot` (`raspberry-supervisor/src/autodev.rs:70-94`) lacks:
++- `AutodevCurrentSnapshot` (`lib/crates/raspberry-supervisor/src/autodev.rs:70-93`) lacks:
+   - Per-lane model/provider fields
+   - Provider health status enumeration (`healthy`, `quota_limited`, `unavailable`)
+-  - 
+-- `render_status_table()` (`raspberry-supervisor/src/evaluate.rs:410`) outputs lane status but not provider info
++- `render_status_table()` (`lib/crates/raspberry-supervisor/src/evaluate.rs:410`) outputs lane status but not provider info
+ 
+ **Verdict:** Spec correctly scopes the work. AC3 requires extending the snapshot struct and status renderer.
+ 
+ ### AC4: Usage Tracking in Report
+ 
+ **Verification:**
+-- `AutodevCycleReport` (`raspberry-supervisor/src/autodev.rs:96-111`) lacks `usage_by_provider` field
+-- Usage is tracked at the stage level (`StageUsage`) but not aggregated per provider per cycle
++- `AutodevCycleReport` (`lib/crates/raspberry-supervisor/src/autodev.rs:96-111`) lacks `usage_by_provider` field
++- Usage is tracked at the stage level but not aggregated per provider per cycle
+ 
+ **Verdict:** Spec correctly scopes the work. AC4 requires adding aggregation logic.
+ 
+@@ -168,7 +167,7 @@ Ready ──[dispatch]──> Running(provider=A, model=X)
+ **Question:** Are API keys and credentials handled safely during provider failover?
+ 
+ **Findings:**
+-1. API keys are passed via environment variables to CLI subprocesses (verified in `cli.rs`)
++1. API keys are passed via environment variables to CLI subprocesses (verified in `cli.rs:244-300`)
+ 2. No logging of API keys in fallback path (verified — tracing only logs provider/model names)
+ 3. **No issue:** Secrets are not part of the policy state being stabilized
+ 
+@@ -200,10 +199,11 @@ Ready ──[dispatch]──> Running(provider=A, model=X)
+ 
+ | Blocker | Severity | Location | Resolution |
+ |---------|----------|----------|------------|
+-| Hardcoded model selection | **Critical** | `fabro-synthesis/src/render.rs:2019-2090` | Replace with `automation_primary_target()` calls |
+-| CLI quota detection gap | Medium | `fabro-workflows/src/backend/cli.rs:799-817` | Add "quota" to retryable patterns |
+-| Missing provider health | Medium | `raspberry-supervisor/src/autodev.rs` | Add fields to snapshot struct |
+-| Missing usage tracking | Medium | `raspberry-supervisor/src/autodev.rs` | Add `usage_by_provider` aggregation |
++| Hardcoded model selection in `recurring_report_primary_target_for_lane` | **Critical** | `lib/crates/fabro-synthesis/src/render.rs:2058-2080` | Replace with `automation_primary_target()` calls |
++| Hardcoded model selection at line 2497 | **Critical** | `lib/crates/fabro-synthesis/src/render.rs:2497` | Replace with policy-based resolution |
++| CLI quota detection gap | Medium | `lib/crates/fabro-workflows/src/backend/cli.rs:799-817` | Add `"quota"` to retryable patterns |
++| Missing provider health fields | Medium | `lib/crates/raspberry-supervisor/src/autodev.rs:70-93` | Extend `AutodevCurrentSnapshot` |
++| Missing usage tracking | Medium | `lib/crates/raspberry-supervisor/src/autodev.rs:96-111` | Add `usage_by_provider` to `AutodevCycleReport` |
+ 
+ ---
+ 
+@@ -221,8 +221,11 @@ Ready ──[dispatch]──> Running(provider=A, model=X)
+ 
+ ## Sign-off
+ 
+-**Spec correctness:** ✅ Sound — correctly identifies problems and proposes viable solutions  
+-**Milestone fit:** ✅ Appropriate for Phase 0 (stabilization)  
+-**Remaining blockers:** 1 critical, 3 medium — all scoped and documented  
++| Criterion | Status |
++|-----------|--------|
++| Spec correctness | ✅ Sound — correctly identifies problems and proposes viable solutions |
++| Milestone fit | ✅ Appropriate for Phase 0 (stabilization) |
++| Implementation accuracy | ⚠️ Line numbers updated to match live codebase |
++| Remaining blockers | 2 critical, 3 medium — all scoped and documented |
+ 
+ **Recommendation:** Approve spec. Proceed to implementation with priority on `render.rs` refactoring.
+diff --git a/outputs/provider-policy-stabilization/spec.md b/outputs/provider-policy-stabilization/spec.md
+index 9d389ab9..2f9997e6 100644
+--- a/outputs/provider-policy-stabilization/spec.md
++++ b/outputs/provider-policy-stabilization/spec.md
+@@ -33,7 +33,7 @@ The provider policy lives in `lib/crates/fabro-model/src/policy.rs`. It defines
+ | Review | Kimi K2.5 (pi) | MiniMax M2.7 (pi) | Claude Opus 4.6 (claude CLI) |
+ | Synth | Claude Opus 4.6 (claude CLI) | GPT-5.3 Codex (codex CLI) | MiniMax M2.7 (pi) |
+ 
+-Key functions:
++Key functions in `policy.rs`:
+ - `automation_chain(profile)` — returns full fallback chain
+ - `automation_primary_target(profile)` — returns first target
+ - `automation_fallback_targets(profile)` — returns fallbacks
+@@ -41,30 +41,38 @@ Key functions:
+ 
+ ### Existing Quota Detection
+ 
+-The `fabro-llm/src/error.rs` already defines:
++`lib/crates/fabro-llm/src/error.rs` already defines:
+ - `ProviderErrorKind::QuotaExceeded` — distinct from `RateLimit`
+-- `failover_eligible()` — returns true for `QuotaExceeded`, meaning a different provider won't share the same quota
+-- 429 errors map to `RateLimit`, which is retryable (same-provider backoff)
++- `failover_eligible()` — returns `true` for `QuotaExceeded`, meaning a different provider won't share the same quota
++- 429 errors map to `RateLimit` (retryable, same-provider backoff)
+ - Message-based classification can identify quota errors (e.g., "usage limit reached", "quota exceeded")
+ 
+ ### CLI Backend Fallback
+ 
+-`fabro-workflows/src/backend/cli.rs` implements fallback via:
++`lib/crates/fabro-workflows/src/backend/cli.rs` implements fallback via:
+ - `build_cli_attempt_targets()` — builds fallback chain from policy
+-- `cli_failure_is_retryable_for_fallback()` — determines if a CLI failure triggers fallback
++- `cli_failure_is_retryable_for_fallback()` (line 799) — determines if a CLI failure triggers fallback
+ - Fallback reasons include: auth failures, rate limits, "you've hit your limit", "usage limit has been reached"
+ 
+ ### Known Leaks
+ 
+ **Critical** (selection decisions, not test code):
+-1. `fabro-synthesis/src/render.rs:2055-2090` — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax` with `MiniMax-M2.7-highspeed`, `Provider::Anthropic` with `claude-opus-4-6`, and `Provider::OpenAi` with `gpt-5.4`. This bypasses policy.rs entirely for holistic review lanes.
+-2. `fabro-synthesis/src/render.rs:2026-2040` — `challenge_target_for_lane()` and `review_target_for_lane()` hardcode `Provider::OpenAi` with `gpt-5.4` for codex-unblock lanes.
+-3. `fabro-workflows/src/backend/cli.rs` — `cli_failure_is_retryable_for_fallback()` checks for "you've hit your limit" and "usage limit has been reached" in lowercase error details, but does not specifically check for `QuotaExceeded` from the API path. The CLI and API paths may have different error formats.
++
++1. `lib/crates/fabro-synthesis/src/render.rs:2019-2043` — `challenge_target_for_lane()` (line 2019) and `review_target_for_lane()` (line 2032) call `recurring_report_primary_target_for_lane()` (line 2058) which hardcodes:
++   - `Provider::Minimax` + `MiniMax-M2.7-highspeed` for holistic review minimax lanes (line 2061)
++   - `Provider::Anthropic` + `claude-opus-4-6` for holistic review deep lanes (line 2067)
++   - `Provider::OpenAi` + `gpt-5.4` for codex-unblock lanes (line 2075)
++   
++   This bypasses `policy.rs` entirely for these lane types.
++
++2. `lib/crates/fabro-synthesis/src/render.rs:2495-2499` — Another hardcoded `Provider::OpenAi` + `gpt-5.4` in a model assignment path.
++
++3. `lib/crates/fabro-workflows/src/backend/cli.rs:799-817` — `cli_failure_is_retryable_for_fallback()` checks for `"you've hit your limit"` and `"usage limit has been reached"` but does **not** check for `"quota"` or `"quota exceeded"`. The CLI path may miss quota errors that the SDK correctly classifies as `QuotaExceeded`.
+ 
+ **Non-critical** (test fixtures, display strings):
+-- `fabro-workflows/src/stylesheet.rs:86-210` — Test fixtures with hardcoded model names (sonnet, opus, gpt)
+-- `fabro-workflows/src/transform.rs:681-790` — Transform tests with hardcoded model names
+-- Various test files in `fabro-workflows/tests/integration.rs` — Test fixtures with model names
++- `lib/crates/fabro-workflows/src/stylesheet.rs:86-210` — Test fixtures with hardcoded model names
++- `lib/crates/fabro-workflows/src/transform.rs:681-790` — Transform tests with hardcoded model names
++- Various test files in `lib/crates/fabro-workflows/tests/`
+ 
+ ## Target Architecture
+ 
+@@ -77,6 +85,7 @@ policy.rs (automation_chain, automation_primary_target, automation_fallback_targ
+      |
+      +---> fabro-synthesis/src/render.rs (model assignment in workflow graphs)
+      +---> fabro-workflows/src/backend/cli.rs (runtime model selection + fallback)
++     +---> fabro-workflows/src/backend/api.rs (API path fallback via failover_eligible)
+      +---> fabro-cli/src/commands/synth.rs (synthesis model selection)
+      |
+      v
+@@ -88,14 +97,14 @@ Any code that references a specific provider or model name outside of `policy.rs
+ ### Fallback Chain Behavior
+ 
+ 1. When CLI command fails with a retryable error (including quota exhaustion), try next target in chain
+-2. When API call fails with `QuotaExceeded`, trigger provider failover (do not consume retry count)
++2. When API call fails with `QuotaExceeded`, trigger provider failover via `failover_eligible()` (do not consume retry count)
+ 3. Fallback chain respects profile minimum capability requirements:
+    - Review cannot fall below Opus/Kimi tier (enforced by chain order)
+    - Synth prefers Opus first, Codex second, MiniMax third
+ 
+ ### Status Output Contract
+ 
+-`raspberry status` output must include:
++`raspberry status --manifest <prog.yaml>` output must include per-lane provider information:
+ 
+ ```yaml
+ lanes:
+@@ -109,9 +118,11 @@ lanes:
+     blocked_reason: "provider quota exhausted: minimax"
+ ```
+ 
++Note: `raspberry status` lives in `lib/crates/raspberry-cli/` and calls `render_status_table()` from `lib/crates/raspberry-supervisor/src/evaluate.rs`.
++
+ ### Usage Tracking Contract
+ 
+-Autodev report must include:
++Autodev report at `.raspberry/autodev-report.json` (managed by `lib/crates/raspberry-supervisor/src/autodev.rs`) must include:
+ 
+ ```yaml
+ cycles:
+@@ -131,17 +142,16 @@ cycles:
+ 
+ ### AC1: Zero Model Selection Leaks
+ 
+-```
++```bash
+ grep -rn "Provider::(Minimax|Kimi|Anthropic|OpenAi|Gemini)" \
+   lib/crates/fabro-synthesis/src/ \
+   lib/crates/fabro-workflows/src/ \
+   --include="*.rs" \
+-  | grep -v "_test\|#\[test\]\|// " \
+-  | grep -v "policy.rs" \
+-  | wc -l
++  | grep -v "_test\|#\[test\]\|// \|use \|mod tests" \
++  | grep -v "policy.rs\|provider.rs"
+ ```
+ 
+-Target: 0 matches in production code paths.
++Target: 0 matches in production code paths outside `policy.rs`.
+ 
+ ### AC2: Quota Exhaustion Triggers Fallback
+ 
+@@ -149,7 +159,7 @@ Target: 0 matches in production code paths.
+ - The fallback must not consume retry count (quota exhaustion is not a transient error)
+ - Lane must not fail — work continues on next provider
+ 
+-Proof: Run autodev, artificially exhaust one provider's quota, observe fallback without lane failure.
++**Proof:** Run autodev, artificially exhaust one provider's quota, observe fallback without lane failure.
+ 
+ ### AC3: Provider Health in Status
+ 
+@@ -175,7 +185,7 @@ Autodev report at `.raspberry/autodev-report.json` includes:
+ 
+ 1. Audit all production code paths for model selection leaks
+ 2. Document findings in review.md
+-3. Fix critical leaks in `fabro-synthesis/src/render.rs`
++3. Fix critical leaks in `lib/crates/fabro-synthesis/src/render.rs` — replace hardcoded `Provider::*` with calls to `automation_primary_target()` and `automation_fallback_targets()`
+ 4. Ensure `cli_failure_is_retryable_for_fallback()` catches quota errors
+ 
+ ### Phase 2: Status and Tracking (next slice)
+@@ -206,4 +216,4 @@ Autodev report at `.raspberry/autodev-report.json` includes:
+ 
+ ## What This Supersedes
+ 
+-This spec consolidates remaining items from `plans/032326-centralize-provider-policy-and-live-autodev-recovery.md` which was partially completed but had remaining drift between policy.rs and consumers.
++This spec consolidates remaining items from `genesis/plans/001-master-plan.md` which was partially completed but had remaining drift between policy.rs and consumers.

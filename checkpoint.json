@@ -1,44 +1,50 @@
 {
-  "timestamp": "2026-03-26T18:39:23.463241042Z",
-  "current_node": "polish",
+  "timestamp": "2026-03-26T18:39:30.343905674Z",
+  "current_node": "verify",
   "completed_nodes": [
     "start",
     "specify",
     "review",
-    "polish"
+    "polish",
+    "verify"
   ],
   "node_retries": {
+    "verify": 1,
     "polish": 1,
     "review": 1,
     "start": 1,
     "specify": 1
   },
   "context_values": {
-    "last_stage": "polish",
-    "internal.fidelity": "compact",
+    "failure_signature": "",
+    "command.stderr": "",
     "outcome": "success",
     "graph.goal": "Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n",
-    "current_node": "polish",
-    "thread.review.current_node": "polish",
+    "current_node": "verify",
     "internal.node_visit_count": 1,
     "thread.start.current_node": "specify",
-    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 60.0k tokens in / 505 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n- **review**: success\n  - Model: k2p5, 903 tokens in / 434 out\n  - Files: outputs/provider-policy-stabilization/review.md\n",
     "last_response": "Polished both durable artifacts. Summary of improvements:\n\n**`spec.md` (219 lines)**\n- Updated line numbers to match live codebase (`render.rs:2019-2043`, `2058-2080`, `2495-2499`)\n- Added explicit cr",
-    "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
-    "thread.specify.current_node": "review",
-    "failure_class": "",
-    "internal.run_id": "01KMNPED2367YB0GPF0QE1ETVW",
-    "response.review": "## Review Complete\n\n### Artifacts Written\n- `outputs/provider-policy-stabilization/review.md` — Comprehensive nemesis-style security review\n\n### Key Findings\n\n| Finding | Severity | Location |\n|---------|----------|----------|\n| **Hardcoded model selection** | Critical | `fabro-synthesis/src/render.rs:2058-2079` |\n| CLI quota detection gap | Medium | `fabro-workflows/src/backend/cli.rs:799-817` |\n| Missing provider health in status | Medium | `raspberry-supervisor/src/autodev.rs` |\n| Missing usage tracking | Medium | `raspberry-supervisor/src/autodev.rs` |\n\n### Verified Invariants\n- ✅ **API path correctly handles quota** — Uses `sdk_err.failover_eligible()` which returns true for `QuotaExceeded`\n- ✅ **Policy.rs chains are well-structured** — `WRITE_CHAIN`, `REVIEW_CHAIN`, `SYNTH_CHAIN` properly defined\n- ✅ **CLI backend uses central policy for fallback chains** — `central_policy_fallback_targets()` called correctly\n- ✅ **Process cleanup safe** — `cleanup_cli_scratch()` called before fallback attempts\n\n### Security Review Summary\n\n**Pass 1 (Trust Boundaries):**\n- Authority drift identified: synthesis layer bypassing policy layer for model selection\n- Error message text is not a stable interface for quota detection\n- No cryptographic provider attestation (acceptable for Phase 0)\n\n**Pass 2 (Coupled State):**\n- **Split-brain risk:** `render.rs` hardcoded MiniMax for holistic review lanes vs. REVIEW_CHAIN ordering (Kimi first)\n- Quota state must not consume retry budget when triggering fallback\n- Missing per-lane provider context prevents debugging provider-specific failures\n\n### Verdict\n**Spec is sound.** Implementation work is appropriately scoped for Phase 0. The critical blocker (hardcoded model selection) is clearly identified and fixable by replacing direct `ModelTarget` construction with `automation_primary_target()` calls.",
     "response.polish": "Polished both durable artifacts. Summary of improvements:\n\n**`spec.md` (219 lines)**\n- Updated line numbers to match live codebase (`render.rs:2019-2043`, `2058-2080`, `2495-2499`)\n- Added explicit crate paths (`lib/crates/fabro-synthesis/src/`, `lib/crates/fabro-workflows/src/backend/`, `lib/crates/raspberry-supervisor/src/`)\n- Added note about `raspberry status` location (crate `raspberry-cli` + `evaluate.rs`)\n- Clarified the policy function names and their roles\n- Improved the target architecture diagram with all four consumers\n- Fixed \"What This Supersedes\" reference to `genesis/plans/001-master-plan.md`\n\n**`review.md` (231 lines)**\n- Updated all line number references to exact grep-verified values\n- Expanded Pass 1 with line-specific analysis (e.g., `recurring_report_primary_target_for_lane()` at line 2058)\n- Added Pass 2 coupled-state analysis with explicit struct references (`AutodevCurrentSnapshot`, `AutodevCycleReport`)\n- Added verification tables with accurate line numbers per blocker\n- Added sign-off table with implementation accuracy row\n- Enhanced recommendations with numbered priority ordering",
-    "internal.thread_id": "review",
-    "internal.retry_count.review": 1,
+    "internal.run_id": "01KMNPED2367YB0GPF0QE1ETVW",
+    "internal.retry_count.verify": 1,
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNPED2367YB0GPF0QE1ETVW/worktree",
     "internal.retry_count.start": 1,
     "graph.rankdir": "LR",
-    "internal.retry_count.specify": 1,
-    "response.specify": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/provider-policy-stabilization/spec.md` | 209 lines |\n| review.md | `outputs/provider-policy-stabilization/review.md` | 365 lines |\n\n## Audit Summary\n\n**9 findings** documented in review.md:\n\n### Critical (1)\n1. **`fabro-synthesis/src/render.rs:2055-2090`** — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax`, `Provider::Anthropic`, `Provider::OpenAi` with specific models, bypassing `policy.rs` for holistic review lanes.\n\n### Medium (3)\n2. **`fabro-workflows/src/backend/cli.rs`** — `cli_failure_is_retryable_for_fallback()` checks for CLI-specific quota messages (\"you've hit your limit\") but not API-level `QuotaExceeded` errors.\n3. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCurrentSnapshot` lacks per-lane model/provider/health fields.\n4. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCycleReport` lacks `usage_by_provider` tracking.\n\n### Low/Informational (5)\n5. Stylesheet tests with hardcoded model names (test fixtures only)\n6. Transform tests with hardcoded model names (test fixtures only)\n7. Integration test fixtures with model names (test fixtures only)\n\n### Positive Findings\n- `fabro-llm/src/error.rs` already has `ProviderErrorKind::QuotaExceeded` and `failover_eligible()` correctly returns `true` for quota errors\n- CLI backend's `build_cli_attempt_targets()` correctly uses `central_policy_fallback_targets()` from policy.rs\n\n## Spec Highlights\n\n- **Target:** Zero model selection decisions outside `policy.rs`\n- **Acceptance criteria:** 4 measurable gates (leak count, quota fallback, status output, usage tracking)\n- **Migration phases:** 3 phases (audit+seal, status+tracking, live validation)\n- **Policy chains preserved:** MiniMax→Kimi→Opus (Write), Kimi→MiniMax→Opus (Review), Opus→Codex→MiniMax (Synth)",
     "internal.retry_count.polish": 1,
-    "failure_signature": ""
+    "response.specify": "Done. I've bootstrapped the first honest reviewed slice for the Provider Policy Stabilization lane.\n\n## Artifacts Created\n\n| Artifact | Path | Size |\n|----------|------|------|\n| spec.md | `outputs/provider-policy-stabilization/spec.md` | 209 lines |\n| review.md | `outputs/provider-policy-stabilization/review.md` | 365 lines |\n\n## Audit Summary\n\n**9 findings** documented in review.md:\n\n### Critical (1)\n1. **`fabro-synthesis/src/render.rs:2055-2090`** — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax`, `Provider::Anthropic`, `Provider::OpenAi` with specific models, bypassing `policy.rs` for holistic review lanes.\n\n### Medium (3)\n2. **`fabro-workflows/src/backend/cli.rs`** — `cli_failure_is_retryable_for_fallback()` checks for CLI-specific quota messages (\"you've hit your limit\") but not API-level `QuotaExceeded` errors.\n3. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCurrentSnapshot` lacks per-lane model/provider/health fields.\n4. **`raspberry-supervisor/src/autodev.rs`** — `AutodevCycleReport` lacks `usage_by_provider` tracking.\n\n### Low/Informational (5)\n5. Stylesheet tests with hardcoded model names (test fixtures only)\n6. Transform tests with hardcoded model names (test fixtures only)\n7. Integration test fixtures with model names (test fixtures only)\n\n### Positive Findings\n- `fabro-llm/src/error.rs` already has `ProviderErrorKind::QuotaExceeded` and `failover_eligible()` correctly returns `true` for quota errors\n- CLI backend's `build_cli_attempt_targets()` correctly uses `central_policy_fallback_targets()` from policy.rs\n\n## Spec Highlights\n\n- **Target:** Zero model selection decisions outside `policy.rs`\n- **Acceptance criteria:** 4 measurable gates (leak count, quota fallback, status output, usage tracking)\n- **Migration phases:** 3 phases (audit+seal, status+tracking, live validation)\n- **Policy chains preserved:** MiniMax→Kimi→Opus (Write), Kimi→MiniMax→Opus (Review), Opus→Codex→MiniMax (Synth)",
+    "thread.polish.current_node": "verify",
+    "thread.review.current_node": "polish",
+    "internal.fidelity": "compact",
+    "command.output": "",
+    "current.preamble": "Goal: Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`\n\n\n## Completed stages\n- **specify**: success\n  - Model: MiniMax-M2.7-highspeed, 60.0k tokens in / 505 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n- **review**: success\n  - Model: k2p5, 903 tokens in / 434 out\n  - Files: outputs/provider-policy-stabilization/review.md\n- **polish**: success\n  - Model: MiniMax-M2.7-highspeed, 28.7k tokens in / 287 out\n  - Files: outputs/provider-policy-stabilization/review.md, outputs/provider-policy-stabilization/spec.md\n",
+    "thread.specify.current_node": "review",
+    "graph.model_stylesheet": "\n            *       { backend: cli; }\n            #review { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n        ",
+    "response.review": "## Review Complete\n\n### Artifacts Written\n- `outputs/provider-policy-stabilization/review.md` — Comprehensive nemesis-style security review\n\n### Key Findings\n\n| Finding | Severity | Location |\n|---------|----------|----------|\n| **Hardcoded model selection** | Critical | `fabro-synthesis/src/render.rs:2058-2079` |\n| CLI quota detection gap | Medium | `fabro-workflows/src/backend/cli.rs:799-817` |\n| Missing provider health in status | Medium | `raspberry-supervisor/src/autodev.rs` |\n| Missing usage tracking | Medium | `raspberry-supervisor/src/autodev.rs` |\n\n### Verified Invariants\n- ✅ **API path correctly handles quota** — Uses `sdk_err.failover_eligible()` which returns true for `QuotaExceeded`\n- ✅ **Policy.rs chains are well-structured** — `WRITE_CHAIN`, `REVIEW_CHAIN`, `SYNTH_CHAIN` properly defined\n- ✅ **CLI backend uses central policy for fallback chains** — `central_policy_fallback_targets()` called correctly\n- ✅ **Process cleanup safe** — `cleanup_cli_scratch()` called before fallback attempts\n\n### Security Review Summary\n\n**Pass 1 (Trust Boundaries):**\n- Authority drift identified: synthesis layer bypassing policy layer for model selection\n- Error message text is not a stable interface for quota detection\n- No cryptographic provider attestation (acceptable for Phase 0)\n\n**Pass 2 (Coupled State):**\n- **Split-brain risk:** `render.rs` hardcoded MiniMax for holistic review lanes vs. REVIEW_CHAIN ordering (Kimi first)\n- Quota state must not consume retry budget when triggering fallback\n- Missing per-lane provider context prevents debugging provider-specific failures\n\n### Verdict\n**Spec is sound.** Implementation work is appropriately scoped for Phase 0. The critical blocker (hardcoded model selection) is clearly identified and fixable by replacing direct `ModelTarget` construction with `automation_primary_target()` calls.",
+    "failure_class": "",
+    "internal.thread_id": "polish",
+    "internal.retry_count.review": 1,
+    "internal.retry_count.specify": 1,
+    "last_stage": "polish"
   },
   "logs": [],
   "node_outcomes": {
@@ -109,13 +115,23 @@
       ],
       "duration_ms": 133440
     },
+    "verify": {
+      "status": "success",
+      "context_updates": {
+        "command.output": "",
+        "command.stderr": ""
+      },
+      "notes": "Script completed: true",
+      "duration_ms": 3
+    },
     "start": {
       "status": "success",
       "duration_ms": 0
     }
   },
-  "next_node_id": "verify",
+  "next_node_id": "exit",
   "node_visits": {
+    "verify": 1,
     "start": 1,
     "review": 1,
     "specify": 1,
