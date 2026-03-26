@@ -5,6 +5,7 @@
 On the next replay of `greenfield-bootstrap-reliability-live-tonofcrap-validation`, the source lane will:
 
 - stop failing quality because of unrelated repo-wide lane-sizing hits such as `lib/crates/fabro-synthesis/src/render.rs`
+- stop failing quality because of the repo-wide semantic-risk regex self-matching `lib/crates/fabro-synthesis/src/render.rs`
 - keep its validation scope focused on the lane's own artifacts and evidence
 - require truthful reporting around Milestone 5, so a short smoke run cannot be written up as full 30-cycle validation
 
