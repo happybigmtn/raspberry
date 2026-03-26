@@ -1,0 +1,9 @@
+{
+  "status": "fail",
+  "duration_ms": 53,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T18:47:42.956230024+00:00",
+  "updated_at": "2026-03-26T18:47:42.956233797+00:00",
+  "failure_reason": "Script failed with exit code: 101\n\n## stderr\nerror: no such command: `nextest`\n\nhelp: a command with a similar name exists: `test`\n\nhelp: view all installed commands with `cargo --list`\nhelp: find a package to install `nextest` with `cargo search cargo-nextest`\n"
+}
