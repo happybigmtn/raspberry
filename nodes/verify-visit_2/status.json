@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 3196,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T23:20:25.892489722+00:00",
+  "updated_at": "2026-03-26T23:20:25.892493838+00:00",
+  "notes": "Script completed: cargo check --workspace"
+}
