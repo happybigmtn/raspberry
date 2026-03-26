@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Contract created at `.fabro-work/contract.md`. Summary:\n\n## Status\n- **fabro-db**: 5/5 passing ✓\n- **fabro-mcp**: 17/17 passing ✓  \n- **fabro-github**: 40/40 passing ✓\n- **fabro-cli -- synth**: ",
+    "response.contract": "Contract created at `.fabro-work/contract.md`. Summary:\n\n## Status\n- **fabro-db**: 5/5 passing ✓\n- **fabro-mcp**: 17/17 passing ✓  \n- **fabro-github**: 40/40 passing ✓\n- **fabro-cli -- synth**: 10/13 passing (3 failing)\n- **fabro-synthesis -- render**: 59/62 passing (3 failing)\n\n## Total Failing Tests (6)\n1. `synth_evolve_preview_stays_bounded_to_manifest_and_report`\n2. `synth_evolve_updates_existing_package`\n3. `synth_evolve_can_import_current_package_without_blueprint_flag`\n4. `inject_workspace_verify_lanes_adds_parent_holistic_gauntlet`\n5. `inject_workspace_verify_lanes_document_release_is_hard_gate_and_retro_is_tail`\n6. `inject_workspace_verify_lanes_adds_conditional_parent_lanes_for_sensitive_plan`\n\n## Deliverables\n- `.fabro-work/implementation.md` — Root cause analysis and fix plan\n- `.fabro-work/verification.md` — Test execution results\n- `.fabro-work/quality.md` — Test quality assessment\n- `.fabro-work/promotion.md` — CI integration notes\n- `.fabro-work/integration.md` — Cross-crate integration verification",
+    "last_stage": "contract"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 28307,
+    "output_tokens": 431
+  },
+  "duration_ms": 221453,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:38:13.953249461+00:00",
+  "updated_at": "2026-03-26T19:38:13.953251917+00:00"
+}
