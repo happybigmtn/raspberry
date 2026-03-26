@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "response.contract": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all in `.fabro-work/`\n- **5 acceptance criteria** (all verifiable by command or file inspection):\n  1. `fabro synth create` exits 0 on tonofcrap\n  2. Scaffold stage is a dependency of every non-scaffold stage in the generated graph\n  3. `raspberry autodev --max-cycles 30` completes without infrastructure-caused failures\n  4. No silent `any[]`-type-gate false-pass after scaffold completes\n  5. Bootstrap verification gate is present in the rendered workflow graph\n- **Out of scope:** All implementation work (scaffold ordering, bootstrap gate, asset resolution, type-aware quality) is owned by sibling lanes; tonofcrap is a read-only validation target; no source changes from this lane",
+    "last_stage": "contract",
+    "last_response": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 23422,
+    "output_tokens": 231
+  },
+  "duration_ms": 60630,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:43:47.210743745+00:00",
+  "updated_at": "2026-03-26T19:43:47.210745699+00:00"
+}

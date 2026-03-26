@@ -1,23 +1,29 @@
 {
-  "timestamp": "2026-03-26T19:42:38.700487321Z",
-  "current_node": "preflight",
+  "timestamp": "2026-03-26T19:43:47.211056904Z",
+  "current_node": "contract",
   "completed_nodes": [
     "start",
-    "preflight"
+    "preflight",
+    "contract"
   ],
   "node_retries": {
     "preflight": 1,
+    "contract": 1,
     "start": 1
   },
   "context_values": {
-    "current.preamble": "Goal: Live Tonofcrap Validation\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "internal.retry_count.contract": 1,
+    "current.preamble": "Goal: Live Tonofcrap Validation\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\ntrue\ntrue`\n  - Stdout: (empty)\n  - Stderr: (empty)\n",
+    "thread.preflight.current_node": "contract",
     "failure_signature": "",
     "thread.start.current_node": "preflight",
     "internal.node_visit_count": 1,
     "command.stderr": "",
+    "last_response": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all",
     "command.output": "",
-    "internal.thread_id": "start",
-    "current_node": "preflight",
+    "response.contract": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all in `.fabro-work/`\n- **5 acceptance criteria** (all verifiable by command or file inspection):\n  1. `fabro synth create` exits 0 on tonofcrap\n  2. Scaffold stage is a dependency of every non-scaffold stage in the generated graph\n  3. `raspberry autodev --max-cycles 30` completes without infrastructure-caused failures\n  4. No silent `any[]`-type-gate false-pass after scaffold completes\n  5. Bootstrap verification gate is present in the rendered workflow graph\n- **Out of scope:** All implementation work (scaffold ordering, bootstrap gate, asset resolution, type-aware quality) is owned by sibling lanes; tonofcrap is a read-only validation target; no source changes from this lane",
+    "internal.thread_id": "preflight",
+    "current_node": "contract",
     "internal.retry_count.preflight": 1,
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMNTNRQ98FRA9RZ7BWYBQ6AQ/worktree",
     "failure_class": "",
@@ -26,6 +32,7 @@
     "graph.rankdir": "LR",
     "internal.run_id": "01KMNTNRQ98FRA9RZ7BWYBQ6AQ",
     "internal.fidelity": "compact",
+    "last_stage": "contract",
     "outcome": "success",
     "internal.retry_count.start": 1
   },
@@ -40,14 +47,30 @@
       "notes": "Script completed: set +e\ntrue\ntrue",
       "duration_ms": 310
     },
+    "contract": {
+      "status": "success",
+      "context_updates": {
+        "response.contract": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all in `.fabro-work/`\n- **5 acceptance criteria** (all verifiable by command or file inspection):\n  1. `fabro synth create` exits 0 on tonofcrap\n  2. Scaffold stage is a dependency of every non-scaffold stage in the generated graph\n  3. `raspberry autodev --max-cycles 30` completes without infrastructure-caused failures\n  4. No silent `any[]`-type-gate false-pass after scaffold completes\n  5. Bootstrap verification gate is present in the rendered workflow graph\n- **Out of scope:** All implementation work (scaffold ordering, bootstrap gate, asset resolution, type-aware quality) is owned by sibling lanes; tonofcrap is a read-only validation target; no source changes from this lane",
+        "last_stage": "contract",
+        "last_response": "Done. Created `.fabro-work/contract.md` defining DONE for this lane.\n\n**Summary:**\n\n- **5 deliverables:** `implementation.md`, `verification.md`, `quality.md`, `promotion.md`, `integration.md` — all"
+      },
+      "notes": "Stage completed: contract",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 23422,
+        "output_tokens": 231
+      },
+      "duration_ms": 60630
+    },
     "start": {
       "status": "success",
       "duration_ms": 325
     }
   },
-  "next_node_id": "contract",
+  "next_node_id": "implement",
   "node_visits": {
     "preflight": 1,
+    "contract": 1,
     "start": 1
   }
 }
