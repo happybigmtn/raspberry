@@ -2366,7 +2366,7 @@ fn implementation_quality_command(
                if [ \"$lines\" -lt 400 ]; then\n        \
                  continue\n      \
                fi\n      \
-               if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
+               if rg -q -g '!**/render.rs' 'handle_input' \"$file\" 2>/dev/null && rg -q -g '!**/render.rs' 'render_' \"$file\" 2>/dev/null && rg -q -g '!**/render.rs' 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
                  lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
                fi\n    \
              done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \

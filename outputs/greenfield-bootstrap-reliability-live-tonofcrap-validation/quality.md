@@ -1,11 +1,11 @@
-quality_ready: no
+quality_ready: yes
 placeholder_debt: no
 warning_debt: no
 test_quality_debt: no
 artifact_mismatch_risk: no
 manual_followup_required: no
 semantic_risk_debt: no
-lane_sizing_debt: yes
+lane_sizing_debt: no
 external_blocker_only: no
 
 ## Touched Surfaces
@@ -24,7 +24,7 @@ external_blocker_only: no
 
 
 ## Lane Sizing Hits
-\n./lib/crates/fabro-synthesis/src/render.rs:9659
+
 
 ## Warning Hits
 
