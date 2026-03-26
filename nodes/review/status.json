@@ -1,0 +1,25 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "## Review Complete\n\nI've completed the Nemesis-style security review of the **Provider Policy Stabilization** lane. The review is written to `outputs/provider-policy-stabilization/review.md`.\n\n### Key",
+    "response.review": "## Review Complete\n\nI've completed the Nemesis-style security review of the **Provider Policy Stabilization** lane. The review is written to `outputs/provider-policy-stabilization/review.md`.\n\n### Key Findings\n\n**Pass 1 — First-Principles Challenge:**\n- **Trust boundary violation**: `fabro-synthesis/src/render.rs` contains 4 confirmed leak points where `ModelTarget` literals are constructed, bypassing `policy.rs`\n- Lane ID suffixes (`-holistic-review-minimax`, `-codex-unblock`) can override policy routing — potential for cost surprises and capability floor violations\n- Quota detection conflates quota errors, auth errors, and timeouts in `cli_failure_is_retryable_for_fallback()`\n\n**Pass 2 — Coupled-State Review:**\n- **GAPPED**: `provider_used.json` is written but never ingested into `DispatchOutcome` or supervisor state\n- **DECOUPLED**: CLI path uses string matching; API path uses structured `ProviderErrorKind::QuotaExceeded` — they can drift\n- **VIOLATED**: Policy chain ordering is ignored for special lane suffixes\n- **INCOMPLETE**: Usage tracking is freeform string, no per-provider breakdown\n\n### Verdict: ✅ APPROVE for Implementation (with conditions)\n\n| Aspect | Rating |\n|--------|--------|\n| Correctness | ✅ Good — all spec claims validated through source inspection |\n| Completeness | ⚠️ Good with gaps noted |\n| Security posture | ⚠️ Acceptable — risks identified and mitigatable |\n| Milestone fit | ✅ Appropriate for first honest reviewed slice |\n\n### Required Before Implementation\n\n1. **Operator confirmation**: Is `gpt-5.4` (hardcoded in render.rs) intentionally different from `gpt-5.3-codex` (in policy.rs)?\n2. **Add chain-exhaustion behavior**: Define what happens when all providers fail\n3. **Add MiniMax/Kimi quota signals**: Their error message patterns are missing from CLI fallback detection",
+    "last_stage": "review"
+  },
+  "notes": "Stage completed: review",
+  "usage": {
+    "model": "k2p5",
+    "input_tokens": 2330,
+    "output_tokens": 433
+  },
+  "files_written": [
+    "outputs/provider-policy-stabilization/review.md"
+  ],
+  "files_touched": [
+    "outputs/provider-policy-stabilization/review.md"
+  ],
+  "duration_ms": 148493,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T19:37:56.803391808+00:00",
+  "updated_at": "2026-03-26T19:37:56.803393248+00:00"
+}
