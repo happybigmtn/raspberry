@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-03-26T19:01:52.327642218Z",
+  "current_node": "main",
+  "completed_nodes": [
+    "start",
+    "main"
+  ],
+  "node_retries": {
+    "main": 1,
+    "start": 1
+  },
+  "context_values": {
+    "graph.goal": "Verify the sandbox can lint and test the project",
+    "current_node": "main",
+    "internal.work_dir": "/home/r/.cache/rust-tmp/.tmpSKGakR/.fabro/runs/20260326-dry-run-new-smoke-run-123/worktree",
+    "internal.run_id": "new-smoke-run-123",
+    "internal.retry_count.main": 1,
+    "last_stage": "main",
+    "thread.start.current_node": "main",
+    "internal.thread_id": "start",
+    "internal.fidelity": "compact",
+    "outcome": "success",
+    "internal.retry_count.start": 1,
+    "last_response": "[Simulated] Response for stage: main",
+    "graph.rankdir": "LR",
+    "failure_signature": "",
+    "current.preamble": "Goal: Verify the sandbox can lint and test the project\n",
+    "failure_class": "",
+    "internal.node_visit_count": 1,
+    "response.main": "[Simulated] Response for stage: main"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    },
+    "main": {
+      "status": "success",
+      "context_updates": {
+        "last_stage": "main",
+        "last_response": "[Simulated] Response for stage: main",
+        "response.main": "[Simulated] Response for stage: main"
+      },
+      "notes": "[Simulated] main",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "exit",
+  "node_visits": {
+    "start": 1,
+    "main": 1
+  }
+}
