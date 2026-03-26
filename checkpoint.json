@@ -1,28 +1,34 @@
 {
-  "timestamp": "2026-03-26T19:01:54.159246458Z",
-  "current_node": "fork",
+  "timestamp": "2026-03-26T19:01:54.981650124Z",
+  "current_node": "merge",
   "completed_nodes": [
     "start",
-    "fork"
+    "fork",
+    "merge"
   ],
   "node_retries": {
     "fork": 1,
+    "merge": 1,
     "start": 1
   },
   "context_values": {
     "internal.retry_count.fork": 1,
-    "current_node": "fork",
+    "parallel.fan_in.best_id": "branch1",
+    "current_node": "merge",
     "parallel.branch_count": 2,
     "internal.run_id": "01KMNRAQEW32N93EGTCVKYDK1M",
     "internal.node_visit_count": 1,
     "thread.start.current_node": "fork",
     "internal.retry_count.start": 1,
     "graph.goal": "Test parallel and fan-in execution",
-    "internal.thread_id": "start",
+    "internal.retry_count.merge": 1,
+    "internal.thread_id": "fork",
     "internal.fidelity": "compact",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNRAQEW32N93EGTCVKYDK1M/worktree",
-    "current.preamble": "Goal: Test parallel and fan-in execution\n",
+    "current.preamble": "Goal: Test parallel and fan-in execution\n\n## Completed stages\n- **fork**: success\n\n## Context\n- parallel.branch_count: 2\n- parallel.results: [{\"id\":\"branch1\",\"status\":\"success\"},{\"id\":\"branch2\",\"status\":\"success\"}]\n",
     "failure_signature": "",
+    "thread.fork.current_node": "merge",
+    "parallel.fan_in.best_outcome": "success",
     "outcome": "success",
     "parallel.results": [
       {
@@ -38,6 +44,15 @@
   },
   "logs": [],
   "node_outcomes": {
+    "merge": {
+      "status": "success",
+      "context_updates": {
+        "parallel.fan_in.best_outcome": "success",
+        "parallel.fan_in.best_id": "branch1"
+      },
+      "notes": "[Simulated] Selected best candidate: branch1",
+      "duration_ms": 0
+    },
     "start": {
       "status": "success",
       "notes": "[Simulated] start",
@@ -50,9 +65,10 @@
       "duration_ms": 0
     }
   },
-  "next_node_id": "merge",
+  "next_node_id": "review",
   "node_visits": {
     "start": 1,
-    "fork": 1
+    "fork": 1,
+    "merge": 1
   }
 }
