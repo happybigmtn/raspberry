@@ -1,0 +1,25 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "fixup",
+    "last_response": "",
+    "response.fixup": ""
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 90699,
+    "output_tokens": 16384
+  },
+  "files_written": [
+    "lib/crates/raspberry-supervisor/src/dispatch.rs"
+  ],
+  "files_touched": [
+    "lib/crates/raspberry-supervisor/src/dispatch.rs"
+  ],
+  "duration_ms": 1788348,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:23:16.777281612+00:00",
+  "updated_at": "2026-03-26T20:23:16.777292683+00:00"
+}
