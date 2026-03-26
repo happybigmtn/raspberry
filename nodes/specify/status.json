@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Both durable artifacts are in place. Here is a summary of the findings and decisions documented in each:\n\n---\n\n## `outputs/autodev-efficiency-and-dispatch/spec.md` (198 lines)\n\nThe durable spec captur",
+    "response.specify": "Both durable artifacts are in place. Here is a summary of the findings and decisions documented in each:\n\n---\n\n## `outputs/autodev-efficiency-and-dispatch/spec.md` (198 lines)\n\nThe durable spec captures **four root-cause findings** from the 2026-03-26 live evidence:\n\n1. **`infer_repo_root_fallback` does not recognize MALINKA layout** — The function in `fabro-workflows/src/workflow.rs` only detects FABRO package layout (root-level `prompts/`, `workflows/`, `run-configs/`). For MALINKA forks these are at `malinka/prompts/`, `malinka/workflows/`, `malinka/run-configs/`, which are invisible. The fallback chain degrades to `start_cwd + ~/.fabro`, and `~/.fabro` is not the target repo, causing prompt resolution to fail silently. The fix adds MALINKA layout detection alongside the existing FABRO check.\n\n2. **Synth command is properly exposed** — The CLI registration in `main.rs` and `commands/synth.rs` is structurally sound. The observed \"synth not found\" failure is a stale binary issue, not a routing problem. A bootstrap test is recommended but no structural change is needed.\n\n3. **Stale `running`/`failed` lane truth is already handled** — `refresh_program_state` in `program_state.rs` already reclassifies dead running lanes (`FailureKind::TransientLaunchFailure`) and stalled lanes (`FailureKind::StallWatchdog`). No code change needed; a unit test is recommended.\n\n4. **Dispatch-state telemetry is absent** — `AutodevCycleReport` and `AutodevCurrentSnapshot` are missing `idle_cycle`, `ready_but_undispatched`, `stale_running_reclaimed`, and `dispatch_rate` fields. These are additive and backward-compatible.\n\nThe spec includes a complete runtime contract explaining the execution path from `raspberry autodev` dispatch through `FileInliningTransform` prompt resolution, plus nine acceptance criteria with evidence types.\n\n---\n\n## `outputs/autodev-efficiency-and-dispatch/review.md` (253 lines)\n\nThe first-review document provides:\n\n- **Finding 1a**: `synth` command exposure — not reproducible; bootstrap test recommended\n- **Finding 1b**: `infer_repo_root_fallback` — root cause confirmed, fix is well-scoped to one function\n- **Task 2**: Stale lane truth — already implemented; unit test recommended\n- **Task 3**: Telemetry — three new fields identified with derivability notes\n- **Task 4**: Live validation — correctly gated behind Tasks 1 and 3\n- **Risk table**: Four risks assessed with likelihood, impact, and mitigations\n- **Six recommendations**: Prioritized implementation order (fix `infer_repo_root_fallback` first, add MALINKA test, add stale-lane test, keep `AutodevCycleReport` additive, measure cycle time before reordering evolve)\n- **Three open questions**: `start_cwd` reliability, `refresh_program_state` timing, `dispatch_rate` formula",
+    "last_stage": "specify"
+  },
+  "notes": "Stage completed: specify",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 109655,
+    "output_tokens": 672
+  },
+  "files_written": [
+    "outputs/autodev-efficiency-and-dispatch/review.md",
+    "outputs/autodev-efficiency-and-dispatch/spec.md"
+  ],
+  "files_touched": [
+    "outputs/autodev-efficiency-and-dispatch/review.md",
+    "outputs/autodev-efficiency-and-dispatch/spec.md"
+  ],
+  "duration_ms": 319508,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T19:37:39.513489979+00:00",
+  "updated_at": "2026-03-26T19:37:39.513491618+00:00"
+}
