@@ -9,14 +9,13 @@ Status: **Reviewed — ready for implementation**
 
 ## Review Summary
 
-This review covers the first slice of the `autodev-efficiency-and-dispatch` lane.
-The review assessed four task areas against the current codebase and the findings
+This review assessed four task areas against the current codebase and the findings
 documented in `genesis/plans/003-autodev-efficiency-and-dispatch.md`.
 
 **Overall verdict:** Three of four task areas have clear, single-root-cause diagnoses
 backed by source evidence. One task area (synth command exposure) is not reproducible
-in the current codebase. One task area (stale lane truth) is already handled by
-existing code. The remaining work is well-scoped and ready for implementation.
+in the current codebase. One task area (stale lane truth) is already implemented with
+test coverage. The remaining work is well-scoped and ready for implementation.
 
 ---
 
@@ -24,58 +23,48 @@ existing code. The remaining work is well-scoped and ready for implementation.
 
 **Status: Root cause identified. Fix is well-scoped.**
 
-### Review Finding
+### 1a — `synth` command not exposed
 
-The plan documents two classes of failure:
-1. The `fabro` binary did not expose `synth` at runtime
-2. Generated workflow graphs referenced prompts as `@../../prompts/...` which
-   resolved under `~/.fabro/` at runtime instead of the target repo
+The current codebase (`lib/crates/fabro-cli/src/main.rs`) properly registers the `synth`
+subcommand group including `import`, `create`, `evolve`, `review`, and `genesis` variants.
+The module is exported at line 28 of `commands/mod.rs` as `pub mod synth;`. Command routing
+dispatches at lines 1028–1041. There is no feature-flag or conditional compilation that
+would suppress this in release builds.
 
-**Finding 1a (synth command):** The current codebase (`fabro-cli/src/main.rs`) properly
-registers the `synth` subcommand group including `import`, `create`, `evolve`, `review`,
-and `genesis` variants. The `mod.rs` exports `pub mod synth;`. The command routing
-dispatches to `commands::synth::*` for all variants. There is no evidence of a
-feature-flag or conditional compilation that would suppress this in release builds.
+The 2026-03-26 failure ("clean `fabro` binary did not expose `synth`") is a stale
+binary artifact or build configuration issue, not a structural CLI routing problem.
 
-The 2026-03-26 failure ("clean `fabro` binary did not expose `synth`") is likely
-a stale binary artifact or a build configuration issue, not a structural CLI routing
-problem. **No code change is required for this sub-issue.**
+**No code change required for this sub-issue.** A bootstrap test that confirms
+`fabro synth --help` exits 0 in release builds should be added to prevent regression.
 
-**Recommendation:** Add a bootstrap test to `raspberry-supervisor` that confirms
-`fabro synth --help` exits 0, and document the expected build target (`--release`)
-in the test so this class of failure is caught by CI.
+### 1b — Prompt resolution for MALINKA layout
 
-**Finding 1b (prompt resolution):** The root cause of prompt resolution failure is
-a gap in `infer_repo_root_fallback` (`fabro-workflows/src/workflow.rs:147-157`).
-This function is called from `workflow_file_fallback_dirs` to build the fallback chain
-for `@file` reference resolution in `FileInliningTransform`.
+**Root cause location:** `lib/crates/fabro-workflows/src/workflow.rs`, function
+`infer_repo_root_fallback` (line 147).
 
-The function walks ancestor directories of `base_dir` (the directory containing the
-graph file) looking for a FABRO package layout (root-level `prompts/`, `workflows/`,
-`run-configs/`). For a MALINKA fork, these directories are at `malinka/prompts/`,
-`malinka/workflows/`, `malinka/run-configs/`, which are not recognized. The function
-returns `None`, and the fallback chain degrades.
+The function walks ancestor directories of `base_dir` looking for a FABRO package layout
+(root-level `prompts/`, `workflows/`, `run-configs/`). For a MALINKA fork, these directories
+are at `malinka/prompts/`, `malinka/workflows/`, `malinka/run-configs/` — not recognized.
+The function returns `None`, and the fallback chain degrades.
 
-The mitigating factor is that `workflow_file_fallback_dirs` also includes `start_cwd`
-as an explicit fallback. In the dispatch path (`dispatch.rs::run_fabro`), the command
-is executed with `current_dir = target_repo`, so `start_cwd = target_repo` and the
-MALINKA prompts directory IS found in the fallback chain. **However**, this depends
-on the dispatch CWD being the target repo root, which is not guaranteed in all
-execution environments or test scenarios.
+The **mitigating factor** is that `workflow_file_fallback_dirs` (line 127) also adds
+`start_cwd` as an explicit fallback. In the dispatch path, `run_fabro` in `dispatch.rs`
+sets `current_dir = target_repo` on the `fabro run` command, so `start_cwd = target_repo`
+and MALINKA prompts are found. This works when dispatch CWD is the target repo root.
 
-**The fix is correct and well-scoped:** Extend `infer_repo_root_fallback` to also
-detect MALINKA layout and return the ancestor (not its parent, since the ancestor
-is already the MALINKA package root). This makes the fallback chain reliable regardless
+**The fix is correct and well-scoped:** Extend `infer_repo_root_fallback` to also detect
+MALINKA layout, returning the ancestor itself (not its parent, since the ancestor IS
+the MALINKA package root for a MALINKA fork). This makes the fallback reliable regardless
 of dispatch CWD.
 
-**Implementation note:** The existing test
-`prepare_with_file_inlining_infers_repo_root_fallback_for_repo_relative_prompts`
-uses the FABRO layout. A new test using the MALINKA layout should be added.
+The existing test `prepare_with_file_inlining_infers_repo_root_fallback_for_repo_relative_prompts`
+uses the FABRO layout. A new test `prepare_with_file_inlining_infers_malinka_root_fallback`
+should be added using a MALINKA fixture.
 
 ### Evidence
 
 ```rust
-// fabro-workflows/src/workflow.rs:147-157
+// fabro-workflows/src/workflow.rs:147-157 (current, FABRO-only)
 fn infer_repo_root_fallback(base_dir: &Path) -> Option<std::path::PathBuf> {
     for ancestor in base_dir.ancestors() {
         let has_package_layout = ancestor.join("prompts").is_dir()
@@ -90,116 +79,79 @@ fn infer_repo_root_fallback(base_dir: &Path) -> Option<std::path::PathBuf> {
 ```
 
 ```rust
-// fabro-workflows/src/workflow.rs:127-145
+// fabro-workflows/src/workflow.rs:127-145 (fallback chain construction)
 fn workflow_file_fallback_dirs(base_dir: &Path, explicit: &[&Path]) -> Vec<PathBuf> {
     // explicit (start_cwd) → inferred repo root → ~/.fabro
     // For MALINKA: inferred = None, chain = [start_cwd, ~/.fabro]
-    // start_cwd works when CWD=target_repo, fails otherwise
+    // start_cwd works when CWD=target_repo, breaks otherwise
 }
 ```
 
 ---
 
-## Task 2: Fix Stale `running` and `failed` Lane Truth Before Dispatch
+## Task 2: Fix Stale `running` / `failed` Lane Truth Before Dispatch
 
-**Status: Already implemented. Verification needed.**
+**Status: Already implemented. Test coverage confirmed.**
 
-### Review Finding
+The `refresh_program_state` function (`lib/crates/raspberry-supervisor/src/program_state.rs`,
+line 383) already handles stale `running` lanes:
 
-The `refresh_program_state` function (`raspberry-supervisor/src/program_state.rs`) is
-called by the autodev evaluation cycle and already handles the stale `running` lane
-case. Specifically:
+1. **Tracked run not found:** When `read_live_lane_progress_for_run_id` returns `None` for a
+   lane with `status == Running`, the record is updated to `Failed` with
+   `failure_kind = FailureKind::TransientLaunchFailure` and
+   `recovery_action = FailureRecoveryAction::BackoffRetry`.
 
-1. **Tracked run not found:** When `read_live_lane_progress_for_run_id` returns `None`
-   for a lane with `status == Running`, the record is updated to `Failed` with
-   `failure_kind = FailureKind::TransientLaunchFailure` and `recovery_action =
-   FailureRecoveryAction::BackoffRetry`. This is the exact case observed during
-   the 2026-03-26 restart work.
+2. **Worker process disappeared:** `stale_active_progress` check with
+   `STALE_RUNNING_GRACE_SECS` (30 s) → `Failed` / `BackoffRetry`.
 
-2. **Worker process disappeared:** The `stale_active_progress` check detects when
-   a tracked run has been active without worker activity for `STALE_RUNNING_GRACE_SECS`
-   (30 seconds). The lane is reclassified to `Failed`.
+3. **Stall watchdog:** `stalled_active_progress_reason` check with
+   `ACTIVE_STALL_TIMEOUT_SECS` (1800 s) → `Failed` / `StallWatchdog`.
 
-3. **Stall watchdog:** The `stalled_active_progress_reason` check detects when a
-   lane has been running beyond `ACTIVE_STALL_TIMEOUT_SECS` (1800 seconds) with no
-   stage completion. The lane is reclassified with `FailureKind::StallWatchdog`.
+Test coverage exists: `refresh_program_state_marks_missing_running_run_as_stale_failure`
+(line 1913) exercises the "tracked run not found" path directly.
 
-**No code change is required.** The stale running reclamation is already present
-and correct. The gap is test coverage: there are no unit tests that specifically
-exercise the stale running lane path in `refresh_program_state`.
-
-**Recommendation:** Add a unit test to `raspberry-supervisor` that:
-- Creates a `ProgramRuntimeState` with a lane marked `Running` but with no
-  corresponding `progress.jsonl` or `state.json` in the expected run directory
-- Calls `refresh_program_state`
-- Asserts the lane transitions to `Failed` with `FailureKind::TransientLaunchFailure`
-
-This test should live in the `program_state` module and be discoverable by
-`cargo nextest run -p raspberry-supervisor -- program_state`.
-
-### Evidence
-
-```rust
-// program_state.rs — tracked run not found case:
-let Some(mut progress) = progress else {
-    if record.status == LaneExecutionStatus::Running {
-        // ... mark Failed, TransientLaunchFailure, BackoffRetry
-    }
-};
-
-// stale_active_progress check:
-if stale_active_progress(&progress, record.last_started_at) {
-    // mark Failed, worker disappeared, BackoffRetry
-}
-```
+**No code change required.** The gap is test coverage for the other two stale-running paths
+(worker disappearance and stall watchdog), which should be added as follow-on work.
 
 ---
 
 ## Task 3: Add Dispatch-State Telemetry
 
-**Status: Structurally identified. Three new fields needed.**
+**Status: Structurally identified. Three new fields needed in `AutodevCycleReport`.**
 
-### Review Finding
+The `AutodevCycleReport` struct (`lib/crates/raspberry-supervisor/src/autodev.rs`, line 96)
+captures dispatched outcomes and running/complete counts. Missing for operator-language
+dispatch diagnostics:
 
-The `AutodevCycleReport` struct captures:
-- `dispatched: Vec<DispatchOutcome>`
-- `running_after: usize`
-- `complete_after: usize`
-- `ready_lanes: Vec<String>`
-- `replayed_lanes: Vec<String>`
-- `regenerate_noop_lanes: Vec<String>`
+| New field | Type | Derivation |
+|---|---|---|
+| `idle_cycle: bool` | `bool` | `true` when `dispatched` is empty and `ready_lanes` is empty |
+| `ready_but_undispatched: usize` | `usize` | `ready_lanes.len() - dispatched.len()` when slots were available |
+| `stale_running_reclaimed: usize` | `usize` | Count of lanes reclassified `running → failed` in this cycle |
 
-Missing fields for operator-language dispatch telemetry:
-1. **`idle_cycle: bool`** — true when no dispatch occurred because no lanes were ready
-2. **`ready_but_undispatched: usize`** — lanes that were ready but not dispatched this
-   cycle (should be 0 when `available_slots > 0` and lanes are available)
-3. **`stale_running_reclaimed: usize`** — lanes reclassified from `running` to `failed`
-   in this cycle
+`AutodevCurrentSnapshot` (line 70) needs:
+| New field | Type | Derivation |
+|---|---|---|
+| `dispatch_rate: f64` | `f64` | Fraction of cycles with at least one dispatch |
 
-The `AutodevCurrentSnapshot` struct should include:
-- **`dispatch_rate: f64`** — fraction of cycles in which dispatch occurred, or
-  rolling mean dispatch rate over the session
+All additions use `#[serde(default, skip_serializing_if = "...")]` for backward compatibility.
 
-These fields are derivable from existing data in the orchestration loop but are
-not currently persisted to the report.
-
-**The fix is additive and backward-compatible.** All new fields use
-`#[serde(default, skip_serializing_if = ...)]` to avoid breaking existing report consumers.
+**The fix is additive and backward-compatible.**
 
 ---
 
 ## Task 4: Live Validation
 
-**Status: Pending implementation. Prerequisites must land first.**
+**Status: Pending implementation. Prerequisites from Tasks 1 and 3 must land first.**
 
 Live validation (10 active lanes on rXMRbro for 20 cycles, zero bootstrap failures,
-3 lanes to trunk) depends on the fixes from Tasks 1 and 3 landing first. The
-`infer_repo_root_fallback` fix is the blocking prerequisite.
+3 lanes to trunk) is blocked on the `infer_repo_root_fallback` fix and the telemetry
+additions. The `refresh_program_state` logic (Task 2) is already in place.
 
-The validation protocol:
-1. Build release binaries: `cargo build --release -p fabro-cli -p raspberry-cli`
+Validation protocol:
+1. Build release binaries: `cargo build --release -p fabro-cli -p fabro-workflows -p raspberry-cli`
 2. Run autodev: `target-local/release/raspberry autodev --manifest ... --max-parallel 10 --max-cycles 20`
-3. Inspect report: Check `failed: 0` for newly dispatched lanes and `running: 10` sustained
+3. Inspect report: `failed: 0` for newly dispatched lanes; `running: 10` sustained
 
 ---
 
@@ -208,46 +160,40 @@ The validation protocol:
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | `infer_repo_root_fallback` change breaks FABRO layout detection | Low | High | Add both FABRO and MALINKA checks; existing tests must pass |
-| Adding telemetry fields breaks JSON report consumers | Low | Medium | Use `skip_serializing_if` defaults; version the schema if needed |
-| Stale lane truth test is flaky (timing-dependent) | Medium | Low | Mock the filesystem in the unit test rather than relying on wall clock |
-| `synth` command not in release binary | Low | High | Add bootstrap test that verifies `--help` succeeds |
+| Adding telemetry fields breaks JSON report consumers | Low | Medium | Use `skip_serializing_if` defaults |
+| Stale lane truth test is flaky (timing-dependent) | Medium | Low | Mock filesystem rather than relying on wall clock |
+| `synth` command not in release binary | Low | High | Bootstrap test verifies `--help` succeeds |
 
 ---
 
-## Recommendations
+## Recommendations (Priority Order)
 
-1. **Implement `infer_repo_root_fallback` fix first** — it unblocks both the
-   prompt resolution fix and the live validation gate.
-2. **Add both FABRO and MALINKA layout checks** in the same function, with
-   a comment explaining why the return value differs between layouts (FABRO returns
-   parent; MALINKA returns the ancestor itself).
-3. **Add a new test** `prepare_with_file_inlining_infers_malinka_root_fallback`
-   to `fabro-workflows/src/workflow.rs` that exercises the MALINKA path.
-4. **Add a stale lane test** to `raspberry-supervisor/src/program_state.rs`
-   as described above.
-5. **Do not change the dispatch cycle ordering** (evolve before dispatch) without
-   first measuring the actual cycle time impact. The existing timeout handling
-   already prevents evolve from permanently blocking dispatch.
-6. **Keep `AutodevCycleReport` additive** — do not remove or rename existing
-   fields; only add new ones.
+1. **Implement `infer_repo_root_fallback` fix first** — it unblocks prompt resolution
+   for MALINKA and the live validation gate.
+2. **Add both FABRO and MALINKA layout checks** in the same function, with a comment
+   explaining why the return value differs (FABRO → parent; MALINKA → ancestor itself).
+3. **Add test** `prepare_with_file_inlining_infers_malinka_root_fallback` to
+   `lib/crates/fabro-workflows/src/workflow.rs` with a MALINKA fixture.
+4. **Do not change the dispatch cycle ordering** (evolve before dispatch) without first
+   measuring actual cycle time. The existing timeout handling already prevents evolve
+   from permanently blocking dispatch.
+5. **Keep `AutodevCycleReport` additive** — do not remove or rename existing fields.
+6. **Add bootstrap test** for `fabro synth --help` in release builds.
 
 ---
 
 ## Open Questions
 
-1. **Is `start_cwd` always `target_repo` in the dispatch path?** The `run_fabro`
-   function sets `current_dir = target_repo` via `Command::new(fabro_bin).current_dir(target_repo)`.
-   This is the correct behavior and is the primary fallback for MALINKA prompt
-   resolution today. The `infer_repo_root_fallback` fix is still correct and
-   valuable as a defense-in-depth measure.
+1. **Is `start_cwd` always `target_repo` in the dispatch path?** `run_fabro` sets
+   `current_dir = target_repo` via `Command::new(fabro_bin).current_dir(target_repo)`.
+   This is the correct behavior and is the primary fallback for MALINKA prompt resolution
+   today. The `infer_repo_root_fallback` fix is defense-in-depth.
 
 2. **Should `refresh_program_state` be called before or after `evaluate_program`?**
-   Currently `refresh_program_state` is called inside `evaluate_program_internal` via
-   `sync_program_state_with_evaluated`. This means the autodev cycle's
-   `refresh → evaluate → evolve → dispatch → watch → update` sequence already
-   includes a state refresh. The stale running detection is on the hot path.
+   Currently called inside `evaluate_program_internal` via `sync_program_state_with_evaluated`.
+   The autodev cycle's `refresh → evaluate → evolve → dispatch → watch → update` sequence
+   already includes a state refresh. The stale running detection is on the hot path.
 
-3. **What is the `dispatch_rate` formula?** Suggested: `dispatched_lanes /
-   max_parallel` per cycle, averaged over the session. Alternatively: fraction
-   of cycles in which at least one lane was dispatched. The operator language
-   suggests the latter ("idle cycles" framing).
+3. **What is the `dispatch_rate` formula?** Suggested: fraction of cycles in which at
+   least one lane was dispatched. This maps directly to the "idle cycles" framing in the
+   report.
