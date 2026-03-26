@@ -183,17 +183,34 @@ mod tests {
         fs::write(repo.join("README.md"), "base\n").expect("readme");
         git(&repo, &["add", "README.md"]);
         git(&repo, &["commit", "-m", "base"]);
+
+        // Use git@localhost as the remote URL with pushInsteadOf rewrite.
+        // This passes SSH URL validation in resolve_ssh_push_url while allowing
+        // actual git operations to use a local file path.
+        git(&repo, &["remote", "add", "origin", "git@localhost"]);
         git(
             &repo,
             &[
-                "remote",
-                "add",
-                "origin",
-                remote.to_str().expect("remote path"),
+                "config",
+                &format!("url.file://{}.pushInsteadOf", remote.display()),
+                "git@localhost",
             ],
         );
         git(&repo, &["push", "-u", "origin", "main"]);
-        git(&repo, &["remote", "set-head", "origin", "main"]);
+
+        // Manually create the remote tracking ref so ensure_target_branch_ref
+        // can find it after the (failing) fetch. The push operation succeeds
+        // via pushInsteadOf rewrite, but fetch fails against git@localhost.
+        let main_sha = git_output(&repo, &["rev-parse", "main"]);
+        let remote_refs = repo.join(".git/refs/remotes/origin");
+        fs::create_dir_all(&remote_refs).expect("remote refs dir");
+        fs::write(remote_refs.join("main"), format!("{}\n", main_sha))
+            .expect("write remote ref");
+
+        // Override target branch detection to use "main" directly, avoiding
+        // the need for origin/HEAD or manifest.base_branch. This bypasses the
+        // fetch that would fail against git@localhost.
+        std::env::set_var("FABRO_TRUNK_BRANCH", "main");
 
         git(&repo, &["branch", "fabro/run/run-1", "HEAD"]);
         let worktree = temp.path().join("run-worktree");
@@ -269,9 +286,15 @@ mod tests {
 
         assert_eq!(outcome.exit_status, 0);
         assert!(artifact.exists(), "integration artifact should be written");
-        assert_eq!(
-            git_output(&repo, &["show", "origin/main:feature.txt"]),
-            "integrated"
-        );
+
+        // Verify the integration by checking the remote directly.
+        // The push went directly to the remote (not via fetch), so we verify
+        // by checking the remote's refs/heads/main contains the feature.
+        let remote_main = git_output(&remote, &["rev-parse", "refs/heads/main"]);
+        let feature_in_remote = git_output(&remote, &["show", &format!("{}:feature.txt", remote_main)]);
+        assert_eq!(feature_in_remote, "integrated");
+
+        // Clean up environment variable
+        std::env::remove_var("FABRO_TRUNK_BRANCH");
     }
 }
