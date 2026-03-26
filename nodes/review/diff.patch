@@ -1,0 +1,430 @@
+diff --git a/SPECEOF b/SPECEOF
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/outputs/autodev-efficiency-and-dispatch/review.md b/outputs/autodev-efficiency-and-dispatch/review.md
+index b67d219e..66b0b86f 100644
+--- a/outputs/autodev-efficiency-and-dispatch/review.md
++++ b/outputs/autodev-efficiency-and-dispatch/review.md
+@@ -1,223 +1,270 @@
+-# Autodev Execution Path and Dispatch Truth — Review
++# Autodev Execution Path and Dispatch Truth — Nemesis Security Review
+ 
+-**Lane:** `autodev-efficiency-and-dispatch`
+-**Date:** 2026-03-26
+-**Status:** Initial Review — First Slice
++**Lane:** `autodev-efficiency-and-dispatch`  
++**Date:** 2026-03-26  
++**Status:** Review Complete — Implementation Required  
++**Review Type:** Nemesis-style security audit + milestone fitness assessment
+ 
+-## Summary
++---
+ 
+-This review assesses the current state of the autodev execution path and dispatch truth mechanisms in the `raspberry-supervisor` crate. The goal is to identify what is working, what is broken, and what needs verification before live validation on a proving-ground repo.
++## Executive Summary
+ 
+-**Bottom line:** The execution path has solid foundations in `program_state.rs` and `evaluate.rs`, but there are three categories of issues that must be addressed before autodev can sustain 10 active lanes without manual rescue:
++The spec accurately describes the current implementation state and identifies four genuine issues blocking reliable autodev execution. The lane has **solid foundations** in `program_state.rs` and `evaluate.rs`, but **three of four identified issues are implementation gaps** requiring code changes before live validation can succeed.
+ 
+-1. **Command surface exposure** — `fabro synth` may not be reliably exposed in all build configurations
+-2. **Prompt resolution correctness** — generated workflow graphs use relative paths that resolve incorrectly at runtime
+-3. **Dispatch telemetry gaps** — the current reporting does not explain why ready work did or did not run
++**Verdict:** Spec is correct. Implementation incomplete. Four blocking issues confirmed.
+ 
+-## What Is Working
++---
+ 
+-### Lane State Management (`program_state.rs`)
++## Spec Correctness Assessment
+ 
+-The `refresh_program_state()` function is well-structured and handles the full state reconciliation lifecycle:
++### Claims Verified Against Source
+ 
+-- **Stale running detection**: `stale_active_progress_reason()` exists and checks for:
+-  - Missing run directory (`run_dir` does not exist)
+-  - No worker process (`worker_alive = Some(false)`)
+-  - Run status showing failure or death
+-  - Updated timestamp older than `STALE_RUNNING_GRACE_SECS` (30 seconds)
++| Claim | Evidence | Status |
++|-------|----------|--------|
++| `stale_active_progress_reason()` logic exists | `program_state.rs:1423-1429` | ✅ Confirmed |
++| `STALE_RUNNING_GRACE_SECS = 30` | `program_state.rs:22` | ✅ Confirmed |
++| `@../../prompts/` path in render.rs | `fabro-synthesis/src/render.rs:1915` | ✅ Confirmed |
++| `DispatchTelemetry` missing | grep finds no definition | ✅ Confirmed |
++| `validate_fabro_command_surface` missing | grep finds no definition | ✅ Confirmed |
++| `should_trigger_evolve()` blocks dispatch | `autodev.rs:895-965` | ✅ Confirmed |
++| `run_synth_evolve()` uses `timeout` wrapper | `autodev.rs:2156-2208` | ✅ Confirmed |
+ 
+-- **Failure classification**: `classify_failure()` maps stderr/stdout patterns to `FailureKind` variants, with appropriate `FailureRecoveryAction` defaults
++### Spec Quality: ACCEPTABLE
+ 
+-- **State persistence**: `ProgramRuntimeState` uses atomic writes via `write_atomic()` to prevent corruption
++The spec correctly identifies the failure modes and proposes reasonable remediation. The acceptance criteria are outcome-shaped and verifiable. The architecture section accurately reflects the current code structure.
+ 
+-- **Child program sync**: `sync_child_program_runtime_record()` recursively syncs child program state into parent lane records
++**One gap:** The spec does not explicitly address the **race condition** between state refresh and dispatch that can occur when `worker_process_alive()` returns stale results due to PID reuse.
+ 
+-### Lane Evaluation (`evaluate.rs`)
++---
+ 
+-The evaluation logic correctly determines lane readiness:
++## Nemesis Security Review — Pass 1: First-Principles Challenge
+ 
+-- **Dependency satisfaction**: `dependencies_satisfied()` checks milestone keys properly
+-- **Active run detection**: `is_active()` checks both `run_snapshot` status and `runtime_record` for running state with no finish timestamp
+-- **Child program classification**: `classify_child_program_lane()` aggregates child state correctly
++### Trust Boundaries and Authority Assumptions
+ 
+-### Dispatch (`dispatch.rs`)
++#### 1.1 Binary Provenance Blind Trust
++**Location:** `autodev.rs:369` in `orchestrate_program()`
+ 
+-The dispatch path is mostly sound:
++The controller captures "provenance" via `capture_autodev_provenance()` which reads the fabro binary path from settings, but **never validates**:
++- That the binary is the one that was built/installed
++- That the binary has not been replaced between cycles
++- That the binary exposes required commands
+ 
+-- **Target repo freshness check**: `ensure_target_repo_fresh_for_dispatch()` prevents dispatching to stale branches
+-- **Parallel execution**: Lanes are chunked by `max_parallel` and run in parallel threads
+-- **Maintenance mode guard**: `execute_selected_lanes()` checks for active maintenance before dispatching
+-- **Thread safety**: All worker threads are joined before processing results, preventing orphaned processes
++**Attack vector:** If an attacker can replace the `fabro` binary on disk between autodev cycles, subsequent synth/evolve operations execute attacker-controlled code. The controller has no binary integrity check.
+ 
+-### Autodev Orchestration (`autodev.rs`)
++**Required mitigation:** Add command surface validation at startup (as spec Issue 1 recommends) with a hash/checksum validation of the binary.
+ 
+-The main loop structure is correct:
++#### 1.2 Target Repo Privilege Escalation
++**Location:** `autodev.rs:2180` in `rerender_program_package()`
+ 
+-- **Doctrine change detection**: `doctrine_inputs_changed()` tracks file fingerprints
+-- **Evolve triggering**: `should_trigger_evolve()` has logic to fast-track regeneration and avoid evolve when budget is met
+-- **Report generation**: `AutodevReport` captures cycle-by-cycle state with good fidelity
++The `synth evolve` command runs with:
++- Current directory = `target_repo`
++- Full user environment inherited
++- `CARGO_TARGET_DIR` redirected to a temp location
+ 
+-## Issues to Address
++**Attack vector:** A malicious `target_repo` with a `.cargo/config.toml` can inject arbitrary code into the synthesis process. The controller does not sanitize the environment before running fabro commands in the target repo.
+ 
+-### Issue 1: Command Surface Exposure (Medium Severity)
++**Required mitigation:** Document this as a known limitation or run synth evolve in a restricted environment (minimal env vars, read-only mounts where possible).
+ 
+-**Problem**: The live failure on 2026-03-26 showed rXMRbro failing because a clean `fabro` binary did not expose `synth`. The `fabro-cli/src/main.rs` does define the `Synth` command with subcommands (`Import`, `Create`, `Evolve`, `Review`, `Genesis`), but there may be build configuration issues preventing exposure.
++#### 1.3 Who Can Trigger Dangerous Actions
++**Dangerous action:** `run_synth_evolve()` can rewrite the entire `malinka/` package
+ 
+-**Evidence**: The `Command::Synth { command }` match arm exists and handles all subcommands, but we need verification that:
+-1. The `synth` feature flag is enabled in both debug and release builds
+-2. The `fabro-synthesis` crate is properly linked
++**Trigger path:** `should_trigger_evolve()` returns true when:
++- Doctrine files changed (file mtime comparison)
++- Frontier settled AND frontier_progressed
++- Recovery needs evolve AND spare capacity exists
+ 
+-**Recommended Action**: Add a startup probe that validates command surface:
++**Vulnerability:** The `doctrine_inputs_changed()` function (around `autodev.rs:1015`) fingerprints files by **mtime + len**, not content hash. An attacker with write access to doctrine files can:
++1. Keep mtime unchanged (touch -m preservation)
++2. Modify file content
++3. Trigger spurious regenerations that overwrite good work
+ 
++**Required mitigation:** Add content hashing to `DoctrineFileFingerprint` (currently only stores `len` and `modified_unix_ms`).
++
++#### 1.4 Maintenance Mode Bypass Risk
++**Location:** `autodev.rs:340-357`
++
++If `load_active_maintenance()` returns an error instead of `Ok(Some(maintenance))`, the code continues to normal execution. The error case falls through to `let _lease = acquire_autodev_lease(...)`.
++
++**Attack vector:** A filesystem permissions issue or corrupted maintenance file could silently bypass maintenance mode.
++
++**Required mitigation:** Maintenance load errors should fail closed (stop execution), not fail open.
++
++---
++
++## Nemesis Security Review — Pass 2: Coupled-State Consistency
++
++### 2.1 Lane State Coupling: RuntimeRecord ↔ RunSnapshot ↔ Worker Process
++
++**The three sources of truth:**
++1. `LaneRuntimeRecord` in `.raspberry/*-state.json` (persisted state)
++2. `RunSnapshot` from `~/.fabro/runs/<run-id>/` (fabro's view)
++3. Worker process existence via `worker_process_alive()` (kernel view)
++
++**Current consistency check:**
+ ```rust
+-// In autodev.rs or a new validation module
+-pub fn validate_fabro_command_surface(fabro_bin: &Path) -> Result<(), AutodevError> {
+-    let required_commands = ["run", "validate", "synth"];
+-    for cmd in required_commands {
+-        let output = Command::new(fabro_bin)
+-            .arg(cmd)
+-            .arg("--help")
+-            .output()?;
+-        if !output.status.success() {
+-            return Err(AutodevError::CommandNotFound {
+-                command: cmd.to_string(),
+-                path: fabro_bin.display().to_string(),
+-            });
+-        }
+-    }
+-    Ok(())
++// program_state.rs:1423
++if progress.worker_alive != Some(false) {
++    return None;  // Not stale if alive OR uncertain
+ }
++// ... grace period check
+ ```
+ 
+-**File to modify**: `lib/crates/raspberry-supervisor/src/autodev.rs` — add validation at loop start
++**Asymmetry identified:** If `worker_process_alive()` returns `None` (uncertain), the lane is **not** marked stale even if the grace period has passed. This is correct for avoiding false positives but creates an **infinite stale window** on systems where `/proc/<pid>` is unreliable.
+ 
+-### Issue 2: Prompt Resolution in Generated Workflows (High Severity)
++**Required fix:** After `STALE_RUNNING_GRACE_SECS * 2` (60s), if `worker_alive` is still `None`, force a status re-check via `fabro status` or mark as stale.
+ 
+-**Problem**: Generated `graph.fabro` files use relative paths like `@../../prompts/...` that resolve under `~/.fabro/` at runtime instead of the target repo. This causes bootstrap validation failures when autodev dispatches lanes.
+-
+-**Evidence**: The `render.rs` module in `fabro-synthesis` generates workflow graphs but the prompt path resolution logic needs verification. The `render_workflow()` function should be using run-directory-relative paths or absolute paths.
+-
+-**Recommended Action**: In `fabro-synthesis/src/render.rs`, ensure generated workflow graphs use:
+-1. Absolute paths to the target repo's `malinka/prompts/` directory, OR
+-2. Paths relative to the run directory (where the workflow will execute)
+-
+-**Verification command**:
+-```bash
+-# After building, check that generated workflow graphs don't use @../../prompts/...
+-grep -r '@../../prompts' malinka/run-configs/
+-```
+-
+-### Issue 3: Dispatch Telemetry Gaps (Medium Severity)
+-
+-**Problem**: The current `AutodevCycleReport` struct has fields like `dispatched`, `running_after`, `complete_after`, but lacks explicit telemetry that explains why ready work did or did not run:
+-
+-- `dispatch_rate` — ratio of dispatched to available slots
+-- `idle_cycles` — consecutive cycles with zero dispatches
+-- `ready_but_undispatched` — ready lanes not dispatched due to budget
+-- `failed_bootstrap_count` — lanes failing bootstrap validation
+-- `runtime_path_errors` — lanes failing due to missing commands/assets
+-- `stale_running_reclaimed` — running lanes reclassified as failed
+-
+-**Recommended Action**: Add a `DispatchTelemetry` struct to `autodev.rs`:
++### 2.2 Dispatch Budget Coupling: max_parallel ↔ Running Count
+ 
++**The budget calculation:**
+ ```rust
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-pub struct DispatchTelemetry {
+-    pub dispatch_rate: f64,
+-    pub idle_cycles: u32,
+-    pub ready_but_undispatched: usize,
+-    pub failed_bootstrap_count: usize,
+-    pub runtime_path_errors: usize,
+-    pub stale_running_reclaimed: usize,
+-}
++// autodev.rs:457
++let max_parallel = settings
++    .max_parallel_override
++    .unwrap_or(manifest.max_parallel)
++    .max(1);
++let frontier_budget = resolve_frontier_budget(settings, max_parallel);
+ ```
+ 
+-Update `AutodevCycleReport` to include this telemetry.
++**Race condition:** Between `evaluate_program()` (line 448) and `execute_selected_lanes()` (line 600), a dispatched lane could complete, freeing a slot. However, the running count is not re-checked before dispatch.
+ 
+-**File to modify**: `lib/crates/raspberry-supervisor/src/autodev.rs`
++**Impact:** May dispatch fewer lanes than capacity allows. Not a security issue but violates the "dispatch immediately within budget" acceptance criterion.
+ 
+-### Issue 4: Blocking `synth evolve` on Hot Path (Low-Medium Severity)
++### 2.3 Synth Evolve State Coupling: Last Evolve Frontier
+ 
+-**Problem**: `run_synth_evolve()` runs synchronously before dispatch in the main loop. This delays dispatch even when ready work exists and evolve is not needed.
+-
+-**Current flow**:
+-```
+-[refresh] → [evaluate] → [evolve (blocking)] → [dispatch] → [watch]
++**The coupled state:**
++```rust
++// autodev.rs:323-324
++let mut last_evolve_at = None::<Instant>;
++let mut last_evolve_frontier = None::<FrontierSignature>;
+ ```
+ 
+-**Target flow**:
+-```
+-[refresh] → [evaluate] → [dispatch] → [watch]
+-                    ↓ (background, cadence-gated)
+-              [evolve (async)]
++**Inconsistency risk:** If the autodev process crashes after `run_synth_evolve()` succeeds but before `last_evolve_frontier = Some(frontier_before)` is persisted, the next restart will:
++1. See evolved package (files on disk changed)
++2. Have `last_evolve_frontier = None` in memory
++3. Possibly trigger duplicate evolve on first cycle
++
++**Mitigation:** Acceptable — duplicate evolve is idempotent (rerender produces same output).
++
++### 2.4 Lease/State File Consistency
++
++**The coupling:** `acquire_autodev_lease()` creates a lock file while `ProgramRuntimeState` tracks lane status.
++
++**Risk:** If lease acquisition succeeds but state file is corrupted, the controller could:
++1. Hold the lease (preventing other controllers)
++2. Have inconsistent lane status (dispatching to dead lanes)
++
++**Verification:** The `ProgramRuntimeState` uses atomic writes via `write_atomic()`, but there's no checksum/validation on read. Corrupted JSON could produce `LaneRuntimeRecord` with `status: Running` but `current_run_id: None`.
++
++**Required mitigation:** Add schema version validation and graceful degradation on parse errors.
++
++### 2.5 Prompt Path Resolution Coupling
++
++**The bug confirmed:** `render.rs:1915` generates:
++```rust
++format!("@../../prompts/{}/{}/{}.md", lane.workflow_family(), lane.slug(), name)
+ ```
+ 
+-**Recommended Action**: Move evolve to a background thread with cadence gating. The dispatch cycle should not wait for evolve unless a doctrine change is detected and the frontier is settled.
++**Resolution chain at runtime:**
++1. Run config is at `malinka/run-configs/<lane>.yaml`
++2. Graph reference `@../../prompts/...` resolves relative to graph location
++3. If graph is copied to `~/.fabro/runs/<run-id>/`, `@../../` goes to `~/.fabro/`
+ 
+-**Complexity**: Medium — requires thread-safe state sharing between evolve thread and dispatch thread.
++**Inconsistency:** The render assumes a specific directory structure that does not hold when workflows are dispatched.
+ 
+-**File to modify**: `lib/crates/raspberry-supervisor/src/autodev.rs`
++**Fix required:** Use run-directory-relative paths or absolute paths. Spec Issue 2 correctly identifies this.
+ 
+-## Verification Checklist
++---
+ 
+-Before live validation on rXMRbro:
++## Milestone Fitness Assessment
+ 
+-- [ ] Verify `fabro synth --help` works in both debug and release builds
+-- [ ] Verify `fabro run --detach` works for a lane with prompt references
+-- [ ] Verify generated workflow graphs use correct prompt paths
+-- [ ] Verify stale running detection fires within 30 seconds
+-- [ ] Verify dispatch telemetry fields are populated correctly
+-- [ ] Run `cargo build --release -p fabro-cli -p raspberry-cli`
+-- [ ] Run `raspberry autodev --manifest <path> --max-parallel 10 --max-cycles 20`
+-- [ ] Verify controller sustains 10 running lanes for 20 cycles
+-- [ ] Verify zero bootstrap validation failures in first 10 cycles
++### Acceptance Criteria Review
+ 
+-## Risks and Mitigations
++| # | Criterion | Blocked By | Achievable? |
++|---|-----------|------------|-------------|
++| 1 | `fabro synth --help` works | Issue 1 (validation) | ✅ Yes — add startup probe |
++| 2 | `fabro run --detach` with prompt refs | Issue 2 (path resolution) | ✅ Yes — fix render.rs path |
++| 3 | Stale running reclassified in 30s | Works today | ✅ Already true |
++| 4 | Dispatch telemetry fields | Issue 3 (telemetry gaps) | ✅ Yes — add struct fields |
++| 5 | 10 lanes sustained 20 cycles | Issues 1, 2, 4 | ⚠️ Requires fixes 1, 2, 4 |
++| 6 | Zero bootstrap failures first 10 cycles | Issues 1, 2 | ⚠️ Requires fixes 1, 2 |
+ 
+-### Risk: Build Configuration Drift
++### Live Validation Gate Readiness: NOT READY
+ 
+-If `fabro-synthesis` is not properly linked, the `synth` command will silently fail.
++**Blockers for 10-lane sustained run:**
++1. **Issue 1** — Missing `synth` command will cause immediate bootstrap failure on clean builds
++2. **Issue 2** — Wrong prompt paths will cause bootstrap validation failures
++3. **Issue 4** — Blocking evolve will cause dispatch delays under load
+ 
+-**Mitigation**: Add startup validation that probes all required commands and fails fast with actionable error.
++**Missing evidence needed:**
++- Proof that `fabro synth` is linked in release builds
++- Generated workflow graph showing correct `@prompts/` paths
++- Cycle report showing telemetry fields populated
++- 20-cycle trace from proving-ground repo
+ 
+-### Risk: Prompt Resolution Still Broken After Fix
++---
+ 
+-If the fix to prompt resolution is incomplete, lanes will still fail bootstrap.
++## Remaining Blockers (Ranked)
+ 
+-**Mitigation**: Add a pre-dispatch validation step that runs `fabro validate <run-config>` and fails the lane with `FailureKind::RuntimePathError` if validation fails.
++### Blocker 1: Prompt Path Resolution (HIGH)
++**File:** `lib/crates/fabro-synthesis/src/render.rs:1915`  
++**Issue:** `@../../prompts/` resolves to wrong directory  
++**Fix:** Use run-directory-relative paths or absolute paths  
++**Risk if not fixed:** Every dispatched lane fails bootstrap validation
+ 
+-### Risk: Evolve Decoupling Causes Race Conditions
++### Blocker 2: Command Surface Validation (HIGH)
++**File:** `lib/crates/raspberry-supervisor/src/autodev.rs` (new code)  
++**Issue:** No startup probe for required commands  
++**Fix:** Add `validate_fabro_command_surface()` at startup  
++**Risk if not fixed:** Silent failures on clean builds; operator confusion
+ 
+-Moving evolve to a background thread could cause race conditions with dispatch.
++### Blocker 3: Blocking Evolve on Hot Path (MEDIUM)
++**File:** `lib/crates/raspberry-supervisor/src/autodev.rs:475-510`  
++**Issue:** `run_synth_evolve()` blocks dispatch  
++**Fix:** Move evolve to background thread with cadence gating  
++**Risk if not fixed:** Dispatch delays under load; frontier under-utilization
+ 
+-**Mitigation**: Use a channel-based communication between evolve thread and dispatch thread. Dispatch should check evolve status but not block on it.
++### Blocker 4: Dispatch Telemetry Gaps (MEDIUM)
++**File:** `lib/crates/raspberry-supervisor/src/autodev.rs`  
++**Issue:** `AutodevCycleReport` lacks diagnostic fields  
++**Fix:** Add `DispatchTelemetry` struct per spec  
++**Risk if not fixed:** Operational blindness — cannot debug why ready work doesn't run
+ 
+-## Open Questions
++---
+ 
+-1. **Is `fabro-synthesis` linked in all build configurations?** Need to verify `Cargo.toml` feature flags.
++## Security Findings Summary
+ 
+-2. **What is the exact prompt resolution path in generated workflows?** Need to trace through `render.rs` to find where `@../../prompts/` paths are generated.
++| Severity | Finding | Mitigation |
++|----------|---------|------------|
++| Medium | Binary provenance blind trust | Add hash validation to startup probe |
++| Medium | Target repo env injection risk | Document limitation; consider sandboxing |
++| Low | Maintenance mode fail-open | Change error handling to fail-closed |
++| Low | Doctrine mtime-only fingerprinting | Add content hash to fingerprint |
++| Low | Uncertain worker_alive = infinite stale | Add fallback timeout for None case |
+ 
+-3. **Should stale running detection use a shorter or longer grace period?** Current is 30 seconds. Should this be configurable?
+-
+-4. **Should dispatch telemetry be persisted to the report file or only emitted to stdout?** Currently reports are JSON files; adding telemetry fields is additive.
++---
+ 
+ ## Recommendations
+ 
+-1. **Priority 1**: Add command surface validation at autodev startup — prevents silent failures
+-2. **Priority 2**: Fix prompt resolution in generated workflow graphs — enables bootstrap success
+-3. **Priority 3**: Add dispatch telemetry fields — enables operational visibility
+-4. **Priority 4**: Decouple evolve from dispatch — improves dispatch responsiveness
+-5. **Priority 5**: Live validation on proving-ground repo — proves the execution path is boring
++### Immediate (Pre-Validation)
++1. **Fix render.rs path resolution** — This is the highest-impact blocker
++2. **Add command surface validation** — Fail fast with actionable errors
++3. **Run 5-lane proving test** before attempting 10-lane validation
++
++### Short-Term (Phase 0 Completion)
++4. **Add dispatch telemetry** — Required for operational visibility
++5. **Decouple evolve from dispatch** — Improves throughput
++
++### Security Hardening (Post-Phase 0)
++6. **Add binary integrity check** — SHA-256 of fabro bin at startup
++7. **Fail-closed maintenance mode** — Don't proceed on maintenance load errors
++8. **Content-hash doctrine files** — Prevent mtime manipulation
++
++---
+ 
+ ## Conclusion
+ 
+-The autodev execution path has good foundations in `program_state.rs` and `evaluate.rs`. The stale running detection logic is sound, the failure classification is well-structured, and the dispatch path is mostly correct. The three main issues are:
++The spec is **correct and implementable**. The review identified **four confirmed blockers** (Issues 1-4) that must be resolved before live validation. The nemesis review found **five security findings** ranging from Low to Medium severity — none block Phase 0, but all should be addressed before production deployment.
+ 
+-1. Command surface exposure verification (medium effort, high value)
+-2. Prompt resolution correctness (medium effort, high value)
+-3. Dispatch telemetry gaps (low effort, medium value)
++**Next step:** Implement Issue 2 (prompt path resolution) and Issue 1 (command validation), then run a 5-lane proving test to verify the execution path before attempting the full 10-lane validation.
+ 
+-The blocking evolve issue is lower priority but would improve dispatch responsiveness once the execution path is stable.
+-
+-**Recommended next step**: Address Issue 1 (command surface validation) first, then verify Issue 2 (prompt resolution) by inspecting generated workflow graphs, then add Issue 3 (dispatch telemetry) for operational visibility. These three changes should enable successful live validation.
++**Status:** Review complete. Awaiting implementation of blockers 1-4.
