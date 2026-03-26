@@ -1,0 +1,621 @@
+diff --git a/lib/crates/fabro-synthesis/tests/bootstrap.rs b/lib/crates/fabro-synthesis/tests/bootstrap.rs
+new file mode 100644
+index 00000000..612ae155
+--- /dev/null
++++ b/lib/crates/fabro-synthesis/tests/bootstrap.rs
+@@ -0,0 +1,615 @@
++//! Bootstrap verification tests for fabro-synthesis.
++//!
++//! These tests verify blueprint structure, validation, and serialization
++//! without requiring any file I/O or external fixtures.
++
++use std::path::Path;
++
++use fabro_synthesis::{
++    validate_blueprint, BlueprintArtifact, BlueprintError, BlueprintInputs, BlueprintLane,
++    BlueprintPackage, BlueprintProgram, BlueprintUnit, ProgramBlueprint, WorkflowTemplate,
++};
++use fabro_synthesis::blueprint::BlueprintProtocol;
++use raspberry_supervisor::manifest::{LaneDependency, LaneKind, MilestoneManifest};
++
++/// Constructs a minimal valid ProgramBlueprint for testing.
++fn minimal_blueprint() -> ProgramBlueprint {
++    ProgramBlueprint {
++        version: 1,
++        program: BlueprintProgram {
++            id: "test-program".to_string(),
++            max_parallel: 4,
++            state_path: Some(std::path::PathBuf::from(".raspberry/test-state.json")),
++            run_dir: None,
++        },
++        inputs: BlueprintInputs::default(),
++        package: BlueprintPackage::default(),
++        units: vec![BlueprintUnit {
++            id: "test-unit".to_string(),
++            title: "Test Unit".to_string(),
++            output_root: std::path::PathBuf::from("outputs/test"),
++            artifacts: vec![BlueprintArtifact {
++                id: "implementation".to_string(),
++                path: std::path::PathBuf::from("implementation.md"),
++            }],
++            milestones: vec![MilestoneManifest {
++                id: "implemented".to_string(),
++                requires: vec!["implementation".to_string()],
++            }],
++            lanes: vec![BlueprintLane {
++                id: "test-lane".to_string(),
++                kind: LaneKind::Platform,
++                title: "Test Lane".to_string(),
++                family: "bootstrap".to_string(),
++                workflow_family: None,
++                slug: Some("test".to_string()),
++                template: WorkflowTemplate::Bootstrap,
++                goal: "Bootstrap the test lane.".to_string(),
++                managed_milestone: "implemented".to_string(),
++                dependencies: Vec::new(),
++                produces: vec!["implementation".to_string()],
++                proof_profile: None,
++                proof_state_path: None,
++                program_manifest: None,
++                service_state_path: None,
++                orchestration_state_path: None,
++                checks: Vec::new(),
++                run_dir: None,
++                prompt_context: None,
++                verify_command: None,
++                health_command: None,
++            }],
++        }],
++        protocols: Vec::new(),
++    }
++}
++
++#[test]
++fn bootstrap_verify() {
++    // Test 1: Blueprint serialization roundtrip
++    // A programmatically-constructed ProgramBlueprint serializes to YAML,
++    // deserializes back, and equals the original.
++    let original = minimal_blueprint();
++    let yaml = serde_yaml::to_string(&original).expect("serialize to YAML");
++    let deserialized: ProgramBlueprint =
++        serde_yaml::from_str(&yaml).expect("deserialize from YAML");
++    assert_eq!(original, deserialized);
++
++    // Test 2: Blueprint validation passes for valid blueprint
++    let valid = minimal_blueprint();
++    let result = validate_blueprint(Path::new("test.yaml"), &valid);
++    assert!(result.is_ok(), "valid blueprint should pass validation: {result:?}");
++
++    // Test 3: Blueprint validation fails for empty program ID
++    let mut invalid_program_id = minimal_blueprint();
++    invalid_program_id.program.id = "".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_program_id);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("program.id must not be empty")),
++        "empty program.id should be rejected: {result:?}"
++    );
++
++    // Test 4: Blueprint validation fails for duplicate unit IDs
++    let mut duplicate_units = minimal_blueprint();
++    duplicate_units.units.push(BlueprintUnit {
++        id: "test-unit".to_string(), // duplicate
++        title: "Duplicate Unit".to_string(),
++        output_root: std::path::PathBuf::from("outputs/dup"),
++        artifacts: vec![BlueprintArtifact {
++            id: "impl".to_string(),
++            path: std::path::PathBuf::from("impl.md"),
++        }],
++        milestones: vec![MilestoneManifest {
++            id: "done".to_string(),
++            requires: vec!["impl".to_string()],
++        }],
++        lanes: vec![BlueprintLane {
++            id: "dup-lane".to_string(),
++            kind: LaneKind::Platform,
++            title: "Dup Lane".to_string(),
++            family: "bootstrap".to_string(),
++            workflow_family: None,
++            slug: None,
++            template: WorkflowTemplate::Bootstrap,
++            goal: "Test".to_string(),
++            managed_milestone: "done".to_string(),
++            dependencies: Vec::new(),
++            produces: vec!["impl".to_string()],
++            proof_profile: None,
++            proof_state_path: None,
++            program_manifest: None,
++            service_state_path: None,
++            orchestration_state_path: None,
++            checks: Vec::new(),
++            run_dir: None,
++            prompt_context: None,
++            verify_command: None,
++            health_command: None,
++        }],
++    });
++    let result = validate_blueprint(Path::new("test.yaml"), &duplicate_units);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("duplicate unit id")),
++        "duplicate unit id should be rejected: {result:?}"
++    );
++
++    // Test 5: Blueprint validation fails for empty unit ID
++    let mut invalid_unit_id = minimal_blueprint();
++    invalid_unit_id.units[0].id = "".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_unit_id);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("unit id must not be empty")),
++        "empty unit id should be rejected: {result:?}"
++    );
++
++    // Test 6: Blueprint validation fails for empty lane title
++    let mut invalid_lane_title = minimal_blueprint();
++    invalid_lane_title.units[0].lanes[0].title = "".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_lane_title);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("title must not be empty")),
++        "empty lane title should be rejected: {result:?}"
++    );
++
++    // Test 7: Blueprint validation fails for empty lane goal
++    let mut invalid_lane_goal = minimal_blueprint();
++    invalid_lane_goal.units[0].lanes[0].goal = "".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_lane_goal);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("goal must not be empty")),
++        "empty lane goal should be rejected: {result:?}"
++    );
++
++    // Test 8: Blueprint validation fails for zero max_parallel
++    let mut invalid_max_parallel = minimal_blueprint();
++    invalid_max_parallel.program.max_parallel = 0;
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_max_parallel);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("max_parallel must be at least 1")),
++        "zero max_parallel should be rejected: {result:?}"
++    );
++
++    // Test 9: BlueprintLane slug derivation - lane without explicit slug
++    // uses the lane ID as the slug
++    let lane_without_slug = BlueprintLane {
++        id: "my-lane-id".to_string(),
++        kind: LaneKind::Platform,
++        title: "My Lane".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: None,
++        slug: None,
++        template: WorkflowTemplate::Bootstrap,
++        goal: "Test goal".to_string(),
++        managed_milestone: "implemented".to_string(),
++        dependencies: Vec::new(),
++        produces: vec!["implementation".to_string()],
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++    assert_eq!(lane_without_slug.slug(), "my-lane-id");
++
++    // Test 10: BlueprintLane slug derivation - lane with explicit slug
++    // uses the explicit slug
++    let lane_with_slug = BlueprintLane {
++        id: "my-lane-id".to_string(),
++        kind: LaneKind::Platform,
++        title: "My Lane".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: None,
++        slug: Some("explicit-slug".to_string()),
++        template: WorkflowTemplate::Bootstrap,
++        goal: "Test goal".to_string(),
++        managed_milestone: "implemented".to_string(),
++        dependencies: Vec::new(),
++        produces: vec!["implementation".to_string()],
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++    assert_eq!(lane_with_slug.slug(), "explicit-slug");
++
++    // Test 11: BlueprintLane workflow_family derivation
++    let lane_without_family = BlueprintLane {
++        id: "my-lane".to_string(),
++        kind: LaneKind::Platform,
++        title: "My Lane".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: None,
++        slug: None,
++        template: WorkflowTemplate::Bootstrap,
++        goal: "Test goal".to_string(),
++        managed_milestone: "implemented".to_string(),
++        dependencies: Vec::new(),
++        produces: vec!["implementation".to_string()],
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++    assert_eq!(lane_without_family.workflow_family(), "bootstrap");
++
++    let lane_with_workflow_family = BlueprintLane {
++        id: "my-lane".to_string(),
++        kind: LaneKind::Platform,
++        title: "My Lane".to_string(),
++        family: "bootstrap".to_string(),
++        workflow_family: Some("implementation".to_string()),
++        slug: None,
++        template: WorkflowTemplate::Bootstrap,
++        goal: "Test goal".to_string(),
++        managed_milestone: "implemented".to_string(),
++        dependencies: Vec::new(),
++        produces: vec!["implementation".to_string()],
++        proof_profile: None,
++        proof_state_path: None,
++        program_manifest: None,
++        service_state_path: None,
++        orchestration_state_path: None,
++        checks: Vec::new(),
++        run_dir: None,
++        prompt_context: None,
++        verify_command: None,
++        health_command: None,
++    };
++    assert_eq!(
++        lane_with_workflow_family.workflow_family(),
++        "implementation"
++    );
++
++    // Test 12: All WorkflowTemplate variants are accessible and comparable
++    let templates = vec![
++        WorkflowTemplate::Bootstrap,
++        WorkflowTemplate::ServiceBootstrap,
++        WorkflowTemplate::Implementation,
++        WorkflowTemplate::Integration,
++        WorkflowTemplate::Orchestration,
++        WorkflowTemplate::RecurringReport,
++    ];
++    for template in &templates {
++        let _ = format!("{:?}", template);
++        // Verify default is Bootstrap
++        assert_eq!(WorkflowTemplate::default(), WorkflowTemplate::Bootstrap);
++    }
++
++    // Test 13: WorkflowTemplate serialization roundtrip
++    for template in &templates {
++        let yaml = serde_yaml::to_string(template).expect("serialize template");
++        let deserialized: WorkflowTemplate =
++            serde_yaml::from_str(&yaml).expect("deserialize template");
++        assert_eq!(*template, deserialized);
++    }
++
++    // Test 14: BlueprintProgram structure serialization/deserialization
++    let program = BlueprintProgram {
++        id: "my-program".to_string(),
++        max_parallel: 8,
++        state_path: Some(std::path::PathBuf::from(".raspberry/state.json")),
++        run_dir: Some(std::path::PathBuf::from(".raspberry/runs")),
++    };
++    let yaml = serde_yaml::to_string(&program).expect("serialize program");
++    let deserialized: BlueprintProgram =
++        serde_yaml::from_str(&yaml).expect("deserialize program");
++    assert_eq!(program.id, deserialized.id);
++    assert_eq!(program.max_parallel, deserialized.max_parallel);
++    assert_eq!(program.state_path, deserialized.state_path);
++    assert_eq!(program.run_dir, deserialized.run_dir);
++
++    // Test 15: BlueprintPackage default value
++    let package = BlueprintPackage::default();
++    assert_eq!(package.fabro_root, std::path::PathBuf::from("malinka"));
++
++    // Test 16: BlueprintInputs default values
++    let inputs = BlueprintInputs::default();
++    assert!(inputs.doctrine_files.is_empty());
++    assert!(inputs.evidence_paths.is_empty());
++
++    // Test 17: BlueprintProtocol structure
++    let protocol = BlueprintProtocol {
++        id: "my-protocol".to_string(),
++        trait_name: "MyTrait".to_string(),
++        implementor_units: vec!["unit-a".to_string()],
++        consumer_units: vec!["unit-b".to_string()],
++        verification_command: Some("cargo test".to_string()),
++    };
++    let yaml = serde_yaml::to_string(&protocol).expect("serialize protocol");
++    let deserialized: BlueprintProtocol =
++        serde_yaml::from_str(&yaml).expect("deserialize protocol");
++    assert_eq!(protocol.id, deserialized.id);
++    assert_eq!(protocol.trait_name, deserialized.trait_name);
++    assert_eq!(protocol.verification_command, deserialized.verification_command);
++
++    // Test 18: Blueprint validation fails for unsupported version
++    let mut invalid_version = minimal_blueprint();
++    invalid_version.version = 99;
++    let result = validate_blueprint(Path::new("test.yaml"), &invalid_version);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("unsupported blueprint version")),
++        "unsupported version should be rejected: {result:?}"
++    );
++
++    // Test 19: Blueprint validation fails for empty units list
++    let mut no_units = minimal_blueprint();
++    no_units.units.clear();
++    let result = validate_blueprint(Path::new("test.yaml"), &no_units);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("at least one unit")),
++        "no units should be rejected: {result:?}"
++    );
++
++    // Test 20: Blueprint validation fails for empty unit title
++    let mut empty_title = minimal_blueprint();
++    empty_title.units[0].title = "".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &empty_title);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("title must not be empty")),
++        "empty unit title should be rejected: {result:?}"
++    );
++
++    // Test 21: Blueprint validation fails when lane references unknown milestone
++    let mut unknown_milestone = minimal_blueprint();
++    unknown_milestone.units[0].lanes[0].managed_milestone = "nonexistent".to_string();
++    let result = validate_blueprint(Path::new("test.yaml"), &unknown_milestone);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("unknown milestone")),
++        "unknown milestone should be rejected: {result:?}"
++    );
++
++    // Test 22: Blueprint validation fails when lane produces unknown artifact
++    let mut unknown_artifact = minimal_blueprint();
++    unknown_artifact.units[0].lanes[0].produces = vec!["nonexistent".to_string()];
++    let result = validate_blueprint(Path::new("test.yaml"), &unknown_artifact);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("produces unknown artifact")),
++        "producing unknown artifact should be rejected: {result:?}"
++    );
++
++    // Test 23: Blueprint validation fails for cross-unit dependency on unknown unit
++    let mut unknown_unit_dep = minimal_blueprint();
++    unknown_unit_dep.units[0].lanes[0].dependencies = vec![LaneDependency {
++        unit: "nonexistent-unit".to_string(),
++        lane: None,
++        milestone: None,
++    }];
++    let result = validate_blueprint(Path::new("test.yaml"), &unknown_unit_dep);
++    assert!(
++        matches!(result, Err(BlueprintError::Invalid { ref message, .. })
++            if message.contains("depends on unknown unit")),
++        "dependency on unknown unit should be rejected: {result:?}"
++    );
++
++    // Test 24: Full lifecycle - construct, validate, serialize, deserialize, re-validate
++    let blueprint = minimal_blueprint();
++    validate_blueprint(Path::new("lifecycle.yaml"), &blueprint).expect("initial validation");
++
++    let yaml = serde_yaml::to_string(&blueprint).expect("serialize");
++    let rebuilt: ProgramBlueprint = serde_yaml::from_str(&yaml).expect("deserialize");
++    validate_blueprint(Path::new("lifecycle.yaml"), &rebuilt).expect("re-validation after roundtrip");
++
++    assert_eq!(blueprint.program.id, rebuilt.program.id);
++    assert_eq!(blueprint.units.len(), rebuilt.units.len());
++    assert_eq!(
++        blueprint.units[0].lanes[0].id,
++        rebuilt.units[0].lanes[0].id
++    );
++
++    // Test 25: Complex multi-unit blueprint with cross-unit dependencies
++    let multi_unit = ProgramBlueprint {
++        version: 1,
++        program: BlueprintProgram {
++            id: "multi-unit-program".to_string(),
++            max_parallel: 2,
++            state_path: Some(std::path::PathBuf::from(".raspberry/state.json")),
++            run_dir: None,
++        },
++        inputs: BlueprintInputs::default(),
++        package: BlueprintPackage::default(),
++        units: vec![
++            BlueprintUnit {
++                id: "scaffold".to_string(),
++                title: "Scaffold Unit".to_string(),
++                output_root: std::path::PathBuf::from("outputs/scaffold"),
++                artifacts: vec![BlueprintArtifact {
++                    id: "scaffold".to_string(),
++                    path: std::path::PathBuf::from("scaffold.md"),
++                }],
++                milestones: vec![MilestoneManifest {
++                    id: "scaffolded".to_string(),
++                    requires: vec!["scaffold".to_string()],
++                }],
++                lanes: vec![BlueprintLane {
++                    id: "scaffold".to_string(),
++                    kind: LaneKind::Platform,
++                    title: "Scaffold Lane".to_string(),
++                    family: "bootstrap".to_string(),
++                    workflow_family: None,
++                    slug: Some("scaffold".to_string()),
++                    template: WorkflowTemplate::Bootstrap,
++                    goal: "Bootstrap the scaffold.".to_string(),
++                    managed_milestone: "scaffolded".to_string(),
++                    dependencies: Vec::new(),
++                    produces: vec!["scaffold".to_string()],
++                    proof_profile: None,
++                    proof_state_path: None,
++                    program_manifest: None,
++                    service_state_path: None,
++                    orchestration_state_path: None,
++                    checks: Vec::new(),
++                    run_dir: None,
++                    prompt_context: None,
++                    verify_command: None,
++                    health_command: None,
++                }],
++            },
++            BlueprintUnit {
++                id: "feature".to_string(),
++                title: "Feature Unit".to_string(),
++                output_root: std::path::PathBuf::from("outputs/feature"),
++                artifacts: vec![BlueprintArtifact {
++                    id: "implementation".to_string(),
++                    path: std::path::PathBuf::from("implementation.md"),
++                }],
++                milestones: vec![MilestoneManifest {
++                    id: "implemented".to_string(),
++                    requires: vec!["implementation".to_string()],
++                }],
++                lanes: vec![BlueprintLane {
++                    id: "feature".to_string(),
++                    kind: LaneKind::Platform,
++                    title: "Feature Lane".to_string(),
++                    family: "implementation".to_string(),
++                    workflow_family: None,
++                    slug: Some("feature".to_string()),
++                    template: WorkflowTemplate::Implementation,
++                    goal: "Implement the feature.".to_string(),
++                    managed_milestone: "implemented".to_string(),
++                    dependencies: vec![LaneDependency {
++                        unit: "scaffold".to_string(),
++                        lane: Some("scaffold".to_string()),
++                        milestone: Some("scaffolded".to_string()),
++                    }],
++                    produces: vec!["implementation".to_string()],
++                    proof_profile: None,
++                    proof_state_path: None,
++                    program_manifest: None,
++                    service_state_path: None,
++                    orchestration_state_path: None,
++                    checks: Vec::new(),
++                    run_dir: None,
++                    prompt_context: None,
++                    verify_command: None,
++                    health_command: None,
++                }],
++            },
++        ],
++        protocols: Vec::new(),
++    };
++
++    let result = validate_blueprint(Path::new("multi.yaml"), &multi_unit);
++    assert!(result.is_ok(), "multi-unit blueprint with valid deps should pass: {result:?}");
++
++    // Test 26: Validate that cross-unit lane dependency within same unit is allowed
++    let same_unit_deps = ProgramBlueprint {
++        version: 1,
++        program: BlueprintProgram {
++            id: "same-unit-deps".to_string(),
++            max_parallel: 3,
++            state_path: None,
++            run_dir: None,
++        },
++        inputs: BlueprintInputs::default(),
++        package: BlueprintPackage::default(),
++        units: vec![BlueprintUnit {
++            id: "multi-lane-unit".to_string(),
++            title: "Multi Lane Unit".to_string(),
++            output_root: std::path::PathBuf::from("outputs/multi"),
++            artifacts: vec![
++                BlueprintArtifact {
++                    id: "foundation".to_string(),
++                    path: std::path::PathBuf::from("foundation.md"),
++                },
++                BlueprintArtifact {
++                    id: "feature".to_string(),
++                    path: std::path::PathBuf::from("feature.md"),
++                },
++            ],
++            milestones: vec![
++                MilestoneManifest {
++                    id: "founded".to_string(),
++                    requires: vec!["foundation".to_string()],
++                },
++                MilestoneManifest {
++                    id: "featured".to_string(),
++                    requires: vec!["feature".to_string()],
++                },
++            ],
++            lanes: vec![
++                BlueprintLane {
++                    id: "foundation".to_string(),
++                    kind: LaneKind::Platform,
++                    title: "Foundation Lane".to_string(),
++                    family: "bootstrap".to_string(),
++                    workflow_family: None,
++                    slug: Some("foundation".to_string()),
++                    template: WorkflowTemplate::Bootstrap,
++                    goal: "Build foundation.".to_string(),
++                    managed_milestone: "founded".to_string(),
++                    dependencies: Vec::new(),
++                    produces: vec!["foundation".to_string()],
++                    proof_profile: None,
++                    proof_state_path: None,
++                    program_manifest: None,
++                    service_state_path: None,
++                    orchestration_state_path: None,
++                    checks: Vec::new(),
++                    run_dir: None,
++                    prompt_context: None,
++                    verify_command: None,
++                    health_command: None,
++                },
++                BlueprintLane {
++                    id: "feature".to_string(),
++                    kind: LaneKind::Platform,
++                    title: "Feature Lane".to_string(),
++                    family: "implementation".to_string(),
++                    workflow_family: None,
++                    slug: Some("feature".to_string()),
++                    template: WorkflowTemplate::Implementation,
++                    goal: "Build feature.".to_string(),
++                    managed_milestone: "featured".to_string(),
++                    dependencies: vec![LaneDependency {
++                        unit: "multi-lane-unit".to_string(),
++                        lane: Some("foundation".to_string()),
++                        milestone: Some("founded".to_string()),
++                    }],
++                    produces: vec!["feature".to_string()],
++                    proof_profile: None,
++                    proof_state_path: None,
++                    program_manifest: None,
++                    service_state_path: None,
++                    orchestration_state_path: None,
++                    checks: Vec::new(),
++                    run_dir: None,
++                    prompt_context: None,
++                    verify_command: None,
++                    health_command: None,
++                },
++            ],
++        }],
++        protocols: Vec::new(),
++    };
++
++    let result = validate_blueprint(Path::new("same-unit.yaml"), &same_unit_deps);
++    assert!(result.is_ok(), "same-unit lane deps should pass: {result:?}");
++}
