@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "minimax",
+  "requested_model": "MiniMax-M2.7-highspeed",
+  "provider": "minimax",
+  "model": "MiniMax-M2.7-highspeed",
+  "served_model": "MiniMax-M2.7-highspeed",
+  "fallback_reason": null,
+  "codex_slot": null,
+  "command": "prompt=\"$(cat '/home/r/.fabro/cli/run.sggi4e/prompt.txt')\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,edit,write,grep,find,ls --model MiniMax-M2.7-highspeed --thinking high --append-system-prompt 'You are executing the IMPLEMENT stage of an automated pipeline. RULES: (1) Read existing code before implementing. (2) Implement functionality COMPLETELY. Code that compiles but does nothing is worse than code that fails to compile — the review will catch hollow implementations. (3) Every public function must have real logic, not a stub that returns a default or immediately transitions state without doing work. (4) Write tests that exercise BEHAVIORAL outcomes: given specific input, assert specific output. Tests for Display, Clone, PartialEq derive macros do not count. (5) Include at least one full lifecycle test that drives the system from initial state to terminal state through multiple actions. (6) Run the proof commands from your goal to verify changes work. (7) Write required durable artifacts to the lane-scoped artifact paths described in the prompt context and keep ephemeral workflow files under `.fabro-work/`. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. ANTI-PATTERNS TO AVOID: returning hardcoded values, marking state as complete without performing the action (e.g. Hit without drawing a card), writing tests that only cover the happy path. The challenge stage will specifically look for functions that compile but do nothing meaningful. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. The audit gate rejects changes outside your scope.' \"$prompt\""
+}
