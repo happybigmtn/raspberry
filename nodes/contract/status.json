@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "contract",
+    "last_response": "The contract file is in place. I’m doing one quick readback to make sure the wording and acceptance checks stayed tight and testable.",
+    "response.contract": "The contract file is in place. I’m doing one quick readback to make sure the wording and acceptance checks stayed tight and testable."
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 897686,
+    "output_tokens": 9364,
+    "cost": 2.384675
+  },
+  "duration_ms": 250488,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T19:36:48.786334368+00:00",
+  "updated_at": "2026-03-26T19:36:48.786336214+00:00"
+}

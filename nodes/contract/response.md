@@ -1,0 +1,1 @@
+The contract file is in place. I’m doing one quick readback to make sure the wording and acceptance checks stayed tight and testable.
