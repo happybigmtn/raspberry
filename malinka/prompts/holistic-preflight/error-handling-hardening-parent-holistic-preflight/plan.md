@@ -6,7 +6,7 @@ Goal:
 - Preflight the integrated parent plan `error-handling-hardening` before holistic review.
 
 Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Your job:
 1. Confirm every child integration artifact exists and is readable.
@@ -22,7 +22,7 @@ This lane is command-driven and report-first. Do not modify product code.
 
 Context:
 - Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Required outputs:
 - verification.md

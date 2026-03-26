@@ -4,7 +4,7 @@ goal = '''
 Deep synthesis pass for integrated parent plan `error-handling-hardening`.
 
 Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Re-read the full parent state after the Minimax pass.
 - collapse duplicates and sharpen weak evidence

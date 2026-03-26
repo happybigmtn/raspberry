@@ -6,7 +6,7 @@ Goal:
 - Final parent adjudication pass for integrated plan `error-handling-hardening`.
 
 Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Re-adjudicate the Minimax and deep-review findings.
 - confirm which findings are real and blocking
@@ -24,7 +24,7 @@ This lane prefers Codex and may fall back to Opus 4.6 if needed.
 
 Context:
 - Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Required outputs:
 - adjudication-verdict.md

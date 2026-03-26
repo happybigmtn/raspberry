@@ -6,7 +6,7 @@ Goal:
 - Deep synthesis pass for integrated parent plan `error-handling-hardening`.
 
 Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Re-read the full parent state after the Minimax pass.
 - collapse duplicates and sharpen weak evidence
@@ -24,7 +24,7 @@ This lane prefers Opus 4.6 and may fall back to Codex if needed.
 
 Context:
 - Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Required outputs:
 - deep-review.md

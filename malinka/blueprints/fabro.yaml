@@ -385,13 +385,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     produces:
@@ -636,13 +630,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening
@@ -896,13 +884,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening
@@ -1161,13 +1143,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening
@@ -1425,13 +1401,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening
@@ -1689,13 +1659,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening
@@ -1941,13 +1905,7 @@ units:
     - unit: autodev-efficiency-and-dispatch-live-validation
       lane: null
       milestone: null
-    - unit: greenfield-bootstrap-reliability-verify-scaffold-first-ordering
-      lane: null
-      milestone: null
     - unit: test-coverage-critical-paths-synthesis-runtime-regression-tests
-      lane: null
-      milestone: null
-    - unit: provider-policy-stabilization-live-validation
       lane: null
       milestone: null
     - unit: error-handling-hardening

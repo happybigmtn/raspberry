@@ -6,7 +6,7 @@ Goal:
 - First-pass holistic parent review for integrated plan `workspace-integration-verification`.
 
 Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 This is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.
 
@@ -20,7 +20,7 @@ Do not merely summarize child artifacts. Normalize the state of the whole parent
 
 Context:
 - Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Required outputs:
 - holistic-review.md

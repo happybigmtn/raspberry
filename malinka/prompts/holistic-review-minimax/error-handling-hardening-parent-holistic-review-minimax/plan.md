@@ -6,7 +6,7 @@ Goal:
 - First-pass holistic parent review for integrated plan `error-handling-hardening`.
 
 Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 This is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.
 
@@ -20,7 +20,7 @@ Do not merely summarize child artifacts. Normalize the state of the whole parent
 
 Context:
 - Integrated child units:
-- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-live-autodev-validation
+- error-handling-hardening-audit-autodev-critical-path, error-handling-hardening-integration-validation, error-handling-hardening-live-autodev-validation
 
 Required outputs:
 - holistic-review.md

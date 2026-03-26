@@ -1428,6 +1428,9 @@ fn master_phase_dependency_map(
         return BTreeMap::new();
     }
 
+    let explicit_dependency_map =
+        master_explicit_dependency_map(active_plan.body.as_str(), &plan_id_by_index);
+
     let mut phase_plan_ids = BTreeMap::<usize, Vec<String>>::new();
     let mut current_phase = None::<usize>;
     for line in active_plan.body.lines() {
@@ -1470,7 +1473,11 @@ fn master_phase_dependency_map(
     let mut prior_phase_ids = Vec::<String>::new();
     for (_phase, phase_ids) in phase_plan_ids {
         for plan_id in &phase_ids {
-            result.insert(plan_id.clone(), prior_phase_ids.clone());
+            let dependencies = explicit_dependency_map
+                .get(plan_id)
+                .cloned()
+                .unwrap_or_else(|| prior_phase_ids.clone());
+            result.insert(plan_id.clone(), dependencies);
         }
         for plan_id in phase_ids {
             if !prior_phase_ids.contains(&plan_id) {
@@ -1479,6 +1486,48 @@ fn master_phase_dependency_map(
         }
     }
     result
+}
+
+fn master_explicit_dependency_map(
+    master_plan_body: &str,
+    plan_id_by_index: &BTreeMap<usize, String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut result = BTreeMap::<String, Vec<String>>::new();
+    for line in master_plan_body.lines() {
+        let trimmed = line.trim();
+        let Some(depends_index) = trimmed.find("depends on") else {
+            continue;
+        };
+        let left_numbers = extract_master_plan_numbers(&trimmed[..depends_index]);
+        let right_numbers = extract_master_plan_numbers(&trimmed[depends_index..]);
+        let Some(plan_index) = left_numbers.last().copied() else {
+            continue;
+        };
+        let Some(plan_id) = plan_id_by_index.get(&plan_index) else {
+            continue;
+        };
+        let dependency_ids = right_numbers
+            .into_iter()
+            .filter(|dependency_index| dependency_index != &plan_index)
+            .filter_map(|dependency_index| plan_id_by_index.get(&dependency_index).cloned())
+            .fold(Vec::<String>::new(), |mut acc, dependency_id| {
+                if !acc.contains(&dependency_id) {
+                    acc.push(dependency_id);
+                }
+                acc
+            });
+        if !dependency_ids.is_empty() {
+            result.insert(plan_id.clone(), dependency_ids);
+        }
+    }
+    result
+}
+
+fn extract_master_plan_numbers(text: &str) -> Vec<usize> {
+    text.split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| part.len() == 3)
+        .filter_map(|part| part.parse::<usize>().ok())
+        .collect()
 }
 
 fn derive_child_intents(
@@ -4559,5 +4608,125 @@ units:
 
         assert!(dependency_units.contains(&"autodev".to_string()));
         assert!(dependency_units.contains(&"bootstrap".to_string()));
+    }
+
+    #[test]
+    fn master_phase_dependency_map_prefers_explicit_dependency_graph_edges() {
+        let corpus = PlanningCorpus {
+            repo_name: "fabro".to_string(),
+            planning_root: PathBuf::from("genesis"),
+            doctrine_files: Vec::new(),
+            evidence_paths: Vec::new(),
+            plan_docs: Vec::new(),
+            active_plan: Some(PlanningDocument {
+                path: PathBuf::from("genesis/plans/001-master-plan.md"),
+                title: "180-Day Turnaround Plan".to_string(),
+                body: concat!(
+                    "# Master Plan\n\n",
+                    "## Phase 0: Stabilization\n\n",
+                    "| # | Plan | Focus | Key Deliverable |\n",
+                    "|---|------|-------|-----------------|\n",
+                    "| 003 | Autodev | Dispatch | Runtime truth |\n",
+                    "| 004 | Bootstrap | Reliability | Fresh repo works |\n",
+                    "| 005 | Tests | Coverage | Regression proof |\n",
+                    "| 008 | Provider | Policy | Stable routing |\n\n",
+                    "## Phase 1: Foundation\n\n",
+                    "| # | Plan | Focus | Key Deliverable |\n",
+                    "|---|------|-------|-----------------|\n",
+                    "| 002 | Error Handling | Hardening | No panics |\n\n",
+                    "## Plan Dependency Graph\n\n",
+                    "```\n",
+                    "Phase 1 (after Phase 0 gate):\n",
+                    "  002-error-handling ─────────────┐\n",
+                    "       |\n",
+                    "       +── 002 depends on 003/005 (stabilize runtime first, then harden failure paths)\n",
+                    "```\n",
+                )
+                .to_string(),
+            }),
+            active_spec: None,
+        };
+        let plans = vec![
+            PlanRecord {
+                plan_id: "error-handling-hardening".to_string(),
+                path: PathBuf::from("genesis/plans/002-error-handling-hardening.md"),
+                title: "Error Handling Hardening".to_string(),
+                category: PlanCategory::Foundation,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: true,
+                implementation_required: true,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            },
+            PlanRecord {
+                plan_id: "autodev-efficiency-and-dispatch".to_string(),
+                path: PathBuf::from("genesis/plans/003-autodev-efficiency-and-dispatch.md"),
+                title: "Autodev".to_string(),
+                category: PlanCategory::Foundation,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: true,
+                implementation_required: true,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            },
+            PlanRecord {
+                plan_id: "greenfield-bootstrap-reliability".to_string(),
+                path: PathBuf::from("genesis/plans/004-greenfield-bootstrap-reliability.md"),
+                title: "Bootstrap".to_string(),
+                category: PlanCategory::Foundation,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: true,
+                implementation_required: true,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            },
+            PlanRecord {
+                plan_id: "test-coverage-critical-paths".to_string(),
+                path: PathBuf::from("genesis/plans/005-test-coverage-critical-paths.md"),
+                title: "Tests".to_string(),
+                category: PlanCategory::Verification,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: false,
+                implementation_required: true,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            },
+            PlanRecord {
+                plan_id: "provider-policy-stabilization".to_string(),
+                path: PathBuf::from("genesis/plans/008-provider-policy-stabilization.md"),
+                title: "Provider".to_string(),
+                category: PlanCategory::Foundation,
+                composite: true,
+                dependency_plan_ids: Vec::new(),
+                mapping_contract_path: None,
+                mapping_source: PlanMappingSource::Inferred,
+                bootstrap_required: true,
+                implementation_required: true,
+                declared_child_ids: Vec::new(),
+                children: Vec::new(),
+            },
+        ];
+
+        let dependencies = master_phase_dependency_map(&corpus, &plans);
+
+        assert_eq!(
+            dependencies.get("error-handling-hardening"),
+            Some(&vec![
+                "autodev-efficiency-and-dispatch".to_string(),
+                "test-coverage-critical-paths".to_string(),
+            ])
+        );
     }
 }

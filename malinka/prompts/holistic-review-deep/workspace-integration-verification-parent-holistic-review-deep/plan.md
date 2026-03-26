@@ -6,7 +6,7 @@ Goal:
 - Deep synthesis pass for integrated parent plan `workspace-integration-verification`.
 
 Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Re-read the full parent state after the Minimax pass.
 - collapse duplicates and sharpen weak evidence
@@ -24,7 +24,7 @@ This lane prefers Opus 4.6 and may fall back to Codex if needed.
 
 Context:
 - Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Required outputs:
 - deep-review.md

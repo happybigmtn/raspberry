@@ -6,7 +6,7 @@ Goal:
 - Final parent adjudication pass for integrated plan `workspace-integration-verification`.
 
 Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Re-adjudicate the Minimax and deep-review findings.
 - confirm which findings are real and blocking
@@ -24,7 +24,7 @@ This lane prefers Codex and may fall back to Opus 4.6 if needed.
 
 Context:
 - Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Required outputs:
 - adjudication-verdict.md

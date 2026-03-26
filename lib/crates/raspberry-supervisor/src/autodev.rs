@@ -550,8 +550,9 @@ pub fn orchestrate_program(
             .cloned()
             .collect::<Vec<_>>();
         let remaining_slots = available_slots.saturating_sub(replayed_lanes.len());
+        let selected_ready_lanes = select_ready_lanes_for_dispatch(&program, remaining_slots);
         let mut lanes_to_dispatch = replayed_lanes.clone();
-        lanes_to_dispatch.extend(ready_lanes.iter().take(remaining_slots).cloned());
+        lanes_to_dispatch.extend(selected_ready_lanes);
         autodev_debug_step(
             &manifest.program,
             cycle_number,
@@ -980,6 +981,64 @@ fn prioritized_lane_keys(lanes: Vec<&crate::evaluate::EvaluatedLane>) -> Vec<Str
         .collect()
 }
 
+fn select_ready_lanes_for_dispatch(
+    program: &crate::evaluate::EvaluatedProgram,
+    available_slots: usize,
+) -> Vec<String> {
+    if available_slots == 0 {
+        return Vec::new();
+    }
+
+    let ready_lanes = program
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == LaneExecutionStatus::Ready)
+        .collect::<Vec<_>>();
+    let ordered = prioritized_lane_keys(ready_lanes);
+    if ordered.len() <= 1 {
+        return ordered.into_iter().take(available_slots).collect();
+    }
+
+    let lane_map = program
+        .lanes
+        .iter()
+        .map(|lane| (lane.lane_key.clone(), lane))
+        .collect::<BTreeMap<_, _>>();
+    let unit_ids = program
+        .lanes
+        .iter()
+        .map(|lane| lane.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    let distinct_families = ordered
+        .iter()
+        .filter_map(|lane_key| {
+            lane_map
+                .get(lane_key)
+                .map(|lane| lane_root_plan_family(lane, &unit_ids))
+        })
+        .collect::<BTreeSet<_>>();
+
+    if distinct_families.len() <= 1 {
+        return ordered.into_iter().take(available_slots).collect();
+    }
+
+    let mut selected = Vec::new();
+    let mut seen_families = BTreeSet::new();
+    for lane_key in ordered {
+        if selected.len() >= available_slots {
+            break;
+        }
+        let Some(lane) = lane_map.get(&lane_key) else {
+            continue;
+        };
+        let family = lane_root_plan_family(lane, &unit_ids);
+        if seen_families.insert(family) {
+            selected.push(lane_key);
+        }
+    }
+    selected
+}
+
 fn lane_dispatch_priority_tuple(
     lane: Option<&&crate::evaluate::EvaluatedLane>,
 ) -> (i32, i32, std::cmp::Reverse<String>) {
@@ -1029,8 +1088,35 @@ fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
     if key.contains("live-validation") || key.contains("fresh-install-test") {
         score += 10;
     }
+    if key.contains("regression") || key.contains("edge-case") {
+        score += 20;
+    }
+    if key.contains("baseline-tests") {
+        score += 10;
+    }
+    if key.contains("autodev-integration-test") || key.contains("ci-preservation") {
+        score -= 10;
+    }
 
     score
+}
+
+fn lane_root_plan_family(
+    lane: &crate::evaluate::EvaluatedLane,
+    unit_ids: &BTreeSet<String>,
+) -> String {
+    let segments = lane.unit_id.split('-').collect::<Vec<_>>();
+    for count in (1..=segments.len()).rev() {
+        let prefix = segments[..count].join("-");
+        let matches = unit_ids
+            .iter()
+            .filter(|unit_id| *unit_id == &prefix || unit_id.starts_with(&format!("{prefix}-")))
+            .count();
+        if matches >= 2 {
+            return prefix;
+        }
+    }
+    lane.unit_id.clone()
 }
 
 fn lane_kind_priority(kind: &crate::manifest::LaneKind) -> i32 {
@@ -1354,14 +1440,14 @@ fn current_origin_head_branch(target_repo: &Path) -> Option<String> {
         .and_then(|branch| branch.strip_prefix("origin/").map(str::to_string))
 }
 
-fn worktree_is_clean(target_repo: &Path) -> bool {
+fn worktree_has_tracked_changes(target_repo: &Path) -> bool {
     Command::new("git")
         .current_dir(target_repo)
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .is_some_and(|output| output.stdout.is_empty())
+        .is_some_and(|output| !output.stdout.is_empty())
 }
 
 fn ahead_behind_counts(target_repo: &Path, remote_ref: &str) -> Option<(usize, usize)> {
@@ -1447,7 +1533,7 @@ pub(crate) fn ensure_target_repo_fresh_for_dispatch(
     if ahead > 0 {
         return TargetRepoFreshness::Diverged { ahead, behind };
     }
-    if !worktree_is_clean(&target_repo) {
+    if worktree_has_tracked_changes(&target_repo) {
         return TargetRepoFreshness::BehindWithLocalChanges { behind };
     }
     let merge = Command::new("git")
@@ -2422,6 +2508,54 @@ mod tests {
         }
     }
 
+    fn ready_lane(
+        lane_key: &str,
+        unit_id: &str,
+        lane_id: &str,
+        lane_kind: LaneKind,
+    ) -> EvaluatedLane {
+        EvaluatedLane {
+            lane_key: lane_key.to_string(),
+            unit_id: unit_id.to_string(),
+            unit_title: unit_id.to_string(),
+            lane_id: lane_id.to_string(),
+            lane_title: lane_id.to_string(),
+            lane_kind,
+            status: LaneExecutionStatus::Ready,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: String::new(),
+            managed_milestone: "reviewed".to_string(),
+            proof_profile: None,
+            run_config: PathBuf::from("malinka/run-configs/bootstrap/demo.toml"),
+            run_id: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage: None,
+            last_run_id: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        }
+    }
+
     fn git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
             .current_dir(dir)
@@ -3272,6 +3406,68 @@ units:
     }
 
     #[test]
+    fn ready_lane_dispatch_diversifies_initial_foundation_wave() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "fabro".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![
+                ready_lane(
+                    "autodev-efficiency-and-dispatch:autodev-efficiency-and-dispatch",
+                    "autodev-efficiency-and-dispatch",
+                    "autodev-efficiency-and-dispatch",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "greenfield-bootstrap-reliability:greenfield-bootstrap-reliability",
+                    "greenfield-bootstrap-reliability",
+                    "greenfield-bootstrap-reliability",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "provider-policy-stabilization:provider-policy-stabilization",
+                    "provider-policy-stabilization",
+                    "provider-policy-stabilization",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-autodev-integration-test:test-coverage-critical-paths-autodev-integration-test",
+                    "test-coverage-critical-paths-autodev-integration-test",
+                    "test-coverage-critical-paths-autodev-integration-test",
+                    LaneKind::Integration,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-ci-preservation-and-hardening:test-coverage-critical-paths-ci-preservation-and-hardening",
+                    "test-coverage-critical-paths-ci-preservation-and-hardening",
+                    "test-coverage-critical-paths-ci-preservation-and-hardening",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests:test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    "test-coverage-critical-paths-synthesis-runtime-regression-tests",
+                    LaneKind::Platform,
+                ),
+            ],
+        };
+
+        let selected = select_ready_lanes_for_dispatch(&program, 10);
+
+        assert_eq!(selected.len(), 4);
+        assert!(selected.contains(
+            &"autodev-efficiency-and-dispatch:autodev-efficiency-and-dispatch".to_string()
+        ));
+        assert!(selected.contains(
+            &"greenfield-bootstrap-reliability:greenfield-bootstrap-reliability".to_string()
+        ));
+        assert!(selected
+            .contains(&"provider-policy-stabilization:provider-policy-stabilization".to_string()));
+        assert!(selected.contains(
+            &"test-coverage-critical-paths-synthesis-runtime-regression-tests:test-coverage-critical-paths-synthesis-runtime-regression-tests".to_string()
+        ));
+    }
+
+    #[test]
     fn refresh_from_trunk_replays_same_lane_after_cooldown() {
         let manifest = ProgramManifest::load(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3518,7 +3714,7 @@ units:
         std::fs::write(source.join("README.md"), "hello\nworld\n").expect("update readme");
         git(&source, &["commit", "-am", "advance remote"]);
         git(&source, &["push", "origin", "main"]);
-        std::fs::write(local.join("scratch.txt"), "dirty\n").expect("dirty local");
+        std::fs::write(local.join("README.md"), "hello\nlocal dirty\n").expect("dirty local");
 
         let manifest = demo_manifest(&local);
         let manifest_path = temp.path().join("demo.yaml");
@@ -3529,6 +3725,61 @@ units:
             freshness,
             TargetRepoFreshness::BehindWithLocalChanges { behind: 1 }
         );
+    }
+
+    #[test]
+    fn ensure_target_repo_fresh_for_dispatch_fast_forwards_with_only_untracked_noise() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let local = temp.path().join("local");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+        git(&source, &["init"]);
+        git(&source, &["config", "user.name", "Fabro"]);
+        git(&source, &["config", "user.email", "fabro@example.com"]);
+        std::fs::write(source.join("README.md"), "hello\n").expect("write readme");
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "initial"]);
+        git(&source, &["branch", "-M", "main"]);
+        git(
+            &source,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                local.to_str().expect("local path"),
+            ],
+        );
+
+        std::fs::write(source.join("README.md"), "hello\nworld\n").expect("update readme");
+        git(&source, &["commit", "-am", "advance remote"]);
+        git(&source, &["push", "origin", "main"]);
+        std::fs::write(local.join("scratch.ipynb"), "noise\n").expect("noise file");
+
+        let manifest = demo_manifest(&local);
+        let manifest_path = temp.path().join("demo.yaml");
+        std::fs::write(&manifest_path, "program: demo\nunits: {}\n").expect("manifest");
+
+        let freshness = ensure_target_repo_fresh_for_dispatch(&manifest, &manifest_path);
+        assert_eq!(freshness, TargetRepoFreshness::FastForwarded);
+
+        let counts = ahead_behind_counts(&local, "origin/main").expect("ahead behind");
+        assert_eq!(counts, (0, 0));
     }
 
     #[test]

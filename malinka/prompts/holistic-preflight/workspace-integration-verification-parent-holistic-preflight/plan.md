@@ -6,7 +6,7 @@ Goal:
 - Preflight the integrated parent plan `workspace-integration-verification` before holistic review.
 
 Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Your job:
 1. Confirm every child integration artifact exists and is readable.
@@ -22,7 +22,7 @@ This lane is command-driven and report-first. Do not modify product code.
 
 Context:
 - Integrated child units:
-- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-integration-proof-profile, workspace-integration-verification-live-validation-on-rxmrbro
 
 Required outputs:
 - verification.md

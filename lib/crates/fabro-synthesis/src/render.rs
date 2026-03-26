@@ -1648,15 +1648,7 @@ fn render_lane(
         .verify_command
         .clone()
         .unwrap_or_else(|| default_verify_command(blueprint, unit_id, lane));
-    // Scope workspace-wide test commands to lane surfaces to prevent agents
-    // from modifying unrelated code to make workspace tests pass.
-    let verify_command = if verify_command.contains("cargo test --workspace") {
-        let surfaces = extract_owned_surfaces(&lane.goal);
-        let scoped = scope_cargo_test_to_surfaces("cargo test --workspace", &surfaces);
-        verify_command.replace("cargo test --workspace", &scoped)
-    } else {
-        verify_command
-    };
+    let verify_command = normalize_lane_verify_command(lane, verify_command);
     let health_command = lane
         .health_command
         .clone()
@@ -5615,8 +5607,23 @@ fn implementation_verify_command(
         return "true".to_string();
     }
     commands = normalize_verify_commands(lane, commands);
+    commands = commands
+        .into_iter()
+        .map(|command| portable_proof_command(command))
+        .collect();
 
     format!("set -e\n{}", commands.join("\n"))
+}
+
+fn normalize_lane_verify_command(lane: &BlueprintLane, verify_command: String) -> String {
+    let verify_command = if verify_command.contains("cargo test --workspace") {
+        let surfaces = extract_owned_surfaces(&lane.goal);
+        let scoped = scope_cargo_test_to_surfaces("cargo test --workspace", &surfaces);
+        verify_command.replace("cargo test --workspace", &scoped)
+    } else {
+        verify_command
+    };
+    portable_proof_command(verify_command)
 }
 
 fn normalize_verify_commands(lane: &BlueprintLane, commands: Vec<String>) -> Vec<String> {
@@ -5666,6 +5673,18 @@ fn normalize_verify_commands(lane: &BlueprintLane, commands: Vec<String>) -> Vec
     }
 
     dedupe_commands(normalized)
+}
+
+fn portable_proof_command(command: String) -> String {
+    if !command.contains("cargo nextest run") {
+        return command;
+    }
+    if command.contains("cargo nextest --version >/dev/null 2>&1") {
+        return command;
+    }
+
+    let fallback = command.replace("cargo nextest run", "cargo test");
+    format!("if cargo nextest --version >/dev/null 2>&1; then\n  {command}\nelse\n  {fallback}\nfi")
 }
 
 fn dedupe_commands(commands: Vec<String>) -> Vec<String> {
@@ -7668,6 +7687,82 @@ The validator binary should emit structured log lines.
         assert!(
             command.contains("./scripts/set_mining_mode.sh --client alice-phone --mode balanced")
         );
+    }
+
+    #[test]
+    fn implementation_verify_command_wraps_nextest_with_portable_fallback() {
+        let lane = BlueprintLane {
+            id: "autodev-integration".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Autodev Integration".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("autodev-integration".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "implement".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let evidence = ImplementationEvidence {
+            proof_commands: vec![
+                "cargo nextest run -p raspberry-supervisor -- integration autodev_cycle"
+                    .to_string(),
+            ],
+            ..ImplementationEvidence::default()
+        };
+
+        let command = implementation_verify_command(&lane, &evidence);
+
+        assert!(command.contains("cargo nextest --version >/dev/null 2>&1"));
+        assert!(command
+            .contains("cargo nextest run -p raspberry-supervisor -- integration autodev_cycle"));
+        assert!(command.contains("cargo test -p raspberry-supervisor -- integration autodev_cycle"));
+    }
+
+    #[test]
+    fn normalize_lane_verify_command_wraps_explicit_nextest_command() {
+        let lane = BlueprintLane {
+            id: "autodev-integration".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Autodev Integration".to_string(),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("autodev-integration".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "implement".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let command = super::normalize_lane_verify_command(
+            &lane,
+            "cargo nextest run -p raspberry-supervisor -- integration autodev_cycle".to_string(),
+        );
+
+        assert!(command.contains("cargo nextest --version >/dev/null 2>&1"));
+        assert!(command.contains("cargo test -p raspberry-supervisor -- integration autodev_cycle"));
     }
 
     #[test]
