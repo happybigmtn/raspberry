@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNXWBQTRHGV0EFMV8GG538N",
+  "workflow_name": "GreenfieldBootstrapReliabilityBootstrapVerificationGate",
+  "goal": "Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-26T20:37:55.507898771Z",
+  "node_count": 13,
+  "edge_count": 20,
+  "run_branch": "fabro/run/01KMNXWBQTRHGV0EFMV8GG538N",
+  "base_sha": "f035a0e637d93ed0f1482197961e60ad67f43c4f",
+  "base_branch": "main",
+  "workflow_slug": "greenfield-bootstrap-reliability-bootstrap-verification-gate",
+  "host_repo_path": "/home/r/coding/fabro"
+}
