@@ -1780,6 +1780,15 @@ fn load_mapping_metadata(path: &std::path::Path) -> Option<MappingMetadata> {
 
 fn infer_archetype_from_child_id(child_id: &str, plan_lower: &str) -> &'static str {
     let id_lower = child_id.to_ascii_lowercase();
+    if id_lower.contains("integration-test")
+        || id_lower.contains("integration-tests")
+        || id_lower.contains("e2e-test")
+        || id_lower.contains("e2e-tests")
+        || id_lower.contains("regression-test")
+        || id_lower.contains("regression-tests")
+    {
+        return "implement_module";
+    }
     if id_lower.contains("e2e")
         || id_lower.contains("end-to-end")
         || id_lower.contains("integration")
@@ -2234,6 +2243,14 @@ mod tests {
         assert_eq!(
             infer_lane_kind_from_child_id("release-preparation-readme-and-changelog"),
             "artifact"
+        );
+    }
+
+    #[test]
+    fn infer_archetype_treats_integration_tests_as_implementation_work() {
+        assert_eq!(
+            infer_archetype_from_child_id("autodev-integration-test", ""),
+            "implement_module"
         );
     }
 

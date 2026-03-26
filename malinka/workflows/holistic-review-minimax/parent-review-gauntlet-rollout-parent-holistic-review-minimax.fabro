@@ -1,0 +1,23 @@
+digraph ParentReviewGauntletRolloutParentHolisticReviewMinimax {
+    graph [
+        goal="First-pass holistic parent review for integrated plan `parent-review-gauntlet-rollout`.\n\nIntegrated child units:\n- parent-review-gauntlet-rollout-artifact-validation, parent-review-gauntlet-rollout-conditional-stage-trigger-validation, parent-review-gauntlet-rollout-live-gauntlet-execution, parent-review-gauntlet-rollout-ship-readiness-verdict, parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package\n\nThis is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.\n\nRequired outputs:\n- `holistic-review.md` with structured findings across correctness, trust boundaries, UX, performance, deployability, and documentation\n- `finding-index.json` with normalized findings, severities, and touched surfaces\n- `remediation-plan.md` with concrete follow-up work or explicit justification for no action\n- `promotion.md` with a first-pass ready/not-ready verdict\n\nDo not merely summarize child artifacts. Normalize the state of the whole parent implementation.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/holistic-review-minimax/parent-review-gauntlet-rollout-parent-holistic-review-minimax/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/holistic-review-minimax/parent-review-gauntlet-rollout-parent-holistic-review-minimax/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-minimax/parent-review-gauntlet-rollout-parent-holistic-review-minimax/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-minimax/holistic-review.md'\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-minimax/finding-index.json'\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-minimax/remediation-plan.md'\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-minimax/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

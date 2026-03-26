@@ -1,0 +1,23 @@
+digraph ErrorHandlingHardeningDocumentRelease {
+    graph [
+        goal="Documentation sync gate for parent plan `error-handling-hardening`.\n\nBring release-facing documentation back into alignment with what actually shipped or is ready to ship at the integrated parent level.\n\nRequired outputs:\n- `docs-release.md`\n- `promotion.md`\n\nThis is a hard gate.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/document-release/error-handling-hardening-document-release/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/document-release/error-handling-hardening-document-release/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/document-release/error-handling-hardening-document-release/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/error-handling-hardening-document-release/docs-release.md'\ntest -f '.raspberry/portfolio/error-handling-hardening-document-release/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

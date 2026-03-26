@@ -12,9 +12,9 @@ digraph PerformanceMeasurementAndOptimizationBenchmark {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/benchmark/performance-measurement-and-optimization-benchmark/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/benchmark/performance-measurement-and-optimization-benchmark/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/benchmark/performance-measurement-and-optimization-benchmark/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/benchmark/performance-measurement-and-optimization-benchmark/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/benchmark/performance-measurement-and-optimization-benchmark/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/benchmark/performance-measurement-and-optimization-benchmark/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-benchmark/benchmark.md'\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-benchmark/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

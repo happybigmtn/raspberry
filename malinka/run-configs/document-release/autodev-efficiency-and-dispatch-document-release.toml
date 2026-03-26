@@ -1,0 +1,30 @@
+version = 1
+graph = "../../workflows/document-release/autodev-efficiency-and-dispatch-document-release.fabro"
+goal = '''
+Documentation sync gate for parent plan `autodev-efficiency-and-dispatch`.
+
+Bring release-facing documentation back into alignment with what actually shipped or is ready to ship at the integrated parent level.
+
+Required outputs:
+- `docs-release.md`
+- `promotion.md`
+
+This is a hard gate.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

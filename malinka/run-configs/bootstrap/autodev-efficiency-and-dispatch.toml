@@ -42,6 +42,9 @@ worktree_mode = "clean"
 MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
 KIMI_API_KEY = "${env.KIMI_API_KEY}"
 
+[pull_request]
+enabled = false
+
 [integration]
 enabled = true
 strategy = "squash"

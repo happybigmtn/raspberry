@@ -1,0 +1,23 @@
+digraph SprintContractsAndScoredReviewParentDesignReview {
+    graph [
+        goal="Parent-level design and interaction review for integrated plan `sprint-contracts-and-scored-review`.\n\nReview the whole integrated UI/TUI surface for spacing, hierarchy, consistency, awkward AI-generated patterns, and interaction quality.\n\nRequired outputs:\n- `design-review.md`\n- `promotion.md`\n\nThis lane is report-first. Do not claim browser-only evidence you did not actually gather.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/design-review/sprint-contracts-and-scored-review-parent-design-review/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/design-review/sprint-contracts-and-scored-review-parent-design-review/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/design-review/sprint-contracts-and-scored-review-parent-design-review/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-design-review/design-review.md'\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-design-review/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

@@ -1,0 +1,26 @@
+version = 1
+graph = "../../workflows/implementation/autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily-codex-unblock.fabro"
+goal = '''
+Use Codex to unblock implementation lane `autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily:autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily`.
+
+Inspect the source lane's most recent failure/remediation context and apply the minimal code or harness changes needed so the source lane can pass its next replay.
+
+Proof commands:
+- `cargo nextest run -p fabro-synthesis -- render && cargo nextest run -p raspberry-supervisor -- dispatch parallel autodev`
+'''
+directory = "../../.."
+
+[llm]
+provider = "openai"
+model = "gpt-5.4"
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+FABRO_STRICT_PROVIDER = "1"

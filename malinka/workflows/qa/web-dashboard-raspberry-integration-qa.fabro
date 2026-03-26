@@ -12,9 +12,9 @@ digraph WebDashboardRaspberryIntegrationQa {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/qa/web-dashboard-raspberry-integration-qa/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/qa/web-dashboard-raspberry-integration-qa/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/qa/web-dashboard-raspberry-integration-qa/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/qa/web-dashboard-raspberry-integration-qa/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/qa/web-dashboard-raspberry-integration-qa/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/qa/web-dashboard-raspberry-integration-qa/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-qa/qa-report.md'\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-qa/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

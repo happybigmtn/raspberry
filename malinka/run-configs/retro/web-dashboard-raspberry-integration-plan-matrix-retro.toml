@@ -1,0 +1,29 @@
+version = 1
+graph = "../../workflows/retro/web-dashboard-raspberry-integration-plan-matrix-retro.fabro"
+goal = '''
+Retrospective tail for parent plan `web-dashboard-raspberry-integration-plan-matrix`.
+
+Summarize what shipped, what slowed the work down, which findings were most valuable, and what Fabro or workflow-level improvements would most reduce repeat failures.
+
+Required outputs:
+- `retro.md`
+
+This lane is reporting-only and should not reopen implementation.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

@@ -1,0 +1,23 @@
+digraph SprintContractsAndScoredReviewValidateHolisticPreflight {
+    graph [
+        goal="Preflight the integrated parent plan `sprint-contracts-and-scored-review-validate` before holistic review.\n\nIntegrated child units:\n- sprint-contracts-and-scored-review-validate-contract-stage, sprint-contracts-and-scored-review-validate-scored-review\n\nYour job:\n1. Confirm every child integration artifact exists and is readable.\n2. Confirm child review artifacts exist where available.\n3. Record the exact integrated surface area that the parent gauntlet must inspect.\n4. Call out any missing evidence, stale artifacts, or ambiguous ownership before expensive parent review begins.\n\nRequired durable artifacts:\n- `verification.md` (what was checked, what artifacts were present, what is missing)\n- `review.md` (a concise go/no-go summary for parent holistic review)\n\nThis lane is command-driven and report-first. Do not modify product code.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/holistic-preflight/sprint-contracts-and-scored-review-validate-holistic-preflight/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/holistic-preflight/sprint-contracts-and-scored-review-validate-holistic-preflight/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/holistic-preflight/sprint-contracts-and-scored-review-validate-holistic-preflight/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-validate-holistic-preflight/verification.md'\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-validate-holistic-preflight/review.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

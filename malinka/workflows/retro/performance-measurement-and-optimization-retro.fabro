@@ -12,9 +12,9 @@ digraph PerformanceMeasurementAndOptimizationRetro {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/retro/performance-measurement-and-optimization-retro/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/retro/performance-measurement-and-optimization-retro/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/retro/performance-measurement-and-optimization-retro/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/retro/performance-measurement-and-optimization-retro/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/retro/performance-measurement-and-optimization-retro/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/retro/performance-measurement-and-optimization-retro/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-retro/retro.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

@@ -1,0 +1,23 @@
+digraph ProviderPolicyStabilizationQa {
+    graph [
+        goal="Integrated QA pass for parent plan `provider-policy-stabilization`.\n\nExercise the end-to-end parent flow as far as this repo can support non-interactively. Focus on integrated regressions, broken workflows, missing validation, and ship-risk.\n\nRequired outputs:\n- `qa-report.md`\n- `promotion.md`\n\nTag findings by severity and include concrete repro steps.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/qa/provider-policy-stabilization-qa/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/qa/provider-policy-stabilization-qa/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/qa/provider-policy-stabilization-qa/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/provider-policy-stabilization-qa/qa-report.md'\ntest -f '.raspberry/portfolio/provider-policy-stabilization-qa/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

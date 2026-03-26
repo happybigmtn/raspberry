@@ -1,0 +1,3 @@
+# performance-measurement-and-optimization Investigate — Polish
+
+Polish the durable artifacts for `performance-measurement-and-optimization-parent-investigate` so they are clear, repo-specific, and ready for the supervisory plane.

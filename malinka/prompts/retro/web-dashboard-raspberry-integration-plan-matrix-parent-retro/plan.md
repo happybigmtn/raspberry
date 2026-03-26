@@ -1,0 +1,20 @@
+# web-dashboard-raspberry-integration-plan-matrix Retro — Plan
+
+Lane: `web-dashboard-raspberry-integration-plan-matrix-parent-retro`
+
+Goal:
+- Retrospective tail for parent plan `web-dashboard-raspberry-integration-plan-matrix`.
+
+Summarize what shipped, what slowed the work down, which findings were most valuable, and what Fabro or workflow-level improvements would most reduce repeat failures.
+
+Required outputs:
+- `retro.md`
+
+This lane is reporting-only and should not reopen implementation.
+
+Context:
+- Required outputs:
+- retro.md
+
+Write durable artifacts only to these exact lane-scoped paths:
+- `.raspberry/portfolio/web-dashboard-raspberry-integration-plan-matrix-parent-retro/retro.md`

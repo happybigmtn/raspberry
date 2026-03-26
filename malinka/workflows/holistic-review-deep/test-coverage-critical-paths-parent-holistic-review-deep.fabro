@@ -1,0 +1,23 @@
+digraph TestCoverageCriticalPathsParentHolisticReviewDeep {
+    graph [
+        goal="Deep synthesis pass for integrated parent plan `test-coverage-critical-paths`.\n\nIntegrated child units:\n- test-coverage-critical-paths-autodev-integration-test, test-coverage-critical-paths-ci-preservation-and-hardening, test-coverage-critical-paths-fabro-db-baseline-tests, test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github, test-coverage-critical-paths-raspberry-supervisor-edge-case-tests, test-coverage-critical-paths-synthesis-runtime-regression-tests\n\nRe-read the full parent state after the Minimax pass.\n- collapse duplicates and sharpen weak evidence\n- identify systemic edge cases or cross-child interactions that the first pass may have missed\n- refine the remediation plan where the first pass was broad or ambiguous\n- preserve uncertainty explicitly when evidence is incomplete\n\nRequired outputs:\n- `deep-review.md`\n- `finding-deltas.json`\n- `remediation-plan.md`\n- `promotion.md`\n\nThis lane prefers Opus 4.6 and may fall back to Codex if needed.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: claude-opus-4-6; provider: anthropic; }
+            #polish { backend: cli; model: claude-opus-4-6; provider: anthropic; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/holistic-review-deep/test-coverage-critical-paths-parent-holistic-review-deep/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/holistic-review-deep/test-coverage-critical-paths-parent-holistic-review-deep/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-deep/test-coverage-critical-paths-parent-holistic-review-deep/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/test-coverage-critical-paths-parent-holistic-review-deep/deep-review.md'\ntest -f '.raspberry/portfolio/test-coverage-critical-paths-parent-holistic-review-deep/finding-deltas.json'\ntest -f '.raspberry/portfolio/test-coverage-critical-paths-parent-holistic-review-deep/remediation-plan.md'\ntest -f '.raspberry/portfolio/test-coverage-critical-paths-parent-holistic-review-deep/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

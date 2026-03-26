@@ -1,0 +1,23 @@
+digraph SprintContractsAndScoredReviewParentHolisticReviewAdjudication {
+    graph [
+        goal="Final parent adjudication pass for integrated plan `sprint-contracts-and-scored-review`.\n\nIntegrated child units:\n- sprint-contracts-and-scored-review-challenge-stage-a-b-assessment, sprint-contracts-and-scored-review-contract-completeness-metrics, sprint-contracts-and-scored-review-decision-and-implementation, sprint-contracts-and-scored-review-review-score-distribution\n\nRe-adjudicate the Minimax and deep-review findings.\n- confirm which findings are real and blocking\n- reject weak or duplicate findings explicitly\n- preserve disagreements rather than flattening them\n- issue the final parent ship/no-ship judgment for this integrated plan\n\nRequired outputs:\n- `adjudication-verdict.md`\n- `confirmed-findings.json`\n- `rejected-findings.json`\n- `promotion.md`\n\nThis lane prefers Codex and may fall back to Opus 4.6 if needed.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: gpt-5.4; provider: openai; }
+            #polish { backend: cli; model: gpt-5.4; provider: openai; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/holistic-review-adjudication/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/holistic-review-adjudication/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-adjudication/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/adjudication-verdict.md'\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/confirmed-findings.json'\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/rejected-findings.json'\ntest -f '.raspberry/portfolio/sprint-contracts-and-scored-review-parent-holistic-review-adjudication/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

@@ -1,0 +1,35 @@
+version = 1
+graph = "../../workflows/holistic-review-minimax/autodev-efficiency-and-dispatch-parent-holistic-review-minimax.fabro"
+goal = '''
+First-pass holistic parent review for integrated plan `autodev-efficiency-and-dispatch`.
+
+Integrated child units:
+- autodev-efficiency-and-dispatch-add-dispatch-state-telemetry, autodev-efficiency-and-dispatch-decouple-evolve-from-dispatch-and-consume-the-budget-greedily, autodev-efficiency-and-dispatch-freeze-the-current-failure-modes-into-reproducible-tests, autodev-efficiency-and-dispatch-live-validation, autodev-efficiency-and-dispatch-make-autodev-runtime-paths-self-consistent, autodev-efficiency-and-dispatch-reconcile-stale-running-and-failed-lane-truth
+
+This is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.
+
+Required outputs:
+- `holistic-review.md` with structured findings across correctness, trust boundaries, UX, performance, deployability, and documentation
+- `finding-index.json` with normalized findings, severities, and touched surfaces
+- `remediation-plan.md` with concrete follow-up work or explicit justification for no action
+- `promotion.md` with a first-pass ready/not-ready verdict
+
+Do not merely summarize child artifacts. Normalize the state of the whole parent implementation.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

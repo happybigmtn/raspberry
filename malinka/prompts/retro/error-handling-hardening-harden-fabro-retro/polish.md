@@ -1,0 +1,3 @@
+# error-handling-hardening-harden-fabro Retro — Polish
+
+Polish the durable artifacts for `error-handling-hardening-harden-fabro-retro` so they are clear, repo-specific, and ready for the supervisory plane.

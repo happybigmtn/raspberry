@@ -1,0 +1,39 @@
+# parent-review-gauntlet-rollout Holistic Deep Review — Plan
+
+Lane: `parent-review-gauntlet-rollout-parent-holistic-review-deep`
+
+Goal:
+- Deep synthesis pass for integrated parent plan `parent-review-gauntlet-rollout`.
+
+Integrated child units:
+- parent-review-gauntlet-rollout-artifact-validation, parent-review-gauntlet-rollout-conditional-stage-trigger-validation, parent-review-gauntlet-rollout-live-gauntlet-execution, parent-review-gauntlet-rollout-ship-readiness-verdict, parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+
+Re-read the full parent state after the Minimax pass.
+- collapse duplicates and sharpen weak evidence
+- identify systemic edge cases or cross-child interactions that the first pass may have missed
+- refine the remediation plan where the first pass was broad or ambiguous
+- preserve uncertainty explicitly when evidence is incomplete
+
+Required outputs:
+- `deep-review.md`
+- `finding-deltas.json`
+- `remediation-plan.md`
+- `promotion.md`
+
+This lane prefers Opus 4.6 and may fall back to Codex if needed.
+
+Context:
+- Integrated child units:
+- parent-review-gauntlet-rollout-artifact-validation, parent-review-gauntlet-rollout-conditional-stage-trigger-validation, parent-review-gauntlet-rollout-live-gauntlet-execution, parent-review-gauntlet-rollout-ship-readiness-verdict, parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+
+Required outputs:
+- deep-review.md
+- finding-deltas.json
+- remediation-plan.md
+- promotion.md
+
+Write durable artifacts only to these exact lane-scoped paths:
+- `.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-deep/deep-review.md`
+- `.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-deep/finding-deltas.json`
+- `.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-deep/remediation-plan.md`
+- `.raspberry/portfolio/parent-review-gauntlet-rollout-parent-holistic-review-deep/promotion.md`

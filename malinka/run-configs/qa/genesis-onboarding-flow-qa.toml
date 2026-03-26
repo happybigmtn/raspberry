@@ -1,0 +1,30 @@
+version = 1
+graph = "../../workflows/qa/genesis-onboarding-flow-qa.fabro"
+goal = '''
+Integrated QA pass for parent plan `genesis-onboarding-flow`.
+
+Exercise the end-to-end parent flow as far as this repo can support non-interactively. Focus on integrated regressions, broken workflows, missing validation, and ship-risk.
+
+Required outputs:
+- `qa-report.md`
+- `promotion.md`
+
+Tag findings by severity and include concrete repro steps.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

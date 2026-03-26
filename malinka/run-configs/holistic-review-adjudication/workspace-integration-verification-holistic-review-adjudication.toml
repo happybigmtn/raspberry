@@ -1,0 +1,39 @@
+version = 1
+graph = "../../workflows/holistic-review-adjudication/workspace-integration-verification-holistic-review-adjudication.fabro"
+goal = '''
+Final parent adjudication pass for integrated plan `workspace-integration-verification`.
+
+Integrated child units:
+- workspace-integration-verification-blueprintprotocol-and-contract-lane-generation, workspace-integration-verification-consistency-challenge-prompts, workspace-integration-verification-live-validation-on-rxmrbro
+
+Re-adjudicate the Minimax and deep-review findings.
+- confirm which findings are real and blocking
+- reject weak or duplicate findings explicitly
+- preserve disagreements rather than flattening them
+- issue the final parent ship/no-ship judgment for this integrated plan
+
+Required outputs:
+- `adjudication-verdict.md`
+- `confirmed-findings.json`
+- `rejected-findings.json`
+- `promotion.md`
+
+This lane prefers Codex and may fall back to Opus 4.6 if needed.
+'''
+directory = "../../.."
+
+[llm]
+provider = "openai"
+model = "gpt-5.4"
+[llm.fallbacks]
+openai = ["claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

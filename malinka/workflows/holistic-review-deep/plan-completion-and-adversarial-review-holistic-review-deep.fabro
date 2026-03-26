@@ -12,9 +12,9 @@ digraph PlanCompletionAndAdversarialReviewHolisticReviewDeep {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/holistic-review-deep/plan-completion-and-adversarial-review-holistic-review-deep/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-deep/deep-review.md'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-deep/finding-deltas.json'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-deep/remediation-plan.md'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-deep/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

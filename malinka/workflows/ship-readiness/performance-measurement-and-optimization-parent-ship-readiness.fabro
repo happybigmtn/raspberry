@@ -1,0 +1,23 @@
+digraph PerformanceMeasurementAndOptimizationParentShipReadiness {
+    graph [
+        goal="Explicit ship-readiness gate for parent plan `performance-measurement-and-optimization`.\n\nDecide whether the integrated parent implementation is actually ready to ship after holistic review, QA, security, and performance checks.\n\nRequired outputs:\n- `ship-checklist.md`\n- `promotion.md`\n\nUse plain yes/no language for the final ship judgment.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/ship-readiness/performance-measurement-and-optimization-parent-ship-readiness/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/ship-readiness/performance-measurement-and-optimization-parent-ship-readiness/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/ship-readiness/performance-measurement-and-optimization-parent-ship-readiness/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-parent-ship-readiness/ship-checklist.md'\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-parent-ship-readiness/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

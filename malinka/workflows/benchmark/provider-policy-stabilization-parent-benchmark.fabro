@@ -1,0 +1,23 @@
+digraph ProviderPolicyStabilizationParentBenchmark {
+    graph [
+        goal="Performance review for parent plan `provider-policy-stabilization`.\n\nCheck for regressions, missing baselines, or obvious throughput / latency / polling inefficiencies introduced by the integrated parent work.\n\nRequired outputs:\n- `benchmark.md`\n- `promotion.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/benchmark/provider-policy-stabilization-parent-benchmark/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/benchmark/provider-policy-stabilization-parent-benchmark/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/benchmark/provider-policy-stabilization-parent-benchmark/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/provider-policy-stabilization-parent-benchmark/benchmark.md'\ntest -f '.raspberry/portfolio/provider-policy-stabilization-parent-benchmark/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

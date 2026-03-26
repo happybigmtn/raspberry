@@ -1,0 +1,30 @@
+version = 1
+graph = "../../workflows/design-review/provider-policy-stabilization-parent-design-review.fabro"
+goal = '''
+Parent-level design and interaction review for integrated plan `provider-policy-stabilization`.
+
+Review the whole integrated UI/TUI surface for spacing, hierarchy, consistency, awkward AI-generated patterns, and interaction quality.
+
+Required outputs:
+- `design-review.md`
+- `promotion.md`
+
+This lane is report-first. Do not claim browser-only evidence you did not actually gather.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

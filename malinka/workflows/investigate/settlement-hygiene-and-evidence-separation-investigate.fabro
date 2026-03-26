@@ -12,9 +12,9 @@ digraph SettlementHygieneAndEvidenceSeparationInvestigate {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/investigate/settlement-hygiene-and-evidence-separation-investigate/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/settlement-hygiene-and-evidence-separation-investigate/investigation.md'\ntest -f '.raspberry/portfolio/settlement-hygiene-and-evidence-separation-investigate/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

@@ -1,0 +1,37 @@
+version = 1
+graph = "../../workflows/holistic-preflight/web-dashboard-raspberry-integration-plan-matrix-holistic-preflight.fabro"
+goal = '''
+Preflight the integrated parent plan `web-dashboard-raspberry-integration-plan-matrix` before holistic review.
+
+Integrated child units:
+- web-dashboard-raspberry-integration-plan-matrix-api-endpoint, web-dashboard-raspberry-integration-plan-matrix-react-component
+
+Your job:
+1. Confirm every child integration artifact exists and is readable.
+2. Confirm child review artifacts exist where available.
+3. Record the exact integrated surface area that the parent gauntlet must inspect.
+4. Call out any missing evidence, stale artifacts, or ambiguous ownership before expensive parent review begins.
+
+Required durable artifacts:
+- `verification.md` (what was checked, what artifacts were present, what is missing)
+- `review.md` (a concise go/no-go summary for parent holistic review)
+
+This lane is command-driven and report-first. Do not modify product code.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

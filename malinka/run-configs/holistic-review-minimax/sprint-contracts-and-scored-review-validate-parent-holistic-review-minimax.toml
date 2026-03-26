@@ -1,0 +1,35 @@
+version = 1
+graph = "../../workflows/holistic-review-minimax/sprint-contracts-and-scored-review-validate-parent-holistic-review-minimax.fabro"
+goal = '''
+First-pass holistic parent review for integrated plan `sprint-contracts-and-scored-review-validate`.
+
+Integrated child units:
+- sprint-contracts-and-scored-review-validate-contract-stage, sprint-contracts-and-scored-review-validate-scored-review
+
+This is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.
+
+Required outputs:
+- `holistic-review.md` with structured findings across correctness, trust boundaries, UX, performance, deployability, and documentation
+- `finding-index.json` with normalized findings, severities, and touched surfaces
+- `remediation-plan.md` with concrete follow-up work or explicit justification for no action
+- `promotion.md` with a first-pass ready/not-ready verdict
+
+Do not merely summarize child artifacts. Normalize the state of the whole parent implementation.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

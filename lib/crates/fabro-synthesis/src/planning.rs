@@ -1502,7 +1502,7 @@ fn derive_child_intents(
                 .title
                 .clone()
                 .unwrap_or_else(|| humanize_slug(&child.child_id));
-            let family = archetype_to_template(child.archetype);
+            let family = effective_child_template(child);
             let output_root = PathBuf::from("outputs").join(&child_unit_id);
             let kind = normalize_lane_kind_for_template(family, child.lane_kind, &child.child_id);
             let verify_command = if !child.proof_commands.is_empty() {
@@ -1601,6 +1601,23 @@ fn archetype_to_template(archetype: Option<WorkflowArchetype>) -> WorkflowTempla
         Some(WorkflowArchetype::Orchestration) => WorkflowTemplate::Orchestration,
         Some(WorkflowArchetype::Report) => WorkflowTemplate::RecurringReport,
     }
+}
+
+fn effective_child_template(child: &PlanChildRecord) -> WorkflowTemplate {
+    let family = archetype_to_template(child.archetype);
+    let id_lower = child.child_id.to_ascii_lowercase();
+    if family == WorkflowTemplate::Integration
+        && (id_lower.contains("integration-test")
+            || id_lower.contains("integration-test")
+            || id_lower.contains("integration-tests")
+            || id_lower.contains("e2e-test")
+            || id_lower.contains("e2e-tests")
+            || id_lower.contains("regression-test")
+            || id_lower.contains("regression-tests"))
+    {
+        return WorkflowTemplate::Implementation;
+    }
+    family
 }
 
 fn child_artifacts_and_milestones(
@@ -3483,6 +3500,30 @@ mod tests {
                 "documentation-and-operator-runbook-architecture-guide-for-contributors"
             ),
             LaneKind::Artifact
+        );
+    }
+
+    #[test]
+    fn effective_child_template_keeps_integration_tests_as_implementation() {
+        let child = PlanChildRecord {
+            child_id: "autodev-integration-test".to_string(),
+            title: None,
+            archetype: Some(WorkflowArchetype::Integration),
+            lane_kind: Some(LaneKind::Integration),
+            review_profile: None,
+            proof_commands: Vec::new(),
+            owned_surfaces: Vec::new(),
+            where_surfaces: None,
+            how_description: None,
+            state_artifacts: None,
+            required_tests: None,
+            verification_plan: None,
+            rollback_condition: None,
+        };
+
+        assert_eq!(
+            effective_child_template(&child),
+            WorkflowTemplate::Implementation
         );
     }
 

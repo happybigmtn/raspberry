@@ -1,0 +1,26 @@
+version = 1
+graph = "../../workflows/implementation/error-handling-hardening-harden-raspberry-supervisor-codex-unblock.fabro"
+goal = '''
+Use Codex to unblock implementation lane `error-handling-hardening-harden-raspberry-supervisor:error-handling-hardening-harden-raspberry-supervisor`.
+
+Inspect the source lane's most recent failure/remediation context and apply the minimal code or harness changes needed so the source lane can pass its next replay.
+
+Proof commands:
+- `cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local && \ && cargo nextest run -p raspberry-supervisor`
+'''
+directory = "../../.."
+
+[llm]
+provider = "openai"
+model = "gpt-5.4"
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "always"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"
+FABRO_STRICT_PROVIDER = "1"

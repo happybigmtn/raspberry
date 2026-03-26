@@ -12,9 +12,9 @@ digraph PlanCompletionAndAdversarialReviewHolisticReviewMinimax {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/holistic-review-minimax/plan-completion-and-adversarial-review-holistic-review-minimax/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-minimax/holistic-review.md'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-minimax/finding-index.json'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-minimax/remediation-plan.md'\ntest -f '.raspberry/portfolio/plan-completion-and-adversarial-review-holistic-review-minimax/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

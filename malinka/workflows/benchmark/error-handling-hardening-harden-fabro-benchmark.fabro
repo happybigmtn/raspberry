@@ -1,0 +1,23 @@
+digraph ErrorHandlingHardeningHardenFabroBenchmark {
+    graph [
+        goal="Performance review for parent plan `error-handling-hardening-harden-fabro`.\n\nCheck for regressions, missing baselines, or obvious throughput / latency / polling inefficiencies introduced by the integrated parent work.\n\nRequired outputs:\n- `benchmark.md`\n- `promotion.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/benchmark/error-handling-hardening-harden-fabro-benchmark/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/benchmark/error-handling-hardening-harden-fabro-benchmark/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/benchmark/error-handling-hardening-harden-fabro-benchmark/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/error-handling-hardening-harden-fabro-benchmark/benchmark.md'\ntest -f '.raspberry/portfolio/error-handling-hardening-harden-fabro-benchmark/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

@@ -1,0 +1,23 @@
+digraph ErrorHandlingHardeningHardenFabroParentInvestigate {
+    graph [
+        goal="Root-cause investigation for integrated parent plan `error-handling-hardening-harden-fabro`.\n\nRun this lane as the non-interactive `/investigate` stage for plans whose risk profile or review findings justify deeper causal analysis.\nExplain what actually failed or could fail, what evidence supports that judgment, and what remediation path follows from the root cause.\n\nRequired outputs:\n- `investigation.md`\n- `promotion.md`\n\nDo not substitute fixes for root cause analysis.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/investigate/error-handling-hardening-harden-fabro-parent-investigate/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/investigate/error-handling-hardening-harden-fabro-parent-investigate/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/investigate/error-handling-hardening-harden-fabro-parent-investigate/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/error-handling-hardening-harden-fabro-parent-investigate/investigation.md'\ntest -f '.raspberry/portfolio/error-handling-hardening-harden-fabro-parent-investigate/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

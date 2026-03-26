@@ -1,0 +1,8 @@
+# test-coverage-critical-paths Holistic Preflight — Review
+
+Review the lane outcome for `test-coverage-critical-paths-parent-holistic-preflight`.
+
+Focus on:
+- correctness
+- milestone fit
+- remaining blockers

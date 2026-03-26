@@ -1,0 +1,30 @@
+version = 1
+graph = "../../workflows/ship-readiness/genesis-onboarding-flow-ship-readiness.fabro"
+goal = '''
+Explicit ship-readiness gate for parent plan `genesis-onboarding-flow`.
+
+Decide whether the integrated parent implementation is actually ready to ship after holistic review, QA, security, and performance checks.
+
+Required outputs:
+- `ship-checklist.md`
+- `promotion.md`
+
+Use plain yes/no language for the final ship judgment.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

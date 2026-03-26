@@ -1,0 +1,39 @@
+version = 1
+graph = "../../workflows/holistic-review-deep/release-preparation-holistic-review-deep.fabro"
+goal = '''
+Deep synthesis pass for integrated parent plan `release-preparation`.
+
+Integrated child units:
+- release-preparation-ci-hardening, release-preparation-fresh-install-test, release-preparation-readme-and-changelog, release-preparation-release-binary-build, release-preparation-security-audit, release-preparation-version-bump-and-tag
+
+Re-read the full parent state after the Minimax pass.
+- collapse duplicates and sharpen weak evidence
+- identify systemic edge cases or cross-child interactions that the first pass may have missed
+- refine the remediation plan where the first pass was broad or ambiguous
+- preserve uncertainty explicitly when evidence is incomplete
+
+Required outputs:
+- `deep-review.md`
+- `finding-deltas.json`
+- `remediation-plan.md`
+- `promotion.md`
+
+This lane prefers Opus 4.6 and may fall back to Codex if needed.
+'''
+directory = "../../.."
+
+[llm]
+provider = "anthropic"
+model = "claude-opus-4-6"
+[llm.fallbacks]
+anthropic = ["gpt-5.4"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

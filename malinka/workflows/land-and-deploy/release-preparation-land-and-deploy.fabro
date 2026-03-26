@@ -1,0 +1,23 @@
+digraph ReleasePreparationLandAndDeploy {
+    graph [
+        goal="Deploy-aware verification for parent plan `release-preparation`.\n\nThis lane exists only for plans whose integrated surface suggests deploy or service exposure. Record what would be landed, what health evidence exists, and any canary or rollout blockers.\n\nRequired outputs:\n- `deploy-verification.md`\n- `promotion.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/land-and-deploy/release-preparation-land-and-deploy/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/land-and-deploy/release-preparation-land-and-deploy/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/land-and-deploy/release-preparation-land-and-deploy/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/release-preparation-land-and-deploy/deploy-verification.md'\ntest -f '.raspberry/portfolio/release-preparation-land-and-deploy/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

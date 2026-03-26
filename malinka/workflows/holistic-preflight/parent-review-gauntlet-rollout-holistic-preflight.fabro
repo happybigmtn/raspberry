@@ -12,9 +12,9 @@ digraph ParentReviewGauntletRolloutHolisticPreflight {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/holistic-preflight/parent-review-gauntlet-rollout-holistic-preflight/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-holistic-preflight/verification.md'\ntest -f '.raspberry/portfolio/parent-review-gauntlet-rollout-holistic-preflight/review.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

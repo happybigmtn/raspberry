@@ -1,0 +1,23 @@
+digraph ReleasePreparationCso {
+    graph [
+        goal="Security and control-plane review for parent plan `release-preparation`.\n\nReview secrets handling, dependency and control-plane risk, trust boundaries, CI/deploy exposure, and residual attack surface at the integrated parent level.\n\nRequired outputs:\n- `security-review.md`\n- `promotion.md`\n\nRecord residual risk explicitly.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/cso/release-preparation-cso/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/cso/release-preparation-cso/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/cso/release-preparation-cso/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/release-preparation-cso/security-review.md'\ntest -f '.raspberry/portfolio/release-preparation-cso/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

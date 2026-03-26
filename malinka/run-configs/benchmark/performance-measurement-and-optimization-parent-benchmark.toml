@@ -1,0 +1,28 @@
+version = 1
+graph = "../../workflows/benchmark/performance-measurement-and-optimization-parent-benchmark.fabro"
+goal = '''
+Performance review for parent plan `performance-measurement-and-optimization`.
+
+Check for regressions, missing baselines, or obvious throughput / latency / polling inefficiencies introduced by the integrated parent work.
+
+Required outputs:
+- `benchmark.md`
+- `promotion.md`
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

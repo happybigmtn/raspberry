@@ -12,9 +12,9 @@ digraph PerformanceMeasurementAndOptimizationDocumentRelease {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/document-release/performance-measurement-and-optimization-document-release/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/document-release/performance-measurement-and-optimization-document-release/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/document-release/performance-measurement-and-optimization-document-release/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/document-release/performance-measurement-and-optimization-document-release/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/document-release/performance-measurement-and-optimization-document-release/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/document-release/performance-measurement-and-optimization-document-release/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-document-release/docs-release.md'\ntest -f '.raspberry/portfolio/performance-measurement-and-optimization-document-release/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

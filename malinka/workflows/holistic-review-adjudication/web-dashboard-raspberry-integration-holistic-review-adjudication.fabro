@@ -12,9 +12,9 @@ digraph WebDashboardRaspberryIntegrationHolisticReviewAdjudication {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    specify [label="Specify", prompt="@malinka/prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/plan.md", reasoning_effort="high"]
-    review  [label="Review", prompt="@malinka/prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/review.md", reasoning_effort="high"]
-    polish  [label="Polish", prompt="@malinka/prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/polish.md", reasoning_effort="medium"]
+    specify [label="Specify", prompt="@../../prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/holistic-review-adjudication/web-dashboard-raspberry-integration-holistic-review-adjudication/polish.md", reasoning_effort="medium"]
     verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-holistic-review-adjudication/adjudication-verdict.md'\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-holistic-review-adjudication/confirmed-findings.json'\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-holistic-review-adjudication/rejected-findings.json'\ntest -f '.raspberry/portfolio/web-dashboard-raspberry-integration-holistic-review-adjudication/promotion.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
 
     start -> specify -> review -> polish -> verify

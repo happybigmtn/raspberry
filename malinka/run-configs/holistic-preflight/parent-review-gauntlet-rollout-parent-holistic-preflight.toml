@@ -1,0 +1,37 @@
+version = 1
+graph = "../../workflows/holistic-preflight/parent-review-gauntlet-rollout-parent-holistic-preflight.fabro"
+goal = '''
+Preflight the integrated parent plan `parent-review-gauntlet-rollout` before holistic review.
+
+Integrated child units:
+- parent-review-gauntlet-rollout-artifact-validation, parent-review-gauntlet-rollout-conditional-stage-trigger-validation, parent-review-gauntlet-rollout-live-gauntlet-execution, parent-review-gauntlet-rollout-ship-readiness-verdict, parent-review-gauntlet-rollout-verify-gauntlet-lanes-in-package
+
+Your job:
+1. Confirm every child integration artifact exists and is readable.
+2. Confirm child review artifacts exist where available.
+3. Record the exact integrated surface area that the parent gauntlet must inspect.
+4. Call out any missing evidence, stale artifacts, or ambiguous ownership before expensive parent review begins.
+
+Required durable artifacts:
+- `verification.md` (what was checked, what artifacts were present, what is missing)
+- `review.md` (a concise go/no-go summary for parent holistic review)
+
+This lane is command-driven and report-first. Do not modify product code.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

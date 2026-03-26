@@ -1,0 +1,23 @@
+digraph ReleasePreparationRetro {
+    graph [
+        goal="Retrospective tail for parent plan `release-preparation`.\n\nSummarize what shipped, what slowed the work down, which findings were most valuable, and what Fabro or workflow-level improvements would most reduce repeat failures.\n\nRequired outputs:\n- `retro.md`\n\nThis lane is reporting-only and should not reopen implementation.",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@../../prompts/retro/release-preparation-retro/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@../../prompts/retro/release-preparation-retro/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@../../prompts/retro/release-preparation-retro/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="set -e\ntest -f '.raspberry/portfolio/release-preparation-retro/retro.md'\n", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}

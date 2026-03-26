@@ -1,0 +1,30 @@
+version = 1
+graph = "../../workflows/cso/settlement-hygiene-and-evidence-separation-parent-cso.fabro"
+goal = '''
+Security and control-plane review for parent plan `settlement-hygiene-and-evidence-separation`.
+
+Review secrets handling, dependency and control-plane risk, trust boundaries, CI/deploy exposure, and residual attack surface at the integrated parent level.
+
+Required outputs:
+- `security-review.md`
+- `promotion.md`
+
+Record residual risk explicitly.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

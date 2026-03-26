@@ -1,0 +1,31 @@
+version = 1
+graph = "../../workflows/investigate/provider-policy-stabilization-investigate.fabro"
+goal = '''
+Root-cause investigation for integrated parent plan `provider-policy-stabilization`.
+
+Run this lane as the non-interactive `/investigate` stage for plans whose risk profile or review findings justify deeper causal analysis.
+Explain what actually failed or could fail, what evidence supports that judgment, and what remediation path follows from the root cause.
+
+Required outputs:
+- `investigation.md`
+- `promotion.md`
+
+Do not substitute fixes for root cause analysis.
+'''
+directory = "../../.."
+
+[llm]
+provider = "minimax"
+model = "MiniMax-M2.7-highspeed"
+[llm.fallbacks]
+minimax = ["kimi-k2.5", "claude-opus-4-6"]
+
+[sandbox]
+provider = "local"
+
+[sandbox.local]
+worktree_mode = "clean"
+
+[sandbox.env]
+MINIMAX_API_KEY = "${env.MINIMAX_API_KEY}"
+KIMI_API_KEY = "${env.KIMI_API_KEY}"

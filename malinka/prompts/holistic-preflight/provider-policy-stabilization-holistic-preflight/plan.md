@@ -1,0 +1,33 @@
+# provider-policy-stabilization Holistic Preflight — Plan
+
+Lane: `provider-policy-stabilization-holistic-preflight`
+
+Goal:
+- Preflight the integrated parent plan `provider-policy-stabilization` before holistic review.
+
+Integrated child units:
+- provider-policy-stabilization-audit-model-selection-leaks, provider-policy-stabilization-live-validation, provider-policy-stabilization-provider-health-in-status-output, provider-policy-stabilization-quota-detection-and-graceful-fallback, provider-policy-stabilization-usage-tracking
+
+Your job:
+1. Confirm every child integration artifact exists and is readable.
+2. Confirm child review artifacts exist where available.
+3. Record the exact integrated surface area that the parent gauntlet must inspect.
+4. Call out any missing evidence, stale artifacts, or ambiguous ownership before expensive parent review begins.
+
+Required durable artifacts:
+- `verification.md` (what was checked, what artifacts were present, what is missing)
+- `review.md` (a concise go/no-go summary for parent holistic review)
+
+This lane is command-driven and report-first. Do not modify product code.
+
+Context:
+- Integrated child units:
+- provider-policy-stabilization-audit-model-selection-leaks, provider-policy-stabilization-live-validation, provider-policy-stabilization-provider-health-in-status-output, provider-policy-stabilization-quota-detection-and-graceful-fallback, provider-policy-stabilization-usage-tracking
+
+Required outputs:
+- verification.md
+- review.md
+
+Write durable artifacts only to these exact lane-scoped paths:
+- `.raspberry/portfolio/provider-policy-stabilization-holistic-preflight/verification.md`
+- `.raspberry/portfolio/provider-policy-stabilization-holistic-preflight/review.md`

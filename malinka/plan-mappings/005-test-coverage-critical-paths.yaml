@@ -8,7 +8,7 @@ implementation_required: true
 dependency_plan_ids: []
 children:
 - id: autodev-integration-test
-  archetype: integration_only
+  archetype: implement_module
   lane_kind: integration
   review_profile: standard
   proof_commands:
