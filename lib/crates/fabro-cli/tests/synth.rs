@@ -310,7 +310,7 @@ fn synth_evolve_updates_existing_package() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Mode: evolve (deterministic steering report)",
+            "Mode: evolve (deterministic reconcile)",
         ))
         .stdout(predicate::str::contains("Preview root:"))
         .stdout(predicate::str::contains("Report:"));
@@ -379,7 +379,7 @@ fn synth_evolve_can_import_current_package_without_blueprint_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Mode: evolve (deterministic steering report)",
+            "Mode: evolve (deterministic reconcile)",
         ))
         .stdout(predicate::str::contains("Preview root:"))
         .stdout(predicate::str::contains("Report:"));
@@ -413,7 +413,7 @@ fn synth_evolve_preview_stays_bounded_to_manifest_and_report() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Mode: evolve (deterministic steering report)",
+            "Mode: evolve (deterministic reconcile)",
         ));
 
     assert!(preview
