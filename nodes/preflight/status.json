@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 156294,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T19:37:01.997322711+00:00",
+  "updated_at": "2026-03-26T19:37:01.997324879+00:00",
+  "notes": "Script completed: set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- bootstrap_verify\nelse\n  cargo test -p fabro-synthesis -- bootstrap_verify\nfi\ntrue"
+}
