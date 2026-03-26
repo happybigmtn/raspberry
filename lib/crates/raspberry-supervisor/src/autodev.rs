@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::controller_lease::{acquire_autodev_lease, ControllerLeaseError};
 use crate::dispatch::{execute_selected_lanes, DispatchError, DispatchOutcome, DispatchSettings};
-use crate::evaluate::{evaluate_program, EvaluateError, LaneExecutionStatus};
+use crate::evaluate::{evaluate_program, take_cycle_detected_flag, EvaluateError, LaneExecutionStatus};
 use crate::failure::{
     classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction,
 };
@@ -390,6 +390,11 @@ pub fn orchestrate_program(
             maybe_sync_target_repo_to_origin(&manifest, &manifest_path, &mut last_repo_sync_at);
         }
         let program_before = evaluate_program(&manifest_path)?;
+        if take_cycle_detected_flag() {
+            return Err(AutodevError::RecursiveProgramCycle {
+                cycle: format!("evaluation cycle detected involving {}", manifest.program),
+            });
+        }
         autodev_debug_step(&manifest.program, cycle_number, "program-before-evaluated");
         let ready_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Ready);
         let running_before = count_lanes_with_status(&program_before, LaneExecutionStatus::Running);

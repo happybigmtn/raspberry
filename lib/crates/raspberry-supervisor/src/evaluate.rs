@@ -23,6 +23,8 @@ use crate::program_state::{
 
 thread_local! {
     static EVALUATION_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    static CYCLE_DETECTED_IN_SUMMARIZE: RefCell<bool> = const { RefCell::new(false) };
+    static IN_REFRESH_PARENT_SCOPE: RefCell<bool> = const { RefCell::new(false) };
 }
 
 const CHECK_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -238,6 +240,7 @@ pub(crate) fn evaluate_program_internal(
         }
     }
     if propagate_parents {
+        let _guard = enter_refresh_parent_scope();
         refresh_parent_programs(&manifest_path, &manifest)?;
     }
     Ok(program)
@@ -246,6 +249,31 @@ pub(crate) fn evaluate_program_internal(
 pub(crate) fn evaluation_stack_contains(manifest_path: &Path) -> bool {
     let manifest_path = normalize_path(manifest_path);
     EVALUATION_STACK.with(|stack| stack.borrow().iter().any(|path| path == &manifest_path))
+}
+
+pub(crate) fn set_cycle_detected_flag() {
+    CYCLE_DETECTED_IN_SUMMARIZE.with(|flag| *flag.borrow_mut() = true);
+}
+
+pub(crate) fn take_cycle_detected_flag() -> bool {
+    CYCLE_DETECTED_IN_SUMMARIZE.with(|flag| {
+        let was_set = *flag.borrow();
+        *flag.borrow_mut() = false;
+        was_set
+    })
+}
+
+pub(crate) fn enter_refresh_parent_scope() -> RefreshParentScopeGuard {
+    IN_REFRESH_PARENT_SCOPE.with(|flag| *flag.borrow_mut() = true);
+    RefreshParentScopeGuard
+}
+
+pub(crate) struct RefreshParentScopeGuard;
+
+impl Drop for RefreshParentScopeGuard {
+    fn drop(&mut self) {
+        IN_REFRESH_PARENT_SCOPE.with(|flag| *flag.borrow_mut() = false);
+    }
 }
 
 fn enter_evaluation_scope(manifest_path: &Path) -> EvaluationScopeGuard {
@@ -1271,6 +1299,12 @@ fn summarize_child_program(
         return Some(summary);
     }
     if evaluation_stack_contains(&program_manifest) {
+        // Only report cycle if not inside refresh_parent_programs scope
+        // (refresh_parent_programs legitimately evaluates parents that reference children)
+        let in_refresh = IN_REFRESH_PARENT_SCOPE.with(|flag| *flag.borrow());
+        if !in_refresh {
+            set_cycle_detected_flag();
+        }
         return None;
     }
     let program = evaluate_program_internal(&program_manifest, false).ok()?;
