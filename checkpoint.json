@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-03-26T22:35:56.428176449Z",
+  "current_node": "preflight",
+  "completed_nodes": [
+    "start",
+    "preflight"
+  ],
+  "node_retries": {
+    "preflight": 1,
+    "start": 1
+  },
+  "context_values": {
+    "command.stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on artifact directory\n   Compiling fabro-util v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-util)\n   Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-model)\n   Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-github)\n   Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-graphviz)\n   Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-git-storage)\n   Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-validate)\n   Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-config)\n   Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-llm)\n   Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-devcontainer)\n   Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-interview)\n   Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-mcp)\n   Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-sandbox)\n   Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-agent)\n   Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-retro)\n   Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-hooks)\n   Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-workflows)\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/raspberry-supervisor)\n   Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-synthesis)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.96s\n────────────\n Nextest run ID 3dc1a1de-0603-4259-8aee-0ce1ba9280d6 with nextest profile: default\n    Starting 0 tests across 2 binaries (95 tests skipped)\n────────────\n     Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\nerror: no tests to run\n(hint: use `--no-tests` to customize)\n",
+    "graph.goal": "Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+    "failure_class": "",
+    "graph.fallback_retry_target": "deep_review",
+    "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
+    "internal.retry_count.preflight": 1,
+    "thread.start.current_node": "preflight",
+    "command.output": "",
+    "internal.thread_id": "start",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree",
+    "outcome": "success",
+    "current.preamble": "Goal: Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "current_node": "preflight",
+    "internal.fidelity": "compact",
+    "internal.node_visit_count": 1,
+    "internal.retry_count.start": 1,
+    "graph.rankdir": "LR",
+    "internal.run_id": "01KMP4JS1ZEC6912S61SSB6804",
+    "failure_signature": ""
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    },
+    "preflight": {
+      "status": "success",
+      "context_updates": {
+        "command.stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on artifact directory\n   Compiling fabro-util v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-util)\n   Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-model)\n   Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-github)\n   Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-graphviz)\n   Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-git-storage)\n   Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-validate)\n   Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-config)\n   Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-llm)\n   Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-devcontainer)\n   Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-interview)\n   Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-mcp)\n   Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-sandbox)\n   Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-agent)\n   Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-retro)\n   Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-hooks)\n   Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-workflows)\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/raspberry-supervisor)\n   Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-synthesis)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.96s\n────────────\n Nextest run ID 3dc1a1de-0603-4259-8aee-0ce1ba9280d6 with nextest profile: default\n    Starting 0 tests across 2 binaries (95 tests skipped)\n────────────\n     Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\nerror: no tests to run\n(hint: use `--no-tests` to customize)\n",
+        "command.output": ""
+      },
+      "notes": "Script completed: set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- bootstrap_verify\nelse\n  cargo test -p fabro-synthesis -- bootstrap_verify\nfi\ntrue",
+      "duration_ms": 54026
+    }
+  },
+  "next_node_id": "contract",
+  "node_visits": {
+    "start": 1,
+    "preflight": 1
+  }
+}
