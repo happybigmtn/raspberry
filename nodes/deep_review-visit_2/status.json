@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Updated [deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md) to make the replay diagnosis explicit: the source lane’s owned",
+    "response.deep_review": "Updated [deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md) to make the replay diagnosis explicit: the source lane’s owned workflow is not the blocker, the repeated failures came from external workspace debt, and the only remaining replay risk is the environment-specific `fabro-api` linker bus error under full-workspace `nextest`. The fix plan now tells fixup to replay the source lane unchanged first, repair external `lib/crates/**` failures directly if they recur, and only treat linker pressure/parallelism/target-dir isolation as the next harness target if that environment-only failure reproduces.\n\nNo source-lane code or workflow semantics were changed, because the owned proof gate is already green and inventing more edits here would be noise.\n\nVerification: `cargo check --workspace` passed.",
+    "last_stage": "deep_review"
+  },
+  "notes": "Stage completed: deep_review",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 875749,
+    "output_tokens": 7921,
+    "cost": 2.3081875000000003
+  },
+  "duration_ms": 195432,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:50:46.524788405+00:00",
+  "updated_at": "2026-03-26T20:50:46.524789645+00:00"
+}

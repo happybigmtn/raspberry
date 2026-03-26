@@ -1,0 +1,5 @@
+Updated [deep-review-findings.md](/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/.fabro-work/deep-review-findings.md) to make the replay diagnosis explicit: the source lane’s owned workflow is not the blocker, the repeated failures came from external workspace debt, and the only remaining replay risk is the environment-specific `fabro-api` linker bus error under full-workspace `nextest`. The fix plan now tells fixup to replay the source lane unchanged first, repair external `lib/crates/**` failures directly if they recur, and only treat linker pressure/parallelism/target-dir isolation as the next harness target if that environment-only failure reproduces.
+
+No source-lane code or workflow semantics were changed, because the owned proof gate is already green and inventing more edits here would be noise.
+
+Verification: `cargo check --workspace` passed.
