@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-03-26T19:14:45.941683861Z",
+  "current_node": "echo_task",
+  "completed_nodes": [
+    "start",
+    "echo_task"
+  ],
+  "node_retries": {
+    "echo_task": 1,
+    "start": 1
+  },
+  "context_values": {
+    "graph.goal": "Verify backwards compatibility with old tool naming",
+    "internal.retry_count.echo_task": 1,
+    "command.stderr": "",
+    "internal.node_visit_count": 1,
+    "internal.run_id": "01KMNS428ZZAAGNY2EEGEKRKJ2",
+    "internal.fidelity": "compact",
+    "current.preamble": "Goal: Verify backwards compatibility with old tool naming\n",
+    "failure_class": "",
+    "internal.retry_count.start": 1,
+    "outcome": "success",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNS428ZZAAGNY2EEGEKRKJ2/worktree",
+    "current_node": "echo_task",
+    "thread.start.current_node": "echo_task",
+    "graph.rankdir": "LR",
+    "internal.thread_id": "start",
+    "command.output": "",
+    "failure_signature": ""
+  },
+  "logs": [],
+  "node_outcomes": {
+    "echo_task": {
+      "status": "success",
+      "context_updates": {
+        "command.output": "",
+        "command.stderr": ""
+      },
+      "notes": "[Simulated] Command skipped: echo hello",
+      "duration_ms": 0
+    },
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "exit",
+  "node_visits": {
+    "start": 1,
+    "echo_task": 1
+  }
+}
