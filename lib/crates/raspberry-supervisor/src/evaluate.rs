@@ -742,7 +742,7 @@ fn evaluate_lane(
 fn satisfied_milestones(
     manifest_path: &Path,
     manifest: &ProgramManifest,
-    _runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
+    runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
     unit_statuses: &BTreeMap<String, UnitStatus>,
 ) -> BTreeSet<String> {
     let mut satisfied = BTreeSet::new();
@@ -751,7 +751,9 @@ fn satisfied_milestones(
             .get(unit_id)
             .expect("unit status should exist for every unit");
         for milestone in &unit.milestones {
-            if lifecycle_reached(unit, unit_status, &milestone.id) {
+            if lifecycle_reached(unit, unit_status, &milestone.id)
+                || legacy_runtime_integrated(unit_id, unit, &milestone.id, runtime_records)
+            {
                 satisfied.insert(format!("{unit_id}@{}", milestone.id));
             }
         }
@@ -775,6 +777,33 @@ fn satisfied_milestones(
         }
     }
     satisfied
+}
+
+fn legacy_runtime_integrated(
+    unit_id: &str,
+    unit: &crate::manifest::UnitManifest,
+    milestone_id: &str,
+    runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
+) -> bool {
+    if milestone_id != "integrated" {
+        return false;
+    }
+
+    let integration_lanes = unit
+        .lanes
+        .iter()
+        .filter(|(_, lane)| lane.produces.iter().any(|artifact| artifact == "integration"))
+        .collect::<Vec<_>>();
+    if integration_lanes.is_empty() {
+        return false;
+    }
+
+    integration_lanes.into_iter().all(|(lane_id, _)| {
+        let key = lane_key(unit_id, lane_id);
+        runtime_records
+            .get(&key)
+            .is_some_and(|record| record.status == LaneExecutionStatus::Complete)
+    })
 }
 
 fn build_unit_statuses(
@@ -2272,6 +2301,128 @@ units:
         );
 
         assert!(!satisfied.contains("docs:lane@reviewed"));
+        assert_eq!(status, LaneExecutionStatus::Ready);
+    }
+
+    #[test]
+    fn legacy_complete_lane_can_satisfy_unit_integrated_for_parent_dependencies() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+units:
+  - id: game
+    title: Game
+    output_root: outputs/game
+    artifacts:
+      - id: spec
+        path: spec.md
+      - id: review
+        path: review.md
+      - id: integration
+        path: integration.md
+    milestones:
+      - id: implemented
+        requires: [spec, review]
+      - id: integrated
+        requires: [integration]
+    lanes:
+      - id: lane
+        title: Game Lane
+        kind: artifact
+        run_config: malinka/run-configs/bootstrap/game.toml
+        managed_milestone: implemented
+        produces: [spec, review, integration]
+  - id: parent
+    title: Parent
+    output_root: outputs/parent
+    artifacts:
+      - id: verification
+        path: verification.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: parent-verified
+        requires: [verification, review]
+    lanes:
+      - id: holistic-preflight
+        title: Parent Holistic Preflight
+        kind: platform
+        run_config: malinka/run-configs/holistic-preflight/parent.toml
+        managed_milestone: parent-verified
+        depends_on:
+          - unit: game
+            milestone: integrated
+        produces: [verification, review]
+"#,
+        )
+        .expect("manifest");
+        std::fs::create_dir_all(temp.path().join("outputs/game")).expect("outputs dir");
+        std::fs::write(temp.path().join("outputs/game/spec.md"), "spec").expect("spec");
+        std::fs::write(temp.path().join("outputs/game/review.md"), "review").expect("review");
+
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let unit_statuses = build_unit_statuses(&manifest_path, &manifest);
+        let runtime_record = LaneRuntimeRecord {
+            lane_key: "game:lane".to_string(),
+            status: LaneExecutionStatus::Complete,
+            run_config: Some(PathBuf::from("malinka/run-configs/bootstrap/game.toml")),
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage_label: None,
+            last_run_id: Some("01KMTESTLEGACYINTEGRATED000000".to_string()),
+            last_started_at: None,
+            last_finished_at: Some(Utc::now()),
+            last_exit_status: Some(0),
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: Some("Exit".to_string()),
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            consecutive_failures: 0,
+        };
+        let runtime_records = BTreeMap::from([("game:lane".to_string(), &runtime_record)]);
+        let satisfied =
+            satisfied_milestones(&manifest_path, &manifest, &runtime_records, &unit_statuses);
+
+        assert!(satisfied.contains("game@integrated"));
+
+        let parent_unit = &manifest.units["parent"];
+        let parent_lane = &parent_unit.lanes["holistic-preflight"];
+        let parent_status = evaluate_unit_status(
+            &manifest_path,
+            &manifest.resolved_target_repo(&manifest_path),
+            parent_unit,
+        );
+        let mut command_probe_cache = HashMap::new();
+        let check_result = evaluate_lane_checks(
+            &manifest_path,
+            &manifest,
+            parent_lane,
+            &mut command_probe_cache,
+        );
+        let status = classify_lane(
+            "parent:holistic-preflight",
+            parent_lane,
+            &satisfied,
+            &parent_status,
+            None,
+            &RunSnapshot::default(),
+            &check_result,
+            lane_orchestration_state(&manifest_path, parent_lane),
+            None,
+        );
+
         assert_eq!(status, LaneExecutionStatus::Ready);
     }
 

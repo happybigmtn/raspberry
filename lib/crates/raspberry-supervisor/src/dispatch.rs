@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::autodev::{
-    autodev_cargo_target_dir, ensure_target_repo_fresh_for_dispatch, orchestrate_program,
-    AutodevSettings, TargetRepoFreshness,
+    autoheal_generated_target_repo_for_dispatch, autodev_cargo_target_dir,
+    ensure_target_repo_fresh_for_dispatch, orchestrate_program, AutodevSettings,
+    TargetRepoFreshness,
 };
 use crate::evaluate::{evaluate_program, LaneExecutionStatus};
 use crate::integration::{integrate_lane, IntegrationRequest};
@@ -108,11 +109,25 @@ pub fn execute_selected_lanes(
             });
         }
         TargetRepoFreshness::BehindWithLocalChanges { behind } => {
-            return Err(DispatchError::TargetRepoStale {
-                message: format!(
-                    "local default branch is behind origin by {behind} commits and the worktree is not clean"
-                ),
-            });
+            if autoheal_generated_target_repo_for_dispatch(
+                &manifest,
+                manifest_path,
+                &settings.fabro_bin,
+                &settings.doctrine_files,
+                &settings.evidence_paths,
+                settings.preview_evolve_root.as_deref(),
+            ) {
+                eprintln!(
+                    "[dispatch] auto-healed generated package drift for program `{}` before dispatch",
+                    manifest.program
+                );
+            } else {
+                return Err(DispatchError::TargetRepoStale {
+                    message: format!(
+                        "local default branch is behind origin by {behind} commits and the worktree is not clean"
+                    ),
+                });
+            }
         }
         TargetRepoFreshness::Diverged { ahead, behind } => {
             return Err(DispatchError::TargetRepoStale {

@@ -195,17 +195,23 @@ fn is_readonly_stage(node_id: &str) -> bool {
 
 fn stage_system_prompt(node_id: &str) -> Option<&'static str> {
     match node_id {
-        "implement" | "specify" => Some(
+        "implement" => Some(
             "You are executing the IMPLEMENT stage of an automated pipeline. RULES: (1) Read existing code before implementing. (2) Implement functionality COMPLETELY. Code that compiles but does nothing is worse than code that fails to compile — the review will catch hollow implementations. (3) Every public function must have real logic, not a stub that returns a default or immediately transitions state without doing work. (4) Write tests that exercise BEHAVIORAL outcomes: given specific input, assert specific output. Tests for Display, Clone, PartialEq derive macros do not count. (5) Include at least one full lifecycle test that drives the system from initial state to terminal state through multiple actions. (6) Run the proof commands from your goal to verify changes work. (7) Write required durable artifacts to the lane-scoped artifact paths described in the prompt context and keep ephemeral workflow files under `.fabro-work/`. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. ANTI-PATTERNS TO AVOID: returning hardcoded values, marking state as complete without performing the action (e.g. Hit without drawing a card), writing tests that only cover the happy path. The challenge stage will specifically look for functions that compile but do nothing meaningful. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. The audit gate rejects changes outside your scope."
         ),
-        "fixup" | "polish" => Some(
+        "specify" | "inventory" => Some(
+            "You are executing a REPORT/PLAN stage of an automated pipeline. Read the prompt carefully, inspect the relevant repo surfaces, and produce the lane-scoped durable artifacts exactly at the paths named in the prompt context. Keep ephemeral workflow notes under `.fabro-work/` only when the prompt asks for them. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. If evidence is missing, say so plainly instead of inventing work or rewriting unrelated files."
+        ),
+        "fixup" => Some(
             "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. Your #2 priority: keep the lane-scoped durable artifacts truthful and complete while keeping ephemeral workflow files under `.fabro-work/`. Never create or rely on repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, IGNORE them and focus on your owned files only. Do not delete, modify, or rewrite files outside your scope."
+        ),
+        "polish" => Some(
+            "You are executing a DURABLE-ARTIFACT POLISH stage. Improve the clarity and completeness of the lane-scoped durable artifacts named in the prompt context, but do not invent unrelated code changes. Write only to the exact artifact paths named in the prompt context. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path."
         ),
         "challenge" => Some(
             "You are executing an ADVERSARIAL CHALLENGE. SPECIFICALLY CHECK: (1) Functions that compile but do nothing meaningful — e.g. a Hit action that does not draw a card, a settle function that returns hardcoded values. Read every match arm and verify it performs real work. (2) Tests that only verify derive macros (Display, Clone, PartialEq) — count how many tests exercise actual business logic vs formatting. (3) State machines that never reach their terminal state through normal gameplay. Run through the lifecycle mentally: can a user actually play the game from start to finish? (4) Duplicate tests that inflate coverage without testing new behavior. (5) DESIGN PATTERN CONFORMANCE: Read AGENTS.md and verify the code follows the mandatory conventions — especially settlement arithmetic (must widen to i32, no bare f64-to-i16 casts), error types (must use shared GameError/VerifyError), and state machine patterns ({Game}Phase enum, is_terminal()). Flag every issue with file:line. Write findings to verification.md. Do NOT approve."
         ),
         "review" => Some(
-            "You are executing the REVIEW stage with merge authority. Read `.fabro-work/quality.md` (machine-generated truth) plus the lane-scoped implementation and verification artifacts named in the prompt. Read AGENTS.md for the mandatory design conventions. Write `.fabro-work/promotion.md` with merge_ready: yes|no unless the prompt explicitly names a different path. Only approve when proof gates pass, tests verify real behavior, no stubs or placeholders remain, AND the code follows the project's design conventions (settlement arithmetic uses i32 widening, error types from shared error.rs, state machine patterns). CRITICAL: run `git diff --stat HEAD` to verify actual code changes exist. If no files were changed, set merge_ready: no unless the lane explicitly documents an external-only unblock where the owned proof gate is already green."
+            "You are executing the REVIEW stage. Read the prompt and the lane-scoped durable artifacts named there. Write only to the exact review or promotion paths named in the prompt context. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. If this lane is report-only, review truthfully and record missing evidence or blockers without inventing code changes. If this lane is implementation-facing, evaluate correctness, proof status, conventions, and remaining blockers before approving."
         ),
         "deep_review" => Some(
             "You are executing an ADVERSARIAL DEEP REVIEW in an automated pipeline. Challenge every trust boundary, input validation, and error path. Verify that tests exercise real behavioral outcomes, not trivial assertions. Check for placeholder debt (todo!, unimplemented!, stub comments). Write your findings to `.fabro-work/deep-review-findings.md` unless the prompt explicitly names a different path. If the owned proof gate is already green and the remaining blocker is external, say that plainly instead of inventing more code churn."
@@ -2180,6 +2186,22 @@ mod tests {
             launch_env.get("OTHER_VAR").map(String::as_str),
             Some("keep-me")
         );
+    }
+
+    #[test]
+    fn specify_stage_system_prompt_is_report_oriented_not_implementation_oriented() {
+        let prompt = stage_system_prompt("specify").expect("specify prompt exists");
+        assert!(prompt.contains("REPORT/PLAN stage"));
+        assert!(prompt.contains("exactly at the paths named in the prompt context"));
+        assert!(!prompt.contains("Implement functionality COMPLETELY"));
+    }
+
+    #[test]
+    fn review_stage_system_prompt_is_generic_across_report_and_impl_lanes() {
+        let prompt = stage_system_prompt("review").expect("review prompt exists");
+        assert!(prompt.contains("Write only to the exact review or promotion paths"));
+        assert!(prompt.contains("If this lane is report-only"));
+        assert!(!prompt.contains("Read `.fabro-work/quality.md` (machine-generated truth)"));
     }
 
     #[test]

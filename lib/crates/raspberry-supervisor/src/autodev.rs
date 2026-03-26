@@ -1362,6 +1362,111 @@ pub(crate) fn ensure_target_repo_fresh_for_dispatch(
     }
 }
 
+fn dirty_worktree_paths(target_repo: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .current_dir(target_repo)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end();
+            if line.len() < 4 {
+                return None;
+            }
+            let path = &line[3..];
+            Some(
+                path.rsplit_once(" -> ")
+                    .map(|(_, dest)| dest)
+                    .unwrap_or(path)
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+fn is_generated_package_dirty_path(path: &str) -> bool {
+    [
+        ".raspberry/",
+        "malinka/programs/",
+        "malinka/workflows/",
+        "malinka/run-configs/",
+        "malinka/prompts/",
+        "outputs/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+fn dirty_worktree_is_generated_package_only(target_repo: &Path) -> bool {
+    let paths = dirty_worktree_paths(target_repo);
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|path| is_generated_package_dirty_path(path.as_str()))
+}
+
+pub(crate) fn autoheal_generated_target_repo_for_dispatch(
+    manifest: &ProgramManifest,
+    manifest_path: &Path,
+    fabro_bin: &Path,
+    doctrine_files: &[PathBuf],
+    evidence_paths: &[PathBuf],
+    preview_evolve_root: Option<&Path>,
+) -> bool {
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    if !dirty_worktree_is_generated_package_only(&target_repo) {
+        return false;
+    }
+
+    let stash_message = format!(
+        "fabro-generated-autosync-{}-{}",
+        manifest.program,
+        Utc::now().timestamp()
+    );
+    let stash = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["stash", "push", "-u", "-m", &stash_message])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match stash {
+        Ok(status) if status.success() => {}
+        _ => return false,
+    }
+
+    let Some(origin_head_branch) = current_origin_head_branch(&target_repo) else {
+        return false;
+    };
+    let remote_ref = format!("origin/{origin_head_branch}");
+    let merge = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["merge", "--ff-only", &remote_ref])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match merge {
+        Ok(status) if status.success() => {}
+        _ => return false,
+    }
+
+    rerender_program_package(
+        manifest_path,
+        manifest,
+        fabro_bin,
+        doctrine_files,
+        evidence_paths,
+        preview_evolve_root,
+    )
+    .is_ok()
+}
+
 fn sync_target_repo_to_origin(manifest: &ProgramManifest, manifest_path: &Path) {
     let _ = ensure_target_repo_fresh_for_dispatch(manifest, manifest_path);
 }
@@ -1942,6 +2047,24 @@ fn run_synth_evolve(
     manifest: &ProgramManifest,
     settings: &AutodevSettings,
 ) -> Result<(), AutodevError> {
+    rerender_program_package(
+        manifest_path,
+        manifest,
+        &settings.fabro_bin,
+        &settings.doctrine_files,
+        &settings.evidence_paths,
+        settings.preview_evolve_root.as_deref(),
+    )
+}
+
+fn rerender_program_package(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    fabro_bin: &Path,
+    doctrine_files: &[PathBuf],
+    evidence_paths: &[PathBuf],
+    preview_evolve_root: Option<&Path>,
+) -> Result<(), AutodevError> {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     let temp_dir = autodev_temp_dir(&manifest.program)?;
 
@@ -1963,7 +2086,7 @@ fn run_synth_evolve(
         copied
     } else {
         let imported = temp_dir.join(format!("{}-autodev.yaml", manifest.program));
-        let import = Command::new(&settings.fabro_bin)
+        let import = Command::new(fabro_bin)
             .current_dir(&target_repo)
             .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
             .arg("--no-upgrade-check")
@@ -1985,11 +2108,7 @@ fn run_synth_evolve(
         imported
     };
 
-    inject_inputs_into_blueprint(
-        &blueprint_path,
-        &settings.doctrine_files,
-        &settings.evidence_paths,
-    )?;
+    inject_inputs_into_blueprint(&blueprint_path, doctrine_files, evidence_paths)?;
 
     // Use synth create --no-review --no-decompose for deterministic re-rendering.
     // This re-renders prompts, workflow graphs, and run configs from the blueprint,
@@ -1998,7 +2117,7 @@ fn run_synth_evolve(
     create
         .arg("--signal=TERM")
         .arg(SYNTH_EVOLVE_TIMEOUT_SECS.to_string())
-        .arg(&settings.fabro_bin)
+        .arg(fabro_bin)
         .current_dir(&target_repo)
         .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
         .arg("--no-upgrade-check")
@@ -2010,7 +2129,7 @@ fn run_synth_evolve(
         .arg(&blueprint_path)
         .arg("--target-repo")
         .arg(&target_repo);
-    if let Some(preview_root) = &settings.preview_evolve_root {
+    if let Some(preview_root) = preview_evolve_root {
         create.arg("--preview-root").arg(preview_root);
     }
     let output = create.output().map_err(|source| AutodevError::Spawn {
@@ -3329,6 +3448,42 @@ units:
             freshness,
             TargetRepoFreshness::BehindWithLocalChanges { behind: 1 }
         );
+    }
+
+    #[test]
+    fn generated_package_dirty_path_classifier_accepts_generated_roots_only() {
+        for path in [
+            ".raspberry/rxmragent-state.json",
+            "malinka/programs/rxmragent.yaml",
+            "malinka/workflows/holistic-review-minimax/demo.fabro",
+            "malinka/run-configs/holistic-preflight/demo.toml",
+            "malinka/prompts/holistic-review-deep/demo/plan.md",
+            "outputs/demo/review.md",
+        ] {
+            assert!(is_generated_package_dirty_path(path), "{path}");
+        }
+        for path in [
+            "malinka/blueprints/rxmragent.yaml",
+            "crates/casino-core/src/lib.rs",
+            "README.md",
+        ] {
+            assert!(!is_generated_package_dirty_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn dirty_worktree_is_generated_package_only_rejects_user_code_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        git(repo, &["init"]);
+        git(repo, &["config", "user.name", "Fabro"]);
+        git(repo, &["config", "user.email", "fabro@example.com"]);
+        std::fs::create_dir_all(repo.join("malinka/prompts")).expect("prompts dir");
+        std::fs::create_dir_all(repo.join("crates/app/src")).expect("src dir");
+        std::fs::write(repo.join("malinka/prompts/demo.md"), "generated\n").expect("write");
+        std::fs::write(repo.join("crates/app/src/lib.rs"), "user change\n").expect("write");
+
+        assert!(!dirty_worktree_is_generated_package_only(repo));
     }
 
     #[test]

@@ -144,6 +144,9 @@ fn run_integration_worktree(
     // Strip agent debris from staging area before committing.
     // Agents sometimes write junk files (heredoc artifacts, stray .md) to root.
     strip_agent_debris_from_staging(worktree_path);
+    // Strip unrelated generated package and evidence churn from ordinary
+    // product settlement commits so integrate(<lane>) diffs stay reviewable.
+    strip_structural_noise_from_staging(request, worktree_path);
 
     let already_integrated = git_exit_status(
         worktree_path,
@@ -402,6 +405,92 @@ fn strip_agent_debris_from_staging(worktree: &Path) {
         .args(&args)
         .current_dir(worktree)
         .output();
+}
+
+fn strip_structural_noise_from_staging(request: &DirectIntegrationRequest, worktree: &Path) {
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(worktree)
+        .output();
+    let Ok(output) = staged else { return };
+    if !output.status.success() {
+        return;
+    }
+
+    let allow_generated_package = lane_allows_generated_package_paths(&request.source_lane);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stripped: Vec<&str> = stdout
+        .lines()
+        .filter(|path| {
+            let path = path.trim();
+            if path.is_empty() {
+                return false;
+            }
+            if is_evidence_artifact_path(path) {
+                return true;
+            }
+            if !allow_generated_package && is_generated_package_path(path) {
+                return true;
+            }
+            false
+        })
+        .collect();
+
+    if stripped.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        source_lane = request.source_lane,
+        count = stripped.len(),
+        "stripping structural noise from settlement staging"
+    );
+    let mut args = vec!["rm", "--cached", "--ignore-unmatch", "--force", "--"];
+    args.extend(stripped.iter().copied());
+    let _ = Command::new("git")
+        .args(&args)
+        .current_dir(worktree)
+        .output();
+}
+
+fn lane_allows_generated_package_paths(source_lane: &str) -> bool {
+    [
+        "blueprint-pipeline",
+        "plan-level",
+        "program-synthesis",
+        "package",
+        "workflow",
+        "prompt",
+        "run-config",
+    ]
+    .iter()
+    .any(|needle| source_lane.contains(needle))
+}
+
+fn is_generated_package_path(path: &str) -> bool {
+    [
+        ".raspberry/",
+        "malinka/programs/",
+        "malinka/workflows/",
+        "malinka/run-configs/",
+        "malinka/prompts/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+        || path == "integration.md"
+}
+
+fn is_evidence_artifact_path(path: &str) -> bool {
+    if !path.starts_with("outputs/") {
+        return false;
+    }
+    let Some(file_name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        file_name,
+        "spec.md" | "review.md" | "verification.md" | "quality.md" | "promotion.md"
+    )
 }
 
 fn conflicted_paths(repo: &Path) -> Result<Vec<PathBuf>, DirectIntegrationError> {
@@ -1304,5 +1393,114 @@ mod tests {
             ),
             "run review"
         );
+    }
+
+    #[test]
+    fn direct_integration_strips_generated_package_and_evidence_noise() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("README.md"), "base\n").expect("readme");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&repo, &["push", "-u", "origin", "main"]);
+        git(&repo, &["remote", "set-head", "origin", "main"]);
+        fs::write(repo.join("LOCAL_ONLY.md"), "local branch tip\n").expect("local only");
+        git(&repo, &["add", "LOCAL_ONLY.md"]);
+        git(&repo, &["commit", "-m", "local branch ahead"]);
+        git(&repo, &["branch", "trunk"]);
+
+        git(&repo, &["branch", "fabro/run/run-2", "HEAD"]);
+        let worktree = temp.path().join("run-worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                worktree.to_str().expect("worktree path"),
+                "fabro/run/run-2",
+            ],
+        );
+        fs::write(worktree.join("feature.txt"), "integrated\n").expect("feature");
+        fs::create_dir_all(worktree.join("malinka/prompts/demo")).expect("prompt dir");
+        fs::write(
+            worktree.join("malinka/prompts/demo/plan.md"),
+            "generated prompt\n",
+        )
+        .expect("prompt");
+        fs::create_dir_all(worktree.join("outputs/demo")).expect("outputs dir");
+        fs::write(worktree.join("outputs/demo/review.md"), "evidence\n").expect("review");
+        fs::write(worktree.join("integration.md"), "root artifact\n").expect("integration");
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-m", "feature with noise"]);
+        git(
+            &repo,
+            &[
+                "push",
+                "origin",
+                "fabro/run/run-2:refs/heads/fabro/run/run-2",
+            ],
+        );
+        git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree.to_str().expect("worktree path"),
+            ],
+        );
+
+        let record = integrate_run(&DirectIntegrationRequest {
+            source_lane: "demo:implement".to_string(),
+            manifest: RunManifest {
+                run_id: "run-2".to_string(),
+                workflow_name: "Demo".to_string(),
+                goal: "Demo".to_string(),
+                start_time: Utc::now(),
+                node_count: 1,
+                edge_count: 0,
+                run_branch: Some("fabro/run/run-2".to_string()),
+                base_sha: None,
+                labels: std::collections::HashMap::new(),
+                base_branch: Some("trunk".to_string()),
+                workflow_slug: Some("demo".to_string()),
+                host_repo_path: Some(repo.display().to_string()),
+            },
+            repo_fallback: repo.clone(),
+            target_branch: "trunk".to_string(),
+            strategy: MergeStrategy::Squash,
+            artifact_path: None,
+            post_merge_check: None,
+        })
+        .expect("integration succeeds");
+
+        assert!(record.integrated);
+        assert_eq!(
+            git_output(&repo, &["show", "trunk:feature.txt"]),
+            "integrated"
+        );
+        let ls_tree = git_output(&repo, &["ls-tree", "-r", "--name-only", "trunk"]);
+        assert!(!ls_tree.contains("malinka/prompts/demo/plan.md"));
+        assert!(!ls_tree.contains("outputs/demo/review.md"));
+        assert!(!ls_tree.lines().any(|line| line == "integration.md"));
     }
 }

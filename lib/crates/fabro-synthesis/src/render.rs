@@ -1151,6 +1151,7 @@ fn append_parent_report_unit(
 ) -> ParentStageRef {
     let unit_id = spec.unit_id;
     let milestone_id = spec.milestone_id;
+    let output_root = PathBuf::from(format!(".raspberry/portfolio/{unit_id}"));
     let artifacts = spec
         .artifacts
         .iter()
@@ -1164,6 +1165,28 @@ fn append_parent_report_unit(
         .iter()
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
+    let durable_paths = spec
+        .artifacts
+        .iter()
+        .map(|(_, path)| join_relative(&output_root, path))
+        .collect::<Vec<_>>();
+    let verify_command = match spec.verify_command {
+        Some(command) if command.trim() != "true" => Some(command),
+        _ => Some(parent_report_verify_command(&durable_paths)),
+    };
+    let durable_paths_section = durable_paths
+        .iter()
+        .map(|path| format!("- `{}`", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt_context = match spec.prompt_context {
+        Some(context) if !context.trim().is_empty() => format!(
+            "{context}\n\nWrite durable artifacts only to these exact lane-scoped paths:\n{durable_paths_section}"
+        ),
+        _ => format!(
+            "Write durable artifacts only to these exact lane-scoped paths:\n{durable_paths_section}"
+        ),
+    };
     let lane = BlueprintLane {
         id: unit_id.clone(),
         kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -1183,14 +1206,14 @@ fn append_parent_report_unit(
         orchestration_state_path: None,
         checks: Vec::new(),
         run_dir: None,
-        prompt_context: spec.prompt_context,
-        verify_command: spec.verify_command,
+        prompt_context: Some(prompt_context),
+        verify_command,
         health_command: None,
     };
     blueprint.units.push(BlueprintUnit {
         id: unit_id.clone(),
         title: spec.title,
-        output_root: PathBuf::from(format!(".raspberry/portfolio/{unit_id}")),
+        output_root: output_root.clone(),
         artifacts,
         milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
             id: milestone_id.clone(),
@@ -1299,25 +1322,43 @@ fn analyze_parent_plan_profile(child_units: &[&BlueprintUnit]) -> ParentPlanProf
 }
 
 fn parent_preflight_verify_command(child_units: &[&BlueprintUnit]) -> Option<String> {
-    let mut required_paths = BTreeSet::new();
+    let mut notes = Vec::new();
     for unit in child_units {
-        for artifact_id in ["integration", "review", "promotion"] {
-            let Some(artifact) = unit.artifacts.iter().find(|artifact| artifact.id == artifact_id)
-            else {
-                continue;
-            };
-            required_paths.insert(join_relative(&unit.output_root, artifact.path.to_string_lossy().as_ref()));
+        let available = unit
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                ["integration", "review", "promotion"]
+                    .iter()
+                    .any(|id| artifact.id == *id)
+            })
+            .map(|artifact| join_relative(&unit.output_root, artifact.path.to_string_lossy().as_ref()))
+            .collect::<Vec<_>>();
+        if !available.is_empty() {
+            notes.push(format!(
+                "expected child evidence for `{}` includes {}",
+                unit.id,
+                available
+                    .iter()
+                    .map(|path| format!("`{}`", path.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
     }
-    if required_paths.is_empty() {
-        return Some("true".to_string());
+    if notes.is_empty() {
+        None
+    } else {
+        Some("true".to_string())
     }
+}
+
+fn parent_report_verify_command(paths: &[PathBuf]) -> String {
     let mut script = String::from("set -e\n");
-    for path in required_paths {
-        let path = path.to_string_lossy();
-        script.push_str(&format!("test -f {}\n", shell_single_quote(&path)));
+    for path in paths {
+        script.push_str(&format!("test -f {}\n", shell_single_quote(&path.display().to_string())));
     }
-    Some(script)
+    script
 }
 
 fn codex_unblock_id(unit_id: &str, lane_id: &str) -> String {
@@ -2323,9 +2364,47 @@ fn implementation_quality_command(
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
     };
+    let lane_sizing_script = if lane_is_layout_sensitive(
+        lane,
+        lane.prompt_context.as_deref().unwrap_or_default(),
+    ) {
+        "lane_sizing_hits=\"\"\n\
+         for surface in {surface_scan_dirs}; do\n  \
+           if [ -d \"$surface\" ]; then\n    \
+             while IFS= read -r file; do\n      \
+               lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n      \
+               if [ \"$lines\" -lt 400 ]; then\n        \
+                 continue\n      \
+               fi\n      \
+               if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
+                 lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
+               fi\n    \
+             done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
+           fi\n\
+         done\n"
+            .replace("{surface_scan_dirs}", &{
+                let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
+                    .iter()
+                    .filter_map(|s| {
+                        std::path::Path::new(s)
+                            .parent()
+                            .map(|p| shell_single_quote(&p.display().to_string()))
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if dirs.is_empty() {
+                    ".".to_string()
+                } else {
+                    dirs.join(" ")
+                }
+            })
+    } else {
+        "lane_sizing_hits=\"\"\n".to_string()
+    };
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}{lane_sizing_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -2333,6 +2412,7 @@ fn implementation_quality_command(
         external_only_blocker_script = external_only_blocker_script,
         root_artifact_shadow_script = root_artifact_shadow_script,
         semantic_risk_script = semantic_risk_script,
+        lane_sizing_script = lane_sizing_script,
         touched_surface_section = touched_surface_section,
         surface_scan_dirs = {
             let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
@@ -2711,6 +2791,22 @@ fn render_implementation_plan_prompt(
             output.push_str(&format!("\n- {}", line));
         }
     }
+    let layout_tests = layout_required_test_lines(lane, context);
+    if !layout_tests.is_empty() {
+        output.push_str(
+            "\n\nLayout/domain invariant tests (required for this slice even if not called out above):",
+        );
+        for line in &layout_tests {
+            output.push_str(&format!("\n- {}", line));
+        }
+    }
+    let decomposition_pressure = decomposition_pressure_lines(lane, context);
+    append_prompt_section(
+        &mut output,
+        "Decomposition pressure",
+        &decomposition_pressure,
+        false,
+    );
     output.push_str(
         "\n\nSprint contract:\n- Read `.fabro-work/contract.md` — the contract stage wrote it before you. It lists the exact deliverables and acceptance criteria.\n- You MUST satisfy ALL acceptance criteria from the contract.\n- You MUST create ALL files listed in the contract's Deliverables section.\n- If the contract is missing or empty, write your own `.fabro-work/contract.md` before coding.\n",
     );
@@ -2892,8 +2988,15 @@ fn render_implementation_review_prompt(
         }
     }
     let verdict_fields = security_review_verdict_fields(lane, context);
+    let decomposition_pressure = decomposition_pressure_lines(lane, context);
     output.push_str(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
+    );
+    append_prompt_section(
+        &mut output,
+        "Structural discipline",
+        &decomposition_pressure,
+        false,
     );
     output.push_str(
         "\nDeterministic evidence:\n- treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
@@ -3004,6 +3107,22 @@ fn render_implementation_challenge_prompt(
             output.push_str(&format!("\n- {}", line));
         }
     }
+    let layout_tests = layout_required_test_lines(lane, _context);
+    if !layout_tests.is_empty() {
+        output.push_str(
+            "\n\nLayout/domain invariant checklist (flag every missing item in `.fabro-work/verification.md`):",
+        );
+        for line in &layout_tests {
+            output.push_str(&format!("\n- {}", line));
+        }
+    }
+    let decomposition_pressure = decomposition_pressure_lines(lane, _context);
+    append_prompt_section(
+        &mut output,
+        "Structural discipline",
+        &decomposition_pressure,
+        false,
+    );
     output.push_str(
         "\n\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Are the tests actually verifying behavioral outcomes, or are they trivial stubs that pass without real logic?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
     );
@@ -3262,6 +3381,56 @@ fn security_required_test_lines(lane: &BlueprintLane, context: &str) -> Vec<Stri
     lines
 }
 
+fn lane_is_layout_sensitive(lane: &BlueprintLane, context: &str) -> bool {
+    let lower = lane_security_haystack(lane, context);
+    let domain_layout = [
+        "roulette",
+        "board",
+        "grid",
+        "layout",
+        "screen",
+        "table",
+        "column",
+        "wheel",
+        "render",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let ui_surface = ["tui", "ui", "screen", "widget", "render", "view"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    domain_layout && ui_surface
+}
+
+fn layout_required_test_lines(lane: &BlueprintLane, context: &str) -> Vec<String> {
+    if !lane_is_layout_sensitive(lane, context) {
+        return Vec::new();
+    }
+    let lower = lane_security_haystack(lane, context);
+    let mut lines = vec![
+        "layout invariant test proving the rendered board/grid contains no duplicate domain values"
+            .to_string(),
+    ];
+    if lower.contains("roulette") {
+        lines.push(
+            "roulette board invariant test proving every number from 0 through 36 appears exactly once"
+                .to_string(),
+        );
+    }
+    lines
+}
+
+fn decomposition_pressure_lines(lane: &BlueprintLane, context: &str) -> Vec<String> {
+    if !lane_is_layout_sensitive(lane, context) {
+        return Vec::new();
+    }
+    vec![
+        "if a new source file would exceed roughly 400 lines, split it before landing".to_string(),
+        "do not mix state transitions, input handling, rendering, and animation in one new file unless the prompt explicitly justifies that coupling".to_string(),
+        "if the slice cannot stay small, stop and update the artifacts to explain the next decomposition boundary instead of silently landing a monolith".to_string(),
+    ]
+}
+
 fn security_review_verdict_fields(lane: &BlueprintLane, context: &str) -> Vec<String> {
     if !lane_is_security_sensitive(lane, context) {
         return Vec::new();
@@ -3300,6 +3469,10 @@ fn security_review_verdict_fields(lane: &BlueprintLane, context: &str) -> Vec<St
     }
     if !fields.is_empty() {
         fields.push("proof_covers_edge_cases: yes|no".to_string());
+    }
+    if lane_is_layout_sensitive(lane, context) {
+        fields.push("layout_invariants_complete: yes|no".to_string());
+        fields.push("slice_decomposition_respected: yes|no".to_string());
     }
     fields
 }
@@ -7912,6 +8085,122 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(review.contains("seed_binding_complete: yes|no"));
         assert!(review.contains("house_authority_preserved: yes|no"));
         assert!(review.contains("proof_covers_edge_cases: yes|no"));
+    }
+
+    #[test]
+    fn implementation_prompts_add_layout_invariants_for_roulette_screen_slices() {
+        let lane = BlueprintLane {
+            id: "roulette-tui-screen".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Roulette TUI Screen Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("roulette-tui-screen".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement the next approved roulette board layout screen slice.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: Some("ux".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Implement now:\n- Slice 1: roulette screen layout\n\nTouch first:\n- crates/tui/src/screens/roulette.rs\n\nBuild in this slice:\n- render the roulette board\n".to_string(),
+            ),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let plan = render_prompt("plan", &lane);
+        let challenge = render_prompt("challenge", &lane);
+        let review = render_prompt("review", &lane);
+
+        assert!(plan.contains(
+            "roulette board invariant test proving every number from 0 through 36 appears exactly once"
+        ));
+        assert!(challenge.contains("Layout/domain invariant checklist"));
+        assert!(review.contains("layout_invariants_complete: yes|no"));
+        assert!(review.contains("slice_decomposition_respected: yes|no"));
+    }
+
+    #[test]
+    fn implementation_quality_command_flags_lane_sizing_debt_for_layout_slices() {
+        let unit = BlueprintUnit {
+            id: "roulette-tui-screen".to_string(),
+            title: "Roulette TUI Screen".to_string(),
+            output_root: PathBuf::from("outputs/roulette-tui-screen"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "roulette-tui-screen".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Roulette TUI Screen Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("roulette-tui-screen".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `crates/tui/src/screens/roulette.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: Some("ux".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Touch first:\n- crates/tui/src/screens/roulette.rs\nBuild in this slice:\n- roulette board layout screen\n".to_string(),
+            ),
+            verify_command: None,
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+            protocols: vec![],
+        };
+
+        let command = implementation_quality_command(&blueprint, "roulette-tui-screen", &lane);
+        assert!(command.contains("lane_sizing_debt"));
+        assert!(command.contains("handle_input"));
+        assert!(command.contains("render_"));
     }
 
     #[test]
