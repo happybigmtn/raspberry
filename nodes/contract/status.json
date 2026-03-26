@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_response": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bo",
+    "last_stage": "contract",
+    "response.contract": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bootstrap_verify`\n\n**8 Testable Criteria:**\n1. Test executes without \"no tests to run\" error\n2. Blueprint roundtrip serialization (construct → YAML → parse → equal)\n3. Valid blueprint passes `validate_blueprint()`\n4. Invalid blueprints are rejected with `BlueprintError`\n5. `BlueprintLane::slug()` returns correct derived value\n6. All `WorkflowTemplate` variants are constructable\n7. `BlueprintProgram` fields serialize/deserialize correctly\n8. Test is self-contained (no file I/O dependencies)\n\n**Out of Scope:**\n- File-based integration tests (existing `tests/synthesis.rs`)\n- `render_blueprint`, `reconcile_blueprint`, `import_existing_package` tests\n- Planning authoring tests (require real repo)\n- Performance/snapshot tests"
+  },
+  "notes": "Stage completed: contract",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 40108,
+    "output_tokens": 237
+  },
+  "duration_ms": 87128,
+  "attempt": 1,
+  "max_attempts": 3,
+  "completed_at": "2026-03-26T22:38:04.470859579+00:00",
+  "updated_at": "2026-03-26T22:38:04.470868183+00:00"
+}

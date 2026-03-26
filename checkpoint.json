@@ -1,16 +1,19 @@
 {
-  "timestamp": "2026-03-26T22:35:56.428176449Z",
-  "current_node": "preflight",
+  "timestamp": "2026-03-26T22:38:04.495364524Z",
+  "current_node": "contract",
   "completed_nodes": [
     "start",
-    "preflight"
+    "preflight",
+    "contract"
   ],
   "node_retries": {
     "preflight": 1,
-    "start": 1
+    "start": 1,
+    "contract": 1
   },
   "context_values": {
     "command.stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on artifact directory\n   Compiling fabro-util v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-util)\n   Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-model)\n   Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-github)\n   Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-graphviz)\n   Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-git-storage)\n   Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-validate)\n   Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-config)\n   Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-llm)\n   Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-devcontainer)\n   Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-interview)\n   Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-mcp)\n   Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-sandbox)\n   Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-agent)\n   Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-retro)\n   Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-hooks)\n   Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-workflows)\n   Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/raspberry-supervisor)\n   Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-synthesis)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.96s\n────────────\n Nextest run ID 3dc1a1de-0603-4259-8aee-0ce1ba9280d6 with nextest profile: default\n    Starting 0 tests across 2 binaries (95 tests skipped)\n────────────\n     Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\nerror: no tests to run\n(hint: use `--no-tests` to customize)\n",
+    "last_response": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bo",
     "graph.goal": "Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
     "failure_class": "",
     "graph.fallback_retry_target": "deep_review",
@@ -18,11 +21,15 @@
     "internal.retry_count.preflight": 1,
     "thread.start.current_node": "preflight",
     "command.output": "",
-    "internal.thread_id": "start",
+    "last_stage": "contract",
+    "internal.retry_count.contract": 1,
+    "thread.preflight.current_node": "contract",
+    "response.contract": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bootstrap_verify`\n\n**8 Testable Criteria:**\n1. Test executes without \"no tests to run\" error\n2. Blueprint roundtrip serialization (construct → YAML → parse → equal)\n3. Valid blueprint passes `validate_blueprint()`\n4. Invalid blueprints are rejected with `BlueprintError`\n5. `BlueprintLane::slug()` returns correct derived value\n6. All `WorkflowTemplate` variants are constructable\n7. `BlueprintProgram` fields serialize/deserialize correctly\n8. Test is self-contained (no file I/O dependencies)\n\n**Out of Scope:**\n- File-based integration tests (existing `tests/synthesis.rs`)\n- `render_blueprint`, `reconcile_blueprint`, `import_existing_package` tests\n- Planning authoring tests (require real repo)\n- Performance/snapshot tests",
+    "internal.thread_id": "preflight",
     "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree",
     "outcome": "success",
-    "current.preamble": "Goal: Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
-    "current_node": "preflight",
+    "current.preamble": "Goal: Bootstrap Verification Gate\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- bootstrap_verify`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n\n## Completed stages\n- **preflight**: success\n  - Script: `set +e\nif cargo nextest --version >/dev/null 2>&1; then\n  cargo nextest run -p fabro-synthesis -- bootstrap_verify\nelse\n  cargo test -p fabro-synthesis -- bootstrap_verify\nfi\ntrue`\n  - Stdout: (empty)\n  - Stderr:\n    ```\n    (8 lines omitted)\n       Compiling fabro-model v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-model)\n       Compiling fabro-github v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-github)\n       Compiling fabro-graphviz v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-graphviz)\n       Compiling fabro-git-storage v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-git-storage)\n       Compiling fabro-validate v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-validate)\n       Compiling fabro-config v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-config)\n       Compiling fabro-llm v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-llm)\n       Compiling fabro-devcontainer v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-devcontainer)\n       Compiling fabro-interview v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-interview)\n       Compiling fabro-mcp v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-mcp)\n       Compiling fabro-sandbox v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-sandbox)\n       Compiling fabro-agent v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-agent)\n       Compiling fabro-retro v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-retro)\n       Compiling fabro-hooks v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-hooks)\n       Compiling fabro-workflows v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-workflows)\n       Compiling raspberry-supervisor v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/raspberry-supervisor)\n       Compiling fabro-synthesis v0.176.2 (/home/r/.fabro/runs/20260326-01KMP4JS1ZEC6912S61SSB6804/worktree/lib/crates/fabro-synthesis)\n        Finished `test` profile [unoptimized + debuginfo] target(s) in 52.96s\n    ────────────\n     Nextest run ID 3dc1a1de-0603-4259-8aee-0ce1ba9280d6 with nextest profile: default\n        Starting 0 tests across 2 binaries (95 tests skipped)\n    ────────────\n         Summary [   0.000s] 0 tests run: 0 passed, 95 skipped\n    error: no tests to run\n    (hint: use `--no-tests` to customize)\n    ```\n",
+    "current_node": "contract",
     "internal.fidelity": "compact",
     "internal.node_visit_count": 1,
     "internal.retry_count.start": 1,
@@ -36,6 +43,21 @@
       "status": "success",
       "duration_ms": 0
     },
+    "contract": {
+      "status": "success",
+      "context_updates": {
+        "last_response": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bo",
+        "last_stage": "contract",
+        "response.contract": "Contract written to `.fabro-work/contract.md`. The deliverables and acceptance criteria define:\n\n**Deliverable:**\n- `lib/crates/fabro-synthesis/tests/bootstrap.rs` — New integration test with `fn bootstrap_verify`\n\n**8 Testable Criteria:**\n1. Test executes without \"no tests to run\" error\n2. Blueprint roundtrip serialization (construct → YAML → parse → equal)\n3. Valid blueprint passes `validate_blueprint()`\n4. Invalid blueprints are rejected with `BlueprintError`\n5. `BlueprintLane::slug()` returns correct derived value\n6. All `WorkflowTemplate` variants are constructable\n7. `BlueprintProgram` fields serialize/deserialize correctly\n8. Test is self-contained (no file I/O dependencies)\n\n**Out of Scope:**\n- File-based integration tests (existing `tests/synthesis.rs`)\n- `render_blueprint`, `reconcile_blueprint`, `import_existing_package` tests\n- Planning authoring tests (require real repo)\n- Performance/snapshot tests"
+      },
+      "notes": "Stage completed: contract",
+      "usage": {
+        "model": "MiniMax-M2.7-highspeed",
+        "input_tokens": 40108,
+        "output_tokens": 237
+      },
+      "duration_ms": 87128
+    },
     "preflight": {
       "status": "success",
       "context_updates": {
@@ -46,8 +68,9 @@
       "duration_ms": 54026
     }
   },
-  "next_node_id": "contract",
+  "next_node_id": "implement",
   "node_visits": {
+    "contract": 1,
     "start": 1,
     "preflight": 1
   }
