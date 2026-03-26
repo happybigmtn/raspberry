@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-03-26T20:24:25.320231264Z",
+  "current_node": "plan",
+  "completed_nodes": [
+    "start",
+    "plan"
+  ],
+  "node_retries": {
+    "start": 1,
+    "plan": 1
+  },
+  "context_values": {
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-dry-run-01KMNX3H1Q3X2WKTNYSEWDYSMM/worktree",
+    "internal.retry_count.plan": 1,
+    "last_stage": "plan",
+    "current_node": "plan",
+    "failure_class": "",
+    "internal.thread_id": "planning",
+    "outcome": "success",
+    "thread.planning.current_node": "plan",
+    "failure_signature": "",
+    "graph.goal": "Build a styled pipeline",
+    "response.plan": "[Simulated] Response for stage: plan",
+    "current.preamble": "Goal: Build a styled pipeline\n",
+    "internal.node_visit_count": 1,
+    "internal.retry_count.start": 1,
+    "last_response": "[Simulated] Response for stage: plan",
+    "graph.model_stylesheet": "\n            * { model: claude-sonnet-4-5;}\n            .code { model: claude-opus-4-6; }\n            #critical_review { model: gpt-5.2;reasoning_effort: high; }\n        ",
+    "internal.run_id": "01KMNX3H1Q3X2WKTNYSEWDYSMM",
+    "internal.fidelity": "compact"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "start": {
+      "status": "success",
+      "notes": "[Simulated] start",
+      "duration_ms": 0
+    },
+    "plan": {
+      "status": "success",
+      "context_updates": {
+        "response.plan": "[Simulated] Response for stage: plan",
+        "last_stage": "plan",
+        "last_response": "[Simulated] Response for stage: plan"
+      },
+      "notes": "[Simulated] plan",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "implement",
+  "node_visits": {
+    "start": 1,
+    "plan": 1
+  }
+}
