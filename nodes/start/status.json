@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "duration_ms": 93,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T20:25:38.377250029+00:00",
+  "updated_at": "2026-03-26T20:25:38.377257873+00:00",
+  "notes": "[Simulated] start"
+}
