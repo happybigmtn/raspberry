@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "minimax",
+  "requested_model": "MiniMax-M2.7-highspeed",
+  "provider": "minimax",
+  "model": "MiniMax-M2.7-highspeed",
+  "served_model": "MiniMax-M2.7-highspeed",
+  "fallback_reason": null,
+  "codex_slot": null,
+  "command": "prompt=\"$(cat '/home/r/.fabro/cli/run.Njjiym/prompt.txt')\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,edit,write,grep,find,ls --model MiniMax-M2.7-highspeed --thinking medium --append-system-prompt 'You are executing a DURABLE-ARTIFACT POLISH stage. Improve the clarity and completeness of the lane-scoped durable artifacts named in the prompt context, but do not invent unrelated code changes. Write only to the exact artifact paths named in the prompt context. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path.' \"$prompt\""
+}
