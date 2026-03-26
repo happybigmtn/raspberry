@@ -3,16 +3,23 @@
 ## Assessment Date
 2026-03-26
 
+## Genesis Plan
+`genesis/plans/004-greenfield-bootstrap-reliability.md`
+
 ## Current Implementation Status
 
 ### ✅ Scaffold-First Ordering (Planning)
 
 **Location**: `lib/crates/fabro-synthesis/src/planning.rs`, lines 752–843
 
-**Code Review**:
+**Code**:
 ```rust
 // Scaffold-first ordering: identify infrastructure/scaffold plans and
 // inject them as implicit dependencies for all non-infrastructure plans.
+// This ensures project scaffolding (package.json, tsconfig, schema) completes
+// before feature lanes dispatch (agents need package.json, tsconfig, schema before writing code).
+// Only applies to plans from YAML plan-mappings (Opus-decomposed) to avoid
+// false positives on legacy master-plan-based projects.
 let scaffold_plan_ids: Vec<String> = registry
     .plans
     .iter()
@@ -27,48 +34,48 @@ let scaffold_plan_ids: Vec<String> = registry
 ```
 
 **Strengths**:
-- Explicit check for `PlanMappingSource::Contract` prevents false positives on legacy master-plan projects
-- Handles composite scaffold plans by resolving to last child
+- Explicit `PlanMappingSource::Contract` check prevents false positives on legacy master-plan projects
+- Handles composite scaffold plans by resolving to the last child
 - Properly excludes infrastructure plans themselves from dependency injection
 - Comprehensive filtering by category AND ID
 
 **Concerns**:
-- **No unit test**: The logic exists but has no `#[test]` coverage
-- Debug output via `eprintln!` instead of structured logging (minor)
+- **No unit test**: Logic exists but no `#[test]` validates it
+- Debug output uses `eprintln!` instead of structured logging (minor)
 
-**Test Gap**: `cargo nextest run -p fabro-synthesis -- scaffold_first` does not exist
+**Missing proof**: `cargo nextest run -p fabro-synthesis -- scaffold_first` does not exist
 
 ---
 
 ### ❌ Bootstrap Verification Gate (Render)
 
-**Location**: `lib/crates/fabro-synthesis/src/render.rs`
+**Location**: `lib/crates/fabro-synthesis/src/render.rs`, `render_workflow_graph()`
 
-**Current State**: The `render_workflow_graph()` function generates workflows for `WorkflowTemplate::Bootstrap` but does NOT include language-specific health checks.
+**Current State**: `WorkflowTemplate::Bootstrap` generates a workflow graph with `specify → review → polish → verify` stages. No language-specific health check exists between scaffold completion and feature lane dispatch.
 
-**Code Gap** (in `render_workflow_graph()` Bootstrap branch):
-```rust
-// Current Bootstrap workflow (simplified):
-verify  [label="Verify", shape=parallelogram, script="...", goal_gate=true]
-// No language-specific health check before verify
+**Current Bootstrap workflow structure**:
+```
+start → specify → review → polish → verify → exit
+                                    ↘ polish (retry)
 ```
 
-**Required Addition**:
-```rust
-// Insert between implement and verify stages:
-bootstrap_health [label="Bootstrap Health", shape=parallelogram, script="{bootstrap_health_command}", goal_gate=true]
-// Then: implement -> bootstrap_health -> verify
+**Gap**: The scaffold lane outputs no signal that `package.json`/`tsconfig.json`/etc. are present before feature lanes begin. A feature lane that runs `npx tsc --noEmit` or `cargo check` immediately after scaffold dispatch will fail if scaffold hasn't finished.
+
+**Required addition** — insert `bootstrap_health` node:
+```
+start → specify → review → polish → bootstrap_health → verify → exit
+                                                   ↘ polish (retry)
 ```
 
-**Language Detection**: Need to detect project type from `target_repo` before rendering.
+**Language detection**: Must derive project type from `target_repo` before rendering. Check for `package.json` (Node/TS), `Cargo.toml` (Rust), `pyproject.toml`/`requirements.txt` (Python).
 
 ---
 
 ### ❌ Runtime-Stable Asset Resolution (Render)
 
-**Location**: `lib/crates/fabro-synthesis/src/render.rs`
+**Location**: `lib/crates/fabro-synthesis/src/render.rs`, line 1913
 
-**Current Code**:
+**Current code**:
 ```rust
 let prompt_path = |name: &str| -> String {
     format!(
@@ -80,15 +87,15 @@ let prompt_path = |name: &str| -> String {
 };
 ```
 
-**Problem**: `../../prompts/` is relative to the workflow file location, which breaks when workflows are copied to `~/.fabro/runs/<run-id>/`.
+**Problem**: `../../prompts/` resolves relative to the workflow file location. When `fabro run` copies `graph.fabro` into `~/.fabro/runs/<run-id>/`, the path resolves under `~/.fabro/` instead of the project root. Every detached run fails prompt loading.
 
-**Impact**: Every `fabro run` from a detached run directory will fail prompt loading.
+**Impact**: This breaks `fabro validate` on any run directory, not just greenfield projects.
 
-**Required Change**: Use `${FABRO_PROJECT_ROOT}` substitution:
+**Fix**: Replace with `${FABRO_PROJECT_ROOT}` substitution:
 ```rust
 let prompt_path = |name: &str| -> String {
     format!(
-        "@${FABRO_PROJECT_ROOT}/malinka/prompts/{}/{}/{}.md",
+        "@${{FABRO_PROJECT_ROOT}}/malinka/prompts/{}/{}/{}.md",
         lane.workflow_family(),
         lane.slug(),
         name
@@ -96,34 +103,38 @@ let prompt_path = |name: &str| -> String {
 };
 ```
 
-**Consumer Impact**: Requires `fabro-workflows` to set `FABRO_PROJECT_ROOT` environment variable when executing in detached runs. Check `lib/crates/fabro-workflows/src/handler/agent.rs` and `lib/crates/fabro-cli/src/commands/run.rs`.
+**Dependency**: Requires `fabro-workflows` to set `FABRO_PROJECT_ROOT` in the run context. Check:
+- `lib/crates/fabro-workflows/src/handler/agent.rs`
+- `lib/crates/fabro-cli/src/commands/run.rs`
 
 ---
 
 ### ❌ TypeScript Quality Checks (Render)
 
-**Location**: `lib/crates/fabro-synthesis/src/render.rs`, `implementation_quality_command()`
+**Location**: `lib/crates/fabro-synthesis/src/render.rs`, `implementation_quality_command()`, lines 2232–2440
 
-**Current Coverage**:
-- ✅ Rust: overflow detection, f64 truncation warnings
+**Current coverage**:
+- ✅ Rust: overflow detection, f64 truncation warnings, semantic risk scanning
 - ✅ Python: syntax validation, duplicate function detection
-- ❌ TypeScript: No checks
+- ✅ JS/TS files: placeholder scanning via `scan_placeholder`
+- ❌ TypeScript-specific: no `any` detection, no import validation
 
-**Required TypeScript Checks**:
+**Required TypeScript checks**:
 
-1. **`any` usage in exported signatures**:
+1. **`any` in exported signatures**:
    ```bash
-   # Pattern: export function foo(): any OR export const bar: any
    rg -n 'export (function|const|class|interface|type) \w+.*: any' -g '*.ts' -g '*.tsx'
    ```
 
 2. **Missing imports in test files**:
-   - Heuristic: if test file is `foo.test.ts`, it should import from `foo.ts`
-   - Check for mismatched module paths
+   - Heuristic: `foo.test.ts` should import from `foo.ts`
+   - Check for path mismatches between test file name and imported module
 
-3. **Schema file existence** (if declared in plan):
+3. **Schema file existence** (if declared in plan context):
    - Extract schema path from `prompt_context`
    - `test -f "$schema_path"`
+
+**Note**: `scan_placeholder` already scans `*.ts`/`*.tsx` for generic placeholders (`TODO`, `stub`, `placeholder`, etc.), but misses type-level issues like `any`.
 
 ---
 
@@ -131,54 +142,50 @@ let prompt_path = |name: &str| -> String {
 
 | Test | Status | Location |
 |------|--------|----------|
-| `scaffold_first` | ❌ Missing | Need to add to `src/planning.rs` |
-| `bootstrap_verify` | ❌ Missing | Need to add to `src/render.rs` |
-| `quality_typescript` | ❌ Missing | Need to add to `src/render.rs` |
-| Existing synthesis tests | ✅ 5 passing | `tests/synthesis.rs` |
-| Existing render tests | ✅ 86 passing | `src/render.rs` |
+| `scaffold_first` | ❌ Missing | Need `#[test]` in `src/planning.rs` |
+| `bootstrap_verify` | ❌ Missing | Need `#[test]` in `src/render.rs` |
+| `quality_typescript` | ❌ Missing | Need `#[test]` in `src/render.rs` |
+| Existing synthesis tests | ✅ ~5 passing | `tests/synthesis.rs` |
+| Existing render tests | ✅ ~86 passing | `src/render.rs` (inline `#[test]` blocks) |
 
 ---
 
-## Dependencies and Risks
+## Risks and Mitigations
 
-### Risks
-
-1. **False positive infrastructure detection**: A plan named "infrastructure" that is actually a feature plan gets treated as a scaffold dependency.
-   - **Status**: Mitigated by requiring `PlanMappingSource::Contract`
-
-2. **Bootstrap verification passes in target repo but fails in detached runs**: `@../../prompts/...` resolves under `~/.fabro/` instead of project root.
-   - **Status**: Not mitigated — requires `${FABRO_PROJECT_ROOT}` fix
-
-3. **TypeScript quality gate passes with `any[]` parameters**: No schema to check against when scaffold hasn't completed.
-   - **Status**: Mitigated by scaffold-first ordering ensuring scaffold completes first
+| Risk | Status | Mitigation |
+|------|--------|------------|
+| False-positive infrastructure detection | Mitigated | Requires `PlanMappingSource::Contract` |
+| Bootstrap passes in-repo but fails in detached runs | Not mitigated | Requires `${FABRO_PROJECT_ROOT}` fix |
+| TypeScript quality gate passes with `any[]` parameters | Mitigated | Scaffold-first ordering ensures scaffold completes first |
 
 ---
 
 ## Implementation Checklist
 
 ### Milestone 1: Scaffold-First Ordering Test
-- [ ] Add `#[test] scaffold_first` to `src/planning.rs`
-- [ ] Create test fixture with Infrastructure plan and Feature plan
-- [ ] Verify feature plan dependencies include scaffold plan
+- [ ] Add `#[test] scaffold_first` to `lib/crates/fabro-synthesis/src/planning.rs`
+- [ ] Create test fixture with `PlanCategory::Infrastructure` plan and feature plan
+- [ ] Verify feature plan intent dependencies include scaffold plan ID
+- [ ] Verify infrastructure plans are NOT injected with themselves as dependencies
 
 ### Milestone 2: Bootstrap Verification Gate
-- [ ] Add `bootstrap_health_command()` function to `src/render.rs`
-- [ ] Implement language detection from `target_repo`
-- [ ] Add health node to Bootstrap workflow graph
+- [ ] Add `bootstrap_health_command(language: &str) -> String` to `lib/crates/fabro-synthesis/src/render.rs`
+- [ ] Implement language detection from `target_repo` (check file existence heuristics)
+- [ ] Insert `bootstrap_health` node into `WorkflowTemplate::Bootstrap` graph
 - [ ] Add `#[test] bootstrap_verify` test
 
 ### Milestone 3: Runtime-Stable Asset Resolution
-- [ ] Update `prompt_path()` to use `${FABRO_PROJECT_ROOT}`
+- [ ] Update `prompt_path` closure in `render_workflow_graph()` to use `${FABRO_PROJECT_ROOT}`
 - [ ] Verify `fabro-workflows` sets `FABRO_PROJECT_ROOT` in run context
-- [ ] Add integration test for detached run validation
+- [ ] Add integration test for detached run directory validation
 
 ### Milestone 4: TypeScript Quality Checks
 - [ ] Add TypeScript detection to `implementation_quality_command()`
-- [ ] Implement `any` usage detection
-- [ ] Implement missing import validation
+- [ ] Implement `any` usage detection in exported signatures
+- [ ] Implement missing import validation for test files
 - [ ] Add `#[test] quality_typescript` test
 
-### Milestones 5-6: Live Validations
+### Milestones 5–6: Live Validations
 - [ ] Run tonofcrap 30-cycle autodev
 - [ ] Create fresh Rust project fixture
 - [ ] Run scaffold-first validation
@@ -189,24 +196,24 @@ let prompt_path = |name: &str| -> String {
 
 | Milestone | Estimated Effort | Complexity |
 |-----------|-----------------|------------|
-| 1: Scaffold-First Test | 2-4 hours | Low |
-| 2: Bootstrap Verification | 4-8 hours | Medium |
-| 3: Runtime-Stable Assets | 2-4 hours | Medium |
-| 4: TypeScript Quality | 4-6 hours | Medium |
-| 5-6: Live Validations | 8-16 hours | High |
+| 1: Scaffold-First Test | 2–4 hours | Low |
+| 2: Bootstrap Verification | 4–8 hours | Medium |
+| 3: Runtime-Stable Assets | 2–4 hours | Medium |
+| 4: TypeScript Quality | 4–6 hours | Medium |
+| 5–6: Live Validations | 8–16 hours | High |
 
-**Total**: ~20-38 hours
+**Total**: ~20–38 hours
 
 ---
 
 ## Recommendation
 
-Proceed with implementation in order:
+Proceed with implementation in genesis order:
 
-1. **First**: Add scaffold-first test (validates existing code works)
-2. **Second**: Runtime-stable asset resolution (small change, high impact)
-3. **Third**: Bootstrap verification gate (requires language detection design)
-4. **Fourth**: TypeScript quality checks (follows Python pattern in codebase)
-5. **Fifth**: Live validations (end-to-end proof)
+1. **First** (Milestone 1): Add `scaffold_first` test — validates existing code works before building on top of it
+2. **Second** (Milestone 3): Runtime-stable asset resolution — small change, high impact, unblocks detached-run validation
+3. **Third** (Milestone 2): Bootstrap verification gate — requires language detection design, builds on scaffold-first
+4. **Fourth** (Milestone 4): TypeScript quality checks — follows the existing Python/Rust pattern in `implementation_quality_command()`
+5. **Fifth** (Milestones 5–6): Live validations — end-to-end proof on tonofcrap and a fresh Rust project
 
-The scaffold-first ordering logic is already correct; adding a test first validates the existing implementation before building new features on top of it.
+The scaffold-first ordering logic is already correct; adding a test first provides a regression guard for subsequent changes.
