@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNV7AFH9R7V3RESHCGWWQXH",
+  "workflow_name": "Simple",
+  "goal": "Run tests and report results",
+  "start_time": "2026-03-26T19:51:29.130461106Z",
+  "node_count": 4,
+  "edge_count": 3,
+  "run_branch": "fabro/run/01KMNV7AFH9R7V3RESHCGWWQXH",
+  "base_sha": "d46cf82ec0cc1e7e27807e97b6f528d2c2043366",
+  "base_branch": "fabro/run/01KMNT43GY4EVV8YYR6SM2CZT0",
+  "workflow_slug": "simple",
+  "host_repo_path": "/home/r/.fabro/runs/20260326-01KMNT43GY4EVV8YYR6SM2CZT0/worktree/lib/crates/fabro-cli"
+}
