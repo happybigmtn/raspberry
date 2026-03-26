@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMNX6GYS41K651BCWX11D50J",
+  "workflow_name": "Branch",
+  "goal": "Implement and validate a feature",
+  "start_time": "2026-03-26T20:26:01.179086502Z",
+  "node_count": 6,
+  "edge_count": 6,
+  "run_branch": "fabro/run/01KMNX6GYS41K651BCWX11D50J",
+  "base_sha": "1be5604f378017f5fd9a8fbaf1541a8bc140a32e",
+  "base_branch": "fabro/run/01KMNT43GY5T3AG67J2TSNF09H",
+  "workflow_slug": "branching",
+  "host_repo_path": "/home/r/.fabro/runs/20260326-01KMNT43GY5T3AG67J2TSNF09H/worktree/lib/crates/fabro-cli"
+}
