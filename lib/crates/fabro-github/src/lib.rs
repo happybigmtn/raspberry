@@ -1662,4 +1662,358 @@ mod tests {
         assert!(err.contains("not found"), "got: {err}");
         assert!(err.contains("#999"), "got: {err}");
     }
+
+    // -----------------------------------------------------------------------
+    // embed_token_in_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn embed_token_in_url_basic() {
+        let url = "https://github.com/owner/repo.git";
+        let result = embed_token_in_url(url, "ghs_abc123");
+        assert_eq!(
+            result,
+            "https://x-access-token:ghs_abc123@github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn embed_token_in_url_no_git_suffix() {
+        let url = "https://github.com/owner/repo";
+        let result = embed_token_in_url(url, "tok_xyz");
+        assert_eq!(
+            result,
+            "https://x-access-token:tok_xyz@github.com/owner/repo"
+        );
+    }
+
+    #[test]
+    fn embed_token_in_url_token_with_special_chars() {
+        // Token with characters that could be problematic in URLs
+        let url = "https://github.com/org/project";
+        let result = embed_token_in_url(url, "ghs_a1b2.c3-d4_e5");
+        assert!(result.contains("x-access-token:ghs_a1b2.c3-d4_e5@"));
+        assert!(result.starts_with("https://"));
+    }
+
+    #[test]
+    fn embed_token_in_url_already_has_credentials_ignores_second() {
+        // Only replaces the first occurrence of https://
+        let url = "https://old:token@github.com/owner/repo.git";
+        let result = embed_token_in_url(url, "new_token");
+        // Should replace the first https://, not the one in the credential
+        assert_eq!(
+            result,
+            "https://x-access-token:new_token@github.com/owner/repo.git"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // create_pull_request
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_pr_success() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Use Regex matcher for Authorization since create_pull_request generates a real JWT
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_test"}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/repos/owner/repo/pulls")
+            .match_header("Authorization", "Bearer ghs_test")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"title":"Add feature X","head":"feature-branch","base":"main","body":"This PR adds feature X.","draft":false}"#.to_string(),
+            ))
+            .with_status(201)
+            .with_body(r#"{"html_url": "https://github.com/owner/repo/pull/1", "number": 1, "node_id": "PR_kwDOBHh7TM6abc"}"#)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let result = create_pull_request(
+            &creds,
+            "owner",
+            "repo",
+            "main",
+            "feature-branch",
+            "Add feature X",
+            "This PR adds feature X.",
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.number, 1);
+        assert_eq!(result.html_url, "https://github.com/owner/repo/pull/1");
+        assert_eq!(result.node_id, "PR_kwDOBHh7TM6abc");
+    }
+
+    #[tokio::test]
+    async fn create_pr_unprocessable_entity() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_test"}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/repos/owner/repo/pulls")
+            .with_status(422)
+            .with_body(r#"{"message": "Validation Failed"}"#)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let err = match create_pull_request(
+            &creds,
+            "owner",
+            "repo",
+            "main",
+            "feature-branch",
+            "Add feature X",
+            "This PR adds feature X.",
+            false,
+        )
+        .await {
+            Ok(_) => panic!("expected 422 error"),
+            Err(e) => e,
+        };
+
+        assert!(err.contains("422"), "got: {err}");
+        assert!(err.contains("Validation Failed") || err.contains("could not be created"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn create_pr_head_base_draft() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_test"}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/repos/owner/repo/pulls")
+            .match_header("Authorization", "Bearer ghs_test")
+            .with_status(201)
+            .with_body(r#"{"html_url": "https://github.com/owner/repo/pull/3", "number": 3, "node_id": "PR_kwDOBHh7TM6xyz"}"#)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let result = create_pull_request(
+            &creds,
+            "owner",
+            "repo",
+            "develop",
+            "bugfix-42",
+            "Fix bug 42",
+            "Fixes #42",
+            true, // draft PR
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.number, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // enable_auto_merge
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn enable_auto_merge_success() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_test"}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/graphql")
+            .match_header("Authorization", "Bearer ghs_test")
+            .match_body(mockito::Matcher::Regex(
+                r#"enablePullRequestAutoMerge"#.to_string(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01T00:00:00Z", "mergeMethod": "SQUASH"}}}}}"#,
+            )
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        enable_auto_merge(
+            &creds,
+            "owner",
+            "repo",
+            "PR_kwDOBHh7TM6abc",
+            AutoMergeMethod::Squash,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn enable_auto_merge_graphql_error() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_test"}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/graphql")
+            .with_status(200)
+            .with_body(r#"{"errors": [{"message": "Auto-merge not enabled for this repository"}]}"#)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let err = enable_auto_merge(
+            &creds,
+            "owner",
+            "repo",
+            "PR_kwDOBHh7TM6abc",
+            AutoMergeMethod::Merge,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("GraphQL error") || err.contains("errors"), "got: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_clone_credentials
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_clone_credentials_returns_x_access_token() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .with_status(200)
+            .with_body(r#"{"id": 1}"#)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/app/installations/1/access_tokens")
+            .with_status(201)
+            .with_body(r#"{"token": "ghs_resolve_creds_test"}"#)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let (username, password) =
+            resolve_clone_credentials(&creds, "owner", "repo").await.unwrap();
+
+        assert_eq!(username.as_deref(), Some("x-access-token"));
+        assert_eq!(password.as_deref(), Some("ghs_resolve_creds_test"));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_clone_credentials — failure
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_clone_credentials_not_installed() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/repos/owner/repo/installation")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let pem = test_rsa_key();
+        let creds = GitHubAppCredentials {
+            app_id: "test".to_string(),
+            private_key_pem: pem,
+        };
+        let err = resolve_clone_credentials(&creds, "owner", "repo")
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.contains("not installed"),
+            "expected 'not installed' error, got: {err}"
+        );
+    }
 }

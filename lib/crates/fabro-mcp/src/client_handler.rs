@@ -109,3 +109,24 @@ impl ClientHandler for LoggingClientHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logging_handler_get_info_returns_client_info() {
+        let handler = LoggingClientHandler;
+        let info = handler.get_info();
+        assert_eq!(info.client_info.name, "fabro-mcp");
+        assert_eq!(
+            info.protocol_version,
+            rmcp::model::ProtocolVersion::V_2025_03_26
+        );
+    }
+
+    // Note: Testing the async on_* notification handlers requires constructing
+    // a NotificationContext<RoleClient>, which requires Peer::new (pub(crate)).
+    // LoggingClientHandler handlers are log-only and never access the context,
+    // but we cannot construct a valid context from outside the rmcp crate.
+}

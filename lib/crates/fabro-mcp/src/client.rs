@@ -255,3 +255,58 @@ impl McpClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{McpServerConfig, McpTransport};
+
+    #[test]
+    fn mcp_client_new_sandbox_transport_returns_error() {
+        let config = McpServerConfig {
+            name: "test-sandbox".into(),
+            transport: McpTransport::Sandbox {
+                command: vec!["node".into(), "server.js".into()],
+                port: 3000,
+                env: std::collections::HashMap::new(),
+            },
+            startup_timeout_secs: 10,
+            tool_timeout_secs: 30,
+        };
+
+        let err = match McpClient::new(&config) {
+            Err(e) => format!("{e}"),
+            Ok(_) => panic!("expected error for Sandbox transport"),
+        };
+        assert!(
+            err.contains("Sandbox"),
+            "error should mention Sandbox transport: {err}"
+        );
+        assert!(
+            err.contains("test-sandbox"),
+            "error should mention server name: {err}"
+        );
+    }
+
+    #[test]
+    fn mcp_client_new_empty_command_returns_error() {
+        let config = McpServerConfig {
+            name: "empty-server".into(),
+            transport: McpTransport::Stdio {
+                command: vec![],
+                env: std::collections::HashMap::new(),
+            },
+            startup_timeout_secs: 10,
+            tool_timeout_secs: 30,
+        };
+
+        let err = match McpClient::new(&config) {
+            Err(e) => format!("{e}"),
+            Ok(_) => panic!("expected error for empty command"),
+        };
+        assert!(
+            err.contains("empty"),
+            "error should mention empty command: {err}"
+        );
+    }
+}
