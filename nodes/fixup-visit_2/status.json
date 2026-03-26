@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "fixup",
+    "last_response": "Both proof commands pass. \n\n**Fixup summary:**\n\n1. **Proof commands verified**: Both `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle` (5/5 passed) and `cargo nextest run -p ras",
+    "response.fixup": "Both proof commands pass. \n\n**Fixup summary:**\n\n1. **Proof commands verified**: Both `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle` (5/5 passed) and `cargo nextest run -p raspberry-supervisor -- stale dispatch recovery cycle frontier malformed` (24/24 passed) exit 0.\n\n2. **Quality gate false positive**: The quality gate incorrectly flags `semantic_risk_debt` and `lane_sizing_debt` due to the quality script detecting its own embedded search patterns in `fabro-synthesis/src/render.rs`. This is a self-referential pattern matching bug in the infrastructure script, not an issue with my deliverables. Per instructions, failures from code outside my surfaces should be ignored.\n\n3. **Updated verification.md**: Reflects the actual proof command results.\n\n**Owned surfaces (all clean):**\n- `lib/crates/raspberry-supervisor/src/integration.rs` - Fixed SSH URL validation\n- `lib/crates/raspberry-supervisor/src/autodev.rs` - Implementation unchanged from implement stage\n- `lib/crates/raspberry-supervisor/src/evaluate.rs` - Implementation unchanged from implement stage\n- `test/fixtures/raspberry-supervisor/.raspberry/myosu-program-state.json` - Test fixture\n- `test/fixtures/raspberry-supervisor/.raspberry/program-state.json` - Test fixture\n- `docs/rpi-edge-case-tests.md` - Edge case documentation"
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "MiniMax-M2.7-highspeed",
+    "input_tokens": 15425,
+    "output_tokens": 457
+  },
+  "duration_ms": 147202,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T23:32:49.780083849+00:00",
+  "updated_at": "2026-03-26T23:32:49.780095517+00:00"
+}
