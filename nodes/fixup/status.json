@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "context_updates": {
+    "last_stage": "fixup",
+    "last_response": "The source-lane diff blocker was already gone when I inspected it, so the real deterministic failure was this unblock lane’s own artifact handoff. I updated [greenfield-bootstrap-reliability-live-to",
+    "response.fixup": "The source-lane diff blocker was already gone when I inspected it, so the real deterministic failure was this unblock lane’s own artifact handoff. I updated [greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro#L22) so quality copies `.fabro-work/verification.md` into the lane-scoped portfolio path before scanning, and [the audit stage](/home/r/.fabro/runs/20260326-01KMNXTEVY0XVBG8H2P2AFC7XT/worktree/malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro#L26) now materializes `spec.md`, `review.md`, `verification.md`, and `promotion.md` from `.fabro-work` before it validates the portfolio artifacts. I also fixed remediation capture to read `quality.md` from the lane-scoped output directory instead of reporting it as missing.\n\nProof: `cargo check --workspace` passed. I also dry-ran the updated audit logic against the current `.fabro-work` artifacts, and that passed too, so the next replay should no longer fail on the missing-portfolio-artifact audit path."
+  },
+  "notes": "Stage completed: fixup",
+  "usage": {
+    "model": "gpt-5.4",
+    "input_tokens": 3432419,
+    "output_tokens": 36604,
+    "cost": 9.1301075
+  },
+  "files_written": [
+    "malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro"
+  ],
+  "files_touched": [
+    "malinka/workflows/implementation/greenfield-bootstrap-reliability-live-tonofcrap-validation-codex-unblock.fabro"
+  ],
+  "duration_ms": 737151,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-26T21:11:33.966326624+00:00",
+  "updated_at": "2026-03-26T21:11:33.966328184+00:00"
+}
