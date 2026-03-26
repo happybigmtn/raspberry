@@ -1,0 +1,23 @@
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index e895e12d..045f1a39 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -2380,8 +2380,16 @@ fn implementation_quality_command(
+         lane,
+         lane.prompt_context.as_deref().unwrap_or_default(),
+     ) {
+-        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+-            .to_string()
++        let pat1 = ["payout", "_", "multiplier", r"\(\)", r"\s+", "as", r"\s+", "i16"].join("");
++        let pat2 = ["numerator", r"\s+", "as", r"\s+", "i16"].join("");
++        let pat3 = ["deterministic", " ", "placeholder"].join("");
++        let pat4 = ["spin", " ", "made", " ", "without", " ", "seed", " ", "being", " ", "set"].join("");
++        let pat5 = ["house", " ", "doesn", ".t", " ", "play", " ", "-", " ", "the", " ", "player", " ", "spins"].join("");
++        let pat6 = ["Generate seed \\(", "in real impl", ",", " comes from house via action_seed", "\\)"].join("");
++        format!(
++            "semantic_risk_hits=\"$(rg -n -i -g '*.rs' '{pat1}|{pat2}|{pat3}|{pat4}|{pat5}|{pat6}' . 2>/dev/null || true)\"\n",
++            pat1 = pat1, pat2 = pat2, pat3 = pat3, pat4 = pat4, pat5 = pat5, pat6 = pat6
++        )
+     } else {
+         "semantic_risk_hits=\"\"\n".to_string()
+     };
