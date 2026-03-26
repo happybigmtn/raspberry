@@ -1,0 +1,11 @@
+{
+  "mode": "cli",
+  "requested_provider": "minimax",
+  "requested_model": "MiniMax-M2.7-highspeed",
+  "provider": "minimax",
+  "model": "MiniMax-M2.7-highspeed",
+  "served_model": "MiniMax-M2.7-highspeed",
+  "fallback_reason": null,
+  "codex_slot": null,
+  "command": "prompt=\"$(cat '/home/r/.fabro/cli/run.nyrzrP/prompt.txt')\" && pi --provider minimax --mode json -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash,edit,write,grep,find,ls --model MiniMax-M2.7-highspeed --thinking high --append-system-prompt 'You are executing a REPORT/PLAN stage of an automated pipeline. Read the prompt carefully, inspect the relevant repo surfaces, and produce the lane-scoped durable artifacts exactly at the paths named in the prompt context. Keep ephemeral workflow notes under `.fabro-work/` only when the prompt asks for them. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. If evidence is missing, say so plainly instead of inventing work or rewriting unrelated files.' \"$prompt\""
+}
