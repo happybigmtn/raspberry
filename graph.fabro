@@ -1,0 +1,23 @@
+digraph ProviderPolicyStabilization {
+    graph [
+        goal="Provider Policy Stabilization\n\nBootstrap the first honest reviewed slice for this frontier.\n\nInputs:\n- `README.md`\n- `SPEC.md`\n- `PLANS.md`\n- `AGENTS.md`\n- `CLAUDE.md`\n- `genesis/plans/001-master-plan.md`\n\nCurrent frontier tasks:\n- Audit all code paths that select models outside policy.rs\n- Add quota detection and graceful fallback to fabro-llm providers\n- Add provider health status to raspberry status output\n- Add usage tracking per provider per cycle\n- Live validation: quota exhaustion triggers fallback without lane failure\n\nRequired durable artifacts:\n- `outputs/provider-policy-stabilization/spec.md`\n- `outputs/provider-policy-stabilization/review.md`",
+        model_stylesheet="
+            *       { backend: cli; }
+            #review { backend: cli; model: kimi-k2.5; provider: kimi; }
+            #polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }
+        "
+    ]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    specify [label="Specify", prompt="@malinka/prompts/bootstrap/provider-policy-stabilization/plan.md", reasoning_effort="high"]
+    review  [label="Review", prompt="@malinka/prompts/bootstrap/provider-policy-stabilization/review.md", reasoning_effort="high"]
+    polish  [label="Polish", prompt="@malinka/prompts/bootstrap/provider-policy-stabilization/polish.md", reasoning_effort="medium"]
+    verify  [label="Verify", shape=parallelogram, script="true", goal_gate=true, retry_target="polish", max_retries=0]
+
+    start -> specify -> review -> polish -> verify
+    verify -> exit [condition="outcome=success"]
+    verify -> polish
+}
