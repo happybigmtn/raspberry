@@ -1,0 +1,455 @@
+diff --git a/lib/crates/fabro-github/src/lib.rs b/lib/crates/fabro-github/src/lib.rs
+index 18e9c0eb..0e431f03 100644
+--- a/lib/crates/fabro-github/src/lib.rs
++++ b/lib/crates/fabro-github/src/lib.rs
+@@ -1662,4 +1662,358 @@ mod tests {
+         assert!(err.contains("not found"), "got: {err}");
+         assert!(err.contains("#999"), "got: {err}");
+     }
++
++    // -----------------------------------------------------------------------
++    // embed_token_in_url
++    // -----------------------------------------------------------------------
++
++    #[test]
++    fn embed_token_in_url_basic() {
++        let url = "https://github.com/owner/repo.git";
++        let result = embed_token_in_url(url, "ghs_abc123");
++        assert_eq!(
++            result,
++            "https://x-access-token:ghs_abc123@github.com/owner/repo.git"
++        );
++    }
++
++    #[test]
++    fn embed_token_in_url_no_git_suffix() {
++        let url = "https://github.com/owner/repo";
++        let result = embed_token_in_url(url, "tok_xyz");
++        assert_eq!(
++            result,
++            "https://x-access-token:tok_xyz@github.com/owner/repo"
++        );
++    }
++
++    #[test]
++    fn embed_token_in_url_token_with_special_chars() {
++        // Token with characters that could be problematic in URLs
++        let url = "https://github.com/org/project";
++        let result = embed_token_in_url(url, "ghs_a1b2.c3-d4_e5");
++        assert!(result.contains("x-access-token:ghs_a1b2.c3-d4_e5@"));
++        assert!(result.starts_with("https://"));
++    }
++
++    #[test]
++    fn embed_token_in_url_already_has_credentials_ignores_second() {
++        // Only replaces the first occurrence of https://
++        let url = "https://old:token@github.com/owner/repo.git";
++        let result = embed_token_in_url(url, "new_token");
++        // Should replace the first https://, not the one in the credential
++        assert_eq!(
++            result,
++            "https://x-access-token:new_token@github.com/owner/repo.git"
++        );
++    }
++
++    // -----------------------------------------------------------------------
++    // create_pull_request
++    // -----------------------------------------------------------------------
++
++    #[tokio::test]
++    async fn create_pr_success() {
++        let mut server = mockito::Server::new_async().await;
++
++        // Use Regex matcher for Authorization since create_pull_request generates a real JWT
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_test"}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/repos/owner/repo/pulls")
++            .match_header("Authorization", "Bearer ghs_test")
++            .match_body(mockito::Matcher::JsonString(
++                r#"{"title":"Add feature X","head":"feature-branch","base":"main","body":"This PR adds feature X.","draft":false}"#.to_string(),
++            ))
++            .with_status(201)
++            .with_body(r#"{"html_url": "https://github.com/owner/repo/pull/1", "number": 1, "node_id": "PR_kwDOBHh7TM6abc"}"#)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let result = create_pull_request(
++            &creds,
++            "owner",
++            "repo",
++            "main",
++            "feature-branch",
++            "Add feature X",
++            "This PR adds feature X.",
++            false,
++        )
++        .await
++        .unwrap();
++
++        assert_eq!(result.number, 1);
++        assert_eq!(result.html_url, "https://github.com/owner/repo/pull/1");
++        assert_eq!(result.node_id, "PR_kwDOBHh7TM6abc");
++    }
++
++    #[tokio::test]
++    async fn create_pr_unprocessable_entity() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_test"}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/repos/owner/repo/pulls")
++            .with_status(422)
++            .with_body(r#"{"message": "Validation Failed"}"#)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let err = match create_pull_request(
++            &creds,
++            "owner",
++            "repo",
++            "main",
++            "feature-branch",
++            "Add feature X",
++            "This PR adds feature X.",
++            false,
++        )
++        .await {
++            Ok(_) => panic!("expected 422 error"),
++            Err(e) => e,
++        };
++
++        assert!(err.contains("422"), "got: {err}");
++        assert!(err.contains("Validation Failed") || err.contains("could not be created"), "got: {err}");
++    }
++
++    #[tokio::test]
++    async fn create_pr_head_base_draft() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_test"}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/repos/owner/repo/pulls")
++            .match_header("Authorization", "Bearer ghs_test")
++            .with_status(201)
++            .with_body(r#"{"html_url": "https://github.com/owner/repo/pull/3", "number": 3, "node_id": "PR_kwDOBHh7TM6xyz"}"#)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let result = create_pull_request(
++            &creds,
++            "owner",
++            "repo",
++            "develop",
++            "bugfix-42",
++            "Fix bug 42",
++            "Fixes #42",
++            true, // draft PR
++        )
++        .await
++        .unwrap();
++
++        assert_eq!(result.number, 3);
++    }
++
++    // -----------------------------------------------------------------------
++    // enable_auto_merge
++    // -----------------------------------------------------------------------
++
++    #[tokio::test]
++    async fn enable_auto_merge_success() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_test"}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/graphql")
++            .match_header("Authorization", "Bearer ghs_test")
++            .match_body(mockito::Matcher::Regex(
++                r#"enablePullRequestAutoMerge"#.to_string(),
++            ))
++            .with_status(200)
++            .with_body(
++                r#"{"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01T00:00:00Z", "mergeMethod": "SQUASH"}}}}}"#,
++            )
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        enable_auto_merge(
++            &creds,
++            "owner",
++            "repo",
++            "PR_kwDOBHh7TM6abc",
++            AutoMergeMethod::Squash,
++        )
++        .await
++        .unwrap();
++    }
++
++    #[tokio::test]
++    async fn enable_auto_merge_graphql_error() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .match_header("Authorization", mockito::Matcher::Regex(r"^Bearer .+$".to_string()))
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_test"}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/graphql")
++            .with_status(200)
++            .with_body(r#"{"errors": [{"message": "Auto-merge not enabled for this repository"}]}"#)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let err = enable_auto_merge(
++            &creds,
++            "owner",
++            "repo",
++            "PR_kwDOBHh7TM6abc",
++            AutoMergeMethod::Merge,
++        )
++        .await
++        .unwrap_err();
++
++        assert!(err.contains("GraphQL error") || err.contains("errors"), "got: {err}");
++    }
++
++    // -----------------------------------------------------------------------
++    // resolve_clone_credentials
++    // -----------------------------------------------------------------------
++
++    #[tokio::test]
++    async fn resolve_clone_credentials_returns_x_access_token() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .with_status(200)
++            .with_body(r#"{"id": 1}"#)
++            .create_async()
++            .await;
++        server
++            .mock("POST", "/app/installations/1/access_tokens")
++            .with_status(201)
++            .with_body(r#"{"token": "ghs_resolve_creds_test"}"#)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let (username, password) =
++            resolve_clone_credentials(&creds, "owner", "repo").await.unwrap();
++
++        assert_eq!(username.as_deref(), Some("x-access-token"));
++        assert_eq!(password.as_deref(), Some("ghs_resolve_creds_test"));
++    }
++
++    // -----------------------------------------------------------------------
++    // resolve_clone_credentials — failure
++    // -----------------------------------------------------------------------
++
++    #[tokio::test]
++    async fn resolve_clone_credentials_not_installed() {
++        let mut server = mockito::Server::new_async().await;
++
++        server
++            .mock("GET", "/repos/owner/repo/installation")
++            .with_status(404)
++            .create_async()
++            .await;
++
++        let pem = test_rsa_key();
++        let creds = GitHubAppCredentials {
++            app_id: "test".to_string(),
++            private_key_pem: pem,
++        };
++        let err = resolve_clone_credentials(&creds, "owner", "repo")
++            .await
++            .unwrap_err();
++
++        assert!(
++            err.contains("not installed"),
++            "expected 'not installed' error, got: {err}"
++        );
++    }
+ }
+diff --git a/lib/crates/fabro-mcp/src/client.rs b/lib/crates/fabro-mcp/src/client.rs
+index 33f3268f..21c50fc2 100644
+--- a/lib/crates/fabro-mcp/src/client.rs
++++ b/lib/crates/fabro-mcp/src/client.rs
+@@ -255,3 +255,58 @@ impl McpClient {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::config::{McpServerConfig, McpTransport};
++
++    #[test]
++    fn mcp_client_new_sandbox_transport_returns_error() {
++        let config = McpServerConfig {
++            name: "test-sandbox".into(),
++            transport: McpTransport::Sandbox {
++                command: vec!["node".into(), "server.js".into()],
++                port: 3000,
++                env: std::collections::HashMap::new(),
++            },
++            startup_timeout_secs: 10,
++            tool_timeout_secs: 30,
++        };
++
++        let err = match McpClient::new(&config) {
++            Err(e) => format!("{e}"),
++            Ok(_) => panic!("expected error for Sandbox transport"),
++        };
++        assert!(
++            err.contains("Sandbox"),
++            "error should mention Sandbox transport: {err}"
++        );
++        assert!(
++            err.contains("test-sandbox"),
++            "error should mention server name: {err}"
++        );
++    }
++
++    #[test]
++    fn mcp_client_new_empty_command_returns_error() {
++        let config = McpServerConfig {
++            name: "empty-server".into(),
++            transport: McpTransport::Stdio {
++                command: vec![],
++                env: std::collections::HashMap::new(),
++            },
++            startup_timeout_secs: 10,
++            tool_timeout_secs: 30,
++        };
++
++        let err = match McpClient::new(&config) {
++            Err(e) => format!("{e}"),
++            Ok(_) => panic!("expected error for empty command"),
++        };
++        assert!(
++            err.contains("empty"),
++            "error should mention empty command: {err}"
++        );
++    }
++}
+diff --git a/lib/crates/fabro-mcp/src/client_handler.rs b/lib/crates/fabro-mcp/src/client_handler.rs
+index 2fb4be02..9b780a6d 100644
+--- a/lib/crates/fabro-mcp/src/client_handler.rs
++++ b/lib/crates/fabro-mcp/src/client_handler.rs
+@@ -109,3 +109,24 @@ impl ClientHandler for LoggingClientHandler {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn logging_handler_get_info_returns_client_info() {
++        let handler = LoggingClientHandler;
++        let info = handler.get_info();
++        assert_eq!(info.client_info.name, "fabro-mcp");
++        assert_eq!(
++            info.protocol_version,
++            rmcp::model::ProtocolVersion::V_2025_03_26
++        );
++    }
++
++    // Note: Testing the async on_* notification handlers requires constructing
++    // a NotificationContext<RoleClient>, which requires Peer::new (pub(crate)).
++    // LoggingClientHandler handlers are log-only and never access the context,
++    // but we cannot construct a valid context from outside the rmcp crate.
++}
