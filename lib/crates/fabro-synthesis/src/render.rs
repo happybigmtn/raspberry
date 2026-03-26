@@ -491,256 +491,7 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
             });
     }
 
-    // Phase 3: Generate plan-review lanes — adversarial bug review after all
-    // child lanes of a plan complete. Groups units by plan prefix, creates a
-    // review lane that depends on all children and runs the 3-step process.
-    const MIN_PLAN_CHILDREN: usize = 2;
-    let plan_candidates = augmented
-        .units
-        .iter()
-        .filter(|unit| {
-            unit.lanes
-                .iter()
-                .filter(|l| l.template == WorkflowTemplate::Implementation)
-                .any(|l| {
-                    !l.id.contains("workspace-verify")
-                        && !l.id.contains("contract-verify")
-                        && !l.id.contains("plan-review")
-                })
-        })
-        .map(|unit| unit.id.clone())
-        .collect::<Vec<_>>();
-    let mut plan_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for unit_id in &plan_candidates {
-        if let Some(plan_prefix) = infer_plan_group(unit_id, &plan_candidates, MIN_PLAN_CHILDREN) {
-            plan_groups
-                .entry(plan_prefix)
-                .or_default()
-                .push(unit_id.clone());
-        }
-    }
-    // Only create plan-review for groups with enough children
-    for (plan_prefix, child_unit_ids) in &plan_groups {
-        if child_unit_ids.len() < MIN_PLAN_CHILDREN {
-            continue;
-        }
-        let review_id = format!("{plan_prefix}-plan-review");
-        // Check if already exists
-        if augmented
-            .units
-            .iter()
-            .any(|u| u.lanes.iter().any(|l| l.id == review_id))
-        {
-            continue;
-        }
-        // Depend on all child units completing
-        let deps: Vec<raspberry_supervisor::manifest::LaneDependency> = child_unit_ids
-            .iter()
-            .filter_map(|uid| {
-                augmented
-                    .units
-                    .iter()
-                    .find(|unit| unit.id == *uid)
-                    .map(plan_review_dependency_for_unit)
-            })
-            .collect();
-        if deps.len() != child_unit_ids.len() {
-            continue;
-        }
-        let review_goal = format!(
-            "Adversarial bug review for plan `{plan_prefix}` ({n} child units).\n\n\
-             All implementation lanes for this plan have completed and their code is on trunk.\n\
-             Execute this 5-step process IN ORDER:\n\n\
-             **Step 1 — Bug Finder:** Search the codebase for ALL potential bugs in code \
-             written by child lanes. Be thorough and aggressive. Score: +1 low, +5 medium, \
-             +10 critical. Maximize score. Report anything that *could* be a bug.\n\n\
-             **Step 2 — Bug Skeptic:** Challenge each bug from Step 1. For each, determine \
-             if it's real or a false positive. Disprove as many as possible. Score: +[bug pts] \
-             for correct disproves, -2x for wrong dismissals.\n\n\
-             **Step 3 — Arbiter:** For each disputed bug, render final verdict: REAL BUG or \
-             NOT A BUG. Output confirmed bugs with severity and one-line fix.\n\n\
-             **Step 4 — Fix:** For each confirmed REAL BUG, apply the fix directly in the \
-             codebase. Run the proof commands to verify. Do NOT skip any confirmed bug.\n\n\
-             **Step 5 — Meta-Review:** Write `.fabro-work/meta-review-{plan_prefix}.md` \
-             analyzing the BUG PATTERNS found (not individual bugs). For each pattern, \
-             propose a specific fabro-level change:\n\
-             - Quality gate rule (shell script addition to render.rs quality command)\n\
-             - Prompt improvement (wording change in plan/review/challenge prompts)\n\
-             - Convention check (regex pattern to add to the quality gate)\n\
-             Format each proposal as: PATTERN: ..., PROPOSED CHANGE: ..., \
-             EXPECTED IMPACT: prevents N bugs per M plans, RISK: false positive rate.\n\
-             This step is REPORT-ONLY for Fabro harness changes: do NOT modify the Fabro \
-             harness itself from this lane. Summarize which proposals deserve operator follow-up \
-             in `review.md`.\n\n\
-             Child units: {children}\n\n\
-             Proof commands:\n\
-             - `if [ -f Cargo.toml ]; then cargo check --workspace; elif [ -f package.json ]; then npm run build --if-present; else echo no workspace build proof available >&2; exit 1; fi`\n\
-             - `if [ -f Cargo.toml ]; then cargo test --workspace; elif [ -f package.json ]; then npm test --if-present; else echo no workspace test proof available >&2; exit 1; fi`\n\n\
-             Required durable artifacts:\n\
-             - `spec.md` (bug review report with all 5 steps)\n\
-             - `review.md` (summary: bugs found/fixed, meta-proposals recommended for Fabro follow-up)\n\
-             - `implementation.md` (concrete fixes applied in this plan-review lane)\n\
-             - `verification.md` (proof command results and residual risk)\n\
-             - `quality.md` (machine-generated quality gate output)\n\
-             - `promotion.md` (merge-ready judgment for the plan-review changes)\n\
-             - `integration.md` (integration record for landed plan-review fixes)",
-            n = child_unit_ids.len(),
-            children = child_unit_ids.join(", "),
-        );
-        augmented.units.push(BlueprintUnit {
-            id: review_id.clone(),
-            title: format!("{plan_prefix} Plan Review"),
-            output_root: PathBuf::from(format!(".raspberry/portfolio/{review_id}")),
-            artifacts: vec![
-                crate::blueprint::BlueprintArtifact {
-                    id: "spec".to_string(),
-                    path: PathBuf::from("spec.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "review".to_string(),
-                    path: PathBuf::from("review.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "implementation".to_string(),
-                    path: PathBuf::from("implementation.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "verification".to_string(),
-                    path: PathBuf::from("verification.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "quality".to_string(),
-                    path: PathBuf::from("quality.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "promotion".to_string(),
-                    path: PathBuf::from("promotion.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "integration".to_string(),
-                    path: PathBuf::from("integration.md"),
-                },
-            ],
-            milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
-                id: format!("{plan_prefix}-plan-reviewed"),
-                requires: vec![
-                    "spec".to_string(),
-                    "review".to_string(),
-                    "implementation".to_string(),
-                    "verification".to_string(),
-                    "quality".to_string(),
-                    "promotion".to_string(),
-                    "integration".to_string(),
-                ],
-            }],
-            lanes: vec![BlueprintLane {
-                id: review_id.clone(),
-                kind: raspberry_supervisor::manifest::LaneKind::Platform,
-                title: format!("{plan_prefix} Plan Review"),
-                family: "plan-review".to_string(),
-                workflow_family: Some("implementation".to_string()),
-                slug: Some(review_id.clone()),
-                template: WorkflowTemplate::Implementation,
-                goal: review_goal,
-                managed_milestone: format!("{plan_prefix}-plan-reviewed"),
-                dependencies: deps,
-                produces: vec![
-                    "spec".to_string(),
-                    "review".to_string(),
-                    "implementation".to_string(),
-                    "verification".to_string(),
-                    "quality".to_string(),
-                    "promotion".to_string(),
-                    "integration".to_string(),
-                ],
-                proof_profile: Some("integration".to_string()),
-                proof_state_path: None,
-                program_manifest: None,
-                service_state_path: None,
-                orchestration_state_path: None,
-                checks: Vec::new(),
-                run_dir: None,
-                prompt_context: None,
-                verify_command: Some(
-                    "if [ -f Cargo.toml ]; then cargo check --workspace; elif [ -f package.json ]; then npm run build --if-present; else echo no workspace build proof available >&2; exit 1; fi".to_string(),
-                ),
-                health_command: None,
-            }],
-        });
-
-        let codex_review_id = format!("{plan_prefix}-codex-review");
-        if augmented
-            .units
-            .iter()
-            .any(|unit| unit.id == codex_review_id)
-        {
-            continue;
-        }
-        let codex_goal = format!(
-            "Final Codex review for completed plan `{plan_prefix}`.\n\n\
-             Preconditions:\n\
-             - Every child lane for this plan already completed execution, review, and integration.\n\
-             - The Kimi-driven `{review_id}` lane already completed.\n\n\
-             This is a POST-COMPLETION review pass. Do not repeat the child workflow. \
-             Do not reopen implementation unless you find a concrete confirmed issue.\n\n\
-             Your job:\n\
-             1. Read the landed code and the artifacts from the completed plan-review lane.\n\
-             2. Look for residual bugs, review blind spots, or harness/prompt quality gaps.\n\
-             3. Write a concise final assessment in `spec.md`.\n\
-             4. Write `review.md` with only:\n\
-             - confirmed residual issues still worth remediation\n\
-             - proposed Fabro harness improvements\n\
-             - a clear ship/no-ship recommendation for this completed plan\n\n\
-             This lane is report-first. Avoid modifying product code unless a specific \
-             residual issue is confirmed and trivially fixable.\n",
-        );
-        augmented.units.push(BlueprintUnit {
-            id: codex_review_id.clone(),
-            title: format!("{plan_prefix} Codex Review"),
-            output_root: PathBuf::from(format!(".raspberry/portfolio/{codex_review_id}")),
-            artifacts: vec![
-                crate::blueprint::BlueprintArtifact {
-                    id: "spec".to_string(),
-                    path: PathBuf::from("spec.md"),
-                },
-                crate::blueprint::BlueprintArtifact {
-                    id: "review".to_string(),
-                    path: PathBuf::from("review.md"),
-                },
-            ],
-            milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
-                id: format!("{plan_prefix}-codex-reviewed"),
-                requires: vec!["spec".to_string(), "review".to_string()],
-            }],
-            lanes: vec![BlueprintLane {
-                id: codex_review_id.clone(),
-                kind: raspberry_supervisor::manifest::LaneKind::Platform,
-                title: format!("{plan_prefix} Codex Review"),
-                family: "codex-review".to_string(),
-                workflow_family: Some("recurring_report".to_string()),
-                slug: Some(codex_review_id.clone()),
-                template: WorkflowTemplate::RecurringReport,
-                goal: codex_goal,
-                managed_milestone: format!("{plan_prefix}-codex-reviewed"),
-                dependencies: vec![raspberry_supervisor::manifest::LaneDependency {
-                    unit: review_id.clone(),
-                    lane: None,
-                    milestone: Some(format!("{plan_prefix}-plan-reviewed")),
-                }],
-                produces: vec!["spec".to_string(), "review".to_string()],
-                proof_profile: None,
-                proof_state_path: None,
-                program_manifest: None,
-                service_state_path: None,
-                orchestration_state_path: None,
-                checks: Vec::new(),
-                run_dir: None,
-                prompt_context: None,
-                verify_command: Some("true".to_string()),
-                health_command: None,
-            }],
-        });
-    }
+    augment_with_parent_review_gauntlet(&mut augmented);
 
     // Phase 4: generate dedicated Codex unblock lanes for implementation
     // slices. These stay blocked under normal scheduling and are dispatched
@@ -780,7 +531,7 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
                  Read the target lane's latest artifacts and remediation notes before editing.\n\
                  If the owned proof gate is already green and the only remaining blocker is outside the owned surface, do not invent more code changes. Write the unblock artifacts truthfully, explain the external blocker, and stop.\n\
                  Keep the scope narrow: fix the blocker, verify, integrate, and stop.\n\
-                 This lane is distinct from the post-completion `*-codex-review` path."
+                 This lane is distinct from the parent holistic deep/adjudication review path."
             );
             augmented.units.push(BlueprintUnit {
                 id: unblock_id.clone(),
@@ -915,6 +666,658 @@ fn infer_plan_group(unit_id: &str, candidates: &[String], min_children: usize) -
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParentPlanProfile {
+    ui_sensitive: bool,
+    security_sensitive: bool,
+    performance_sensitive: bool,
+    deploy_sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParentStageRef {
+    unit_id: String,
+    milestone_id: String,
+}
+
+fn augment_with_parent_review_gauntlet(blueprint: &mut ProgramBlueprint) {
+    const MIN_PLAN_CHILDREN: usize = 2;
+    let plan_candidates = blueprint
+        .units
+        .iter()
+        .filter(|unit| {
+            unit.lanes
+                .iter()
+                .filter(|lane| lane.template == WorkflowTemplate::Implementation)
+                .any(|lane| {
+                    !lane.id.contains("workspace-verify")
+                        && !lane.id.contains("contract-verify")
+                        && !lane.id.contains("codex-unblock")
+                })
+        })
+        .map(|unit| unit.id.clone())
+        .collect::<Vec<_>>();
+    let mut plan_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for unit_id in &plan_candidates {
+        if let Some(plan_prefix) = infer_plan_group(unit_id, &plan_candidates, MIN_PLAN_CHILDREN) {
+            plan_groups
+                .entry(plan_prefix)
+                .or_default()
+                .push(unit_id.clone());
+        }
+    }
+
+    for (plan_prefix, child_unit_ids) in plan_groups {
+        if child_unit_ids.len() < MIN_PLAN_CHILDREN {
+            continue;
+        }
+        let preflight_id = format!("{plan_prefix}-holistic-preflight");
+        if blueprint.units.iter().any(|unit| unit.id == preflight_id) {
+            continue;
+        }
+        let child_units = child_unit_ids
+            .iter()
+            .filter_map(|unit_id| blueprint.units.iter().find(|unit| unit.id == *unit_id))
+            .collect::<Vec<_>>();
+        if child_units.len() != child_unit_ids.len() {
+            continue;
+        }
+        let child_dependencies = child_units
+            .iter()
+            .map(|unit| plan_review_dependency_for_unit(unit))
+            .collect::<Vec<_>>();
+        let profile = analyze_parent_plan_profile(&child_units);
+        let child_summary = child_unit_ids.join(", ");
+
+        let preflight_verify = parent_preflight_verify_command(&child_units);
+        let preflight_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: preflight_id.clone(),
+                title: format!("{plan_prefix} Holistic Preflight"),
+                family: "holistic-preflight".to_string(),
+                milestone_id: format!("{plan_prefix}-holistic-preflight-verified"),
+                goal: format!(
+                    "Preflight the integrated parent plan `{plan_prefix}` before holistic review.\n\n\
+                     Integrated child units:\n\
+                     - {child_summary}\n\n\
+                     Your job:\n\
+                     1. Confirm every child integration artifact exists and is readable.\n\
+                     2. Confirm child review artifacts exist where available.\n\
+                     3. Record the exact integrated surface area that the parent gauntlet must inspect.\n\
+                     4. Call out any missing evidence, stale artifacts, or ambiguous ownership before expensive parent review begins.\n\n\
+                     Required durable artifacts:\n\
+                     - `verification.md` (what was checked, what artifacts were present, what is missing)\n\
+                     - `review.md` (a concise go/no-go summary for parent holistic review)\n\n\
+                     This lane is command-driven and report-first. Do not modify product code."
+                ),
+                dependencies: child_dependencies,
+                artifacts: vec![
+                    ("verification".to_string(), "verification.md".to_string()),
+                    ("review".to_string(), "review.md".to_string()),
+                ],
+                verify_command: preflight_verify,
+                prompt_context: Some(format!(
+                    "Integrated child units:\n- {child_summary}\n\nRequired outputs:\n- verification.md\n- review.md"
+                )),
+            },
+        );
+
+        let minimax_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-holistic-review-minimax"),
+                title: format!("{plan_prefix} Holistic Review Minimax"),
+                family: "holistic-review-minimax".to_string(),
+                milestone_id: format!("{plan_prefix}-holistic-review-minimax-reviewed"),
+                goal: format!(
+                    "First-pass holistic parent review for integrated plan `{plan_prefix}`.\n\n\
+                     Integrated child units:\n\
+                     - {child_summary}\n\n\
+                     This is the breadth-first `/review` style pass. Inspect the integrated diff, parent plan intent, landed child artifacts, and the current trunk state together.\n\n\
+                     Required outputs:\n\
+                     - `holistic-review.md` with structured findings across correctness, trust boundaries, UX, performance, deployability, and documentation\n\
+                     - `finding-index.json` with normalized findings, severities, and touched surfaces\n\
+                     - `remediation-plan.md` with concrete follow-up work or explicit justification for no action\n\
+                     - `promotion.md` with a first-pass ready/not-ready verdict\n\n\
+                     Do not merely summarize child artifacts. Normalize the state of the whole parent implementation."
+                ),
+                dependencies: vec![parent_stage_dependency(&preflight_ref)],
+                artifacts: vec![
+                    ("holistic_review".to_string(), "holistic-review.md".to_string()),
+                    ("finding_index".to_string(), "finding-index.json".to_string()),
+                    ("remediation_plan".to_string(), "remediation-plan.md".to_string()),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(format!(
+                    "Integrated child units:\n- {child_summary}\n\nRequired outputs:\n- holistic-review.md\n- finding-index.json\n- remediation-plan.md\n- promotion.md"
+                )),
+            },
+        );
+
+        let deep_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-holistic-review-deep"),
+                title: format!("{plan_prefix} Holistic Deep Review"),
+                family: "holistic-review-deep".to_string(),
+                milestone_id: format!("{plan_prefix}-holistic-review-deep-reviewed"),
+                goal: format!(
+                    "Deep synthesis pass for integrated parent plan `{plan_prefix}`.\n\n\
+                     Integrated child units:\n\
+                     - {child_summary}\n\n\
+                     Re-read the full parent state after the Minimax pass.\n\
+                     - collapse duplicates and sharpen weak evidence\n\
+                     - identify systemic edge cases or cross-child interactions that the first pass may have missed\n\
+                     - refine the remediation plan where the first pass was broad or ambiguous\n\
+                     - preserve uncertainty explicitly when evidence is incomplete\n\n\
+                     Required outputs:\n\
+                     - `deep-review.md`\n\
+                     - `finding-deltas.json`\n\
+                     - `remediation-plan.md`\n\
+                     - `promotion.md`\n\n\
+                     This lane prefers Opus 4.6 and may fall back to Codex if needed."
+                ),
+                dependencies: vec![parent_stage_dependency(&minimax_ref)],
+                artifacts: vec![
+                    ("deep_review".to_string(), "deep-review.md".to_string()),
+                    ("finding_deltas".to_string(), "finding-deltas.json".to_string()),
+                    ("remediation_plan".to_string(), "remediation-plan.md".to_string()),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(format!(
+                    "Integrated child units:\n- {child_summary}\n\nRequired outputs:\n- deep-review.md\n- finding-deltas.json\n- remediation-plan.md\n- promotion.md"
+                )),
+            },
+        );
+
+        let mut current_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-holistic-review-adjudication"),
+                title: format!("{plan_prefix} Holistic Adjudication"),
+                family: "holistic-review-adjudication".to_string(),
+                milestone_id: format!("{plan_prefix}-holistic-review-adjudicated"),
+                goal: format!(
+                    "Final parent adjudication pass for integrated plan `{plan_prefix}`.\n\n\
+                     Integrated child units:\n\
+                     - {child_summary}\n\n\
+                     Re-adjudicate the Minimax and deep-review findings.\n\
+                     - confirm which findings are real and blocking\n\
+                     - reject weak or duplicate findings explicitly\n\
+                     - preserve disagreements rather than flattening them\n\
+                     - issue the final parent ship/no-ship judgment for this integrated plan\n\n\
+                     Required outputs:\n\
+                     - `adjudication-verdict.md`\n\
+                     - `confirmed-findings.json`\n\
+                     - `rejected-findings.json`\n\
+                     - `promotion.md`\n\n\
+                     This lane prefers Codex and may fall back to Opus 4.6 if needed."
+                ),
+                dependencies: vec![parent_stage_dependency(&deep_ref)],
+                artifacts: vec![
+                    (
+                        "adjudication_verdict".to_string(),
+                        "adjudication-verdict.md".to_string(),
+                    ),
+                    (
+                        "confirmed_findings".to_string(),
+                        "confirmed-findings.json".to_string(),
+                    ),
+                    (
+                        "rejected_findings".to_string(),
+                        "rejected-findings.json".to_string(),
+                    ),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(format!(
+                    "Integrated child units:\n- {child_summary}\n\nRequired outputs:\n- adjudication-verdict.md\n- confirmed-findings.json\n- rejected-findings.json\n- promotion.md"
+                )),
+            },
+        );
+
+        if profile.security_sensitive || profile.performance_sensitive {
+            current_ref = append_parent_report_unit(
+                blueprint,
+                ParentReportSpec {
+                    unit_id: format!("{plan_prefix}-investigate"),
+                    title: format!("{plan_prefix} Investigate"),
+                    family: "investigate".to_string(),
+                    milestone_id: format!("{plan_prefix}-investigated"),
+                    goal: format!(
+                        "Root-cause investigation for integrated parent plan `{plan_prefix}`.\n\n\
+                         Run this lane as the non-interactive `/investigate` stage for plans whose risk profile or review findings justify deeper causal analysis.\n\
+                         Explain what actually failed or could fail, what evidence supports that judgment, and what remediation path follows from the root cause.\n\n\
+                         Required outputs:\n\
+                         - `investigation.md`\n\
+                         - `promotion.md`\n\n\
+                         Do not substitute fixes for root cause analysis."
+                    ),
+                    dependencies: vec![parent_stage_dependency(&current_ref)],
+                    artifacts: vec![
+                        ("investigation".to_string(), "investigation.md".to_string()),
+                        ("promotion".to_string(), "promotion.md".to_string()),
+                    ],
+                    verify_command: Some("true".to_string()),
+                    prompt_context: Some(
+                        "Required outputs:\n- investigation.md\n- promotion.md".to_string(),
+                    ),
+                },
+            );
+        }
+
+        if profile.ui_sensitive {
+            current_ref = append_parent_report_unit(
+                blueprint,
+                ParentReportSpec {
+                    unit_id: format!("{plan_prefix}-design-review"),
+                    title: format!("{plan_prefix} Design Review"),
+                    family: "design-review".to_string(),
+                    milestone_id: format!("{plan_prefix}-design-reviewed"),
+                    goal: format!(
+                        "Parent-level design and interaction review for integrated plan `{plan_prefix}`.\n\n\
+                         Review the whole integrated UI/TUI surface for spacing, hierarchy, consistency, awkward AI-generated patterns, and interaction quality.\n\n\
+                         Required outputs:\n\
+                         - `design-review.md`\n\
+                         - `promotion.md`\n\n\
+                         This lane is report-first. Do not claim browser-only evidence you did not actually gather."
+                    ),
+                    dependencies: vec![parent_stage_dependency(&current_ref)],
+                    artifacts: vec![
+                        ("design_review".to_string(), "design-review.md".to_string()),
+                        ("promotion".to_string(), "promotion.md".to_string()),
+                    ],
+                    verify_command: Some("true".to_string()),
+                    prompt_context: Some(
+                        "Required outputs:\n- design-review.md\n- promotion.md".to_string(),
+                    ),
+                },
+            );
+        }
+
+        current_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-qa"),
+                title: format!("{plan_prefix} QA"),
+                family: "qa".to_string(),
+                milestone_id: format!("{plan_prefix}-qa-reviewed"),
+                goal: format!(
+                    "Integrated QA pass for parent plan `{plan_prefix}`.\n\n\
+                     Exercise the end-to-end parent flow as far as this repo can support non-interactively. Focus on integrated regressions, broken workflows, missing validation, and ship-risk.\n\n\
+                     Required outputs:\n\
+                     - `qa-report.md`\n\
+                     - `promotion.md`\n\n\
+                     Tag findings by severity and include concrete repro steps."
+                ),
+                dependencies: vec![parent_stage_dependency(&current_ref)],
+                artifacts: vec![
+                    ("qa_report".to_string(), "qa-report.md".to_string()),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(
+                    "Required outputs:\n- qa-report.md\n- promotion.md".to_string(),
+                ),
+            },
+        );
+
+        if profile.security_sensitive || profile.deploy_sensitive {
+            current_ref = append_parent_report_unit(
+                blueprint,
+                ParentReportSpec {
+                    unit_id: format!("{plan_prefix}-cso"),
+                    title: format!("{plan_prefix} CSO"),
+                    family: "cso".to_string(),
+                    milestone_id: format!("{plan_prefix}-cso-reviewed"),
+                    goal: format!(
+                        "Security and control-plane review for parent plan `{plan_prefix}`.\n\n\
+                         Review secrets handling, dependency and control-plane risk, trust boundaries, CI/deploy exposure, and residual attack surface at the integrated parent level.\n\n\
+                         Required outputs:\n\
+                         - `security-review.md`\n\
+                         - `promotion.md`\n\n\
+                         Record residual risk explicitly."
+                    ),
+                    dependencies: vec![parent_stage_dependency(&current_ref)],
+                    artifacts: vec![
+                        ("security_review".to_string(), "security-review.md".to_string()),
+                        ("promotion".to_string(), "promotion.md".to_string()),
+                    ],
+                    verify_command: Some("true".to_string()),
+                    prompt_context: Some(
+                        "Required outputs:\n- security-review.md\n- promotion.md".to_string(),
+                    ),
+                },
+            );
+        }
+
+        if profile.performance_sensitive {
+            current_ref = append_parent_report_unit(
+                blueprint,
+                ParentReportSpec {
+                    unit_id: format!("{plan_prefix}-benchmark"),
+                    title: format!("{plan_prefix} Benchmark"),
+                    family: "benchmark".to_string(),
+                    milestone_id: format!("{plan_prefix}-benchmarked"),
+                    goal: format!(
+                        "Performance review for parent plan `{plan_prefix}`.\n\n\
+                         Check for regressions, missing baselines, or obvious throughput / latency / polling inefficiencies introduced by the integrated parent work.\n\n\
+                         Required outputs:\n\
+                         - `benchmark.md`\n\
+                         - `promotion.md`"
+                    ),
+                    dependencies: vec![parent_stage_dependency(&current_ref)],
+                    artifacts: vec![
+                        ("benchmark".to_string(), "benchmark.md".to_string()),
+                        ("promotion".to_string(), "promotion.md".to_string()),
+                    ],
+                    verify_command: Some("true".to_string()),
+                    prompt_context: Some(
+                        "Required outputs:\n- benchmark.md\n- promotion.md".to_string(),
+                    ),
+                },
+            );
+        }
+
+        current_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-ship-readiness"),
+                title: format!("{plan_prefix} Ship Readiness"),
+                family: "ship-readiness".to_string(),
+                milestone_id: format!("{plan_prefix}-ship-ready"),
+                goal: format!(
+                    "Explicit ship-readiness gate for parent plan `{plan_prefix}`.\n\n\
+                     Decide whether the integrated parent implementation is actually ready to ship after holistic review, QA, security, and performance checks.\n\n\
+                     Required outputs:\n\
+                     - `ship-checklist.md`\n\
+                     - `promotion.md`\n\n\
+                     Use plain yes/no language for the final ship judgment."
+                ),
+                dependencies: vec![parent_stage_dependency(&current_ref)],
+                artifacts: vec![
+                    ("ship_checklist".to_string(), "ship-checklist.md".to_string()),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(
+                    "Required outputs:\n- ship-checklist.md\n- promotion.md".to_string(),
+                ),
+            },
+        );
+
+        if profile.deploy_sensitive {
+            current_ref = append_parent_report_unit(
+                blueprint,
+                ParentReportSpec {
+                    unit_id: format!("{plan_prefix}-land-and-deploy"),
+                    title: format!("{plan_prefix} Land And Deploy"),
+                    family: "land-and-deploy".to_string(),
+                    milestone_id: format!("{plan_prefix}-deploy-verified"),
+                    goal: format!(
+                        "Deploy-aware verification for parent plan `{plan_prefix}`.\n\n\
+                         This lane exists only for plans whose integrated surface suggests deploy or service exposure. Record what would be landed, what health evidence exists, and any canary or rollout blockers.\n\n\
+                         Required outputs:\n\
+                         - `deploy-verification.md`\n\
+                         - `promotion.md`"
+                    ),
+                    dependencies: vec![parent_stage_dependency(&current_ref)],
+                    artifacts: vec![
+                        (
+                            "deploy_verification".to_string(),
+                            "deploy-verification.md".to_string(),
+                        ),
+                        ("promotion".to_string(), "promotion.md".to_string()),
+                    ],
+                    verify_command: Some("true".to_string()),
+                    prompt_context: Some(
+                        "Required outputs:\n- deploy-verification.md\n- promotion.md"
+                            .to_string(),
+                    ),
+                },
+            );
+        }
+
+        current_ref = append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-document-release"),
+                title: format!("{plan_prefix} Document Release"),
+                family: "document-release".to_string(),
+                milestone_id: format!("{plan_prefix}-docs-released"),
+                goal: format!(
+                    "Documentation sync gate for parent plan `{plan_prefix}`.\n\n\
+                     Bring release-facing documentation back into alignment with what actually shipped or is ready to ship at the integrated parent level.\n\n\
+                     Required outputs:\n\
+                     - `docs-release.md`\n\
+                     - `promotion.md`\n\n\
+                     This is a hard gate."
+                ),
+                dependencies: vec![parent_stage_dependency(&current_ref)],
+                artifacts: vec![
+                    ("docs_release".to_string(), "docs-release.md".to_string()),
+                    ("promotion".to_string(), "promotion.md".to_string()),
+                ],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some(
+                    "Required outputs:\n- docs-release.md\n- promotion.md".to_string(),
+                ),
+            },
+        );
+
+        append_parent_report_unit(
+            blueprint,
+            ParentReportSpec {
+                unit_id: format!("{plan_prefix}-retro"),
+                title: format!("{plan_prefix} Retro"),
+                family: "retro".to_string(),
+                milestone_id: format!("{plan_prefix}-retro-complete"),
+                goal: format!(
+                    "Retrospective tail for parent plan `{plan_prefix}`.\n\n\
+                     Summarize what shipped, what slowed the work down, which findings were most valuable, and what Fabro or workflow-level improvements would most reduce repeat failures.\n\n\
+                     Required outputs:\n\
+                     - `retro.md`\n\n\
+                     This lane is reporting-only and should not reopen implementation."
+                ),
+                dependencies: vec![parent_stage_dependency(&current_ref)],
+                artifacts: vec![("retro".to_string(), "retro.md".to_string())],
+                verify_command: Some("true".to_string()),
+                prompt_context: Some("Required outputs:\n- retro.md".to_string()),
+            },
+        );
+    }
+}
+
+struct ParentReportSpec {
+    unit_id: String,
+    title: String,
+    family: String,
+    milestone_id: String,
+    goal: String,
+    dependencies: Vec<raspberry_supervisor::manifest::LaneDependency>,
+    artifacts: Vec<(String, String)>,
+    verify_command: Option<String>,
+    prompt_context: Option<String>,
+}
+
+fn append_parent_report_unit(
+    blueprint: &mut ProgramBlueprint,
+    spec: ParentReportSpec,
+) -> ParentStageRef {
+    let unit_id = spec.unit_id;
+    let milestone_id = spec.milestone_id;
+    let artifacts = spec
+        .artifacts
+        .iter()
+        .map(|(id, path)| crate::blueprint::BlueprintArtifact {
+            id: id.clone(),
+            path: PathBuf::from(path),
+        })
+        .collect::<Vec<_>>();
+    let requires = spec
+        .artifacts
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let lane = BlueprintLane {
+        id: unit_id.clone(),
+        kind: raspberry_supervisor::manifest::LaneKind::Platform,
+        title: spec.title.clone(),
+        family: spec.family,
+        workflow_family: None,
+        slug: Some(unit_id.clone()),
+        template: WorkflowTemplate::RecurringReport,
+        goal: spec.goal,
+        managed_milestone: milestone_id.clone(),
+        dependencies: spec.dependencies,
+        produces: requires.clone(),
+        proof_profile: None,
+        proof_state_path: None,
+        program_manifest: None,
+        service_state_path: None,
+        orchestration_state_path: None,
+        checks: Vec::new(),
+        run_dir: None,
+        prompt_context: spec.prompt_context,
+        verify_command: spec.verify_command,
+        health_command: None,
+    };
+    blueprint.units.push(BlueprintUnit {
+        id: unit_id.clone(),
+        title: spec.title,
+        output_root: PathBuf::from(format!(".raspberry/portfolio/{unit_id}")),
+        artifacts,
+        milestones: vec![raspberry_supervisor::manifest::MilestoneManifest {
+            id: milestone_id.clone(),
+            requires,
+        }],
+        lanes: vec![lane],
+    });
+    ParentStageRef {
+        unit_id,
+        milestone_id,
+    }
+}
+
+fn parent_stage_dependency(
+    parent: &ParentStageRef,
+) -> raspberry_supervisor::manifest::LaneDependency {
+    raspberry_supervisor::manifest::LaneDependency {
+        unit: parent.unit_id.clone(),
+        lane: None,
+        milestone: Some(parent.milestone_id.clone()),
+    }
+}
+
+fn analyze_parent_plan_profile(child_units: &[&BlueprintUnit]) -> ParentPlanProfile {
+    let mut haystack = String::new();
+    for unit in child_units {
+        haystack.push_str(&unit.id);
+        haystack.push('\n');
+        haystack.push_str(&unit.title);
+        haystack.push('\n');
+        for lane in &unit.lanes {
+            haystack.push_str(&lane.id);
+            haystack.push('\n');
+            haystack.push_str(&lane.title);
+            haystack.push('\n');
+            haystack.push_str(&lane.goal);
+            haystack.push('\n');
+        }
+    }
+    let lower = haystack.to_lowercase();
+    ParentPlanProfile {
+        ui_sensitive: [
+            "ui",
+            "tui",
+            "screen",
+            "frontend",
+            "visual",
+            "layout",
+            "design",
+            "render",
+            "widget",
+            "view",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle)),
+        security_sensitive: [
+            "wallet",
+            "seed",
+            "provably",
+            "payout",
+            "balance",
+            "settlement",
+            "auth",
+            "secret",
+            "key",
+            "daemon",
+            "control-plane",
+            "control plane",
+            "external process",
+            "roulette",
+            "sic bo",
+            "sic-bo",
+            "bet",
+            "chips",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle)),
+        performance_sensitive: [
+            "benchmark",
+            "performance",
+            "latency",
+            "throughput",
+            "poll",
+            "render loop",
+            "cache",
+            "ws",
+            "websocket",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle)),
+        deploy_sensitive: [
+            "deploy",
+            "release",
+            "service",
+            "daemon",
+            "ws",
+            "websocket",
+            "agent",
+            "server",
+            "control-plane",
+            "control plane",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle)),
+    }
+}
+
+fn parent_preflight_verify_command(child_units: &[&BlueprintUnit]) -> Option<String> {
+    let mut required_paths = BTreeSet::new();
+    for unit in child_units {
+        for artifact_id in ["integration", "review", "promotion"] {
+            let Some(artifact) = unit.artifacts.iter().find(|artifact| artifact.id == artifact_id)
+            else {
+                continue;
+            };
+            required_paths.insert(join_relative(&unit.output_root, artifact.path.to_string_lossy().as_ref()));
+        }
+    }
+    if required_paths.is_empty() {
+        return Some("true".to_string());
+    }
+    let mut script = String::from("set -e\n");
+    for path in required_paths {
+        let path = path.to_string_lossy();
+        script.push_str(&format!("test -f {}\n", shell_single_quote(&path)));
+    }
+    Some(script)
 }
 
 fn codex_unblock_id(unit_id: &str, lane_id: &str) -> String {
@@ -1464,7 +1867,7 @@ fn render_workflow_graph(
     audit_command: &str,
     quality_command: &str,
 ) -> String {
-    let write_target = automation_primary_target(AutomationProfile::Write);
+    let write_target = write_target_for_lane(lane);
     let challenge_target = challenge_target_for_lane(lane);
     let review_target = review_target_for_lane(lane);
     let deep_review_target = deep_review_target_for_lane(lane);
@@ -1576,7 +1979,10 @@ fn render_workflow_graph(
 }
 
 fn challenge_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
-    if is_post_completion_codex_review_lane(lane) || is_codex_unblock_lane(lane) {
+    if let Some(target) = recurring_report_primary_target_for_lane(lane) {
+        return target;
+    }
+    if is_codex_unblock_lane(lane) {
         return ModelTarget {
             provider: Provider::OpenAi,
             model: "gpt-5.4",
@@ -1586,7 +1992,10 @@ fn challenge_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
 }
 
 fn review_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
-    if is_post_completion_codex_review_lane(lane) || is_codex_unblock_lane(lane) {
+    if let Some(target) = recurring_report_primary_target_for_lane(lane) {
+        return target;
+    }
+    if is_codex_unblock_lane(lane) {
         return ModelTarget {
             provider: Provider::OpenAi,
             model: "gpt-5.4",
@@ -1603,8 +2012,59 @@ fn escalation_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
     review_target_for_lane(lane)
 }
 
+fn write_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
+    recurring_report_primary_target_for_lane(lane)
+        .unwrap_or_else(|| automation_primary_target(AutomationProfile::Write))
+}
+
+fn recurring_report_primary_target_for_lane(lane: &BlueprintLane) -> Option<ModelTarget> {
+    if is_parent_holistic_review_minimax_lane(lane) {
+        return Some(ModelTarget {
+            provider: Provider::Minimax,
+            model: "MiniMax-M2.7-highspeed",
+        });
+    }
+    if is_parent_holistic_review_deep_lane(lane) {
+        return Some(ModelTarget {
+            provider: Provider::Anthropic,
+            model: "claude-opus-4-6",
+        });
+    }
+    if is_parent_holistic_review_adjudication_lane(lane) || is_post_completion_codex_review_lane(lane)
+    {
+        return Some(ModelTarget {
+            provider: Provider::OpenAi,
+            model: "gpt-5.4",
+        });
+    }
+    None
+}
+
+fn custom_fallback_section_for_lane(lane: &BlueprintLane) -> Option<String> {
+    if is_parent_holistic_review_deep_lane(lane) {
+        return Some("[llm.fallbacks]\nanthropic = [\"gpt-5.4\"]\n".to_string());
+    }
+    if is_parent_holistic_review_adjudication_lane(lane) {
+        return Some("[llm.fallbacks]\nopenai = [\"claude-opus-4-6\"]\n".to_string());
+    }
+    None
+}
+
 fn is_post_completion_codex_review_lane(lane: &BlueprintLane) -> bool {
-    lane.id.ends_with("-codex-review") && lane.managed_milestone.ends_with("-codex-reviewed")
+    lane.id.ends_with("-codex-review")
+        && lane.managed_milestone.ends_with("-codex-reviewed")
+}
+
+fn is_parent_holistic_review_minimax_lane(lane: &BlueprintLane) -> bool {
+    lane.id.ends_with("-holistic-review-minimax")
+}
+
+fn is_parent_holistic_review_deep_lane(lane: &BlueprintLane) -> bool {
+    lane.id.ends_with("-holistic-review-deep")
+}
+
+fn is_parent_holistic_review_adjudication_lane(lane: &BlueprintLane) -> bool {
+    lane.id.ends_with("-holistic-review-adjudication")
 }
 
 fn is_codex_unblock_lane(lane: &BlueprintLane) -> bool {
@@ -1693,9 +2153,17 @@ fn implementation_promotion_contract_command(
 ) -> String {
     let promotion_path = implementation_promotion_path(blueprint, unit_id, lane);
     let p = promotion_path.display();
+    let context = lane.prompt_context.as_deref().unwrap_or_default();
+    let verdict_fields = security_review_verdict_fields(lane, context);
+    let security_checks = verdict_fields
+        .iter()
+        .filter_map(|field| field.strip_suffix(": yes|no"))
+        .map(|field| format!("grep -Eq '^{}: yes$' {p}", field))
+        .collect::<Vec<_>>()
+        .join(" && \\\n        ");
     // Validate promotion format: merge_ready, manual_proof_pending, and all 4
     // scored dimensions must be present. Each score must be >= 6 (threshold).
-    format!(
+    let base = format!(
         "grep -Eq '^merge_ready: yes$' {p} && \
         grep -Eq '^manual_proof_pending: no$' {p} && \
         grep -Eq '^reason: .+$' {p} && \
@@ -1704,7 +2172,12 @@ fn implementation_promotion_contract_command(
         grep -Eq '^correctness: ([6-9]|10)$' {p} && \
         grep -Eq '^convention: ([6-9]|10)$' {p} && \
         grep -Eq '^test_quality: ([6-9]|10)$' {p}"
-    )
+    );
+    if security_checks.is_empty() {
+        base
+    } else {
+        format!("{base} && \\\n        {security_checks}")
+    }
 }
 
 fn implementation_quality_path(
@@ -1841,15 +2314,25 @@ fn implementation_quality_command(
           fi\n\
         done\n"
         .to_string();
+    let semantic_risk_script = if lane_is_security_sensitive(
+        lane,
+        lane.prompt_context.as_deref().unwrap_or_default(),
+    ) {
+        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+            .to_string()
+    } else {
+        "semantic_risk_hits=\"\"\n".to_string()
+    };
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
         surface_scan = surface_scan_lines.join("\n"),
         external_only_blocker_script = external_only_blocker_script,
         root_artifact_shadow_script = root_artifact_shadow_script,
+        semantic_risk_script = semantic_risk_script,
         touched_surface_section = touched_surface_section,
         surface_scan_dirs = {
             let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
@@ -1938,7 +2421,7 @@ fn render_run_config(
             model: "gpt-5.4",
         }
     } else {
-        automation_primary_target(AutomationProfile::Write)
+        write_target_for_lane(lane)
     };
     let llm_config = if matches!(
         lane.template,
@@ -1949,6 +2432,8 @@ fn render_run_config(
     ) {
         let fallback_section = if is_codex_unblock_lane(lane) {
             String::new()
+        } else if let Some(section) = custom_fallback_section_for_lane(lane) {
+            section
         } else {
             render_fallback_section(AutomationProfile::Write)
         };
@@ -2217,6 +2702,15 @@ fn render_implementation_plan_prompt(
             output.push_str(&format!("\n- {}", line.trim_start_matches("- ").trim()));
         }
     }
+    let security_tests = security_required_test_lines(lane, context);
+    if !security_tests.is_empty() {
+        output.push_str(
+            "\n\nSecurity-critical edge tests (required for this slice even if not called out above):",
+        );
+        for line in &security_tests {
+            output.push_str(&format!("\n- {}", line));
+        }
+    }
     output.push_str(
         "\n\nSprint contract:\n- Read `.fabro-work/contract.md` — the contract stage wrote it before you. It lists the exact deliverables and acceptance criteria.\n- You MUST satisfy ALL acceptance criteria from the contract.\n- You MUST create ALL files listed in the contract's Deliverables section.\n- If the contract is missing or empty, write your own `.fabro-work/contract.md` before coding.\n",
     );
@@ -2397,6 +2891,7 @@ fn render_implementation_review_prompt(
             ));
         }
     }
+    let verdict_fields = security_review_verdict_fields(lane, context);
     output.push_str(
         "\n\nFocus on:\n- slice scope discipline\n- proof-gate coverage for the active slice\n- touched-surface containment\n- implementation and verification artifact quality\n- remaining blockers before the next slice\n",
     );
@@ -2422,6 +2917,14 @@ If `.fabro-work/contract.md` exists, verify EVERY acceptance criterion from it.\
 Any dimension below 6 = merge_ready: no.\n\
 If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.\n",
     );
+    if !verdict_fields.is_empty() {
+        output
+            .push_str("\nFor security-sensitive slices, append these mandatory fields exactly:\n");
+        for field in &verdict_fields {
+            output.push_str(&format!("- {field}\n"));
+        }
+        output.push_str("If any mandatory security field is `no`, set `merge_ready: no`.\n");
+    }
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `.fabro-work/promotion.md` in this stage\n- read `.fabro-work/quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
     );
@@ -2490,6 +2993,15 @@ fn render_implementation_challenge_prompt(
                 "\n- Verify test: {}",
                 line.trim_start_matches("- ").trim()
             ));
+        }
+    }
+    let security_tests = security_required_test_lines(lane, _context);
+    if !security_tests.is_empty() {
+        output.push_str(
+            "\n\nSecurity edge checklist (flag every missing item in `.fabro-work/verification.md`):",
+        );
+        for line in &security_tests {
+            output.push_str(&format!("\n- {}", line));
         }
     }
     output.push_str(
@@ -2650,6 +3162,146 @@ fn implementation_security_review_items(
         );
     }
     items
+}
+
+fn lane_security_haystack(lane: &BlueprintLane, context: &str) -> String {
+    format!("{} {} {} {}", lane.id, lane.title, lane.goal, context).to_lowercase()
+}
+
+fn lane_is_security_sensitive(lane: &BlueprintLane, context: &str) -> bool {
+    let lower = lane_security_haystack(lane, context);
+    [
+        "wallet",
+        "rpc",
+        "seed",
+        "shuffle",
+        "provably",
+        "settlement",
+        "payout",
+        "balance",
+        "auth",
+        "token",
+        "principal",
+        "secret",
+        "key",
+        "daemon",
+        "control plane",
+        "control-plane",
+        "pair",
+        "capability",
+        "mining",
+        "node",
+        "external process",
+        "roulette",
+        "sic bo",
+        "sic-bo",
+        "dice",
+        "mines",
+        "roll",
+        "spin",
+        "bet",
+        "chips",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn security_required_test_lines(lane: &BlueprintLane, context: &str) -> Vec<String> {
+    if !lane_is_security_sensitive(lane, context) {
+        return Vec::new();
+    }
+    let lower = lane_security_haystack(lane, context);
+    let mut lines = Vec::new();
+    if [
+        "settlement",
+        "payout",
+        "chips",
+        "balance",
+        "bet",
+        "roulette",
+        "sic bo",
+        "sic-bo",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        lines.push(
+            "max-bet payout test proving arithmetic widens before casting back to Chips"
+                .to_string(),
+        );
+        lines.push(
+            "overflow/underflow regression test for the highest-payout path in the slice"
+                .to_string(),
+        );
+    }
+    if [
+        "seed",
+        "shuffle",
+        "provably",
+        "roll",
+        "spin",
+        "rng",
+        "randomness",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        lines.push(
+            "wrong-seed verification test proving verify_house rejects mismatched randomness"
+                .to_string(),
+        );
+        lines.push(
+            "missing-seed rejection test proving the round cannot advance without house-authorized randomness"
+                .to_string(),
+        );
+        lines.push(
+            "player-bypass test proving apply_player cannot synthesize or substitute house randomness"
+                .to_string(),
+        );
+    }
+    lines
+}
+
+fn security_review_verdict_fields(lane: &BlueprintLane, context: &str) -> Vec<String> {
+    if !lane_is_security_sensitive(lane, context) {
+        return Vec::new();
+    }
+    let lower = lane_security_haystack(lane, context);
+    let mut fields = Vec::new();
+    if [
+        "settlement",
+        "payout",
+        "chips",
+        "balance",
+        "bet",
+        "roulette",
+        "sic bo",
+        "sic-bo",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        fields.push("overflow_safe: yes|no".to_string());
+    }
+    if [
+        "seed",
+        "shuffle",
+        "provably",
+        "roll",
+        "spin",
+        "rng",
+        "randomness",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        fields.push("seed_binding_complete: yes|no".to_string());
+        fields.push("house_authority_preserved: yes|no".to_string());
+    }
+    if !fields.is_empty() {
+        fields.push("proof_covers_edge_cases: yes|no".to_string());
+    }
+    fields
 }
 
 fn general_security_review_items(lane: &BlueprintLane, context: &str) -> Vec<String> {
@@ -5679,14 +6331,15 @@ mod tests {
         first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
         first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
         implementation_audit_command, implementation_blueprint_for_candidate,
-        implementation_candidates, implementation_goal, implementation_quality_command,
-        implementation_verify_command, infer_plan_group, inject_workspace_verify_lanes,
-        inline_proof_command, looks_like_shell_command, manual_notes_from_markdown,
-        normalize_blueprint_lane_kinds, observability_notes_from_markdown, prompt_context_block,
-        proof_commands_from_markdown, raw_lane_refs, render_prompt, render_run_config,
-        render_workflow_graph, review_blocker_lane_refs, review_stage_requirements,
-        setup_notes_from_markdown, slice_notes_from_markdown, smoke_commands_from_markdown,
-        trim_list_prefix, ImplementationEvidence, LaneCatalogEntry, ReviewStageRequirement,
+        implementation_candidates, implementation_goal, implementation_promotion_contract_command,
+        implementation_quality_command, implementation_verify_command, infer_plan_group,
+        inject_workspace_verify_lanes, inline_proof_command, looks_like_shell_command,
+        manual_notes_from_markdown, normalize_blueprint_lane_kinds,
+        observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
+        raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
+        review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
+        slice_notes_from_markdown, smoke_commands_from_markdown, trim_list_prefix,
+        ImplementationEvidence, LaneCatalogEntry, ReviewStageRequirement,
     };
 
     #[test]
@@ -5995,7 +6648,7 @@ Required before validator:oracle implementation-family workflow:
     }
 
     #[test]
-    fn inject_workspace_verify_lanes_makes_plan_review_wait_for_integrated_children() {
+    fn inject_workspace_verify_lanes_adds_parent_holistic_gauntlet() {
         let implementation_lane = |id: &str| BlueprintLane {
             id: id.to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -6078,19 +6731,70 @@ Required before validator:oracle implementation-family workflow:
         };
 
         let evolved = inject_workspace_verify_lanes(&blueprint);
-        let host_unit = evolved
+        let preflight_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-plan-review")
-            .expect("host unit exists");
-        let plan_review = host_unit.lanes.first().expect("plan review lane exists");
+            .find(|unit| unit.id == "roulette-holistic-preflight")
+            .expect("preflight unit exists");
+        let preflight_lane = preflight_unit.lanes.first().expect("preflight lane exists");
 
-        assert_eq!(plan_review.family, "plan-review");
-        assert_eq!(plan_review.dependencies.len(), 2);
-        for dependency in &plan_review.dependencies {
+        assert_eq!(preflight_lane.family, "holistic-preflight");
+        assert_eq!(preflight_lane.dependencies.len(), 2);
+        for dependency in &preflight_lane.dependencies {
             assert_eq!(dependency.lane, None);
             assert_eq!(dependency.milestone.as_deref(), Some("integrated"));
         }
+
+        let minimax_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-holistic-review-minimax")
+            .expect("minimax unit exists");
+        let minimax_lane = minimax_unit.lanes.first().expect("minimax lane exists");
+        assert_eq!(minimax_lane.dependencies.len(), 1);
+        assert_eq!(
+            minimax_lane.dependencies[0].unit,
+            "roulette-holistic-preflight"
+        );
+        assert_eq!(
+            minimax_lane.dependencies[0].milestone.as_deref(),
+            Some("roulette-holistic-preflight-verified")
+        );
+
+        let deep_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-holistic-review-deep")
+            .expect("deep review unit exists");
+        let deep_lane = deep_unit.lanes.first().expect("deep lane exists");
+        assert_eq!(deep_lane.dependencies.len(), 1);
+        assert_eq!(
+            deep_lane.dependencies[0].unit,
+            "roulette-holistic-review-minimax"
+        );
+        assert_eq!(
+            deep_lane.dependencies[0].milestone.as_deref(),
+            Some("roulette-holistic-review-minimax-reviewed")
+        );
+
+        let adjudication_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-holistic-review-adjudication")
+            .expect("adjudication unit exists");
+        let adjudication_lane = adjudication_unit
+            .lanes
+            .first()
+            .expect("adjudication lane exists");
+        assert_eq!(adjudication_lane.dependencies.len(), 1);
+        assert_eq!(
+            adjudication_lane.dependencies[0].unit,
+            "roulette-holistic-review-deep"
+        );
+        assert_eq!(
+            adjudication_lane.dependencies[0].milestone.as_deref(),
+            Some("roulette-holistic-review-deep-reviewed")
+        );
     }
 
     #[test]
@@ -6189,7 +6893,7 @@ Required before validator:oracle implementation-family workflow:
     }
 
     #[test]
-    fn inject_workspace_verify_lanes_adds_codex_review_after_plan_review() {
+    fn inject_workspace_verify_lanes_adds_conditional_parent_lanes_for_sensitive_plan() {
         let implementation_lane = |id: &str| BlueprintLane {
             id: id.to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -6265,31 +6969,28 @@ Required before validator:oracle implementation-family workflow:
             package: BlueprintPackage::default(),
             protocols: vec![],
             units: vec![
-                implementation_unit("roulette-core"),
-                implementation_unit("roulette-ui"),
+                implementation_unit("roulette-wallet"),
+                implementation_unit("roulette-tui-screen"),
+                implementation_unit("roulette-benchmark"),
             ],
         };
 
         let evolved = inject_workspace_verify_lanes(&blueprint);
-        let codex_unit = evolved
-            .units
-            .iter()
-            .find(|unit| unit.id == "roulette-codex-review")
-            .expect("codex review unit exists");
-        let codex_lane = codex_unit.lanes.first().expect("codex lane exists");
-
-        assert_eq!(codex_lane.family, "codex-review");
-        assert_eq!(codex_lane.template, WorkflowTemplate::RecurringReport);
-        assert_eq!(codex_lane.dependencies.len(), 1);
-        assert_eq!(codex_lane.dependencies[0].unit, "roulette-plan-review");
-        assert_eq!(
-            codex_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-plan-reviewed")
-        );
+        for expected in [
+            "roulette-investigate",
+            "roulette-design-review",
+            "roulette-cso",
+            "roulette-benchmark",
+        ] {
+            assert!(
+                evolved.units.iter().any(|unit| unit.id == expected),
+                "expected parent unit `{expected}` to exist"
+            );
+        }
     }
 
     #[test]
-    fn inject_workspace_verify_lanes_plan_review_uses_full_implementation_artifacts() {
+    fn inject_workspace_verify_lanes_document_release_is_hard_gate_and_retro_is_tail() {
         let implementation_lane = |id: &str| BlueprintLane {
             id: id.to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
@@ -6371,44 +7072,47 @@ Required before validator:oracle implementation-family workflow:
         };
 
         let evolved = inject_workspace_verify_lanes(&blueprint);
-        let review_unit = evolved
+        let docs_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-plan-review")
-            .expect("review unit exists");
-        let review_lane = review_unit.lanes.first().expect("review lane exists");
-
-        for artifact in [
-            "spec",
-            "review",
-            "implementation",
-            "verification",
-            "quality",
-            "promotion",
-            "integration",
-        ] {
-            assert!(review_unit
-                .artifacts
-                .iter()
-                .any(|entry| entry.id == artifact));
-            assert!(review_lane.produces.iter().any(|entry| entry == artifact));
-        }
-        let milestone = review_unit
+            .find(|unit| unit.id == "roulette-document-release")
+            .expect("document release unit exists");
+        let docs_lane = docs_unit.lanes.first().expect("docs lane exists");
+        assert_eq!(docs_lane.family, "document-release");
+        assert!(docs_unit
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == "docs_release"));
+        assert!(docs_unit
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == "promotion"));
+        let docs_milestone = docs_unit
             .milestones
             .iter()
-            .find(|entry| entry.id == "roulette-plan-reviewed")
-            .expect("plan-reviewed milestone exists");
-        for artifact in [
-            "spec",
-            "review",
-            "implementation",
-            "verification",
-            "quality",
-            "promotion",
-            "integration",
-        ] {
-            assert!(milestone.requires.iter().any(|entry| entry == artifact));
-        }
+            .find(|entry| entry.id == "roulette-docs-released")
+            .expect("docs milestone exists");
+        assert!(docs_milestone
+            .requires
+            .iter()
+            .any(|entry| entry == "docs_release"));
+        assert!(docs_milestone
+            .requires
+            .iter()
+            .any(|entry| entry == "promotion"));
+
+        let retro_unit = evolved
+            .units
+            .iter()
+            .find(|unit| unit.id == "roulette-retro")
+            .expect("retro unit exists");
+        let retro_lane = retro_unit.lanes.first().expect("retro lane exists");
+        assert_eq!(retro_lane.dependencies.len(), 1);
+        assert_eq!(retro_lane.dependencies[0].unit, "roulette-document-release");
+        assert_eq!(
+            retro_lane.dependencies[0].milestone.as_deref(),
+            Some("roulette-docs-released")
+        );
     }
 
     #[test]
@@ -7166,14 +7870,15 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     #[test]
     fn implementation_review_prompt_adds_security_guidance_for_sensitive_slices() {
         let lane = BlueprintLane {
-            id: "wallet-implement".to_string(),
+            id: "roulette-implement".to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
-            title: "Wallet Service Implementation Lane".to_string(),
+            title: "Roulette Settlement Implementation Lane".to_string(),
             family: "implement".to_string(),
             workflow_family: Some("implement".to_string()),
-            slug: Some("wallet-service".to_string()),
+            slug: Some("roulette-settlement".to_string()),
             template: WorkflowTemplate::Implementation,
-            goal: "Implement the next approved wallet RPC slice.".to_string(),
+            goal: "Implement the next approved roulette payout and seed verification slice."
+                .to_string(),
             managed_milestone: "merge_ready".to_string(),
             dependencies: Vec::new(),
             produces: vec!["implementation".to_string(), "verification".to_string()],
@@ -7185,17 +7890,28 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             checks: Vec::new(),
             run_dir: None,
             prompt_context: Some(
-                "Implement now:\n- Wallet RPC session validation\n\nTouch first:\n- `crates/rxmr-wallet/src/rpc.rs`\n".to_string(),
+                "Implement now:\n- Roulette payout safety and spin-seed binding\n\nTouch first:\n- `crates/casino-core/src/roulette.rs`\n".to_string(),
             ),
             verify_command: None,
             health_command: None,
         };
 
         let review = render_prompt("review", &lane);
+        let plan = render_prompt("plan", &lane);
+        let challenge = render_prompt("challenge", &lane);
 
+        assert!(plan.contains("Security-critical edge tests"));
+        assert!(plan.contains("max-bet payout test"));
+        assert!(plan.contains("wrong-seed verification test"));
+        assert!(challenge.contains("Security edge checklist"));
+        assert!(challenge.contains("player-bypass test"));
         assert!(review.contains("Nemesis-style security review"));
         assert!(review.contains("trust boundaries"));
         assert!(review.contains("state transitions"));
+        assert!(review.contains("overflow_safe: yes|no"));
+        assert!(review.contains("seed_binding_complete: yes|no"));
+        assert!(review.contains("house_authority_preserved: yes|no"));
+        assert!(review.contains("proof_covers_edge_cases: yes|no"));
     }
 
     #[test]
@@ -7282,7 +7998,9 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("label=\"Quality Gate\""));
         assert!(graph.contains("label=\"Challenge\""));
         assert!(graph.contains("label=\"Review\""));
-        assert!(graph.contains("#challenge   { backend: cli; model: kimi-k2.5; provider: kimi; }"));
+        assert!(graph.contains(
+            "#challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
+        ));
         assert!(graph.contains("#review      { backend: cli; model: kimi-k2.5; provider: kimi; }"));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
@@ -7296,57 +8014,19 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
-    fn plan_review_workflow_uses_kimi_for_in_band_review() {
+    fn parent_holistic_minimax_workflow_uses_minimax_first_pass() {
         let lane = BlueprintLane {
-            id: "roulette-plan-review".to_string(),
+            id: "roulette-holistic-review-minimax".to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Platform,
-            title: "Roulette Plan Review".to_string(),
-            family: "plan-review".to_string(),
-            workflow_family: Some("implementation".to_string()),
-            slug: Some("roulette-plan-review".to_string()),
-            template: WorkflowTemplate::Implementation,
-            goal: "Review all landed roulette child work.".to_string(),
-            managed_milestone: "roulette-plan-reviewed".to_string(),
-            dependencies: Vec::new(),
-            produces: vec!["spec".to_string(), "review".to_string()],
-            proof_profile: Some("integration".to_string()),
-            proof_state_path: None,
-            program_manifest: None,
-            service_state_path: None,
-            orchestration_state_path: None,
-            checks: Vec::new(),
-            run_dir: None,
-            prompt_context: None,
-            verify_command: None,
-            health_command: None,
-        };
-
-        let graph = render_workflow_graph(&lane, "cargo test --workspace", "true", "true", "true");
-
-        assert!(graph.contains(
-            "#challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
-        ));
-        assert!(graph.contains("#review      { backend: cli; model: kimi-k2.5; provider: kimi; }"));
-        assert!(graph.contains(
-            "#deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
-        ));
-        assert!(graph.contains("#escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }"));
-    }
-
-    #[test]
-    fn post_completion_codex_review_uses_openai_only_after_plan_review() {
-        let lane = BlueprintLane {
-            id: "roulette-codex-review".to_string(),
-            kind: raspberry_supervisor::manifest::LaneKind::Platform,
-            title: "Roulette Codex Review".to_string(),
-            family: "codex-review".to_string(),
-            workflow_family: Some("recurring_report".to_string()),
-            slug: Some("roulette-codex-review".to_string()),
+            title: "Roulette Holistic Review Minimax".to_string(),
+            family: "holistic-review-minimax".to_string(),
+            workflow_family: Some("holistic-review-minimax".to_string()),
+            slug: Some("roulette-holistic-review-minimax".to_string()),
             template: WorkflowTemplate::RecurringReport,
-            goal: "Final Codex review for completed roulette plan.".to_string(),
-            managed_milestone: "roulette-codex-reviewed".to_string(),
+            goal: "First-pass holistic review.".to_string(),
+            managed_milestone: "roulette-holistic-review-minimax-reviewed".to_string(),
             dependencies: Vec::new(),
-            produces: vec!["spec".to_string(), "review".to_string()],
+            produces: vec!["holistic_review".to_string()],
             proof_profile: None,
             proof_state_path: None,
             program_manifest: None,
@@ -7360,8 +8040,89 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         };
 
         let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+        let run_config = render_run_config(&lane, None, Path::new("."));
+
+        assert!(graph.contains(
+            "#review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
+        ));
+        assert!(graph.contains(
+            "#polish { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }"
+        ));
+        assert!(run_config.contains("provider = \"minimax\""));
+        assert!(run_config.contains("model = \"MiniMax-M2.7-highspeed\""));
+    }
+
+    #[test]
+    fn parent_holistic_deep_and_adjudication_use_expected_provider_failover() {
+        let deep_lane = BlueprintLane {
+            id: "roulette-holistic-review-deep".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Roulette Holistic Deep Review".to_string(),
+            family: "holistic-review-deep".to_string(),
+            workflow_family: Some("holistic-review-deep".to_string()),
+            slug: Some("roulette-holistic-review-deep".to_string()),
+            template: WorkflowTemplate::RecurringReport,
+            goal: "Deep synthesis pass.".to_string(),
+            managed_milestone: "roulette-holistic-review-deep-reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["deep_review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let lane = BlueprintLane {
+            id: "roulette-holistic-review-adjudication".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Roulette Holistic Adjudication".to_string(),
+            family: "holistic-review-adjudication".to_string(),
+            workflow_family: Some("holistic-review-adjudication".to_string()),
+            slug: Some("roulette-holistic-review-adjudication".to_string()),
+            template: WorkflowTemplate::RecurringReport,
+            goal: "Final adjudication.".to_string(),
+            managed_milestone: "roulette-holistic-review-adjudicated".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["adjudication_verdict".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let deep_graph = render_workflow_graph(&deep_lane, "true", "true", "true", "true");
+        let deep_run_config = render_run_config(&deep_lane, None, Path::new("."));
+        assert!(
+            deep_graph.contains("#review { backend: cli; model: claude-opus-4-6; provider: anthropic; }")
+        );
+        assert!(
+            deep_graph.contains("#polish { backend: cli; model: claude-opus-4-6; provider: anthropic; }")
+        );
+        assert!(deep_run_config.contains("provider = \"anthropic\""));
+        assert!(deep_run_config.contains("model = \"claude-opus-4-6\""));
+        assert!(deep_run_config.contains("[llm.fallbacks]"));
+        assert!(deep_run_config.contains("anthropic = [\"gpt-5.4\"]"));
+
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+        let run_config = render_run_config(&lane, None, Path::new("."));
 
         assert!(graph.contains("#review { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(graph.contains("#polish { backend: cli; model: gpt-5.4; provider: openai; }"));
+        assert!(run_config.contains("provider = \"openai\""));
+        assert!(run_config.contains("model = \"gpt-5.4\""));
+        assert!(run_config.contains("[llm.fallbacks]"));
+        assert!(run_config.contains("openai = [\"claude-opus-4-6\"]"));
     }
 
     #[test]
@@ -7698,6 +8459,64 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(command.contains("no code changes were needed"));
         assert!(command.contains("outside lane-owned surface: yes"));
         assert!(command.contains(".fabro-work/deep-review-findings.md"));
+    }
+
+    #[test]
+    fn promotion_contract_requires_security_fields_for_sensitive_lane() {
+        let lane = BlueprintLane {
+            id: "roulette".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Roulette".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("roulette".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement roulette payout and seed verification.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["promotion".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Touch first:\n- `crates/casino-core/src/roulette.rs`\n".to_string(),
+            ),
+            verify_command: None,
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "roulette".to_string(),
+                title: "Roulette".to_string(),
+                output_root: PathBuf::from("outputs/roulette"),
+                artifacts: vec![BlueprintArtifact {
+                    id: "promotion".to_string(),
+                    path: PathBuf::from("promotion.md"),
+                }],
+                milestones: Vec::new(),
+                lanes: vec![lane.clone()],
+            }],
+        };
+
+        let command = implementation_promotion_contract_command(&blueprint, "roulette", &lane);
+        assert!(command.contains("overflow_safe"));
+        assert!(command.contains("seed_binding_complete"));
+        assert!(command.contains("house_authority_preserved"));
+        assert!(command.contains("proof_covers_edge_cases"));
     }
 
     #[test]

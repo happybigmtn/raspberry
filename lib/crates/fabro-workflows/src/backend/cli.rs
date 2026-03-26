@@ -292,7 +292,9 @@ pub fn cli_command_for_provider(
             } else {
                 format!(" --model {model}")
             };
-            format!("cat {prompt_file} | CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag}")
+            format!(
+                "cat {prompt_file} | env -u ANTHROPIC_API_KEY CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions{model_flag}"
+            )
         }
     }
 }
@@ -698,7 +700,7 @@ struct CodexSlotFailure {
 fn resolve_cli_target(
     requested_provider: Provider,
     requested_model: &str,
-    default_model: &str,
+    _default_model: &str,
     launch_env: &HashMap<String, String>,
     codex_slots_available: bool,
 ) -> (Provider, String, Option<String>) {
@@ -714,20 +716,6 @@ fn resolve_cli_target(
         .is_some_and(|value| !value.trim().is_empty());
     if strict_provider || has_openai_key || codex_slots_available {
         return (requested_provider, requested_model.to_string(), None);
-    }
-
-    if launch_env
-        .get("ANTHROPIC_API_KEY")
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        return (
-            Provider::Anthropic,
-            default_model.to_string(),
-            Some(
-                "provider=openai requested but no dedicated Codex slot or API key is available"
-                    .to_string(),
-            ),
-        );
     }
 
     (requested_provider, requested_model.to_string(), None)
@@ -836,6 +824,9 @@ fn build_launch_env_for_provider(
     }
     if provider == Provider::OpenAi {
         launch_env.remove("OPENAI_API_KEY");
+    }
+    if provider == Provider::Anthropic {
+        launch_env.remove("ANTHROPIC_API_KEY");
     }
     // Kimi routes through pi CLI (kimi-coding provider) which reads
     // KIMI_API_KEY from the environment or ~/.pi/agent/auth.json.
@@ -2104,26 +2095,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cli_target_prefers_anthropic_when_openai_key_missing() {
-        let env = HashMap::from([
-            ("ANTHROPIC_API_KEY".to_string(), "test-key".to_string()),
-            (
-                "ANTHROPIC_MODEL".to_string(),
-                "MiniMax-M2.7-highspeed".to_string(),
-            ),
-        ]);
+    fn resolve_cli_target_keeps_openai_when_key_missing() {
+        let env = HashMap::new();
 
-        let (provider, model, reason) = resolve_cli_target(
-            Provider::OpenAi,
-            "gpt-5.4",
-            "MiniMax-M2.7-highspeed",
-            &env,
-            false,
-        );
+        let (provider, model, reason) =
+            resolve_cli_target(Provider::OpenAi, "gpt-5.4", "gpt-5.4", &env, false);
 
-        assert_eq!(provider, Provider::Anthropic);
-        assert_eq!(model, "MiniMax-M2.7-highspeed");
-        assert!(reason.is_some());
+        assert_eq!(provider, Provider::OpenAi);
+        assert_eq!(model, "gpt-5.4");
+        assert!(reason.is_none());
     }
 
     #[test]
@@ -2187,6 +2167,22 @@ mod tests {
     }
 
     #[test]
+    fn build_launch_env_for_anthropic_strips_api_key() {
+        let env = HashMap::from([
+            ("ANTHROPIC_API_KEY".to_string(), "test-anthropic-key".to_string()),
+            ("OTHER_VAR".to_string(), "keep-me".to_string()),
+        ]);
+
+        let launch_env = build_launch_env_for_provider(Provider::Anthropic, &env);
+
+        assert!(!launch_env.contains_key("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            launch_env.get("OTHER_VAR").map(String::as_str),
+            Some("keep-me")
+        );
+    }
+
+    #[test]
     fn build_cli_attempt_targets_prefers_configured_fallback_chain() {
         let targets = build_cli_attempt_targets(
             Provider::Anthropic,
@@ -2203,6 +2199,21 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[1].provider, Provider::OpenAi);
         assert_eq!(targets[1].model, "gpt-5.4");
+    }
+
+    #[test]
+    fn anthropic_cli_command_unsets_api_key() {
+        let cmd = cli_command_for_provider(
+            Provider::Anthropic,
+            "claude-opus-4-6",
+            "'/tmp/prompt.txt'",
+            Some("high"),
+            false,
+            None,
+        );
+
+        assert!(cmd.contains("env -u ANTHROPIC_API_KEY"));
+        assert!(cmd.contains("claude -p"));
     }
 
     #[test]
