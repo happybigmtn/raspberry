@@ -1,100 +1,160 @@
-# Provider Policy Stabilization — First Slice Review
+# Provider Policy Stabilization — Lane Review
 
 **Lane:** `provider-policy-stabilization`  
-**Plan:** `genesis/plans/008-provider-policy-stabilization.md`  
-**Review date:** 2026-03-26  
-**Reviewer:** Genesis (first honest reviewed slice)
+**Spec:** `outputs/provider-policy-stabilization/spec.md`  
+**Plan:** `genesis/plans/008-provider-policy-stabilization` (referenced in 001-master-plan.md)  
+**Review Date:** 2026-03-26  
+**Review Stage:** First honest reviewed slice — REVIEW gate  
 
 ---
 
-## Evidence Gathered
+## Executive Summary
 
-This review is based on direct inspection of the current codebase without running tests or building the project. The following surfaces were examined:
-
-| Surface | Files inspected | Lines |
-|---|---|---|
-| Policy source of truth | `lib/crates/fabro-model/src/policy.rs` | 98 |
-| Synthesis model assignment | `lib/crates/fabro-synthesis/src/render.rs` | ~2100 (grep + targeted read) |
-| CLI backend fallback logic | `lib/crates/fabro-workflows/src/backend/cli.rs` | ~2450 (grep + targeted read) |
-| LLM error taxonomy | `lib/crates/fabro-llm/src/error.rs` | ~800 (full read) |
-| LLM retry logic | `lib/crates/fabro-llm/src/retry.rs` | ~200 (full read) |
-| Provider implementations | `lib/crates/fabro-llm/src/providers/*.rs` | grep + targeted reads |
-| Raspberry status output | `lib/crates/raspberry-supervisor/src/autodev.rs` | ~4200 (grep + targeted read) |
-| Dispatch outcome | `lib/crates/raspberry-supervisor/src/dispatch.rs` | ~550 (full read) |
+The specification presents a coherent capability definition for centralizing model routing through `fabro_model::policy::automation_chain()`. The review validates the spec's claims through direct source inspection. **Milestone 1 findings are confirmed: there are hardcoded model string leaks in `fabro-synthesis/src/render.rs` that violate the policy centralization invariant.** Milestones 2-4 identify legitimate gaps requiring implementation. The spec is **fit for implementation** with noted risks requiring mitigation.
 
 ---
 
-## Milestone 1 Assessment: Audit Model Selection Leaks
+## Nemesis-Style Security Review
 
-### What exists today
+### Pass 1 — First-Principles Challenge
 
-`lib/crates/fabro-model/src/policy.rs` is clean. It exports `automation_chain()`, `automation_primary_target()`, `automation_fallback_targets()`, and `automation_fallback_map()`. All model/provider strings are defined as `&'static str` constants in the chain arrays. The module has tests covering all three profiles.
+#### Trust Boundaries and Authority Assumptions
 
-### What is leaking
+| Boundary | Current State | Risk |
+|----------|---------------|------|
+| **Policy.rs as source of truth** | Validated clean. All model strings are `&'static str` constants. | Low — the module exports only immutable functions |
+| **Synthesis → render.rs** | **BROKEN**. Functions construct `ModelTarget` literals bypassing policy.rs | **High** — workflow graphs embed hardcoded providers/models |
+| **CLI backend → cli.rs** | Uses `automation_fallback_targets()` correctly for chain execution | Low — properly delegates to policy |
+| **Quota detection** | String matching on stderr ("you've hit your limit", "usage limit has been reached") | Medium — fragile, relies on provider message stability |
+| **Provider credentials** | Inherited from host environment via `provider.api_key_env_vars()` | Medium — no rotation or validation of key scopes |
 
-**`fabro-synthesis/src/render.rs`** — four confirmed leak points:
+**Authority Challenge**: Who can alter which model runs where?
+- The `automation_chain()` function returns a static slice — compile-time fixed
+- No runtime policy override mechanism exists (feature or bug?)
+- Lane ID string patterns (`-holistic-review-minimax`, `-codex-unblock`) **override** the policy chain via the leak functions in render.rs
 
-1. **`recurring_report_primary_target_for_lane()` (lines 2050–2084)**  
-   Returns hardcoded `ModelTarget` values keyed on lane ID string patterns:
-   - Parent holistic review minimax lanes → `Provider::Minimax`, `"MiniMax-M2.7-highspeed"`
-   - Non-minimax parent lanes → `Provider::Anthropic`, `"claude-opus-4-6"`
-   - Codex review lanes → `Provider::OpenAi`, `"gpt-5.4"`  
-   Also emits hardcoded fallback sections into workflow graphs (`"[llm.fallbacks]\nanthropic = [\"gpt-5.4\"]"` and inverse) rather than reading from `automation_fallback_map()`.
-
-2. **`challenge_target_for_lane()` (lines 2011–2021)**  
-   Returns `Provider::OpenAi, "gpt-5.4"` for codex-unblock lanes. No call to `automation_chain()`.
-
-3. **`review_target_for_lane()` (lines 2024–2034)**  
-   Same pattern as challenge: hardcodes `gpt-5.4` on `Provider::OpenAi` for codex-unblock lanes.
-
-4. **Workflow graph template literals (lines 1917–1990)**  
-   The Graphviz digraph strings embed `{model}` and `{provider}` attributes for `#review`, `#challenge`, `#deep_review`, `#escalation` nodes. These are populated from the return values of the functions above, so fixing the functions fixes the graphs.
-
-**Assessment: High confidence leak.** The synthesis path generates workflow TOML files that land in the repo. Any hardcoded model in a generated workflow graph means `raspberry autodev` will route those lanes through the hardcoded provider regardless of what `policy.rs` says.
-
-**`fabro-workflows/src/backend/cli.rs`** — CLI fallback uses string matching:
-
-`cli_failure_is_retryable_for_fallback()` (lines 799–810) checks stderr strings for quota signals:
+**Attack Surface**: A compromised lane ID suffix could force routing to an unintended provider:
 ```rust
-lower.contains("you've hit your limit")
-    || lower.contains("usage limit has been reached")
-    || lower.contains("rate_limit")
-    || ...
+// In render.rs — lane ID patterns override policy
+if lane.id.ends_with("-holistic-review-minimax") {
+    return Some(ModelTarget { provider: Provider::Minimax, model: "MiniMax-M2.7-highspeed" });
+}
 ```
-This works but is fragile. The signals checked are all quota-adjacent, but the function conflates "quota exhausted" with "auth error" and "timeout". The plan's requirement is that "quota exhaustion triggers graceful fallback" — the string-matching approach satisfies the requirement but doesn't integrate with the structured `ProviderErrorKind::QuotaExceeded` that `fabro-llm` already defines.
+This is not a security vulnerability per se (all providers are trusted), but it **violates the policy abstraction** and could cause:
+1. Cost surprises (routing to expensive Opus when Minimax was policy-intended)
+2. Capability floor violations (MiniMax reviewing security-critical code meant for Opus)
+3. Quota exhaustion on the wrong provider
 
-**`fabro-llm/src/error.rs` and `fabro-llm/src/retry.rs`** — Correctly instrumented:
+#### Dangerous Actions and Trigger Points
 
-`ProviderErrorKind::QuotaExceeded` exists and is used in `error_from_status_code()` (message inspection path). `failover_eligible()` returns `true` for it. The API path is properly wired. No changes needed here.
-
-**Other surfaces checked and found clean:**
-
-- `fabro-cli/src/commands/synth.rs`: References to `"claude"`, `"MiniMax-M2.7-highspeed"` etc. are in command template strings for the `claude` and `pi` CLI invocations — these are provider/CLI tool selection, not model routing. The model string is interpolated from `policy.rs`-derived values in the synthesis path. (One exception: `run_opus_decomposition()` uses the string `"opus-{}"` as a path template convention, not a model selector — benign.)
-- `fabro-agent/src/`: No model string hardcoding found outside policy.rs.
-- `raspberry-supervisor/src/`: No model string hardcoding found outside policy.rs.
-
----
-
-## Milestone 2 Assessment: Quota Detection and Graceful Fallback
-
-### CLI path (fabro-workflows backend/cli.rs)
-
-The CLI backend already has a fallback chain execution mechanism (lines 758–799, `build_cli_attempt_targets()`). It reads from `automation_fallback_targets()` via `central_policy_fallback_targets()`. When a CLI invocation fails, `cli_failure_is_retryable_for_fallback()` decides whether to advance.
-
-**Gap identified:** The string-matching signals for quota (`"you've hit your limit"`, `"usage limit has been reached"`) are present, but there is no structured `QuotaExceeded` classification. If a new quota signal appears (e.g., a different wording from MiniMax or Kimi), it won't be caught without a code change.
-
-**Fix needed:** Extend `cli_failure_is_retryable_for_fallback()` to cover additional quota signals. Additionally, the function currently conflates quota errors with auth/timeouts — consider separating a `cli_failure_is_quota_exhausted()` helper for clarity and for future wiring into a `ProviderHealth` struct.
-
-### API path (fabro-llm)
-
-Already correct. `failover_eligible()` on `SdkError` returns `true` for `QuotaExceeded`. No code changes required — only validation testing.
+| Dangerous Action | Who Can Trigger | Current Control |
+|------------------|-----------------|-----------------|
+| Provider fallback chain exhaustion | Any quota-exhausted lane run | `cli_failure_is_retryable_for_fallback()` decides; returns true for quota signals |
+| Routing to expensive provider (Anthropic Opus) | Any `-holistic-review-deep` lane | Hardcoded in render.rs, bypasses policy cost ordering |
+| Model capability floor bypass | Codex-unblock lanes | Hardcoded `gpt-5.4` usage bypasses Review chain ordering |
 
 ---
 
-## Milestone 3 Assessment: Provider Health in Status Output
+### Pass 2 — Coupled-State Review
 
-**Current state:** `DispatchOutcome` (in `raspberry-supervisor/src/dispatch.rs`) has:
+#### Paired State Surfaces
+
+| State A | State B | Consistency Check |
+|---------|---------|-------------------|
+| `provider_used.json` (written by CLI backend) | `DispatchOutcome` (returned to supervisor) | **GAPPED**. `DispatchOutcome` has no provider/model fields. The JSON file exists but isn't ingested into supervisor state. |
+| `fabro-llm::ProviderErrorKind::QuotaExceeded` | `cli_failure_is_retryable_for_fallback()` | **DECOUPLED**. CLI path uses string matching; API path uses structured error. These can drift if providers change error messages. |
+| Policy chain ordering (Write: Minimax→Kimi→Opus) | Lane runtime routing | **VIOLATED**. `recurring_report_primary_target_for_lane()` ignores policy for specific lane suffixes. |
+| `AutodevCycleReport.cycles` | `last_usage_summary` (per lane) | **INCOMPLETE**. Usage is freeform string, no per-provider breakdown. |
+
+#### State Transitions Affecting Safety
+
+**Quota Exhaustion Transition:**
+```
+Lane running on Provider P → Quota hit → Fallback to P' → Success
+                    ↓                ↓                  ↓
+              Current: cli_failure_is_retryable_for_fallback()
+                               returns true for substring match
+              Desired: Structured QuotaExceeded classification
+```
+
+**Risk**: The conflation of quota errors with auth errors and timeouts in `cli_failure_is_retryable_for_fallback()` means a 401 Unauthorized could incorrectly advance the fallback chain, masking a credential problem.
+
 ```rust
+// Current implementation — quota conflated with auth
+fn cli_failure_is_retryable_for_fallback(detail: &str) -> bool {
+    lower.contains("you've hit your limit")  // Quota — should advance chain
+        || lower.contains("401 unauthorized")  // Auth — should NOT advance, should fail
+        || lower.contains("timed out")  // Transient — should retry same provider
+}
+```
+
+#### Secret Handling and Capability Scoping
+
+| Aspect | Assessment |
+|--------|------------|
+| API keys in env vars | Standard practice; keys inherited from host via `provider.api_key_env_vars()` |
+| Key rotation mid-lane | **Not supported**. Spec explicitly excludes this as out-of-scope. Valid decision. |
+| Provider scope validation | No validation that key has quota before attempting call. This is the quota detection gap. |
+
+#### Idempotence and Replay Safety
+
+| Scenario | Behavior | Risk |
+|----------|----------|------|
+| Lane fails with quota, replays from checkpoint | Will retry same primary provider, hit quota again | Medium — no "provider exhausted" state recorded |
+| Provider chain exhausted | Current code has no exhaust handling | **High** — unclear what happens when all providers fail |
+| Partial provider_used.json write | JSON written atomically via `serde_json::to_string_pretty()` then `tokio::fs::write()` | Low — atomic write pattern |
+
+#### External-Process Control and Operator Safety
+
+| Control Surface | Assessment |
+|-----------------|------------|
+| CLI tool invocation (claude, codex, pi) | Sandboxed via `Sandbox` trait; environment filtered |
+| Provider rotator state | `CodexRotatorConfig` with shared state path; concurrent-safe |
+| `raspberry status` | Read-only view; no mutation capability |
+
+---
+
+## Milestone-by-Milestone Assessment
+
+### Milestone 1: Audit Model Selection Leaks — **CONFIRMED LEAKS**
+
+**Status**: Spec claims accurate. Grep and read inspection validate all four leak points in `fabro-synthesis/src/render.rs`:
+
+| Function | Lines | Hardcoded Model | Policy Violation |
+|----------|-------|-----------------|------------------|
+| `challenge_target_for_lane()` | 2011–2021 | `gpt-5.4` for codex-unblock | Uses OpenAI, not Write chain |
+| `review_target_for_lane()` | 2024–2034 | `gpt-5.4` for codex-unblock | Uses OpenAI, not Review chain |
+| `recurring_report_primary_target_for_lane()` | 2050–2084 | Multiple per lane family | Completely bypasses policy.rs |
+| `render_workflow_graph()` closure | 2487–2490 | `gpt-5.4` for unblock lanes | Cosmetic equivalent |
+
+**Critical Finding**: `gpt-5.4` appears in hardcoded strings, but policy.rs uses `gpt-5.3-codex` for Synth chain. The spec flags this as needing operator confirmation. This is a **version drift risk**.
+
+### Milestone 2: Quota Detection and Graceful Fallback — **PARTIAL GAP**
+
+**API Path (fabro-llm)**: Correctly instrumented.
+- `ProviderErrorKind::QuotaExceeded` exists
+- `failover_eligible()` returns `true` for it
+- `retryable()` returns `false` for it (correct — don't retry same provider)
+
+**CLI Path (fabro-workflows)**:
+- String-matching detection exists but is fragile
+- Quota signals conflated with auth errors
+- No structured `QuotaExceeded` classification
+
+**Gap**: MiniMax and Kimi quota error messages not explicitly handled. Current patterns:
+```rust
+"you've hit your limit"       // OpenAI/Codex style
+"usage limit has been reached" // Anthropic style
+"rate_limit"                   // Generic
+```
+
+Missing patterns for Asian providers (MiniMax, Kimi) may cause fallback failure.
+
+### Milestone 3: Provider Health in Status Output — **GAP IDENTIFIED**
+
+**Current State**:
+```rust
+// DispatchOutcome in dispatch.rs
 pub struct DispatchOutcome {
     pub lane_key: String,
     pub exit_status: i32,
@@ -104,60 +164,130 @@ pub struct DispatchOutcome {
 }
 ```
 
-No model, provider, or health signal. `raspberry status` reads `AutodevCurrentSnapshot` from `autodev.rs`, which has lane key lists and blocker counts but no model/provider routing information.
+**Missing**: No `provider`, `model`, `provider_health` fields.
 
-**Gap identified:** No field exists to carry provider health information from the dispatch layer up to the status surface. This requires:
-1. Adding a `ProviderHealth` struct to `dispatch.rs` or a shared module
-2. Populating it from `provider_used.json` written by `backend/cli.rs` (which already records `requested_provider`, `requested_model`, `provider`, `model`, and `fallback_reason`)
-3. Including it in `AutodevCurrentSnapshot` and rendering it in `raspberry status`
+**`provider_used.json` already contains**:
+- `requested_provider`, `requested_model`
+- `provider`, `model` (actual)
+- `fallback_reason`
 
----
+**Gap**: This JSON is written but not ingested into `DispatchOutcome` or `AutodevCurrentSnapshot`.
 
-## Milestone 4 Assessment: Usage Tracking Per Provider Per Cycle
+### Milestone 4: Usage Tracking Per Provider Per Cycle — **GAP IDENTIFIED**
 
-**Current state:** `last_usage_summary: Option<String>` exists in `program_state.rs` lane state and `evaluate.rs`. It is a freeform string with no per-provider breakdown. `AutodevCycleReport` has no usage fields.
+**Current State**: `last_usage_summary: Option<String>` is freeform:
+```rust
+// Example from program_state.rs test
+"last_usage_summary": "anthropic: 10 in / 20 out"
+```
 
-**Gap identified:** No per-provider token tracking. The `provider_used.json` written by `backend/cli.rs` contains the requested and actual provider/model but no usage tokens. The `parse_codex_ndjson()`, `parse_claude_ndjson()`, and `parse_pi_json()` functions in `backend/cli.rs` extract token counts from CLI output, but these are not aggregated upward.
+**Required**: `usage_by_provider: BTreeMap<Provider, ProviderCycleUsage>` in `AutodevCycleReport`.
 
-**Fix needed:**  
-1. Aggregate token counts from `provider_used.json` per provider per cycle  
-2. Add `usage_by_provider: BTreeMap<Provider, ProviderCycleUsage>` to `AutodevCycleReport`  
-3. Write a summary into the autodev cycle JSON report
+**Gap**: CLI backends write `provider_used.json` but don't include token counts. API path has usage in response headers but not aggregated per-cycle.
 
----
+### Milestone 5: Live Validation — **NOT ASSESSABLE**
 
-## Milestone 5 Assessment: Live Validation
-
-**Cannot assess without running.** Requires proving-ground autodev execution against a live repo. This is the gate criterion and must be run after Milestones 1–4 are complete.
-
----
-
-## Risk Assessment
-
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Fallback chain bypasses minimum capability floor (e.g., MiniMax reviewing security code) | Medium | High | The plan's Decision Log explicitly calls this out. The policy chains are ordered with capability floors (Review: Kimi → MiniMax → Opus). The implementation must not reorder or skip the floor. |
-| Substring quota detection misses new quota messages from providers | Medium | Medium | After implementing Milestone 2, add a test that simulates quota error output and verify fallback fires. |
-| `provider_used.json` is not written on early-exit paths (e.g., sandbox failure before CLI invocation) | Low | Low | Health shows as `unknown` rather than `ok`; acceptable for v1 |
-| Per-cycle usage aggregation requires parsing `provider_used.json` files across concurrent lane runs | Low | Medium | Use a shared append-only log format and aggregate at cycle boundary, not per-lane |
+Requires 50-cycle autodev run. Cannot validate without execution.
 
 ---
 
-## Implementation Order Recommendation
+## Correctness Assessment
 
-1. **Fix render.rs hardcoded targets** — highest-confidence change, directly restores the policy.rs invariant
-2. **Add `provider_used.json` aggregation to `AutodevCycleReport`** — enables Milestone 4 incrementally
-3. **Add `ProviderHealth` to `DispatchOutcome` and `AutodevCurrentSnapshot`** — enables Milestone 3
-4. **Extend `cli_failure_is_retryable_for_fallback()` with broader quota signals** — stabilizes Milestone 2
-5. **Write validation tests** for quota fallback in both CLI and API paths
-6. **Live validation run** — Milestone 5 gate
+| Criterion | Verdict | Evidence |
+|-----------|---------|----------|
+| Spec correctly identifies leak sites | ✅ Correct | Grep validated; all four functions confirmed |
+| Spec correctly describes API path | ✅ Correct | `failover_eligible()` and `retryable()` behavior confirmed |
+| Spec correctly identifies gaps | ✅ Correct | Milestones 3-4 gaps validated through source read |
+| Acceptance criteria are verifiable | ✅ Correct | Grep-based criteria are objective; live validation criterion is measurable |
+| Architecture contracts are sound | ⚠️ Risk | The "no call site may construct ModelTarget literal" contract is currently violated; spec acknowledges this |
 
 ---
 
-## Open Questions
+## Milestone Fit Assessment
 
-1. Should `provider_used.json` be written to the run directory (persisted across resume) or only to the cycle report (ephemeral)? The current code writes it to `stage_dir`, which is ephemeral per run. For usage tracking across cycles, the aggregator needs either persistent writes or a pipeline from the run log.
+This lane is appropriately scoped for a first honest reviewed slice:
 
-2. Does `raspberry status` need to show historical provider health, or only the current cycle? The spec says "current model routing for each active lane" — suggest current-cycle-only for v1, with historical trend data as a future enhancement.
+| Aspect | Assessment |
+|--------|------------|
+| Bounded scope | Yes — 4 milestones with clear deliverables |
+| Independence | Yes — doesn't block on other genesis plans |
+| Value | High — quota fallback failure currently collapses lanes |
+| Verifiability | Yes — grep for hardcoded strings; observe fallback in test |
+| Rollback safety | Yes — additive changes to status output; no schema migrations |
 
-3. The `gpt-5.4` model string appears in multiple places in `render.rs` but the policy chain uses `"gpt-5.3-codex"` as the Synth fallback. Is `gpt-5.4` intentional (a newer model not yet in policy.rs) or a copy-paste error? **This needs operator confirmation before the hardcoded values are replaced with policy.rs calls.**
+---
+
+## Remaining Blockers
+
+### Blockers for Spec Approval
+
+1. **Operator confirmation needed**: Is `gpt-5.4` (in render.rs hardcoding) intentionally different from `gpt-5.3-codex` (in policy.rs)? Or is this a copy-paste error? Spec flags this; decision required before render.rs fix.
+
+2. **Missing quota signals**: MiniMax and Kimi error message patterns need to be added to `cli_failure_is_retryable_for_fallback()` or quota fallback will fail for those providers.
+
+### Blockers for Implementation (not spec)
+
+1. **Provider chain exhaust behavior**: Spec doesn't define what happens when all providers in the chain fail. Current code likely panics or returns opaque error. Should be defined.
+
+2. **`provider_used.json` location**: Written to `stage_dir` which is ephemeral. For usage tracking across cycles, spec should clarify aggregation mechanism.
+
+---
+
+## Security Risks Summary
+
+| Risk | Severity | Mitigation in Spec |
+|------|----------|-------------------|
+| Hardcoded routing bypasses capability floor | Medium | Spec requires removing all hardcoded targets |
+| String-matching quota detection misses new providers | Medium | Spec recommends broader signal coverage |
+| Quota/auth/timeout conflation | Low-Medium | Spec recommends separating `cli_failure_is_quota_exhausted()` helper |
+| No provider exhaust handling | Medium | Should be added to Milestone 2 acceptance |
+
+---
+
+## Recommendations
+
+### For Spec (before implementation)
+
+1. **Add explicit acceptance**: When all providers in chain are exhausted, system must return structured error (not panic).
+
+2. **Clarify `gpt-5.4` vs `gpt-5.3-codex`**: Document whether this is intentional or a bug to fix.
+
+3. **Add MiniMax/Kimi quota signals**: Research and include their quota error message patterns.
+
+### For Implementation
+
+1. **Start with render.rs**: Highest confidence fix; restores policy invariant.
+
+2. **Add test fixtures**: Create simulated provider responses with quota errors for each provider to validate `cli_failure_is_retryable_for_fallback()`.
+
+3. **ProviderHealth enum**: Define as `ok`, `quota_limited`, `auth_error`, `unavailable` with clear transition semantics.
+
+---
+
+## Final Verdict
+
+| Aspect | Rating |
+|--------|--------|
+| **Correctness** | ✅ Good — claims validated |
+| **Completeness** | ⚠️ Good with gaps noted — provider exhaust behavior undefined |
+| **Security posture** | ⚠️ Acceptable — risks identified and mitigatable |
+| **Milestone fit** | ✅ Appropriate for first slice |
+| **Implementation readiness** | ✅ Approved with notes |
+
+**Decision**: **APPROVE for implementation** with the following conditions:
+1. Operator confirms `gpt-5.4` vs `gpt-5.3-codex` discrepancy
+2. Spec adds chain-exhaustion error handling requirement
+3. Implementation adds MiniMax/Kimi quota signal patterns
+
+---
+
+## Evidence Log
+
+| Claim | Verification Method | Result |
+|-------|---------------------|--------|
+| Hardcoded `gpt-5.4` in render.rs | `grep -n "gpt-5\." lib/crates/fabro-synthesis/src/render.rs` | Confirmed lines 2018, 2031, 2068, 2490 |
+| Hardcoded `MiniMax-M2.7-highspeed` | `grep -n "MiniMax" lib/crates/fabro-synthesis/src/render.rs` | Confirmed lines 2054, 2076, 2079, test lines |
+| `automation_chain()` exports | Read `lib/crates/fabro-model/src/policy.rs` | Confirmed clean, static chains |
+| `failover_eligible()` behavior | Read `lib/crates/fabro-llm/src/error.rs:212` | Confirmed returns true for QuotaExceeded |
+| `provider_used.json` written | Read `lib/crates/fabro-workflows/src/backend/cli.rs:620` | Confirmed write location |
+| `DispatchOutcome` fields | Read `lib/crates/raspberry-supervisor/src/dispatch.rs:17-24` | Confirmed no provider/model fields |
