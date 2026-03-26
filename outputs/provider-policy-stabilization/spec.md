@@ -33,7 +33,7 @@ The provider policy lives in `lib/crates/fabro-model/src/policy.rs`. It defines 
 | Review | Kimi K2.5 (pi) | MiniMax M2.7 (pi) | Claude Opus 4.6 (claude CLI) |
 | Synth | Claude Opus 4.6 (claude CLI) | GPT-5.3 Codex (codex CLI) | MiniMax M2.7 (pi) |
 
-Key functions:
+Key functions in `policy.rs`:
 - `automation_chain(profile)` — returns full fallback chain
 - `automation_primary_target(profile)` — returns first target
 - `automation_fallback_targets(profile)` — returns fallbacks
@@ -41,30 +41,38 @@ Key functions:
 
 ### Existing Quota Detection
 
-The `fabro-llm/src/error.rs` already defines:
+`lib/crates/fabro-llm/src/error.rs` already defines:
 - `ProviderErrorKind::QuotaExceeded` — distinct from `RateLimit`
-- `failover_eligible()` — returns true for `QuotaExceeded`, meaning a different provider won't share the same quota
-- 429 errors map to `RateLimit`, which is retryable (same-provider backoff)
+- `failover_eligible()` — returns `true` for `QuotaExceeded`, meaning a different provider won't share the same quota
+- 429 errors map to `RateLimit` (retryable, same-provider backoff)
 - Message-based classification can identify quota errors (e.g., "usage limit reached", "quota exceeded")
 
 ### CLI Backend Fallback
 
-`fabro-workflows/src/backend/cli.rs` implements fallback via:
+`lib/crates/fabro-workflows/src/backend/cli.rs` implements fallback via:
 - `build_cli_attempt_targets()` — builds fallback chain from policy
-- `cli_failure_is_retryable_for_fallback()` — determines if a CLI failure triggers fallback
+- `cli_failure_is_retryable_for_fallback()` (line 799) — determines if a CLI failure triggers fallback
 - Fallback reasons include: auth failures, rate limits, "you've hit your limit", "usage limit has been reached"
 
 ### Known Leaks
 
 **Critical** (selection decisions, not test code):
-1. `fabro-synthesis/src/render.rs:2055-2090` — `recurring_report_primary_target_for_lane()` hardcodes `Provider::Minimax` with `MiniMax-M2.7-highspeed`, `Provider::Anthropic` with `claude-opus-4-6`, and `Provider::OpenAi` with `gpt-5.4`. This bypasses policy.rs entirely for holistic review lanes.
-2. `fabro-synthesis/src/render.rs:2026-2040` — `challenge_target_for_lane()` and `review_target_for_lane()` hardcode `Provider::OpenAi` with `gpt-5.4` for codex-unblock lanes.
-3. `fabro-workflows/src/backend/cli.rs` — `cli_failure_is_retryable_for_fallback()` checks for "you've hit your limit" and "usage limit has been reached" in lowercase error details, but does not specifically check for `QuotaExceeded` from the API path. The CLI and API paths may have different error formats.
+
+1. `lib/crates/fabro-synthesis/src/render.rs:2019-2043` — `challenge_target_for_lane()` (line 2019) and `review_target_for_lane()` (line 2032) call `recurring_report_primary_target_for_lane()` (line 2058) which hardcodes:
+   - `Provider::Minimax` + `MiniMax-M2.7-highspeed` for holistic review minimax lanes (line 2061)
+   - `Provider::Anthropic` + `claude-opus-4-6` for holistic review deep lanes (line 2067)
+   - `Provider::OpenAi` + `gpt-5.4` for codex-unblock lanes (line 2075)
+   
+   This bypasses `policy.rs` entirely for these lane types.
+
+2. `lib/crates/fabro-synthesis/src/render.rs:2495-2499` — Another hardcoded `Provider::OpenAi` + `gpt-5.4` in a model assignment path.
+
+3. `lib/crates/fabro-workflows/src/backend/cli.rs:799-817` — `cli_failure_is_retryable_for_fallback()` checks for `"you've hit your limit"` and `"usage limit has been reached"` but does **not** check for `"quota"` or `"quota exceeded"`. The CLI path may miss quota errors that the SDK correctly classifies as `QuotaExceeded`.
 
 **Non-critical** (test fixtures, display strings):
-- `fabro-workflows/src/stylesheet.rs:86-210` — Test fixtures with hardcoded model names (sonnet, opus, gpt)
-- `fabro-workflows/src/transform.rs:681-790` — Transform tests with hardcoded model names
-- Various test files in `fabro-workflows/tests/integration.rs` — Test fixtures with model names
+- `lib/crates/fabro-workflows/src/stylesheet.rs:86-210` — Test fixtures with hardcoded model names
+- `lib/crates/fabro-workflows/src/transform.rs:681-790` — Transform tests with hardcoded model names
+- Various test files in `lib/crates/fabro-workflows/tests/`
 
 ## Target Architecture
 
@@ -77,6 +85,7 @@ policy.rs (automation_chain, automation_primary_target, automation_fallback_targ
      |
      +---> fabro-synthesis/src/render.rs (model assignment in workflow graphs)
      +---> fabro-workflows/src/backend/cli.rs (runtime model selection + fallback)
+     +---> fabro-workflows/src/backend/api.rs (API path fallback via failover_eligible)
      +---> fabro-cli/src/commands/synth.rs (synthesis model selection)
      |
      v
@@ -88,14 +97,14 @@ Any code that references a specific provider or model name outside of `policy.rs
 ### Fallback Chain Behavior
 
 1. When CLI command fails with a retryable error (including quota exhaustion), try next target in chain
-2. When API call fails with `QuotaExceeded`, trigger provider failover (do not consume retry count)
+2. When API call fails with `QuotaExceeded`, trigger provider failover via `failover_eligible()` (do not consume retry count)
 3. Fallback chain respects profile minimum capability requirements:
    - Review cannot fall below Opus/Kimi tier (enforced by chain order)
    - Synth prefers Opus first, Codex second, MiniMax third
 
 ### Status Output Contract
 
-`raspberry status` output must include:
+`raspberry status --manifest <prog.yaml>` output must include per-lane provider information:
 
 ```yaml
 lanes:
@@ -109,9 +118,11 @@ lanes:
     blocked_reason: "provider quota exhausted: minimax"
 ```
 
+Note: `raspberry status` lives in `lib/crates/raspberry-cli/` and calls `render_status_table()` from `lib/crates/raspberry-supervisor/src/evaluate.rs`.
+
 ### Usage Tracking Contract
 
-Autodev report must include:
+Autodev report at `.raspberry/autodev-report.json` (managed by `lib/crates/raspberry-supervisor/src/autodev.rs`) must include:
 
 ```yaml
 cycles:
@@ -131,17 +142,16 @@ cycles:
 
 ### AC1: Zero Model Selection Leaks
 
-```
+```bash
 grep -rn "Provider::(Minimax|Kimi|Anthropic|OpenAi|Gemini)" \
   lib/crates/fabro-synthesis/src/ \
   lib/crates/fabro-workflows/src/ \
   --include="*.rs" \
-  | grep -v "_test\|#\[test\]\|// " \
-  | grep -v "policy.rs" \
-  | wc -l
+  | grep -v "_test\|#\[test\]\|// \|use \|mod tests" \
+  | grep -v "policy.rs\|provider.rs"
 ```
 
-Target: 0 matches in production code paths.
+Target: 0 matches in production code paths outside `policy.rs`.
 
 ### AC2: Quota Exhaustion Triggers Fallback
 
@@ -149,7 +159,7 @@ Target: 0 matches in production code paths.
 - The fallback must not consume retry count (quota exhaustion is not a transient error)
 - Lane must not fail — work continues on next provider
 
-Proof: Run autodev, artificially exhaust one provider's quota, observe fallback without lane failure.
+**Proof:** Run autodev, artificially exhaust one provider's quota, observe fallback without lane failure.
 
 ### AC3: Provider Health in Status
 
@@ -175,7 +185,7 @@ Autodev report at `.raspberry/autodev-report.json` includes:
 
 1. Audit all production code paths for model selection leaks
 2. Document findings in review.md
-3. Fix critical leaks in `fabro-synthesis/src/render.rs`
+3. Fix critical leaks in `lib/crates/fabro-synthesis/src/render.rs` — replace hardcoded `Provider::*` with calls to `automation_primary_target()` and `automation_fallback_targets()`
 4. Ensure `cli_failure_is_retryable_for_fallback()` catches quota errors
 
 ### Phase 2: Status and Tracking (next slice)
@@ -206,4 +216,4 @@ Autodev report at `.raspberry/autodev-report.json` includes:
 
 ## What This Supersedes
 
-This spec consolidates remaining items from `plans/032326-centralize-provider-policy-and-live-autodev-recovery.md` which was partially completed but had remaining drift between policy.rs and consumers.
+This spec consolidates remaining items from `genesis/plans/001-master-plan.md` which was partially completed but had remaining drift between policy.rs and consumers.
