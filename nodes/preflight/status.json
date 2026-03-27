@@ -1,0 +1,9 @@
+{
+  "status": "fail",
+  "duration_ms": 31845,
+  "attempt": 1,
+  "max_attempts": 1,
+  "completed_at": "2026-03-27T01:15:49.069189708+00:00",
+  "updated_at": "2026-03-27T01:15:49.069193490+00:00",
+  "failure_reason": "I/O error: No such file or directory (os error 2)"
+}
