@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use fabro_model::{
-    automation_fallback_map, automation_primary_target, AutomationProfile, ModelTarget, Provider,
+    automation_fallback_map, automation_primary_target, AutomationProfile, ModelTarget,
 };
 use git2::Repository;
 use raspberry_supervisor::manifest::{LaneCheck, LaneCheckProbe};
@@ -526,7 +526,8 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
             let prompt_context = format!(
                 "Target blocked lane: `{source_lane_key}`.\n\
                  Recovery objective: unblock the source lane so it can be replayed successfully.\n\
-                 This lane is dispatched only after the source lane is marked `surface_blocked`.\n\
+                 This lane is dispatched automatically by the supervisor for \
+                 unblock-worthy provider or runtime failures.\n\
                  Focus on minimal, high-confidence changes that remove the blocker.\n\
                  Read the target lane's latest artifacts and remediation notes before editing.\n\
                  If the owned proof gate is already green and the only remaining blocker is outside the owned surface, do not invent more code changes. Write the unblock artifacts truthfully, explain the external blocker, and stop.\n\
@@ -598,14 +599,7 @@ fn inject_workspace_verify_lanes(blueprint: &ProgramBlueprint) -> ProgramBluepri
                     program_manifest: None,
                     service_state_path: None,
                     orchestration_state_path: None,
-                    checks: vec![LaneCheck {
-                        label: format!("{}_dispatch_only", unblock_id.replace('-', "_")),
-                        kind: raspberry_supervisor::manifest::LaneCheckKind::Precondition,
-                        scope: raspberry_supervisor::manifest::LaneCheckScope::Ready,
-                        probe: LaneCheckProbe::FileExists {
-                            path: PathBuf::from(".raspberry/codex-unblock-dispatch-only"),
-                        },
-                    }],
+                    checks: Vec::new(),
                     run_dir: None,
                     prompt_context: Some(prompt_context),
                     verify_command: Some(verify_command),
@@ -1644,15 +1638,16 @@ fn render_lane(
     let run_config_path = layout.run_config_path(lane);
     let workflow_path = layout.workflow_path(lane);
     let prompt_dir = layout.prompt_dir(lane);
-    let verify_command = lane
+    let raw_verify_command = lane
         .verify_command
         .clone()
         .unwrap_or_else(|| default_verify_command(blueprint, unit_id, lane));
-    let verify_command = normalize_lane_verify_command(lane, verify_command);
+    let verify_command = normalize_lane_verify_command(lane, raw_verify_command.clone());
     let health_command = lane
         .health_command
         .clone()
         .unwrap_or_else(|| "true".to_string());
+    let health_command = normalize_lane_health_command(lane, &verify_command, health_command);
     let promotion_command = implementation_promotion_contract_command(blueprint, unit_id, lane);
     let audit_command = implementation_audit_command(blueprint, unit_id, lane, &promotion_command);
     let mut quality_command = implementation_quality_command(blueprint, unit_id, lane);
@@ -1780,6 +1775,7 @@ fn render_lane(
 
     let graph = render_workflow_graph(
         lane,
+        &raw_verify_command,
         &verify_command,
         &health_command,
         &audit_command,
@@ -1892,6 +1888,7 @@ fn write_manifest(
 
 fn render_workflow_graph(
     lane: &BlueprintLane,
+    raw_verify_command: &str,
     verify_command: &str,
     health_command: &str,
     audit_command: &str,
@@ -1940,7 +1937,7 @@ fn render_workflow_graph(
             escape_graph_attr(verify_command),
         ),
         WorkflowTemplate::Implementation => {
-            let profile = lane.proof_profile.as_deref().unwrap_or("standard");
+            let profile = workflow_profile_for_lane(lane);
             let max_visits = profile_max_visits(profile);
             let service_health = lane.kind == raspberry_supervisor::manifest::LaneKind::Service
                 && health_command != "true";
@@ -1966,9 +1963,11 @@ fn render_workflow_graph(
                 health_command,
             );
             let fallback_attr = profile_fallback_retry_target(profile);
+            let contract_prompt = escape_graph_attr(&contract_prompt_for_lane(lane));
+            let contract_check = escape_graph_attr(contract_gate_command());
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"Read the implementation plan carefully. Before writing any code, write .fabro-work/contract.md defining what DONE looks like for this lane.\\n\\nFormat:\\n\\n## Deliverables\\nList every file you will create or modify, one per line with backtick path.\\n\\n## Acceptance Criteria\\nList 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\\n\\n## Out of Scope\\nList what this lane will NOT implement.\\n\\nDo NOT write any source code. Only write the contract. Run `mkdir -p .fabro-work` first.\", reasoning_effort=\"medium\", max_retries=2]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 fallback_attr,
@@ -1980,7 +1979,14 @@ fn render_workflow_graph(
                 deep_review_target.provider.as_str(),
                 escalation_target.model,
                 escalation_target.provider.as_str(),
-                escape_graph_attr(&preflight_command(verify_command)),
+                escape_graph_attr(&preflight_command(
+                    lane,
+                    raw_verify_command,
+                    verify_command,
+                    health_command,
+                )),
+                contract_prompt,
+                contract_check,
                 prompt_path("plan"),
                 escape_graph_attr(verify_command),
                 health_node,
@@ -2009,29 +2015,11 @@ fn render_workflow_graph(
 }
 
 fn challenge_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
-    if let Some(target) = recurring_report_primary_target_for_lane(lane) {
-        return target;
-    }
-    if is_codex_unblock_lane(lane) {
-        return ModelTarget {
-            provider: Provider::OpenAi,
-            model: "gpt-5.4",
-        };
-    }
-    automation_primary_target(AutomationProfile::Write)
+    automation_primary_target(automation_profile_for_lane(lane, AutomationProfile::Write))
 }
 
 fn review_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
-    if let Some(target) = recurring_report_primary_target_for_lane(lane) {
-        return target;
-    }
-    if is_codex_unblock_lane(lane) {
-        return ModelTarget {
-            provider: Provider::OpenAi,
-            model: "gpt-5.4",
-        };
-    }
-    automation_primary_target(AutomationProfile::Review)
+    automation_primary_target(automation_profile_for_lane(lane, AutomationProfile::Review))
 }
 
 fn deep_review_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
@@ -2043,42 +2031,28 @@ fn escalation_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
 }
 
 fn write_target_for_lane(lane: &BlueprintLane) -> ModelTarget {
-    recurring_report_primary_target_for_lane(lane)
-        .unwrap_or_else(|| automation_primary_target(AutomationProfile::Write))
+    automation_primary_target(automation_profile_for_lane(lane, AutomationProfile::Write))
 }
 
-fn recurring_report_primary_target_for_lane(lane: &BlueprintLane) -> Option<ModelTarget> {
+fn automation_profile_for_lane(
+    lane: &BlueprintLane,
+    default_profile: AutomationProfile,
+) -> AutomationProfile {
+    if is_codex_unblock_lane(lane) {
+        return AutomationProfile::Unblock;
+    }
     if is_parent_holistic_review_minimax_lane(lane) {
-        return Some(ModelTarget {
-            provider: Provider::Minimax,
-            model: "MiniMax-M2.7-highspeed",
-        });
+        return AutomationProfile::Write;
     }
     if is_parent_holistic_review_deep_lane(lane) {
-        return Some(ModelTarget {
-            provider: Provider::Anthropic,
-            model: "claude-opus-4-6",
-        });
+        return AutomationProfile::DeepReview;
     }
     if is_parent_holistic_review_adjudication_lane(lane)
         || is_post_completion_codex_review_lane(lane)
     {
-        return Some(ModelTarget {
-            provider: Provider::OpenAi,
-            model: "gpt-5.4",
-        });
+        return AutomationProfile::Adjudication;
     }
-    None
-}
-
-fn custom_fallback_section_for_lane(lane: &BlueprintLane) -> Option<String> {
-    if is_parent_holistic_review_deep_lane(lane) {
-        return Some("[llm.fallbacks]\nanthropic = [\"gpt-5.4\"]\n".to_string());
-    }
-    if is_parent_holistic_review_adjudication_lane(lane) {
-        return Some("[llm.fallbacks]\nopenai = [\"claude-opus-4-6\"]\n".to_string());
-    }
-    None
+    default_profile
 }
 
 fn is_post_completion_codex_review_lane(lane: &BlueprintLane) -> bool {
@@ -2101,11 +2075,84 @@ fn is_codex_unblock_lane(lane: &BlueprintLane) -> bool {
     lane.id.ends_with("-codex-unblock") && lane.managed_milestone.ends_with("-done")
 }
 
+fn is_validation_lane(lane: &BlueprintLane) -> bool {
+    if is_codex_unblock_lane(lane) {
+        return false;
+    }
+    let combined = format!("{} {} {}", lane.id, lane.title, lane.goal).to_ascii_lowercase();
+    combined.contains("validation")
+}
+
+fn lane_allows_evidence_only_completion(lane: &BlueprintLane) -> bool {
+    is_codex_unblock_lane(lane) || is_validation_lane(lane)
+}
+
+fn workflow_profile_for_lane(lane: &BlueprintLane) -> &str {
+    if is_codex_unblock_lane(lane) {
+        return "unblock";
+    }
+    if is_validation_lane(lane) {
+        return "validation";
+    }
+    lane.proof_profile.as_deref().unwrap_or("standard")
+}
+
+fn contract_mode_for_lane(lane: &BlueprintLane) -> &'static str {
+    if is_codex_unblock_lane(lane) {
+        "unblock"
+    } else if is_validation_lane(lane) {
+        "validation"
+    } else {
+        "implementation"
+    }
+}
+
+fn contract_prompt_for_lane(lane: &BlueprintLane) -> String {
+    let mut prompt = String::from(
+        "Read the implementation plan carefully. Before writing any code, run `mkdir -p .fabro-work` and write `.fabro-work/contract.md` defining what DONE looks like for this lane.\n\n\
+Format:\n\n\
+## Deliverables\n\
+List every file you will create or modify, one per line with backtick path.\n\n\
+## Acceptance Criteria\n\
+List 3-8 testable conditions that prove the implementation works. Each must be verifiable by running a command or checking file content.\n\n\
+## Out of Scope\n\
+List what this lane will NOT implement.\n\n",
+    );
+    match contract_mode_for_lane(lane) {
+        "validation" => prompt.push_str(
+            "This is a validation lane. Prefer evidence and lane-local artifacts over product code changes. Do not invent implementation work that belongs to sibling lanes.\n\n",
+        ),
+        "unblock" => prompt.push_str(
+            "This is an unblock lane. Prefer the smallest lane-local workflow, prompt, or harness repair that lets the source lane pass its next replay. Do not broaden into unrelated repo cleanup.\n\n",
+        ),
+        _ => prompt.push_str(
+            "This is an implementation lane. Stay inside the named slice and declare only the minimal product files needed for that slice.\n\n",
+        ),
+    }
+    let owned_surfaces = extract_owned_surfaces(&lane.goal);
+    if !owned_surfaces.is_empty() {
+        prompt.push_str("Use these owned surfaces as your default scope:\n");
+        for surface in owned_surfaces {
+            prompt.push_str(&format!("- `{surface}`\n"));
+        }
+        prompt.push('\n');
+    }
+    prompt.push_str(
+        "Do NOT write any source code in this stage. Do NOT create new docs, broad cleanup tasks, or unrelated package edits unless the lane explicitly requires them. Finish by writing the contract only.\n",
+    );
+    prompt
+}
+
+fn contract_gate_command() -> &'static str {
+    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md"
+}
+
 fn profile_max_visits(profile: &str) -> u32 {
     match profile {
         "hardened" => 5,
         "unblock" => 5,
         "integration" => 6,
+        "validation" => 4,
         "foundation" => 4,
         _ => 3,
     }
@@ -2164,16 +2211,32 @@ fn profile_extra_graph_elements(
     }
 }
 
-fn preflight_command(verify_command: &str) -> String {
-    let trimmed = verify_command.trim_start();
-    let body = if let Some(rest) = trimmed.strip_prefix("set -e\n") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("set -e\r\n") {
-        rest
-    } else {
-        trimmed
-    };
-    format!("set +e\n{}\ntrue", body)
+fn shell_body(command: &str) -> &str {
+    let trimmed = command.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("set -e\n") {
+        return rest;
+    }
+    if let Some(rest) = trimmed.strip_prefix("set -e\r\n") {
+        return rest;
+    }
+    trimmed
+}
+
+fn preflight_command(
+    lane: &BlueprintLane,
+    raw_verify_command: &str,
+    verify_command: &str,
+    health_command: &str,
+) -> String {
+    let verify_body = shell_body(verify_command);
+    if lane.kind == raspberry_supervisor::manifest::LaneKind::Service && health_command != "true" {
+        let preflight_verify_body = shell_body(raw_verify_command);
+        let health_body = shell_body(health_command);
+        return format!(
+            "set -e\n{preflight_verify_body} &\npid=$!\ncleanup() {{\n  kill -TERM \"$pid\" 2>/dev/null || true\n  wait \"$pid\" 2>/dev/null || true\n}}\ntrap cleanup EXIT\nsleep 2\n{health_body}\ncleanup\ntrap - EXIT\n"
+        );
+    }
+    format!("set +e\n{}\ntrue", verify_body)
 }
 
 fn implementation_promotion_contract_command(
@@ -2256,52 +2319,42 @@ fn implementation_quality_command(
         .map(|line| normalize_prompt_path_item(line))
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
-    let touched_surface_section = if touched_surfaces.is_empty() {
+    let owned_surfaces = extract_owned_surfaces(&lane.goal);
+    let mut declared_surfaces = touched_surfaces.clone();
+    for surface in &owned_surfaces {
+        if !declared_surfaces.contains(surface) {
+            declared_surfaces.push(surface.clone());
+        }
+    }
+    let touched_surface_section = if declared_surfaces.is_empty() {
         "- (none declared)\n".to_string()
     } else {
-        touched_surfaces
+        declared_surfaces
             .iter()
             .map(|surface| format!("- {surface}\n"))
             .collect::<String>()
     };
     let mut surface_scan_lines = Vec::new();
-    for surface in &touched_surfaces {
+    for surface in &declared_surfaces {
         surface_scan_lines.push(format!("scan_placeholder {}", shell_single_quote(surface)));
     }
-    // Extract owned surfaces from the goal text ("Owned surfaces:\n- `path`")
-    for source in [&lane.goal] {
-        let mut in_section = false;
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("Owned surfaces:") {
-                in_section = true;
-                continue;
-            }
-            if in_section {
-                if trimmed.is_empty() || (!trimmed.starts_with('-') && !trimmed.starts_with('*')) {
-                    break;
-                }
-                let path = trimmed
-                    .trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace())
-                    .trim_matches('`')
-                    .trim();
-                if !path.is_empty() {
-                    surface_scan_lines
-                        .push(format!("scan_placeholder {}", shell_single_quote(path)));
-                }
-            }
-        }
-    }
+    let allows_evidence_only = lane_allows_evidence_only_completion(lane);
     if surface_scan_lines.is_empty() {
-        surface_scan_lines.push("true".to_string());
+        if allows_evidence_only {
+            surface_scan_lines.push("true".to_string());
+        } else {
+            surface_scan_lines.push(
+                "placeholder_hits=\"$placeholder_hits\\nMISSING OWNED SURFACES: no lane-owned surfaces declared\""
+                    .to_string(),
+            );
+        }
     }
     // Missing owned surface check: if a source file (.rs/.ts/.py/.js/.go) is
     // declared as an owned surface but doesn't exist after implementation,
     // that's a quality failure — the agent didn't create the required file.
     // scan_placeholder silently returns 0 for missing files, which masks this.
     let source_exts = ["rs", "ts", "tsx", "js", "py", "go", "sol", "rb"];
-    let all_owned_surfaces = extract_owned_surfaces(&lane.goal);
-    let owned_source_surfaces: Vec<&str> = all_owned_surfaces
+    let owned_source_surfaces: Vec<&str> = owned_surfaces
         .iter()
         .filter(|s| {
             source_exts
@@ -2344,19 +2397,34 @@ fn implementation_quality_command(
           fi\n\
         done\n"
         .to_string();
-    let semantic_risk_script = if lane_is_security_sensitive(
-        lane,
-        lane.prompt_context.as_deref().unwrap_or_default(),
-    ) {
+    let semantic_risk_script = if !allows_evidence_only
+        && lane_is_security_sensitive(lane, lane.prompt_context.as_deref().unwrap_or_default())
+    {
         "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
             .to_string()
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
     };
-    let lane_sizing_script = if lane_is_layout_sensitive(
-        lane,
-        lane.prompt_context.as_deref().unwrap_or_default(),
-    ) {
+    let surface_scan_dirs = {
+        let dirs: Vec<String> = declared_surfaces
+            .iter()
+            .filter_map(|s| {
+                std::path::Path::new(s)
+                    .parent()
+                    .map(|p| p.display().to_string())
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if dirs.is_empty() {
+            "__fabro_no_surface__".to_string()
+        } else {
+            dirs.join(" ")
+        }
+    };
+    let lane_sizing_script = if !allows_evidence_only
+        && lane_is_layout_sensitive(lane, lane.prompt_context.as_deref().unwrap_or_default())
+    {
         "lane_sizing_hits=\"\"\n\
          for surface in {surface_scan_dirs}; do\n  \
            if [ -d \"$surface\" ]; then\n    \
@@ -2371,23 +2439,14 @@ fn implementation_quality_command(
              done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
            fi\n\
          done\n"
-            .replace("{surface_scan_dirs}", &{
-                let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
-                    .iter()
-                    .filter_map(|s| {
-                        std::path::Path::new(s)
-                            .parent()
-                            .map(|p| shell_single_quote(&p.display().to_string()))
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                if dirs.is_empty() {
-                    ".".to_string()
-                } else {
-                    dirs.join(" ")
-                }
-            })
+            .replace(
+                "{surface_scan_dirs}",
+                &surface_scan_dirs
+                    .split_whitespace()
+                    .map(shell_single_quote)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
     } else {
         "lane_sizing_hits=\"\"\n".to_string()
     };
@@ -2403,19 +2462,7 @@ fn implementation_quality_command(
         semantic_risk_script = semantic_risk_script,
         lane_sizing_script = lane_sizing_script,
         touched_surface_section = touched_surface_section,
-        surface_scan_dirs = {
-            let dirs: Vec<String> = extract_owned_surfaces(&lane.goal)
-                .iter()
-                .filter_map(|s| {
-                    std::path::Path::new(s)
-                        .parent()
-                        .map(|p| p.display().to_string())
-                })
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if dirs.is_empty() { ".".to_string() } else { dirs.join(" ") }
-        },
+        surface_scan_dirs = surface_scan_dirs,
     )
 }
 
@@ -2484,14 +2531,7 @@ fn render_run_config(
     } else {
         "clean"
     };
-    let llm_target = if is_codex_unblock_lane(lane) {
-        ModelTarget {
-            provider: Provider::OpenAi,
-            model: "gpt-5.4",
-        }
-    } else {
-        write_target_for_lane(lane)
-    };
+    let llm_target = write_target_for_lane(lane);
     let llm_config = if matches!(
         lane.template,
         WorkflowTemplate::Bootstrap
@@ -2499,13 +2539,8 @@ fn render_run_config(
             | WorkflowTemplate::ServiceBootstrap
             | WorkflowTemplate::Implementation
     ) {
-        let fallback_section = if is_codex_unblock_lane(lane) {
-            String::new()
-        } else if let Some(section) = custom_fallback_section_for_lane(lane) {
-            section
-        } else {
-            render_fallback_section(AutomationProfile::Write)
-        };
+        let fallback_section =
+            render_fallback_section(automation_profile_for_lane(lane, AutomationProfile::Write));
         format!(
             "[llm]\nprovider = \"{}\"\nmodel = \"{}\"\n{}\n",
             llm_target.provider.as_str(),
@@ -3609,7 +3644,7 @@ fn default_verify_command(
                     .trim_matches('`')
                     .trim();
                 if looks_like_shell_command(candidate) {
-                    let cmd = if candidate.starts_with("cargo run") {
+                    let cmd = if candidate.starts_with("cargo run") && !candidate.contains(" -- ") {
                         candidate.replacen("cargo run", "cargo build", 1)
                     } else if candidate == "cargo test --workspace"
                         || candidate == "cargo test --workspace --"
@@ -4992,6 +5027,34 @@ fn implementation_audit_command(
             shell_single_quote(&review_path.display().to_string()),
             shell_single_quote(&verification_path.display().to_string()),
         )
+    } else if is_validation_lane(lane) {
+        let implementation_path = unit
+            .and_then(|unit| {
+                lane_named_artifact_path_relative(blueprint, unit_id, lane, "implementation")
+                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+            })
+            .unwrap_or_else(|| PathBuf::from("implementation.md"));
+        let review_path = unit
+            .and_then(|unit| {
+                lane_named_artifact_path_relative(blueprint, unit_id, lane, "review")
+                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+            })
+            .unwrap_or_else(|| PathBuf::from("review.md"));
+        let verification_path = unit
+            .and_then(|unit| {
+                lane_named_artifact_path_relative(blueprint, unit_id, lane, "verification")
+                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+            })
+            .unwrap_or_else(|| PathBuf::from("verification.md"));
+        format!(
+            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+             changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
+             test \"$changed_count\" -gt 0 || \
+             rg -q -i 'validation lane|no product code changes expected|no code changes were needed|evidence-only|smoke run is partial evidence' {} {} {} 2>/dev/null )",
+            shell_single_quote(&implementation_path.display().to_string()),
+            shell_single_quote(&review_path.display().to_string()),
+            shell_single_quote(&verification_path.display().to_string()),
+        )
     } else {
         "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
         test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )"
@@ -5623,7 +5686,38 @@ fn normalize_lane_verify_command(lane: &BlueprintLane, verify_command: String) -
     } else {
         verify_command
     };
-    portable_proof_command(verify_command)
+    let verify_command = portable_proof_command(verify_command);
+    if lane.kind == raspberry_supervisor::manifest::LaneKind::Service {
+        let verify_body = shell_body(&verify_command).trim();
+        if verify_body.starts_with("cargo run") {
+            return service_startup_smoke_command(verify_body);
+        }
+    }
+    verify_command
+}
+
+fn service_startup_smoke_command(command: &str) -> String {
+    format!(
+        "set -e\n{command} &\npid=$!\ncleanup() {{\n  kill -TERM \"$pid\" 2>/dev/null || true\n  wait \"$pid\" 2>/dev/null || true\n}}\ntrap cleanup EXIT\nsleep 2\ncleanup\ntrap - EXIT\n"
+    )
+}
+
+fn normalize_lane_health_command(
+    lane: &BlueprintLane,
+    verify_command: &str,
+    health_command: String,
+) -> String {
+    if lane.kind != raspberry_supervisor::manifest::LaneKind::Service {
+        return health_command;
+    }
+
+    let verify_body = shell_body(verify_command).trim();
+    let health_body = shell_body(&health_command).trim();
+    if verify_body.starts_with("cargo test") && health_body == "cargo test -- --nocapture health" {
+        return "true".to_string();
+    }
+
+    health_command
 }
 
 fn normalize_verify_commands(lane: &BlueprintLane, commands: Vec<String>) -> Vec<String> {
@@ -6281,9 +6375,18 @@ fn inline_smoke_command(line: &str) -> Option<String> {
 }
 
 fn looks_like_shell_command(line: &str) -> bool {
+    if is_command_output_line(line) {
+        return false;
+    }
+
     ["cargo ", "git ", "./", "test ", "fabro ", "myosu-", "curl "]
         .iter()
         .any(|prefix| line.starts_with(prefix))
+}
+
+fn is_command_output_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    lower.starts_with("test result:")
 }
 
 fn missing_implementation_package(
@@ -6507,7 +6610,7 @@ mod tests {
     use super::{
         apply_blocker_contract_tightening, augment_with_implementation_follow_on_units,
         backticked_segments, blocked_review_refs, blocker_milestone_refinement_recommendations,
-        execution_guidance_from_slice_notes, extract_requirement_detail,
+        default_verify_command, execution_guidance_from_slice_notes, extract_requirement_detail,
         first_code_surface_from_markdown, first_health_gate_from_markdown,
         first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
         first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
@@ -6915,7 +7018,7 @@ Required before validator:oracle implementation-family workflow:
         let preflight_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-preflight")
+            .find(|unit| unit.id == "roulette-parent-holistic-preflight")
             .expect("preflight unit exists");
         let preflight_lane = preflight_unit.lanes.first().expect("preflight lane exists");
 
@@ -6929,39 +7032,39 @@ Required before validator:oracle implementation-family workflow:
         let minimax_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-minimax")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-minimax")
             .expect("minimax unit exists");
         let minimax_lane = minimax_unit.lanes.first().expect("minimax lane exists");
         assert_eq!(minimax_lane.dependencies.len(), 1);
         assert_eq!(
             minimax_lane.dependencies[0].unit,
-            "roulette-holistic-preflight"
+            "roulette-parent-holistic-preflight"
         );
         assert_eq!(
             minimax_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-preflight-verified")
+            Some("roulette-parent-holistic-preflight-verified")
         );
 
         let deep_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-deep")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-deep")
             .expect("deep review unit exists");
         let deep_lane = deep_unit.lanes.first().expect("deep lane exists");
         assert_eq!(deep_lane.dependencies.len(), 1);
         assert_eq!(
             deep_lane.dependencies[0].unit,
-            "roulette-holistic-review-minimax"
+            "roulette-parent-holistic-review-minimax"
         );
         assert_eq!(
             deep_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-review-minimax-reviewed")
+            Some("roulette-parent-holistic-review-minimax-reviewed")
         );
 
         let adjudication_unit = evolved
             .units
             .iter()
-            .find(|unit| unit.id == "roulette-holistic-review-adjudication")
+            .find(|unit| unit.id == "roulette-parent-holistic-review-adjudication")
             .expect("adjudication unit exists");
         let adjudication_lane = adjudication_unit
             .lanes
@@ -6970,11 +7073,11 @@ Required before validator:oracle implementation-family workflow:
         assert_eq!(adjudication_lane.dependencies.len(), 1);
         assert_eq!(
             adjudication_lane.dependencies[0].unit,
-            "roulette-holistic-review-deep"
+            "roulette-parent-holistic-review-deep"
         );
         assert_eq!(
             adjudication_lane.dependencies[0].milestone.as_deref(),
-            Some("roulette-holistic-review-deep-reviewed")
+            Some("roulette-parent-holistic-review-deep-reviewed")
         );
     }
 
@@ -7158,9 +7261,9 @@ Required before validator:oracle implementation-family workflow:
 
         let evolved = inject_workspace_verify_lanes(&blueprint);
         for expected in [
-            "roulette-investigate",
-            "roulette-design-review",
-            "roulette-cso",
+            "roulette-parent-investigate",
+            "roulette-parent-design-review",
+            "roulette-parent-cso",
             "roulette-benchmark",
         ] {
             assert!(
@@ -7405,6 +7508,27 @@ cargo test -p myosu-play training::tests::hand_completes_fold
     }
 
     #[test]
+    fn proof_commands_from_markdown_ignores_fenced_test_output_lines() {
+        let text = r#"
+## Verification Commands
+
+```bash
+cargo test -p casino-core -- baccarat
+# Expected result: 66 tests pass
+test result: ok. 54 passed; 0 failed; 0 ignored
+test result: ok. 12 passed; 0 failed; 0 ignored
+```
+"#;
+
+        let commands = proof_commands_from_markdown(text);
+
+        assert_eq!(
+            commands,
+            vec!["cargo test -p casino-core -- baccarat".to_string()]
+        );
+    }
+
+    #[test]
     fn inline_proof_command_extracts_single_line_proof_gate() {
         let command = inline_proof_command(
             "**Proof gate**: `cargo test -p myosu-sdk scaffold::tests::generates_compilable_crate`",
@@ -7421,6 +7545,9 @@ cargo test -p myosu-play training::tests::hand_completes_fold
     fn looks_like_shell_command_ignores_non_commands() {
         assert!(looks_like_shell_command("cargo test -p myosu-sdk"));
         assert!(looks_like_shell_command("git diff crates/myosu-games/src/"));
+        assert!(!looks_like_shell_command(
+            "test result: ok. 54 passed; 0 failed; 0 ignored"
+        ));
         assert!(!looks_like_shell_command(
             "The lane is ready for implementation."
         ));
@@ -8125,6 +8252,86 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn implementation_workflow_adds_contract_check_gate() {
+        let lane = BlueprintLane {
+            id: "demo-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Demo Implement Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("demo-implement".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `src/demo.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some("Touch first:\n- `src/demo.rs`\n".to_string()),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "cargo test -p demo",
+            "cargo test -p demo",
+            "true",
+            "true",
+            "true",
+        );
+
+        assert!(graph.contains("label=\"Contract Check\""));
+        assert!(graph.contains("contract -> contract_check -> implement"));
+        assert!(!graph.contains("contract_check -> contract"));
+        assert!(graph.contains("Use these owned surfaces as your default scope"));
+    }
+
+    #[test]
+    fn validation_workflow_uses_validation_contract_guidance() {
+        let lane = BlueprintLane {
+            id: "live-validation".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Live Validation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("live-validation".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Live validation for generated package behavior.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "cargo test -p demo",
+            "cargo test -p demo",
+            "true",
+            "true",
+            "true",
+        );
+
+        assert!(graph.contains("This is a validation lane."));
+        assert!(graph.contains("Do not invent implementation work that belongs to sibling lanes"));
+    }
+
+    #[test]
     fn implementation_review_prompt_adds_security_guidance_for_sensitive_slices() {
         let lane = BlueprintLane {
             id: "roulette-implement".to_string(),
@@ -8362,6 +8569,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let graph = render_workflow_graph(
             &lane,
             "cargo test -p myosu-miner -- --test-threads=1",
+            "cargo test -p myosu-miner -- --test-threads=1",
             "set -e\ncurl http://{ip}:{port}/health",
             "test -f outputs/miner/service/implementation.md && test -f outputs/miner/service/verification.md && test -f outputs/miner/service/quality.md && grep -Eq '^merge_ready: yes$' outputs/miner/service/promotion.md",
             "test -f outputs/miner/service/quality.md",
@@ -8377,6 +8585,10 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("#review      { backend: cli; model: kimi-k2.5; provider: kimi; }"));
         assert!(graph.contains("verify -> health"));
         assert!(graph.contains("health -> quality"));
+        assert!(graph.contains("preflight [label=\"Preflight\""));
+        assert!(graph.contains("pid=$!"));
+        assert!(graph.contains("trap cleanup EXIT"));
+        assert!(graph.contains("curl http://{ip}:{port}/health"));
         assert!(graph.contains("quality -> challenge [condition=\"outcome=success\"]"));
         assert!(graph.contains("challenge -> review [condition=\"outcome=success\"]"));
         assert!(graph.contains("review -> audit [condition=\"outcome=success\"]"));
@@ -8384,6 +8596,104 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("review -> fixup"));
         assert!(graph.contains("audit -> fixup"));
         assert!(!graph.contains("label=\"Settle\""));
+    }
+
+    #[test]
+    fn service_test_lanes_skip_generic_health_gate() {
+        let lane = BlueprintLane {
+            id: "test-coverage-house-protocol-tests".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "House protocol tests".to_string(),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("test-coverage-house-protocol-tests".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Add protocol tests.\n\nOwned surfaces:\n- `bin/house/src/protocol.rs`\n"
+                .to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo test --bin house -- protocol".to_string()),
+            health_command: Some("cargo test -- --nocapture health".to_string()),
+        };
+
+        let verify = super::normalize_lane_verify_command(
+            &lane,
+            lane.verify_command.clone().expect("verify command"),
+        );
+        let health = super::normalize_lane_health_command(
+            &lane,
+            &verify,
+            lane.health_command.clone().expect("health command"),
+        );
+        let graph = render_workflow_graph(
+            &lane,
+            lane.verify_command.as_deref().expect("verify command"),
+            &verify,
+            &health,
+            "true",
+            "true",
+        );
+
+        assert_eq!(health, "true");
+        assert!(!graph.contains("label=\"Health\""));
+        assert!(graph.contains("set +e\\ncargo test --bin house -- protocol\\ntrue"));
+    }
+
+    #[test]
+    fn service_verify_for_long_running_cargo_run_becomes_startup_smoke() {
+        let lane = BlueprintLane {
+            id: "house-agent-ws-accept-loop".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "House Agent Ws Accept Loop".to_string(),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("house-agent-ws-accept-loop".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Proof commands:\n- `cargo run --bin house -- --bind 127.0.0.1:9876`\n"
+                .to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo run --bin house -- --bind 127.0.0.1:9876".to_string()),
+            health_command: Some("cargo test -- --nocapture health".to_string()),
+        };
+
+        let verify = super::normalize_lane_verify_command(
+            &lane,
+            lane.verify_command.clone().expect("verify command"),
+        );
+        let graph = render_workflow_graph(
+            &lane,
+            lane.verify_command.as_deref().expect("verify command"),
+            &verify,
+            "set -e\ncargo test -- --nocapture health",
+            "true",
+            "true",
+        );
+
+        assert!(verify.contains("pid=$!"));
+        assert!(verify.contains("sleep 2"));
+        assert!(verify.contains("kill -TERM"));
+        assert!(graph.contains("label=\"Verify\""));
+        assert!(graph.contains("kill -TERM \\\"$pid\\\""));
+        assert_eq!(graph.matches("pid=$!").count(), 2);
     }
 
     #[test]
@@ -8412,7 +8722,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true", "true");
         let run_config = render_run_config(&lane, None, Path::new("."));
 
         assert!(graph.contains(
@@ -8474,7 +8784,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let deep_graph = render_workflow_graph(&deep_lane, "true", "true", "true", "true");
+        let deep_graph =
+            render_workflow_graph(&deep_lane, "true", "true", "true", "true", "true");
         let deep_run_config = render_run_config(&deep_lane, None, Path::new("."));
         assert!(deep_graph
             .contains("#review { backend: cli; model: claude-opus-4-6; provider: anthropic; }"));
@@ -8485,7 +8796,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(deep_run_config.contains("[llm.fallbacks]"));
         assert!(deep_run_config.contains("anthropic = [\"gpt-5.4\"]"));
 
-        let graph = render_workflow_graph(&lane, "true", "true", "true", "true");
+        let graph = render_workflow_graph(&lane, "true", "true", "true", "true", "true");
         let run_config = render_run_config(&lane, None, Path::new("."));
 
         assert!(graph.contains("#review { backend: cli; model: gpt-5.4; provider: openai; }"));
@@ -8556,7 +8867,14 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let graph = render_workflow_graph(&lane, "cargo check --workspace", "true", "true", "true");
+        let graph = render_workflow_graph(
+            &lane,
+            "cargo check --workspace",
+            "cargo check --workspace",
+            "true",
+            "true",
+            "true",
+        );
 
         assert!(graph.contains("#challenge   { backend: cli; model: gpt-5.4; provider: openai; }"));
         assert!(graph.contains("#review      { backend: cli; model: gpt-5.4; provider: openai; }"));
@@ -8669,6 +8987,49 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
                 "promotion".to_string()
             ]
         );
+        assert!(unblock_unit.lanes[0].checks.is_empty());
+        assert!(unblock_unit.lanes[0]
+            .prompt_context
+            .as_deref()
+            .is_some_and(|text| text.contains("dispatched automatically by the supervisor")));
+    }
+
+    #[test]
+    fn manifest_lane_out_strips_legacy_unblock_dispatch_checks() {
+        let lane = BlueprintLane {
+            id: "poker-tui-screen-codex-unblock".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Poker TUI Screen Codex Unblock".to_string(),
+            family: "codex-unblock".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("poker-tui-screen-codex-unblock".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Use Codex to unblock poker-tui-screen.".to_string(),
+            managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string()],
+            proof_profile: Some("unblock".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: vec![raspberry_supervisor::manifest::LaneCheck {
+                label: "legacy_dispatch_only".to_string(),
+                kind: raspberry_supervisor::manifest::LaneCheckKind::Precondition,
+                scope: raspberry_supervisor::manifest::LaneCheckScope::Ready,
+                probe: raspberry_supervisor::manifest::LaneCheckProbe::FileExists {
+                    path: PathBuf::from(".raspberry/codex-unblock-dispatch-only"),
+                },
+            }],
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo check --workspace".to_string()),
+            health_command: None,
+        };
+
+        let manifest_lane = super::ManifestLaneOut::from_blueprint(&lane);
+
+        assert!(manifest_lane.checks.is_empty());
     }
 
     #[test]
@@ -8833,6 +9194,202 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn implementation_quality_command_does_not_scan_repo_root_for_validation_lane() {
+        let unit = BlueprintUnit {
+            id: "live-validation".to_string(),
+            title: "Live Validation".to_string(),
+            output_root: PathBuf::from("outputs/live-validation"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "live-validation".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Live Validation Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("live-validation".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Live validation for generated package behavior.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+            protocols: vec![],
+        };
+
+        let command = implementation_quality_command(&blueprint, "live-validation", &lane);
+
+        assert!(!command.contains("for surface in .;"));
+        assert!(command.contains("__fabro_no_surface__"));
+        assert!(!command.contains("lane_sizing_hits=\"\"\\n         for surface in '.'"));
+    }
+
+    #[test]
+    fn implementation_audit_command_allows_validation_lane_without_product_diff() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "live-validation".to_string(),
+                title: "Live Validation".to_string(),
+                output_root: PathBuf::from("outputs/live-validation"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from("implementation.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "review".to_string(),
+                        path: PathBuf::from("review.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "live-validation".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Live Validation Lane".to_string(),
+                    family: "implement".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("live-validation".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Live validation for generated package behavior.".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "review".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: None,
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p demo".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+        let lane = &blueprint.units[0].lanes[0];
+        let command = implementation_audit_command(&blueprint, "live-validation", lane, "true");
+
+        assert!(command.contains("validation lane"));
+        assert!(command.contains("no product code changes expected"));
+        assert!(command.contains("evidence-only"));
+    }
+
+    #[test]
+    fn default_verify_command_preserves_cargo_run_commands_with_runtime_args() {
+        let lane = BlueprintLane {
+            id: "house-agent-ws-accept-loop".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Service,
+            title: "House Agent Ws Accept Loop".to_string(),
+            family: "implementation".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("house-agent-ws-accept-loop".to_string()),
+            template: WorkflowTemplate::ServiceBootstrap,
+            goal: "Proof commands:\n- `cargo run --bin house -- --bind 127.0.0.1:9876`\n"
+                .to_string(),
+            managed_milestone: "reviewed".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![],
+            protocols: vec![],
+        };
+
+        let command = default_verify_command(&blueprint, "house-agent", &lane);
+
+        assert!(command.contains("cargo run --bin house -- --bind 127.0.0.1:9876"));
+        assert!(!command.contains("cargo build --bin house -- --bind 127.0.0.1:9876"));
+    }
+
+    #[test]
     fn promotion_contract_requires_security_fields_for_sensitive_lane() {
         let lane = BlueprintLane {
             id: "roulette".to_string(),
@@ -8971,6 +9528,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let graph = render_workflow_graph(
             &lane,
             "test -f spec.md && test -f review.md",
+            "test -f spec.md && test -f review.md",
             "true",
             "true",
             "true",
@@ -9009,6 +9567,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         let graph = render_workflow_graph(
             &lane,
+            "test -f inventory.md && test -f review.md",
             "test -f inventory.md && test -f review.md",
             "true",
             "true",
@@ -9582,6 +10141,11 @@ impl ManifestLaneOut {
             .as_ref()
             .map(|path| repo_relative_string(path, 2))
             .unwrap_or_else(|| format!("../run-configs/{}/{}.toml", lane.family, lane.slug()));
+        let checks = if is_codex_unblock_lane(lane) {
+            Vec::new()
+        } else {
+            lane.checks.iter().map(manifest_check).collect()
+        };
         Self {
             id: lane.id.clone(),
             kind: lane.kind,
@@ -9607,7 +10171,7 @@ impl ManifestLaneOut {
                 .orchestration_state_path
                 .as_ref()
                 .map(|path| repo_relative_string(path, 2)),
-            checks: lane.checks.iter().map(manifest_check).collect(),
+            checks,
             run_dir: lane
                 .run_dir
                 .as_ref()

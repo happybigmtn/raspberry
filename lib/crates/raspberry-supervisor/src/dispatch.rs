@@ -101,6 +101,11 @@ pub fn execute_selected_lanes(
         | TargetRepoFreshness::Current
         | TargetRepoFreshness::FastForwarded
         | TargetRepoFreshness::LocalAhead => {}
+        TargetRepoFreshness::InvalidPushRemote { reason } => {
+            return Err(DispatchError::TargetRepoStale {
+                message: format!("origin is not a valid branch-backed push target: {reason}"),
+            });
+        }
         TargetRepoFreshness::WrongBranch { current, expected } => {
             return Err(DispatchError::TargetRepoStale {
                 message: format!(
