@@ -109,6 +109,9 @@ pub fn classify_failure(
         || combined.contains("does not appear to be a git repository")
         || (combined.contains("cannot force update the branch")
             && combined.contains("used by worktree"))
+        || combined.contains("failed to resolve ssh push url")
+        || (combined.contains("remote `origin` must use ssh")
+            && combined.contains("convertible from github https"))
         || combined.contains("configure origin/head so direct integration can target trunk")
         || combined.contains("set fabro_trunk_branch")
     {
@@ -158,6 +161,8 @@ pub fn classify_failure(
         || combined.contains("\"error\":\"rate_limit\"")
         || combined.contains("\"error\":\"rate limit\"")
         || combined.contains("try again at")
+        || combined.contains("provider returned empty response with zero tokens")
+        || combined.contains("possible auth failure")
     {
         return Some(FailureKind::ProviderAccessLimited);
     }
@@ -170,7 +175,10 @@ pub fn classify_failure(
     {
         return Some(FailureKind::CapabilityContractMismatch);
     }
-    if combined.contains("stall watchdog") || combined.contains("had no activity for 1800s") {
+    if combined.contains("stall watchdog")
+        || combined.contains("had no activity for 1800s")
+        || combined.contains("cli command timed out after 1800s")
+    {
         return Some(FailureKind::StallWatchdog);
     }
     if combined.contains("provider policy")
@@ -379,6 +387,14 @@ mod tests {
             ),
             Some(FailureKind::ProviderAccessLimited)
         );
+        assert_eq!(
+            classify_failure(
+                Some("Previous attempts:\nminimax:MiniMax-M2.7-highspeed failed: provider returned empty response with zero tokens (possible auth failure)"),
+                None,
+                None,
+            ),
+            Some(FailureKind::ProviderAccessLimited)
+        );
     }
 
     #[test]
@@ -415,6 +431,16 @@ mod tests {
             classify_failure(
                 Some(
                     "git branch -f target branch failed: fatal: cannot force update the branch 'main' used by worktree at '/repo'"
+                ),
+                None,
+                None,
+            ),
+            Some(FailureKind::IntegrationTargetUnavailable)
+        );
+        assert_eq!(
+            classify_failure(
+                Some(
+                    "failed to resolve SSH push URL: Engine error: remote `origin` must use SSH or be convertible from GitHub HTTPS, got `/home/r/coding/rXMRbro-autodev-fresh2`"
                 ),
                 None,
                 None,
@@ -516,6 +542,14 @@ mod tests {
         assert_eq!(
             classify_failure(
                 Some("Engine error: stall watchdog: node \"verify\" had no activity for 1800s"),
+                None,
+                None,
+            ),
+            Some(FailureKind::StallWatchdog)
+        );
+        assert_eq!(
+            classify_failure(
+                Some("Handler error: CLI command exited with code -1: CLI command timed out after 1800s: cat '/tmp/prompt.txt' | env -u ANTHROPIC_API_KEY CLAUDECODE= claude -p --verbose --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6"),
                 None,
                 None,
             ),

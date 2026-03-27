@@ -17,7 +17,7 @@ use crate::controller_lease::{
     acquire_autodev_lease, autodev_controller_active, ControllerLeaseError,
 };
 use crate::dispatch::{execute_selected_lanes, DispatchError, DispatchOutcome, DispatchSettings};
-use crate::evaluate::{evaluate_program, EvaluateError, LaneExecutionStatus};
+use crate::evaluate::{evaluate_program, parse_usage_summary, EvaluateError, LaneExecutionStatus};
 use crate::failure::{
     classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction,
 };
@@ -86,12 +86,33 @@ pub struct AutodevCurrentSnapshot {
     pub failed_lanes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub critical_blockers: Vec<CriticalBlocker>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_routes: Vec<LaneProviderRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usage_by_provider: Vec<ProviderUsageSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CriticalBlocker {
     pub lane_key: String,
     pub blocked_downstream: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneProviderRoute {
+    pub lane_key: String,
+    pub status: LaneExecutionStatus,
+    pub model: String,
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderUsageSnapshot {
+    pub provider: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_microusd: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +128,46 @@ pub struct AutodevCycleReport {
     pub dispatched: Vec<DispatchOutcome>,
     pub running_after: usize,
     pub complete_after: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<AutodevCycleTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<AutodevCycleTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutodevCycleTiming {
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub total_duration_ms: u64,
+    pub refresh_evaluate_ms: u64,
+    pub evolve_ms: u64,
+    pub dispatch_ms: u64,
+    pub post_dispatch_evaluate_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutodevCycleTelemetry {
+    pub available_slots: usize,
+    pub fresh_capacity_reserve: usize,
+    pub replay_budget: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready_but_undispatched: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct_ready_but_undispatched: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_program_ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub idle_with_ready_work: bool,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub failed_bootstrap_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub runtime_path_errors: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub stale_running_reclaimed: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub provider_access_limited: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub stall_watchdog: usize,
 }
 
 const DOCTRINE_STATE_SCHEMA_VERSION: &str = "raspberry.doctrine.v1";
@@ -131,9 +192,23 @@ const DEFAULT_DOCTRINE_ROOT_FILES: &[&str] = &[
     "CLAUDE.md",
 ];
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+fn elapsed_millis(start: Instant) -> u64 {
+    let millis = start.elapsed().as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TargetRepoFreshness {
     NoOrigin,
+    InvalidPushRemote { reason: String },
     Current,
     FastForwarded,
     LocalAhead,
@@ -382,6 +457,8 @@ pub fn orchestrate_program(
         }
 
         cycle_number += 1;
+        let cycle_started_at = Utc::now();
+        let cycle_started = Instant::now();
         autodev_debug_step(&initial_manifest.program, cycle_number, "cycle-start");
         let manifest = ProgramManifest::load(&manifest_path)?;
         autodev_debug_step(&manifest.program, cycle_number, "manifest-loaded");
@@ -428,9 +505,11 @@ pub fn orchestrate_program(
                 regenerable_failures.len()
             ),
         );
+        let refresh_evaluate_ms = elapsed_millis(cycle_started);
 
         let mut evolved = false;
         let mut evolve_target = None;
+        let evolve_started = Instant::now();
         if should_trigger_evolve(
             last_evolve_at,
             evolve_every,
@@ -484,6 +563,7 @@ pub fn orchestrate_program(
                 }
             }
         }
+        let evolve_ms = elapsed_millis(evolve_started);
         autodev_debug_step(
             &manifest.program,
             cycle_number,
@@ -540,14 +620,18 @@ pub fn orchestrate_program(
                 .filter(|lane| lane.status == LaneExecutionStatus::Ready)
                 .collect::<Vec<_>>(),
         );
+        let dispatch_started = Instant::now();
         let current_running = program
             .lanes
             .iter()
             .filter(|lane| lane.status == LaneExecutionStatus::Running)
             .count();
         let available_slots = max_parallel.saturating_sub(current_running);
+        let fresh_capacity_reserve =
+            reserve_fresh_ready_capacity(&program, &replayable_failures, available_slots);
+        let replay_budget = available_slots.saturating_sub(fresh_capacity_reserve);
         let replayed_lanes =
-            select_replayed_lanes_for_dispatch(&program, &replayable_failures, available_slots);
+            select_replayed_lanes_for_dispatch(&program, &replayable_failures, replay_budget);
         let remaining_slots = available_slots.saturating_sub(replayed_lanes.len());
         let selected_ready_lanes =
             select_ready_lanes_for_dispatch(&program, remaining_slots, &replayed_lanes);
@@ -557,7 +641,7 @@ pub fn orchestrate_program(
             &manifest.program,
             cycle_number,
             &format!(
-                "dispatch-plan available_slots={available_slots} replayed={} ready={} dispatching={}",
+                "dispatch-plan available_slots={available_slots} fresh_reserve={fresh_capacity_reserve} replay_budget={replay_budget} replayed={} ready={} dispatching={}",
                 replayed_lanes.len(),
                 ready_lanes.len(),
                 lanes_to_dispatch.len()
@@ -600,6 +684,7 @@ pub fn orchestrate_program(
             cycle_number,
             &format!("dispatch-complete outcomes={}", dispatched.len()),
         );
+        let dispatch_ms = elapsed_millis(dispatch_started);
 
         // After dispatch, sync the target repo if integrations may have landed.
         // This ensures evaluate sees freshly-pushed artifacts for milestone checks.
@@ -607,9 +692,19 @@ pub fn orchestrate_program(
             maybe_sync_target_repo_to_origin(&manifest, &manifest_path, &mut last_repo_sync_at);
         }
 
+        let cycle_telemetry = build_cycle_telemetry(
+            &program,
+            available_slots,
+            fresh_capacity_reserve,
+            replay_budget,
+            &ready_lanes,
+            &lanes_to_dispatch,
+        );
+
         // Skip redundant evaluation when nothing changed (no dispatch, no evolve).
         // Between program_before and here only ms elapsed; re-evaluating 221 lanes
         // with check probes and progress file reads is wasted work.
+        let post_dispatch_evaluate_started = Instant::now();
         let program_after = if dispatched.is_empty() && !evolved {
             autodev_debug_step(
                 &manifest.program,
@@ -626,6 +721,7 @@ pub fn orchestrate_program(
             );
             p
         };
+        let post_dispatch_evaluate_ms = elapsed_millis(post_dispatch_evaluate_started);
         let running_after = program_after
             .lanes
             .iter()
@@ -650,6 +746,16 @@ pub fn orchestrate_program(
             dispatched,
             running_after,
             complete_after,
+            timing: Some(AutodevCycleTiming {
+                started_at: cycle_started_at,
+                finished_at: Utc::now(),
+                total_duration_ms: elapsed_millis(cycle_started),
+                refresh_evaluate_ms,
+                evolve_ms,
+                dispatch_ms,
+                post_dispatch_evaluate_ms,
+            }),
+            telemetry: Some(cycle_telemetry),
         });
         report.current = Some(current_snapshot(&program_after, Some(max_parallel)));
         report.updated_at = Utc::now();
@@ -737,6 +843,131 @@ fn has_more_cycles(max_cycles: Option<usize>, cycle_number: usize) -> bool {
         Some(limit) => cycle_number < limit,
         None => true,
     }
+}
+
+fn build_cycle_telemetry(
+    program: &crate::evaluate::EvaluatedProgram,
+    available_slots: usize,
+    fresh_capacity_reserve: usize,
+    replay_budget: usize,
+    ready_lanes: &[String],
+    lanes_to_dispatch: &[String],
+) -> AutodevCycleTelemetry {
+    let lanes_to_dispatch: BTreeSet<&str> = lanes_to_dispatch.iter().map(String::as_str).collect();
+    let ready_lane_kind = program
+        .lanes
+        .iter()
+        .map(|lane| (lane.lane_key.as_str(), lane.lane_kind))
+        .collect::<BTreeMap<_, _>>();
+    let ready_but_undispatched = ready_lanes
+        .iter()
+        .filter(|lane| !lanes_to_dispatch.contains(lane.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let direct_ready_but_undispatched = ready_but_undispatched
+        .iter()
+        .filter(|lane| {
+            ready_lane_kind
+                .get(lane.as_str())
+                .is_some_and(|kind| *kind != crate::manifest::LaneKind::Orchestration)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let child_program_ready = ready_but_undispatched
+        .iter()
+        .filter(|lane| {
+            ready_lane_kind
+                .get(lane.as_str())
+                .is_some_and(|kind| *kind == crate::manifest::LaneKind::Orchestration)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut failed_bootstrap_count = 0usize;
+    let mut runtime_path_errors = 0usize;
+    let mut stale_running_reclaimed = 0usize;
+    let mut provider_access_limited = 0usize;
+    let mut stall_watchdog = 0usize;
+
+    for lane in &program.lanes {
+        let Some(kind) = lane.failure_kind else {
+            if stale_run_reclaimed(lane) {
+                stale_running_reclaimed += 1;
+            }
+            continue;
+        };
+        match kind {
+            FailureKind::TransientLaunchFailure => failed_bootstrap_count += 1,
+            FailureKind::ProviderAccessLimited => provider_access_limited += 1,
+            FailureKind::StallWatchdog => stall_watchdog += 1,
+            _ => {}
+        }
+        if runtime_path_error(lane, kind) {
+            runtime_path_errors += 1;
+        }
+        if stale_run_reclaimed(lane) {
+            stale_running_reclaimed += 1;
+        }
+    }
+
+    AutodevCycleTelemetry {
+        available_slots,
+        fresh_capacity_reserve,
+        replay_budget,
+        idle_with_ready_work: available_slots > 0
+            && !direct_ready_but_undispatched.is_empty()
+            && lanes_to_dispatch.is_empty(),
+        ready_but_undispatched,
+        direct_ready_but_undispatched,
+        child_program_ready,
+        failed_bootstrap_count,
+        runtime_path_errors,
+        stale_running_reclaimed,
+        provider_access_limited,
+        stall_watchdog,
+    }
+}
+
+fn runtime_path_error(lane: &crate::evaluate::EvaluatedLane, kind: FailureKind) -> bool {
+    let mut combined = String::new();
+    for text in [
+        Some(lane.detail.as_str()),
+        lane.last_error.as_deref(),
+        lane.last_stdout_snippet.as_deref(),
+        lane.last_stderr_snippet.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&text.to_lowercase());
+    }
+
+    if combined.is_empty() {
+        return false;
+    }
+
+    matches!(
+        kind,
+        FailureKind::TransientLaunchFailure | FailureKind::ProviderPolicyMismatch
+    ) && (combined.contains("no such file or directory")
+        || combined.contains("failed to spawn fabro")
+        || combined.contains("failed to spawn git")
+        || combined.contains("prompt")
+        || combined.contains("@../../prompts/")
+        || combined.contains("synth")
+        || combined.contains("manifest"))
+}
+
+fn stale_run_reclaimed(lane: &crate::evaluate::EvaluatedLane) -> bool {
+    lane.last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("tracked run was removed after controller stopped"))
 }
 
 fn enter_orchestration_scope(
@@ -1100,6 +1331,25 @@ fn select_replayed_lanes_for_dispatch(
     selected
 }
 
+fn reserve_fresh_ready_capacity(
+    program: &crate::evaluate::EvaluatedProgram,
+    replayable_failures: &[String],
+    available_slots: usize,
+) -> usize {
+    if available_slots < 2 || replayable_failures.is_empty() {
+        return 0;
+    }
+    let has_fresh_ready = program
+        .lanes
+        .iter()
+        .any(|lane| lane.status == LaneExecutionStatus::Ready);
+    if has_fresh_ready {
+        1
+    } else {
+        0
+    }
+}
+
 fn lane_dispatch_priority_tuple(
     lane: Option<&&crate::evaluate::EvaluatedLane>,
 ) -> (i32, i32, std::cmp::Reverse<String>) {
@@ -1117,6 +1367,7 @@ fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
     let key = lane.lane_key.as_str();
     let unit = lane.unit_id.as_str();
     let mut score = 50;
+    let failure_kind = failure_kind_for_lane(lane);
 
     if unit == "master" {
         score -= 40;
@@ -1132,6 +1383,9 @@ fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
     }
     if unit.contains("benchmark") {
         score -= 10;
+    }
+    if lane.lane_id.ends_with("-codex-unblock") {
+        score -= 15;
     }
 
     if unit.contains("autodev-efficiency")
@@ -1156,6 +1410,17 @@ fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
         score += 10;
     }
     if key.contains("autodev-integration-test") || key.contains("ci-preservation") {
+        score -= 10;
+    }
+    if matches!(failure_kind, Some(FailureKind::IntegrationTargetUnavailable)) {
+        score += 60;
+        if !lane.lane_id.ends_with("-codex-unblock") {
+            score += 40;
+        }
+    }
+    if lane.lane_id.ends_with("-codex-unblock")
+        && matches!(failure_kind, Some(FailureKind::ProofScriptFailure))
+    {
         score -= 10;
     }
 
@@ -1501,6 +1766,12 @@ fn current_origin_head_branch(target_repo: &Path) -> Option<String> {
         .and_then(|branch| branch.strip_prefix("origin/").map(str::to_string))
 }
 
+fn branch_allowed_for_dispatch(current: &str, expected: &str) -> bool {
+    current == expected
+        || current == format!("autodev/{expected}")
+        || current == format!("autodev-{expected}")
+}
+
 fn worktree_has_tracked_changes(target_repo: &Path) -> bool {
     Command::new("git")
         .current_dir(target_repo)
@@ -1548,6 +1819,11 @@ pub(crate) fn ensure_target_repo_fresh_for_dispatch(
     if !has_origin {
         return TargetRepoFreshness::NoOrigin;
     }
+    if let Err(error) = fabro_workflows::git::resolve_ssh_push_url(&target_repo, "origin") {
+        return TargetRepoFreshness::InvalidPushRemote {
+            reason: error.to_string(),
+        };
+    }
     let fetch = Command::new("git")
         .current_dir(&target_repo)
         .args(["fetch", "origin", "--quiet"])
@@ -1574,7 +1850,7 @@ pub(crate) fn ensure_target_repo_fresh_for_dispatch(
     let Some(origin_head_branch) = current_origin_head_branch(&target_repo) else {
         return TargetRepoFreshness::Current;
     };
-    if head_branch != origin_head_branch {
+    if !branch_allowed_for_dispatch(&head_branch, &origin_head_branch) {
         return TargetRepoFreshness::WrongBranch {
             current: head_branch,
             expected: origin_head_branch,
@@ -1848,6 +2124,13 @@ fn synced_stop_reason(
     previous
 }
 
+pub fn current_snapshot_for_program(
+    program: &crate::evaluate::EvaluatedProgram,
+    max_parallel: Option<usize>,
+) -> AutodevCurrentSnapshot {
+    current_snapshot(program, max_parallel)
+}
+
 fn current_snapshot(
     program: &crate::evaluate::EvaluatedProgram,
     max_parallel: Option<usize>,
@@ -1860,6 +2143,8 @@ fn current_snapshot(
     let mut ready_lanes = Vec::new();
     let mut running_lanes = Vec::new();
     let mut failed_lanes = Vec::new();
+    let mut provider_routes = Vec::new();
+    let mut usage_by_provider: BTreeMap<String, ProviderUsageSnapshot> = BTreeMap::new();
     let recovering_failed_lanes = recovering_failed_lane_keys(program);
 
     for lane in &program.lanes {
@@ -1889,6 +2174,42 @@ fn current_snapshot(
                 nested_child_running_from_detail(&lane.detail);
             running += nested_running;
             running_lanes.extend(nested_running_lanes);
+        }
+
+        let Some(summary) = lane.last_usage_summary.as_deref() else {
+            continue;
+        };
+        let Some(parsed) = parse_usage_summary(summary) else {
+            continue;
+        };
+        provider_routes.push(LaneProviderRoute {
+            lane_key: lane.lane_key.clone(),
+            status: lane.status,
+            model: parsed.model,
+            provider: parsed.provider.clone(),
+        });
+        let entry =
+            usage_by_provider
+                .entry(parsed.provider.clone())
+                .or_insert(ProviderUsageSnapshot {
+                    provider: parsed.provider,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_microusd: Some(0),
+                });
+        entry.input_tokens += parsed.input_tokens;
+        entry.output_tokens += parsed.output_tokens;
+        match (entry.cost_microusd, parsed.cost_estimate_usd) {
+            (Some(current), Some(cost)) => {
+                let microusd = (cost * 1_000_000.0).round();
+                if microusd.is_finite() && microusd >= 0.0 {
+                    entry.cost_microusd = Some(current.saturating_add(microusd as u64));
+                } else {
+                    entry.cost_microusd = None;
+                }
+            }
+            (Some(_), None) => entry.cost_microusd = None,
+            (None, _) => {}
         }
     }
 
@@ -1920,6 +2241,7 @@ fn current_snapshot(
         .collect();
     critical_blockers.sort_by(|a, b| b.blocked_downstream.cmp(&a.blocked_downstream));
     critical_blockers.truncate(10);
+    provider_routes.sort_by(|left, right| left.lane_key.cmp(&right.lane_key));
 
     AutodevCurrentSnapshot {
         updated_at: Utc::now(),
@@ -1933,6 +2255,8 @@ fn current_snapshot(
         running_lanes,
         failed_lanes,
         critical_blockers,
+        provider_routes,
+        usage_by_provider: usage_by_provider.into_values().collect(),
     }
 }
 
@@ -2122,15 +2446,28 @@ fn replayable_failed_lanes(
 }
 
 fn failure_kind_for_lane(lane: &crate::evaluate::EvaluatedLane) -> Option<FailureKind> {
+    recovery_decision_for_lane(lane).map(|(kind, _)| kind)
+}
+
+fn recovery_decision_for_lane(
+    lane: &crate::evaluate::EvaluatedLane,
+) -> Option<(FailureKind, FailureRecoveryAction)> {
     let classified = classify_failure(
         lane.last_error.as_deref(),
         lane.last_stderr_snippet.as_deref(),
         lane.last_stdout_snippet.as_deref(),
     );
     match (lane.failure_kind, classified) {
-        (Some(FailureKind::Unknown), Some(kind)) if kind != FailureKind::Unknown => Some(kind),
-        (Some(kind), _) => Some(kind),
-        (None, classified) => classified,
+        (Some(FailureKind::Unknown), Some(kind)) if kind != FailureKind::Unknown => {
+            Some((kind, default_recovery_action(kind)))
+        }
+        (Some(kind), _) => Some((
+            kind,
+            lane.recovery_action
+                .unwrap_or_else(|| default_recovery_action(kind)),
+        )),
+        (None, Some(kind)) => Some((kind, default_recovery_action(kind))),
+        (None, None) => None,
     }
 }
 
@@ -2141,12 +2478,12 @@ fn replay_target_lane(
     now: DateTime<Utc>,
     allow_regenerate: bool,
 ) -> Option<String> {
-    let kind = failure_kind_for_lane(lane)?;
-    let action = lane
-        .recovery_action
-        .unwrap_or_else(|| default_recovery_action(kind));
+    let (kind, action) = recovery_decision_for_lane(lane)?;
     if is_verify_gate_miss_without_retry(lane) {
         return allow_regenerate.then(|| lane.lane_key.clone());
+    }
+    if let Some(target) = codex_unblock_recovery_target(program, lane, kind, now) {
+        return Some(target);
     }
     match action {
         FailureRecoveryAction::ReplaySourceLane => {
@@ -2177,9 +2514,6 @@ fn replay_target_lane(
             }
         }
         FailureRecoveryAction::SurfaceBlocked => {
-            if let Some(target) = codex_unblock_recovery_target(program, lane, kind, now) {
-                return Some(target);
-            }
             if lane.consecutive_failures >= MAX_SURFACE_BLOCKED_RETRIES {
                 return None;
             }
@@ -2234,10 +2568,9 @@ fn codex_unblock_recovery_target(
 fn should_use_codex_unblock(kind: FailureKind) -> bool {
     matches!(
         kind,
-        FailureKind::RegenerateNoop
+        FailureKind::ProviderAccessLimited
+            | FailureKind::TransientLaunchFailure
             | FailureKind::ProviderPolicyMismatch
-            | FailureKind::DeterministicVerifyCycle
-            | FailureKind::ProofScriptFailure
     )
 }
 
@@ -2287,10 +2620,7 @@ fn regenerable_failed_lanes(program: &crate::evaluate::EvaluatedProgram) -> Vec<
             if is_verify_gate_miss_without_retry(lane) {
                 return Some(lane.lane_key.clone());
             }
-            let kind = failure_kind_for_lane(lane)?;
-            let action = lane
-                .recovery_action
-                .unwrap_or_else(|| default_recovery_action(kind));
+            let (_, action) = recovery_decision_for_lane(lane)?;
             (action == FailureRecoveryAction::RegenerateLane).then(|| lane.lane_key.clone())
         })
         .collect::<Vec<_>>();
@@ -2305,8 +2635,7 @@ fn failed_recovery_keys(program: &crate::evaluate::EvaluatedProgram) -> Vec<Stri
         .iter()
         .filter(|lane| lane.status == LaneExecutionStatus::Failed)
         .filter_map(|lane| {
-            let kind = failure_kind_for_lane(lane)?;
-            let action = default_recovery_action(kind);
+            let (kind, action) = recovery_decision_for_lane(lane)?;
             Some(format!("{}:{kind}:{action}", lane.lane_key))
         })
         .collect::<Vec<_>>();
@@ -2338,11 +2667,8 @@ fn integration_source_lane_key(
         .dependencies
         .iter()
         .find(|dependency| dependency.lane.is_some())?;
-    Some(format!(
-        "{}:{}",
-        dependency.unit,
-        dependency.lane.as_ref().expect("lane dependency exists")
-    ))
+    let lane_name = dependency.lane.as_deref()?;
+    Some(format!("{}:{}", dependency.unit, lane_name))
 }
 
 fn run_synth_evolve(
@@ -2593,6 +2919,8 @@ mod tests {
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: Some(1),
@@ -2612,6 +2940,17 @@ mod tests {
             running_checks_failing: Vec::new(),
             consecutive_failures: 0,
         }
+    }
+
+    fn failed_lane_with_kind(
+        lane_key: &str,
+        error: &str,
+        failure_kind: FailureKind,
+    ) -> EvaluatedLane {
+        let mut lane = failed_lane(lane_key, error);
+        lane.failure_kind = Some(failure_kind);
+        lane.detail = format!("failure_kind={failure_kind}");
+        lane
     }
 
     fn ready_lane(
@@ -2641,6 +2980,8 @@ mod tests {
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -2660,6 +3001,45 @@ mod tests {
             running_checks_failing: Vec::new(),
             consecutive_failures: 0,
         }
+    }
+
+    #[test]
+    fn current_snapshot_captures_provider_routes_and_usage() {
+        let mut running = ready_lane("runtime:page", "runtime", "page", LaneKind::Artifact);
+        running.status = LaneExecutionStatus::Running;
+        running.last_usage_summary = Some("gpt-5.4: 1200 in / 800 out".to_string());
+
+        let mut failed = failed_lane("consensus:chapter", "provider rejected request");
+        failed.last_usage_summary = Some("claude-opus-4-6: 300 in / 40 out".to_string());
+
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 2,
+            runtime_max_parallel: Some(2),
+            lanes: vec![running, failed],
+        };
+
+        let snapshot = current_snapshot_for_program(&program, Some(2));
+
+        assert_eq!(snapshot.provider_routes.len(), 2);
+        assert!(snapshot
+            .provider_routes
+            .iter()
+            .any(|route| route.lane_key == "runtime:page"
+                && route.model == "gpt-5.4"
+                && route.provider == "openai"));
+        assert!(snapshot
+            .usage_by_provider
+            .iter()
+            .any(|usage| usage.provider == "openai"
+                && usage.input_tokens == 1200
+                && usage.output_tokens == 800));
+        assert!(snapshot
+            .usage_by_provider
+            .iter()
+            .any(|usage| usage.provider == "anthropic"
+                && usage.input_tokens == 300
+                && usage.output_tokens == 40));
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -2860,6 +3240,8 @@ units:
                     current_fabro_run_id: None,
                     current_stage: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: Some(1),
@@ -2900,6 +3282,8 @@ units:
                     current_fabro_run_id: None,
                     current_stage: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: Some(1),
@@ -2940,6 +3324,8 @@ units:
                     current_fabro_run_id: Some("01RUNNING".to_string()),
                     current_stage: Some("Implement".to_string()),
                     last_run_id: Some("01RUNNING".to_string()),
+                    current_run_dir: None,
+                    last_run_dir: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -3036,6 +3422,8 @@ units:
                     current_fabro_run_id: None,
                     current_stage: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -3076,6 +3464,8 @@ units:
                     current_fabro_run_id: None,
                     current_stage: None,
                     last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
                     last_started_at: None,
                     last_finished_at: None,
                     last_exit_status: None,
@@ -3171,6 +3561,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: Some(1),
@@ -3311,8 +3703,8 @@ units:
         );
         lane.failure_kind = Some(FailureKind::Unknown);
         lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
-        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
-        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(20));
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
@@ -3326,20 +3718,23 @@ units:
     }
 
     #[test]
-    fn replayable_failed_lanes_skip_provider_access_limits() {
+    fn replayable_failed_lanes_upgrade_unknown_recovery_action_from_last_error() {
         let manifest = ProgramManifest::load(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
         )
         .expect("manifest loads");
         let mut lane = failed_lane(
-            "blocked:lane",
-            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 25th, 2026 1:07 PM.",
+            "house-agent-ws-accept-loop:house-agent-ws-accept-loop",
+            "failed to resolve SSH push URL: Engine error: remote `origin` must use SSH or be convertible from GitHub HTTPS, got `/tmp/controller`",
         );
-        lane.failure_kind = Some(FailureKind::ProviderAccessLimited);
+        lane.unit_id = "house-agent-ws-accept-loop".to_string();
+        lane.lane_id = "house-agent-ws-accept-loop".to_string();
+        lane.lane_kind = LaneKind::Service;
+        lane.failure_kind = Some(FailureKind::Unknown);
         lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
-        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
-        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(2));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(1));
         let program = crate::evaluate::EvaluatedProgram {
             program: "demo".to_string(),
             max_parallel: 1,
@@ -3349,7 +3744,137 @@ units:
 
         let lanes = replayable_failed_lanes(&manifest, &program);
 
-        assert!(lanes.is_empty());
+        assert_eq!(
+            lanes,
+            vec!["house-agent-ws-accept-loop:house-agent-ws-accept-loop".to_string()]
+        );
+    }
+
+    #[test]
+    fn prioritized_failure_lane_keys_prefer_source_replay_after_remote_fix() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let remote_error = "failed to resolve SSH push URL: Engine error: remote `origin` must use SSH or be convertible from GitHub HTTPS, got `/tmp/controller`";
+
+        let mut house = failed_lane(
+            "house-agent-ws-accept-loop:house-agent-ws-accept-loop",
+            remote_error,
+        );
+        house.unit_id = "house-agent-ws-accept-loop".to_string();
+        house.lane_id = "house-agent-ws-accept-loop".to_string();
+        house.lane_kind = LaneKind::Service;
+        house.failure_kind = Some(FailureKind::Unknown);
+        house.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        house.last_started_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        house.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(20));
+
+        let mut unblock = failed_lane(
+            "test-coverage-wallet-rpc-tests-codex-unblock:test-coverage-wallet-rpc-tests-codex-unblock",
+            remote_error,
+        );
+        unblock.unit_id = "test-coverage-wallet-rpc-tests-codex-unblock".to_string();
+        unblock.lane_id = "test-coverage-wallet-rpc-tests-codex-unblock".to_string();
+        unblock.lane_kind = LaneKind::Platform;
+        unblock.failure_kind = Some(FailureKind::Unknown);
+        unblock.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        unblock.last_started_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        unblock.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(20));
+
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 2,
+            runtime_max_parallel: None,
+            lanes: vec![house, unblock],
+        };
+
+        let replayable = dispatchable_failed_lanes(&manifest, &program, false);
+        let prioritized = prioritized_failure_lane_keys(&program, replayable);
+
+        assert_eq!(
+            prioritized,
+            vec![
+                "house-agent-ws-accept-loop:house-agent-ws-accept-loop".to_string(),
+                "test-coverage-wallet-rpc-tests-codex-unblock:test-coverage-wallet-rpc-tests-codex-unblock"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn replayable_failed_lanes_dispatch_codex_unblock_for_provider_access_limits() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut lane = failed_lane(
+            "blocked:blocked",
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 25th, 2026 1:07 PM.",
+        );
+        lane.unit_id = "blocked".to_string();
+        lane.lane_id = "blocked".to_string();
+        lane.failure_kind = Some(FailureKind::ProviderAccessLimited);
+        lane.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
+        lane.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
+        lane.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        let unblock = EvaluatedLane {
+            lane_key: "blocked-codex-unblock:blocked-codex-unblock".to_string(),
+            unit_id: "blocked-codex-unblock".to_string(),
+            unit_title: "Blocked Codex Unblock".to_string(),
+            lane_id: "blocked-codex-unblock".to_string(),
+            lane_title: "Blocked Codex Unblock".to_string(),
+            lane_kind: LaneKind::Platform,
+            status: LaneExecutionStatus::Blocked,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: String::new(),
+            managed_milestone: "blocked-codex-unblock-done".to_string(),
+            proof_profile: Some("unblock".to_string()),
+            run_config: PathBuf::from("run-configs/codex-unblock/blocked-codex-unblock.toml"),
+            run_id: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage: None,
+            last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        };
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![lane, unblock],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(
+            lanes,
+            vec!["blocked-codex-unblock:blocked-codex-unblock".to_string()]
+        );
     }
 
     #[test]
@@ -3381,7 +3906,7 @@ units:
     }
 
     #[test]
-    fn replayable_failed_lanes_dispatch_codex_unblock_for_regenerate_noop() {
+    fn replayable_failed_lanes_retry_source_lane_for_regenerate_noop() {
         let manifest = ProgramManifest::load(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
@@ -3396,8 +3921,8 @@ units:
         source.status = LaneExecutionStatus::Failed;
         source.failure_kind = Some(FailureKind::RegenerateNoop);
         source.recovery_action = Some(FailureRecoveryAction::SurfaceBlocked);
-        source.last_started_at = Some(Utc::now() - chrono::Duration::minutes(5));
-        source.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(2));
+        source.last_started_at = Some(Utc::now() - chrono::Duration::minutes(20));
+        source.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(16));
 
         let unblock = EvaluatedLane {
             lane_key: "poker-tui-screen-codex-unblock:poker-tui-screen-codex-unblock".to_string(),
@@ -3422,6 +3947,81 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
+            last_started_at: None,
+            last_finished_at: None,
+            last_exit_status: None,
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: None,
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            ready_checks_passing: Vec::new(),
+            ready_checks_failing: Vec::new(),
+            running_checks_passing: Vec::new(),
+            running_checks_failing: Vec::new(),
+            consecutive_failures: 0,
+        };
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 1,
+            runtime_max_parallel: None,
+            lanes: vec![source, unblock],
+        };
+
+        let lanes = replayable_failed_lanes(&manifest, &program);
+
+        assert_eq!(lanes, vec!["poker-tui-screen:poker-tui-screen".to_string()]);
+    }
+
+    #[test]
+    fn replayable_failed_lanes_dispatch_codex_unblock_for_transient_launch_failures() {
+        let manifest = ProgramManifest::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../test/fixtures/raspberry-supervisor/myosu-program.yaml"),
+        )
+        .expect("manifest loads");
+        let mut source = failed_lane(
+            "wallet-rpc-tests:wallet-rpc-tests",
+            "cli command exited with code 1 and total_cost_usd=0 input_tokens=0 output_tokens=0",
+        );
+        source.unit_id = "wallet-rpc-tests".to_string();
+        source.lane_id = "wallet-rpc-tests".to_string();
+        source.status = LaneExecutionStatus::Failed;
+        source.failure_kind = Some(FailureKind::TransientLaunchFailure);
+        source.recovery_action = Some(FailureRecoveryAction::BackoffRetry);
+        source.last_started_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        source.last_finished_at = Some(Utc::now() - chrono::Duration::minutes(2));
+
+        let unblock = EvaluatedLane {
+            lane_key: "wallet-rpc-tests-codex-unblock:wallet-rpc-tests-codex-unblock".to_string(),
+            unit_id: "wallet-rpc-tests-codex-unblock".to_string(),
+            unit_title: "Wallet Rpc Tests Codex Unblock".to_string(),
+            lane_id: "wallet-rpc-tests-codex-unblock".to_string(),
+            lane_title: "Wallet Rpc Tests Codex Unblock".to_string(),
+            lane_kind: LaneKind::Platform,
+            status: LaneExecutionStatus::Ready,
+            operational_state: None,
+            precondition_state: None,
+            proof_state: None,
+            orchestration_state: None,
+            detail: String::new(),
+            managed_milestone: "wallet-rpc-tests-codex-unblock-done".to_string(),
+            proof_profile: Some("unblock".to_string()),
+            run_config: PathBuf::from("run-configs/codex-unblock/wallet-rpc-tests-codex-unblock.toml"),
+            run_id: None,
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage: None,
+            last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -3452,7 +4052,7 @@ units:
 
         assert_eq!(
             lanes,
-            vec!["poker-tui-screen-codex-unblock:poker-tui-screen-codex-unblock".to_string()]
+            vec!["wallet-rpc-tests-codex-unblock:wallet-rpc-tests-codex-unblock".to_string()]
         );
     }
 
@@ -3479,6 +4079,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -3509,6 +4111,39 @@ units:
             lanes_to_dispatch,
             vec!["failed:lane".to_string(), "ready:lane".to_string()]
         );
+    }
+
+    #[test]
+    fn replayed_lanes_do_not_consume_all_fresh_capacity() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "fabro".to_string(),
+            max_parallel: 5,
+            runtime_max_parallel: None,
+            lanes: vec![ready_lane(
+                "ready:lane",
+                "fresh-unit",
+                "fresh-lane",
+                LaneKind::Platform,
+            )],
+        };
+
+        let reserved = reserve_fresh_ready_capacity(&program, &["failed:lane".to_string()], 3);
+
+        assert_eq!(reserved, 1);
+    }
+
+    #[test]
+    fn fresh_capacity_reservation_skips_when_no_fresh_work_exists() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "fabro".to_string(),
+            max_parallel: 5,
+            runtime_max_parallel: None,
+            lanes: Vec::new(),
+        };
+
+        let reserved = reserve_fresh_ready_capacity(&program, &["failed:lane".to_string()], 3);
+
+        assert_eq!(reserved, 0);
     }
 
     #[test]
@@ -3677,6 +4312,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: Some("01KMTEST".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: Some(Utc::now() - chrono::Duration::minutes(20)),
             last_finished_at: Some(Utc::now() - chrono::Duration::minutes(10)),
             last_exit_status: Some(1),
@@ -3744,6 +4381,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: Some("01KMTEST".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: Some(Utc::now() - chrono::Duration::seconds(20)),
             last_finished_at: Some(Utc::now() - chrono::Duration::seconds(10)),
             last_exit_status: Some(1),
@@ -3962,6 +4601,119 @@ units:
 
         let counts = ahead_behind_counts(&local, "origin/main").expect("ahead behind");
         assert_eq!(counts, (0, 0));
+    }
+
+    #[test]
+    fn ensure_target_repo_fresh_for_dispatch_allows_autodev_controller_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let local = temp.path().join("local");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+        git(&source, &["init"]);
+        git(&source, &["config", "user.name", "Fabro"]);
+        git(&source, &["config", "user.email", "fabro@example.com"]);
+        std::fs::write(source.join("README.md"), "hello\n").expect("write readme");
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "initial"]);
+        git(&source, &["branch", "-M", "main"]);
+        git(
+            &source,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                local.to_str().expect("local path"),
+            ],
+        );
+        git(&local, &["checkout", "-b", "autodev/main"]);
+
+        std::fs::write(source.join("README.md"), "hello\nworld\n").expect("update readme");
+        git(&source, &["commit", "-am", "advance remote"]);
+        git(&source, &["push", "origin", "main"]);
+
+        let manifest = demo_manifest(&local);
+        let manifest_path = temp.path().join("demo.yaml");
+        std::fs::write(&manifest_path, "program: demo\nunits: {}\n").expect("manifest");
+
+        let freshness = ensure_target_repo_fresh_for_dispatch(&manifest, &manifest_path);
+        assert_eq!(freshness, TargetRepoFreshness::FastForwarded);
+    }
+
+    #[test]
+    fn ensure_target_repo_fresh_for_dispatch_rejects_local_path_origin() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let source = temp.path().join("source");
+        let local = temp.path().join("local");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+        git(&source, &["init"]);
+        git(&source, &["config", "user.name", "Fabro"]);
+        git(&source, &["config", "user.email", "fabro@example.com"]);
+        std::fs::write(source.join("README.md"), "hello\n").expect("write readme");
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "initial"]);
+        git(&source, &["branch", "-M", "main"]);
+        git(
+            &source,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&source, &["push", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                local.to_str().expect("local path"),
+            ],
+        );
+
+        git(
+            &local,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                temp.path().join("controller").to_str().expect("controller path"),
+            ],
+        );
+
+        let manifest = demo_manifest(&local);
+        let manifest_path = temp.path().join("demo.yaml");
+        std::fs::write(&manifest_path, "program: demo\nunits: {}\n").expect("manifest");
+
+        let freshness = ensure_target_repo_fresh_for_dispatch(&manifest, &manifest_path);
+        assert!(
+            matches!(freshness, TargetRepoFreshness::InvalidPushRemote { .. }),
+            "expected invalid push remote, got {:?}",
+            freshness
+        );
     }
 
     #[test]
@@ -4186,6 +4938,8 @@ units:
                 current_fabro_run_id: None,
                 current_stage: None,
                 last_run_id: None,
+                current_run_dir: None,
+                last_run_dir: None,
                 last_started_at: None,
                 last_finished_at: Some(Utc::now()),
                 last_exit_status: Some(1),
@@ -4315,6 +5069,8 @@ units:
                 current_fabro_run_id: None,
                 current_stage: None,
                 last_run_id: None,
+                current_run_dir: None,
+                last_run_dir: None,
                 last_started_at: None,
                 last_finished_at: None,
                 last_exit_status: Some(1),
@@ -4368,6 +5124,8 @@ units:
                 current_fabro_run_id: None,
                 current_stage: None,
                 last_run_id: None,
+                current_run_dir: None,
+                last_run_dir: None,
                 last_started_at: None,
                 last_finished_at: None,
                 last_exit_status: None,
@@ -4424,6 +5182,8 @@ units:
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: Some(1),
@@ -4470,6 +5230,8 @@ units:
             current_fabro_run_id: Some("run-123".to_string()),
             current_stage: None,
             last_run_id: Some("run-123".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -4684,6 +5446,145 @@ units:
         assert_eq!(
             synced.current.as_ref().map(|snapshot| snapshot.ready),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn cycle_telemetry_surfaces_zero_throughput_and_provider_debt() {
+        let mut reclaimed = failed_lane(
+            "demo:stale",
+            "tracked run was removed after controller stopped",
+        );
+        reclaimed.detail = "stale running record reconciled".to_string();
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![
+                ready_lane("demo:ready-1", "demo", "ready-1", LaneKind::Artifact),
+                ready_lane("demo:ready-2", "demo", "ready-2", LaneKind::Artifact),
+                failed_lane_with_kind(
+                    "demo:bootstrap",
+                    "failed to spawn fabro synth import: No such file or directory",
+                    FailureKind::TransientLaunchFailure,
+                ),
+                failed_lane_with_kind(
+                    "demo:provider",
+                    "provider returned empty response with zero tokens",
+                    FailureKind::ProviderAccessLimited,
+                ),
+                failed_lane_with_kind(
+                    "demo:watchdog",
+                    "CLI command timed out after 1800s",
+                    FailureKind::StallWatchdog,
+                ),
+                reclaimed,
+            ],
+        };
+
+        let telemetry = build_cycle_telemetry(
+            &program,
+            10,
+            1,
+            9,
+            &["demo:ready-1".to_string(), "demo:ready-2".to_string()],
+            &[],
+        );
+
+        assert_eq!(telemetry.available_slots, 10);
+        assert_eq!(telemetry.fresh_capacity_reserve, 1);
+        assert_eq!(telemetry.replay_budget, 9);
+        assert!(telemetry.idle_with_ready_work);
+        assert_eq!(telemetry.ready_but_undispatched.len(), 2);
+        assert_eq!(telemetry.failed_bootstrap_count, 1);
+        assert_eq!(telemetry.runtime_path_errors, 1);
+        assert_eq!(telemetry.stale_running_reclaimed, 1);
+        assert_eq!(telemetry.provider_access_limited, 1);
+        assert_eq!(telemetry.stall_watchdog, 1);
+    }
+
+    #[test]
+    fn cycle_telemetry_does_not_mark_full_capacity_as_idle() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![ready_lane(
+                "demo:ready-1",
+                "demo",
+                "ready-1",
+                LaneKind::Artifact,
+            )],
+        };
+
+        let telemetry =
+            build_cycle_telemetry(&program, 0, 0, 0, &["demo:ready-1".to_string()], &[]);
+
+        assert!(!telemetry.idle_with_ready_work);
+        assert_eq!(
+            telemetry.ready_but_undispatched,
+            vec!["demo:ready-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn cycle_telemetry_treats_orchestration_ready_as_child_program_capacity() {
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![EvaluatedLane {
+                lane_key: "demo:program".to_string(),
+                unit_id: "demo".to_string(),
+                unit_title: "Demo".to_string(),
+                lane_id: "program".to_string(),
+                lane_title: "Demo Program".to_string(),
+                lane_kind: LaneKind::Orchestration,
+                status: LaneExecutionStatus::Ready,
+                operational_state: None,
+                precondition_state: None,
+                proof_state: None,
+                orchestration_state: None,
+                detail: String::new(),
+                managed_milestone: "coordinated".to_string(),
+                proof_profile: None,
+                run_config: PathBuf::from("malinka/programs/demo.yaml"),
+                run_id: None,
+                current_run_id: None,
+                current_fabro_run_id: None,
+                current_stage: None,
+                last_run_id: None,
+                current_run_dir: None,
+                last_run_dir: None,
+                last_started_at: None,
+                last_finished_at: None,
+                last_exit_status: None,
+                last_error: None,
+                failure_kind: None,
+                recovery_action: None,
+                last_completed_stage_label: None,
+                last_stage_duration_ms: None,
+                last_usage_summary: None,
+                last_files_read: Vec::new(),
+                last_files_written: Vec::new(),
+                last_stdout_snippet: None,
+                last_stderr_snippet: None,
+                ready_checks_passing: Vec::new(),
+                ready_checks_failing: Vec::new(),
+                running_checks_passing: Vec::new(),
+                running_checks_failing: Vec::new(),
+                consecutive_failures: 0,
+            }],
+        };
+
+        let telemetry =
+            build_cycle_telemetry(&program, 1, 0, 1, &["demo:program".to_string()], &[]);
+
+        assert!(!telemetry.idle_with_ready_work);
+        assert!(telemetry.direct_ready_but_undispatched.is_empty());
+        assert_eq!(
+            telemetry.child_program_ready,
+            vec!["demo:program".to_string()]
         );
     }
 
