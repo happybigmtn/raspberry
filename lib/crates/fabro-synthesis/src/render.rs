@@ -5097,9 +5097,11 @@ fn implementation_audit_command(
                 }
             })
             .collect();
-        // Always allow output artifacts (these are safe literal patterns)
+        // Always allow output artifacts, lane local files, and malinka (these are safe literal patterns)
         allowed.push("outputs/".to_string());
         allowed.push("\\.fabro-work/".to_string());
+        allowed.push("lanes/".to_string());
+        allowed.push("malinka/".to_string());
 
         let pattern = allowed.join("|");
         // Use merge-base to scope to this run's commits — the worktree inherits
