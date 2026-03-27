@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMPDR724CH9VKSFEGAMNFAF6",
+  "workflow_name": "TestCoverageCriticalPathsMinimalCoverageForFabroMcpAndFabroGithub",
+  "goal": "Minimal Coverage For Fabro Mcp And Fabro Github\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-27T01:15:18.041556699Z",
+  "node_count": 12,
+  "edge_count": 17,
+  "run_branch": "fabro/run/01KMPDR724CH9VKSFEGAMNFAF6",
+  "base_sha": "b389fbe4af1353f90050744b19ec55f4eeb72418",
+  "base_branch": "main",
+  "workflow_slug": "test-coverage-critical-paths-minimal-coverage-for-fabro-mcp-and-fabro-github",
+  "host_repo_path": "/home/r/coding/fabro"
+}
