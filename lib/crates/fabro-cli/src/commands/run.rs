@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -391,6 +392,176 @@ fn should_create_worktree(
         sandbox_config::WorktreeMode::Clean => git_clean,
         sandbox_config::WorktreeMode::Dirty => !git_clean,
         sandbox_config::WorktreeMode::Never => false,
+    }
+}
+
+fn branch_is_autodev_controller(branch: &str) -> bool {
+    branch.starts_with("autodev/") || branch.starts_with("autodev-")
+}
+
+fn current_branch(repo: &Path) -> Option<String> {
+    Command::new("git")
+        .current_dir(repo)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn dirty_worktree_paths(repo: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end();
+            if line.len() < 4 {
+                return None;
+            }
+            let path = &line[3..];
+            Some(
+                path.rsplit_once(" -> ")
+                    .map(|(_, dest)| dest)
+                    .unwrap_or(path)
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+fn is_generated_package_dirty_path(path: &str) -> bool {
+    [
+        ".raspberry/",
+        "malinka/programs/",
+        "malinka/workflows/",
+        "malinka/run-configs/",
+        "malinka/prompts/",
+        "outputs/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+fn restore_clean_autodev_controller_checkout(repo: &Path) -> anyhow::Result<bool> {
+    let Some(branch) = current_branch(repo) else {
+        return Ok(false);
+    };
+    if !branch_is_autodev_controller(&branch) || dirty_worktree_paths(repo).is_empty() {
+        return Ok(false);
+    }
+
+    let reset = Command::new("git")
+        .current_dir(repo)
+        .args(["reset", "--hard", "HEAD"])
+        .output()
+        .context("git reset --hard HEAD failed")?;
+    if !reset.status.success() {
+        bail!(
+            "git reset --hard HEAD failed: {}",
+            String::from_utf8_lossy(&reset.stderr).trim()
+        );
+    }
+
+    let clean = Command::new("git")
+        .current_dir(repo)
+        .args(["clean", "-fd"])
+        .output()
+        .context("git clean -fd failed")?;
+    if !clean.status.success() {
+        bail!(
+            "git clean -fd failed: {}",
+            String::from_utf8_lossy(&clean.stderr).trim()
+        );
+    }
+
+    Ok(true)
+}
+
+fn auto_commit_generated_autodev_refresh(
+    repo: &Path,
+    git_author: &fabro_workflows::git::GitAuthor,
+) -> anyhow::Result<Option<String>> {
+    let Some(branch) = current_branch(repo) else {
+        return Ok(None);
+    };
+    if !branch_is_autodev_controller(&branch) {
+        return Ok(None);
+    }
+
+    let dirty_paths = dirty_worktree_paths(repo);
+    if dirty_paths.is_empty()
+        || dirty_paths
+            .iter()
+            .any(|path| !is_generated_package_dirty_path(path))
+    {
+        return Ok(None);
+    }
+
+    let add = Command::new("git")
+        .current_dir(repo)
+        .args(["add", "-A", "--", "."])
+        .output()
+        .context("git add failed")?;
+    if !add.status.success() {
+        bail!("git add failed: {}", String::from_utf8_lossy(&add.stderr).trim());
+    }
+
+    let commit = Command::new("git")
+        .current_dir(repo)
+        .args([
+            "-c",
+            &format!("user.name={}", git_author.name),
+            "-c",
+            &format!("user.email={}", git_author.email),
+            "commit",
+            "-m",
+            "fabro: refresh generated package",
+        ])
+        .output()
+        .context("git commit failed")?;
+    if !commit.status.success() {
+        let stdout = String::from_utf8_lossy(&commit.stdout);
+        let stderr = String::from_utf8_lossy(&commit.stderr);
+        if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
+            return Ok(None);
+        }
+        bail!("git commit failed: {}{}", stdout.trim(), stderr.trim());
+    }
+
+    let head = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("git rev-parse HEAD failed")?;
+    if !head.status.success() {
+        bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        );
+    }
+    Ok(Some(String::from_utf8_lossy(&head.stdout).trim().to_string()))
+}
+
+fn dirty_worktree_notice_env_name(
+    git_status: GitSyncStatus,
+    workdir_strategy: WorkdirStrategy,
+) -> Option<&'static str> {
+    if git_status != GitSyncStatus::Dirty {
+        return None;
+    }
+    match workdir_strategy {
+        WorkdirStrategy::LocalWorktree => Some("worktree"),
+        WorkdirStrategy::Cloud => Some("remote sandbox"),
+        WorkdirStrategy::LocalDirectory => None,
     }
 }
 
@@ -966,6 +1137,19 @@ pub async fn run_command(
         fabro_sandbox::daytona::detect_repo_info(&original_cwd)
             .map(|(url, branch)| (Some(url), branch))
             .unwrap_or((None, None));
+    let controller_checkout_restore = if args.dry_run {
+        None
+    } else {
+        Some(restore_clean_autodev_controller_checkout(&original_cwd))
+    };
+    let generated_package_autocommit = if args.dry_run {
+        None
+    } else {
+        Some(auto_commit_generated_autodev_refresh(
+            &original_cwd,
+            &git_author,
+        ))
+    };
     let git_status =
         fabro_workflows::git::sync_status(&original_cwd, "origin", detected_base_branch.as_deref());
 
@@ -1054,6 +1238,43 @@ pub async fn run_command(
 
     // 3. Build event emitter
     let emitter = EventEmitter::new();
+    if let Some(result) = controller_checkout_restore {
+        match result {
+            Ok(true) => emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Info,
+                "controller_checkout_restored",
+                "Reset autodev controller checkout to HEAD before launch.",
+            ),
+            Ok(false) => {}
+            Err(error) => emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Warn,
+                "controller_checkout_restore_failed",
+                format!("Failed to restore autodev controller checkout: {error}"),
+            ),
+        }
+    }
+
+    if let Some(result) = generated_package_autocommit {
+        match result {
+            Ok(Some(sha)) => emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Info,
+                "generated_package_autocommitted",
+                format!("Committed generated package refresh on controller branch at {sha}"),
+            ),
+            Ok(None) => {}
+            Err(error) => emit_run_notice(
+                &emitter,
+                RunNoticeLevel::Warn,
+                "generated_package_autocommit_failed",
+                format!("Failed to auto-commit generated controller state: {error}"),
+            ),
+        }
+    }
+    let effective_git_status =
+        fabro_workflows::git::sync_status(&original_cwd, "origin", detected_base_branch.as_deref());
 
     // Track the last git commit SHA from CheckpointCompleted events
     let last_git_sha: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1166,7 +1387,7 @@ pub async fn run_command(
     let worktree_mode = resolve_worktree_mode(run_cfg.as_ref(), &run_defaults);
     let require_branch_backed_run =
         resolve_integration_config(run_cfg.as_ref()).is_some() && !args.dry_run;
-    let git_clean = git_status.is_clean();
+    let git_clean = effective_git_status.is_clean();
     let should_create_worktree = should_create_worktree(
         sandbox_provider,
         worktree_mode,
@@ -1188,20 +1409,14 @@ pub async fn run_command(
     );
 
     // Warn about uncommitted changes that won't be available in the execution environment.
-    if git_status == GitSyncStatus::Dirty {
-        let env_name = match workdir_strategy {
-            WorkdirStrategy::LocalWorktree => Some("worktree"),
-            WorkdirStrategy::Cloud => Some("remote sandbox"),
-            WorkdirStrategy::LocalDirectory => None,
-        };
-        if let Some(env_name) = env_name {
-            emit_run_notice(
-                &emitter,
-                RunNoticeLevel::Warn,
-                "dirty_worktree",
-                format!("Uncommitted changes will not be included in the {env_name}."),
-            );
-        }
+    if let Some(env_name) = dirty_worktree_notice_env_name(effective_git_status, workdir_strategy)
+    {
+        emit_run_notice(
+            &emitter,
+            RunNoticeLevel::Warn,
+            "dirty_worktree",
+            format!("Uncommitted changes will not be included in the {env_name}."),
+        );
     }
 
     // Auto-push when the execution environment needs commits on the remote.
@@ -1212,55 +1427,59 @@ pub async fn run_command(
         )
     {
         if let Some(ref branch) = detected_base_branch {
-            // For Synced we know no push is needed; for Unsynced we know it is;
-            // for Dirty the push status wasn't checked, so check now.
-            let needs_push = match git_status {
-                GitSyncStatus::Synced => false,
-                GitSyncStatus::Unsynced => true,
-                GitSyncStatus::Dirty => {
-                    let check_repo = original_cwd.clone();
-                    let check_branch = branch.clone();
-                    tokio::task::spawn_blocking(move || {
-                        fabro_workflows::git::branch_needs_push(
-                            &check_repo,
-                            "origin",
-                            &check_branch,
-                        )
-                    })
-                    .await
-                    .unwrap_or(true)
-                }
-            };
-
-            if needs_push {
-                let repo_path = original_cwd.clone();
-                let branch_owned = branch.clone();
-                let result = fabro_workflows::git::blocking_push_with_timeout(60, move || {
-                    fabro_workflows::git::push_branch(&repo_path, "origin", &branch_owned)
-                })
-                .await;
-                match result {
-                    Ok(()) => {
-                        tracing::info!(%branch, "Pushed current branch to origin");
-                        emit_run_notice(
-                            &emitter,
-                            RunNoticeLevel::Info,
-                            "git_push_succeeded",
-                            format!("{branch} (synced local commits to remote)"),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, %branch, "Failed to push current branch");
-                        emit_run_notice(
-                            &emitter,
-                            RunNoticeLevel::Warn,
-                            "git_push_failed",
-                            format!("Failed to push {branch} to origin: {e}"),
-                        );
-                    }
-                }
+            if branch_is_autodev_controller(branch) {
+                tracing::info!(%branch, "Skipping autodev controller branch push");
             } else {
-                tracing::info!(%branch, "Branch already in sync with origin, skipping push");
+                // For Synced we know no push is needed; for Unsynced we know it is;
+                // for Dirty the push status wasn't checked, so check now.
+                let needs_push = match effective_git_status {
+                    GitSyncStatus::Synced => false,
+                    GitSyncStatus::Unsynced => true,
+                    GitSyncStatus::Dirty => {
+                        let check_repo = original_cwd.clone();
+                        let check_branch = branch.clone();
+                        tokio::task::spawn_blocking(move || {
+                            fabro_workflows::git::branch_needs_push(
+                                &check_repo,
+                                "origin",
+                                &check_branch,
+                            )
+                        })
+                        .await
+                        .unwrap_or(true)
+                    }
+                };
+
+                if needs_push {
+                    let repo_path = original_cwd.clone();
+                    let branch_owned = branch.clone();
+                    let result = fabro_workflows::git::blocking_push_with_timeout(60, move || {
+                        fabro_workflows::git::push_branch(&repo_path, "origin", &branch_owned)
+                    })
+                    .await;
+                    match result {
+                        Ok(()) => {
+                            tracing::info!(%branch, "Pushed current branch to origin");
+                            emit_run_notice(
+                                &emitter,
+                                RunNoticeLevel::Info,
+                                "git_push_succeeded",
+                                format!("{branch} (synced local commits to remote)"),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, %branch, "Failed to push current branch");
+                            emit_run_notice(
+                                &emitter,
+                                RunNoticeLevel::Warn,
+                                "git_push_failed",
+                                format!("Failed to push {branch} to origin: {e}"),
+                            );
+                        }
+                    }
+                } else {
+                    tracing::info!(%branch, "Branch already in sync with origin, skipping push");
+                }
             }
         }
     }
@@ -3935,6 +4154,43 @@ include = ["*.md"]
         assert_eq!(
             normalize_source_lane_name("wallet_integration"),
             "wallet-integration"
+        );
+    }
+
+    #[test]
+    fn dirty_worktree_notice_is_suppressed_after_controller_autocommit() {
+        assert_eq!(
+            dirty_worktree_notice_env_name(
+                GitSyncStatus::Unsynced,
+                WorkdirStrategy::LocalWorktree,
+            ),
+            None
+        );
+        assert_eq!(
+            dirty_worktree_notice_env_name(GitSyncStatus::Synced, WorkdirStrategy::Cloud),
+            None
+        );
+    }
+
+    #[test]
+    fn dirty_worktree_notice_only_emits_for_dirty_execution_envs() {
+        assert_eq!(
+            dirty_worktree_notice_env_name(
+                GitSyncStatus::Dirty,
+                WorkdirStrategy::LocalWorktree,
+            ),
+            Some("worktree")
+        );
+        assert_eq!(
+            dirty_worktree_notice_env_name(GitSyncStatus::Dirty, WorkdirStrategy::Cloud),
+            Some("remote sandbox")
+        );
+        assert_eq!(
+            dirty_worktree_notice_env_name(
+                GitSyncStatus::Dirty,
+                WorkdirStrategy::LocalDirectory,
+            ),
+            None
         );
     }
 }

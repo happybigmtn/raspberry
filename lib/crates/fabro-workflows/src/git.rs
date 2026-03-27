@@ -156,12 +156,22 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
 
 /// Remove any stale worktree at `path` (best-effort), then add a fresh one.
 pub fn replace_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
+    cleanup_stale_worktree_path(repo, path);
+    match add_worktree(repo, path, branch) {
+        Ok(()) => Ok(()),
+        Err(first_error) => {
+            cleanup_stale_worktree_path(repo, path);
+            add_worktree(repo, path, branch).map_err(|_| first_error)
+        }
+    }
+}
+
+fn cleanup_stale_worktree_path(repo: &Path, path: &Path) {
     let _ = remove_worktree(repo, path);
     let _ = prune_worktrees(repo);
     if path.exists() {
         let _ = std::fs::remove_dir_all(path);
     }
-    add_worktree(repo, path, branch)
 }
 
 /// Best-effort prune of stale git worktree admin state.
@@ -963,6 +973,22 @@ mod tests {
 
         // Calling replace_worktree again succeeds (removes stale, re-creates)
         replace_worktree(dir.path(), &wt_path, "stale-branch").unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        remove_worktree(dir.path(), &wt_path).unwrap();
+    }
+
+    #[test]
+    fn replace_worktree_recovers_from_stale_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        create_branch(dir.path(), "recover-branch").unwrap();
+
+        let wt_path = dir.path().join("recover-wt");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("stale.txt"), "stale").unwrap();
+
+        replace_worktree(dir.path(), &wt_path, "recover-branch").unwrap();
         assert!(wt_path.join(".git").exists());
 
         remove_worktree(dir.path(), &wt_path).unwrap();

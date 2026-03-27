@@ -150,6 +150,12 @@ pub struct AutodevCycleTelemetry {
     pub available_slots: usize,
     pub fresh_capacity_reserve: usize,
     pub replay_budget: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_running_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub running_without_completion_cycles: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ready_while_saturated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ready_but_undispatched: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -692,15 +698,6 @@ pub fn orchestrate_program(
             maybe_sync_target_repo_to_origin(&manifest, &manifest_path, &mut last_repo_sync_at);
         }
 
-        let cycle_telemetry = build_cycle_telemetry(
-            &program,
-            available_slots,
-            fresh_capacity_reserve,
-            replay_budget,
-            &ready_lanes,
-            &lanes_to_dispatch,
-        );
-
         // Skip redundant evaluation when nothing changed (no dispatch, no evolve).
         // Between program_before and here only ms elapsed; re-evaluating 221 lanes
         // with check probes and progress file reads is wasted work.
@@ -732,6 +729,31 @@ pub fn orchestrate_program(
             .iter()
             .filter(|lane| lane.status == LaneExecutionStatus::Complete)
             .count();
+        let running_without_completion_cycles = next_running_without_completion_cycles(
+            report.cycles
+                .last()
+                .and_then(|cycle| cycle.telemetry.as_ref())
+                .map(|telemetry| telemetry.running_without_completion_cycles)
+                .unwrap_or(0),
+            last_complete_count,
+            running_after,
+            complete_after,
+        );
+        let cycle_telemetry = build_cycle_telemetry(
+            &program_after,
+            available_slots,
+            fresh_capacity_reserve,
+            replay_budget,
+            &ready_lanes,
+            &lanes_to_dispatch,
+            running_without_completion_cycles,
+            oldest_running_seconds(&program_after, Utc::now()),
+            running_after >= max_parallel
+                && program_after
+                    .lanes
+                    .iter()
+                    .any(|lane| lane.status == LaneExecutionStatus::Ready),
+        );
 
         // Track complete count so we know when to sync on the next cycle
         last_complete_count = Some(complete_after);
@@ -852,6 +874,9 @@ fn build_cycle_telemetry(
     replay_budget: usize,
     ready_lanes: &[String],
     lanes_to_dispatch: &[String],
+    running_without_completion_cycles: usize,
+    oldest_running_seconds: Option<u64>,
+    ready_while_saturated: bool,
 ) -> AutodevCycleTelemetry {
     let lanes_to_dispatch: BTreeSet<&str> = lanes_to_dispatch.iter().map(String::as_str).collect();
     let ready_lane_kind = program
@@ -914,6 +939,9 @@ fn build_cycle_telemetry(
         available_slots,
         fresh_capacity_reserve,
         replay_budget,
+        oldest_running_seconds,
+        running_without_completion_cycles,
+        ready_while_saturated,
         idle_with_ready_work: available_slots > 0
             && !direct_ready_but_undispatched.is_empty()
             && lanes_to_dispatch.is_empty(),
@@ -926,6 +954,39 @@ fn build_cycle_telemetry(
         provider_access_limited,
         stall_watchdog,
     }
+}
+
+fn next_running_without_completion_cycles(
+    previous_cycles: usize,
+    previous_complete_after: Option<usize>,
+    running_after: usize,
+    complete_after: usize,
+) -> usize {
+    if running_after == 0 {
+        return 0;
+    }
+    match previous_complete_after {
+        Some(previous_complete_after) if previous_complete_after == complete_after => {
+            previous_cycles + 1
+        }
+        _ => 0,
+    }
+}
+
+fn oldest_running_seconds(
+    program: &crate::evaluate::EvaluatedProgram,
+    observed_at: DateTime<Utc>,
+) -> Option<u64> {
+    program
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == LaneExecutionStatus::Running)
+        .filter_map(|lane| lane.last_started_at)
+        .map(|started_at| {
+            let elapsed = (observed_at - started_at).num_seconds().max(0);
+            u64::try_from(elapsed).unwrap_or(u64::MAX)
+        })
+        .max()
 }
 
 fn runtime_path_error(lane: &crate::evaluate::EvaluatedLane, kind: FailureKind) -> bool {
@@ -5459,6 +5520,133 @@ units:
     }
 
     #[test]
+    fn orchestrate_program_dispatches_from_fresh_autodev_controller_fixture() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        std::fs::create_dir_all(repo.join("malinka/blueprints")).expect("blueprints dir");
+        std::fs::create_dir_all(repo.join("malinka/programs")).expect("programs dir");
+        std::fs::create_dir_all(repo.join("malinka/run-configs/bootstrap"))
+            .expect("run-configs dir");
+        std::fs::create_dir_all(repo.join("malinka/workflows/bootstrap"))
+            .expect("workflows dir");
+        std::fs::create_dir_all(repo.join(".raspberry")).expect("state dir");
+        std::fs::write(repo.join("README.md"), "demo\n").expect("readme");
+        std::fs::write(repo.join("malinka/blueprints/demo.yaml"), "program: demo\n")
+            .expect("blueprint");
+        std::fs::write(
+            repo.join("malinka/programs/demo.yaml"),
+            r#"
+version: 1
+program: demo
+target_repo: ../..
+state_path: ../../.raspberry/demo-state.json
+max_parallel: 1
+units:
+  - id: docs
+    title: Docs
+    output_root: ../../outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+    milestones:
+      - id: reviewed
+        requires: [plan]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: ../run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan]
+"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            repo.join("malinka/run-configs/bootstrap/docs.toml"),
+            "version = 1\ngraph = \"../../workflows/bootstrap/docs.fabro\"\ngoal = \"Demo\"\n",
+        )
+        .expect("run config");
+        std::fs::write(
+            repo.join("malinka/workflows/bootstrap/docs.fabro"),
+            "digraph docs {\n  start [shape=Mdiamond, label=\"Start\"]\n  exit [shape=Msquare, label=\"Exit\"]\n  work [label=\"Work\", prompt=\"Do the work\"]\n  start -> work -> exit\n}\n",
+        )
+        .expect("workflow");
+        git(repo, &["init"]);
+        git(repo, &["config", "user.name", "Fabro"]);
+        git(repo, &["config", "user.email", "fabro@example.com"]);
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-m", "initial"]);
+        git(repo, &["checkout", "-b", "autodev/main"]);
+
+        let fabro_bin = repo.join("fake-fabro.sh");
+        std::fs::write(
+            &fabro_bin,
+            format!(
+                "#!/bin/sh\n\
+set -eu\n\
+runs_base={runs_base}\n\
+case \" $* \" in\n\
+  *\" synth create \"*)\n\
+  exit 0\n\
+  ;;\n\
+  *\" run \"*)\n\
+  run_id=01K00000000000000000000000\n\
+  run_dir=\"$runs_base/20260327-$run_id\"\n\
+  mkdir -p \"$run_dir\"\n\
+  cat > \"$run_dir/manifest.json\" <<'EOF'\n\
+{{\"run_id\":\"01K00000000000000000000000\",\"workflow_name\":\"docs\",\"goal\":\"Demo\",\"start_time\":\"2026-03-27T00:00:00Z\",\"node_count\":1,\"edge_count\":0}}\n\
+EOF\n\
+  cat > \"$run_dir/state.json\" <<'EOF'\n\
+{{\"run_id\":\"01K00000000000000000000000\",\"updated_at\":\"2026-03-27T00:00:01Z\",\"status\":\"running\",\"current_stage_label\":\"Implement\",\"completed_stage_count\":0}}\n\
+EOF\n\
+  echo \"$run_id\"\n\
+  exit 0\n\
+  ;;\n\
+esac\n\
+exit 1\n"
+                ,
+                runs_base = fabro_workflows::run_lookup::default_runs_base().display()
+            ),
+        )
+        .expect("fake fabro");
+        let mut perms = std::fs::metadata(&fabro_bin)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fabro_bin, perms).expect("chmod");
+
+        let manifest_path = repo.join("malinka/programs/demo.yaml");
+
+        let report = orchestrate_program(
+            &manifest_path,
+            &AutodevSettings {
+                fabro_bin: fabro_bin.clone(),
+                max_parallel_override: Some(1),
+                frontier_budget: None,
+                max_cycles: 1,
+                poll_interval_ms: 1,
+                evolve_every_seconds: 0,
+                doctrine_files: Vec::new(),
+                evidence_paths: Vec::new(),
+                preview_evolve_root: None,
+                manifest_stack: Vec::new(),
+            },
+        )
+        .expect("autodev should dispatch");
+
+        assert!(!matches!(report.stop_reason, AutodevStopReason::Maintenance));
+        assert!(
+            report
+                .cycles
+                .first()
+                .is_some_and(|cycle| !cycle.dispatched.is_empty()),
+            "expected at least one dispatch outcome"
+        );
+    }
+
+    #[test]
     fn sync_autodev_report_with_program_marks_live_controller_in_progress() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest_path = temp.path().join("malinka/programs/demo.yaml");
@@ -5542,11 +5730,17 @@ units:
             9,
             &["demo:ready-1".to_string(), "demo:ready-2".to_string()],
             &[],
+            3,
+            Some(120),
+            true,
         );
 
         assert_eq!(telemetry.available_slots, 10);
         assert_eq!(telemetry.fresh_capacity_reserve, 1);
         assert_eq!(telemetry.replay_budget, 9);
+        assert_eq!(telemetry.oldest_running_seconds, Some(120));
+        assert_eq!(telemetry.running_without_completion_cycles, 3);
+        assert!(telemetry.ready_while_saturated);
         assert!(telemetry.idle_with_ready_work);
         assert_eq!(telemetry.ready_but_undispatched.len(), 2);
         assert_eq!(telemetry.failed_bootstrap_count, 1);
@@ -5570,8 +5764,17 @@ units:
             )],
         };
 
-        let telemetry =
-            build_cycle_telemetry(&program, 0, 0, 0, &["demo:ready-1".to_string()], &[]);
+        let telemetry = build_cycle_telemetry(
+            &program,
+            0,
+            0,
+            0,
+            &["demo:ready-1".to_string()],
+            &[],
+            0,
+            None,
+            false,
+        );
 
         assert!(!telemetry.idle_with_ready_work);
         assert_eq!(
@@ -5630,8 +5833,17 @@ units:
             }],
         };
 
-        let telemetry =
-            build_cycle_telemetry(&program, 1, 0, 1, &["demo:program".to_string()], &[]);
+        let telemetry = build_cycle_telemetry(
+            &program,
+            1,
+            0,
+            1,
+            &["demo:program".to_string()],
+            &[],
+            0,
+            None,
+            false,
+        );
 
         assert!(!telemetry.idle_with_ready_work);
         assert!(telemetry.direct_ready_but_undispatched.is_empty());
@@ -5639,6 +5851,45 @@ units:
             telemetry.child_program_ready,
             vec!["demo:program".to_string()]
         );
+    }
+
+    #[test]
+    fn running_without_completion_cycles_tracks_saturated_stalls() {
+        assert_eq!(
+            next_running_without_completion_cycles(0, Some(118), 10, 118),
+            1
+        );
+        assert_eq!(
+            next_running_without_completion_cycles(1, Some(118), 10, 118),
+            2
+        );
+        assert_eq!(
+            next_running_without_completion_cycles(2, Some(118), 10, 119),
+            0
+        );
+        assert_eq!(
+            next_running_without_completion_cycles(2, Some(118), 0, 118),
+            0
+        );
+    }
+
+    #[test]
+    fn oldest_running_seconds_uses_oldest_live_lane() {
+        let mut older = ready_lane("demo:older", "demo", "older", LaneKind::Artifact);
+        older.status = LaneExecutionStatus::Running;
+        older.last_started_at = Some(Utc::now() - chrono::Duration::seconds(45));
+        let mut newer = ready_lane("demo:newer", "demo", "newer", LaneKind::Artifact);
+        newer.status = LaneExecutionStatus::Running;
+        newer.last_started_at = Some(Utc::now() - chrono::Duration::seconds(15));
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 10,
+            runtime_max_parallel: None,
+            lanes: vec![older, newer],
+        };
+
+        let oldest = oldest_running_seconds(&program, Utc::now()).expect("oldest running age");
+        assert!(oldest >= 45, "{oldest}");
     }
 
     #[test]
