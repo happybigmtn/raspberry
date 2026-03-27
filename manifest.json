@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMPDR724S6E13J7716J1SWNY",
+  "workflow_name": "GreenfieldBootstrapReliabilityFreshRustProjectValidation",
+  "goal": "Fresh Rust Project Validation\n\nChild work item of plan: Greenfield Bootstrap and Runtime Asset Reliability\n\nProof commands:\n- `cargo nextest run -p fabro-synthesis -- greenfield_rust`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+  "start_time": "2026-03-27T01:15:17.205139611Z",
+  "node_count": 12,
+  "edge_count": 17,
+  "run_branch": "fabro/run/01KMPDR724S6E13J7716J1SWNY",
+  "base_sha": "b389fbe4af1353f90050744b19ec55f4eeb72418",
+  "base_branch": "main",
+  "workflow_slug": "greenfield-bootstrap-reliability-fresh-rust-project-validation",
+  "host_repo_path": "/home/r/coding/fabro"
+}
