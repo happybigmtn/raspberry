@@ -1,0 +1,9 @@
+{
+  "status": "fail",
+  "duration_ms": 24641,
+  "attempt": 3,
+  "max_attempts": 3,
+  "completed_at": "2026-03-27T01:15:59.923848350+00:00",
+  "updated_at": "2026-03-27T01:15:59.923851986+00:00",
+  "failure_reason": "Handler error: Failed to create CLI scratch dir: Failed to spawn command: No such file or directory (os error 2)"
+}
