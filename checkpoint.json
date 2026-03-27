@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-03-27T01:15:49.157109849Z",
+  "current_node": "preflight",
+  "completed_nodes": [
+    "start",
+    "preflight"
+  ],
+  "node_retries": {
+    "start": 1,
+    "preflight": 1
+  },
+  "context_values": {
+    "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
+    "graph.rankdir": "LR",
+    "internal.run_id": "01KMPDR724CH9VKSFEGAMNFAF6",
+    "internal.thread_id": "start",
+    "current_node": "preflight",
+    "outcome": "fail",
+    "internal.fidelity": "compact",
+    "failure_signature": "preflight|transient_infra|i/o error: no such file or directory (os error <n>)",
+    "thread.start.current_node": "preflight",
+    "internal.retry_count.preflight": 1,
+    "internal.retry_count.start": 1,
+    "failure_class": "transient_infra",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMPDR724CH9VKSFEGAMNFAF6/worktree",
+    "graph.goal": "Minimal Coverage For Fabro Mcp And Fabro Github\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+    "internal.node_visit_count": 1,
+    "current.preamble": "Goal: Minimal Coverage For Fabro Mcp And Fabro Github\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p fabro-mcp && cargo nextest run -p fabro-github`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n"
+  },
+  "logs": [],
+  "node_outcomes": {
+    "preflight": {
+      "status": "fail",
+      "failure": {
+        "message": "I/O error: No such file or directory (os error 2)",
+        "failure_class": "transient_infra"
+      },
+      "duration_ms": 31099
+    },
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "contract",
+  "node_visits": {
+    "preflight": 1,
+    "start": 1
+  }
+}
