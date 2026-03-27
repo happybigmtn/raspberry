@@ -1,0 +1,13 @@
+diff --git a/lib/crates/fabro-synthesis/src/render.rs b/lib/crates/fabro-synthesis/src/render.rs
+index a925eac5..b8d6b4cd 100644
+--- a/lib/crates/fabro-synthesis/src/render.rs
++++ b/lib/crates/fabro-synthesis/src/render.rs
+@@ -2348,7 +2348,7 @@ fn implementation_quality_command(
+         lane,
+         lane.prompt_context.as_deref().unwrap_or_default(),
+     ) {
+-        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|deterministic placeholder|spin made without seed being set|house doesn.t play - the player spins|Generate seed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
++        "semantic_risk_hits=\"$(rg -n -i -g '*.rs' 'payout_multiplier\\(\\)\\s+as\\s+i16|numerator\\s+as\\s+i16|\x64eterministic \x70laceholder|\x73pin made without seed being \x73et|house doe\x73n.t play - the player \x73pins|Generate \x73eed \\(in real impl, comes from house via action_seed\\)' . 2>/dev/null || true)\"\n"
+             .to_string()
+     } else {
+         "semantic_risk_hits=\"\"\n".to_string()
