@@ -249,8 +249,82 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+struct AuxiliaryPathInfo {
+    path: std::path::PathBuf,
+    label: &'static str,
+    size: u64,
+}
+
+fn collect_prunable_auxiliary_paths(
+    logs_base: &Path,
+    cli_base: &Path,
+    cutoff: Option<DateTime<Utc>>,
+) -> Vec<AuxiliaryPathInfo> {
+    let mut paths = Vec::new();
+    let Some(cutoff) = cutoff else {
+        return paths;
+    };
+
+    if let Ok(entries) = std::fs::read_dir(logs_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let modified_at: DateTime<Utc> = modified.into();
+            if modified_at >= cutoff {
+                continue;
+            }
+            paths.push(AuxiliaryPathInfo {
+                path,
+                label: "log",
+                size: metadata.len(),
+            });
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(cli_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("run.") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let modified_at: DateTime<Utc> = modified.into();
+            if modified_at >= cutoff {
+                continue;
+            }
+            paths.push(AuxiliaryPathInfo {
+                size: dir_size(&path),
+                path,
+                label: "cli-scratch",
+            });
+        }
+    }
+
+    paths
+}
+
 fn df_from(args: &DfArgs, data_dir: &Path, runs_base: &Path, logs_base: &Path) -> Result<()> {
     let runs = fabro_workflows::run_lookup::scan_runs(runs_base)?;
+    let cli_base = data_dir.join("cli");
     let mut active_count = 0u64;
     let mut total_run_size = 0u64;
     let mut reclaimable_run_size = 0u64;
@@ -318,6 +392,19 @@ fn df_from(args: &DfArgs, data_dir: &Path, runs_base: &Path, logs_base: &Path) -
         }
     }
 
+    let mut cli_count = 0u64;
+    let mut total_cli_size = 0u64;
+    if let Ok(entries) = std::fs::read_dir(&cli_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            cli_count += 1;
+            total_cli_size += dir_size(&path);
+        }
+    }
+
     let run_reclaim_pct = if total_run_size > 0 {
         (reclaimable_run_size as f64 / total_run_size as f64 * 100.0) as u64
     } else {
@@ -357,6 +444,15 @@ fn df_from(args: &DfArgs, data_dir: &Path, runs_base: &Path, logs_base: &Path) -
             "-".cell().justify(Justify::Right),
             format_size(total_db_size).cell().justify(Justify::Right),
             format!("{} (0%)", format_size(0))
+                .cell()
+                .justify(Justify::Right),
+        ],
+        vec![
+            "CLI scratch".cell(),
+            cli_count.cell().justify(Justify::Right),
+            "-".cell().justify(Justify::Right),
+            format_size(total_cli_size).cell().justify(Justify::Right),
+            format!("{} (100%)", format_size(total_cli_size))
                 .cell()
                 .justify(Justify::Right),
         ],
@@ -444,6 +540,9 @@ fn parse_duration(s: &str) -> Result<chrono::Duration> {
 
 fn prune_from(args: &RunsPruneArgs, base: &Path) -> Result<()> {
     let runs = fabro_workflows::run_lookup::scan_runs(base)?;
+    let data_dir = fabro_workflows::run_lookup::default_data_dir();
+    let logs_base = fabro_workflows::run_lookup::default_logs_base();
+    let cli_base = data_dir.join("cli");
     let label_filters = parse_label_filters(&args.filter.label);
     let mut filtered = fabro_workflows::run_lookup::filter_runs(
         &runs,
@@ -475,24 +574,45 @@ fn prune_from(args: &RunsPruneArgs, base: &Path) -> Result<()> {
                 .is_some_and(|time| time < cutoff)
         });
     }
+    let auxiliary = collect_prunable_auxiliary_paths(
+        &logs_base,
+        &cli_base,
+        staleness_threshold.map(|threshold| Utc::now() - threshold),
+    );
 
-    if filtered.is_empty() {
+    if filtered.is_empty() && auxiliary.is_empty() {
         eprintln!("No matching runs to prune.");
         return Ok(());
     }
 
     let total_bytes: u64 = filtered.iter().map(|run| dir_size(&run.path)).sum();
-    info!(count = filtered.len(), bytes = total_bytes, "pruning runs");
+    let auxiliary_bytes: u64 = auxiliary.iter().map(|item| item.size).sum();
+    info!(
+        count = filtered.len(),
+        bytes = total_bytes,
+        auxiliary_count = auxiliary.len(),
+        auxiliary_bytes,
+        "pruning runs"
+    );
 
     if args.yes {
         for run in &filtered {
             info!(run_id = %run.run_id, path = %run.path.display(), "deleting run");
             std::fs::remove_dir_all(&run.path)?;
         }
+        for item in &auxiliary {
+            info!(path = %item.path.display(), label = item.label, "deleting auxiliary artifact");
+            if item.path.is_dir() {
+                std::fs::remove_dir_all(&item.path)?;
+            } else {
+                std::fs::remove_file(&item.path)?;
+            }
+        }
         eprintln!(
-            "{} run(s) deleted ({} freed).",
+            "{} run(s) deleted and {} auxiliary artifact(s) deleted ({} freed).",
             filtered.len(),
-            format_size(total_bytes)
+            auxiliary.len(),
+            format_size(total_bytes + auxiliary_bytes)
         );
         return Ok(());
     }
@@ -501,10 +621,18 @@ fn prune_from(args: &RunsPruneArgs, base: &Path) -> Result<()> {
         debug!(run_id = %run.run_id, "would delete run (dry-run)");
         println!("would delete: {} ({})", run.dir_name, run.workflow_name);
     }
+    for item in &auxiliary {
+        println!(
+            "would delete auxiliary: {} ({})",
+            item.path.display(),
+            item.label
+        );
+    }
     eprintln!(
-        "\n{} run(s) would be deleted ({} freed). Pass --yes to confirm.",
+        "\n{} run(s) and {} auxiliary artifact(s) would be deleted ({} freed). Pass --yes to confirm.",
         filtered.len(),
-        format_size(total_bytes)
+        auxiliary.len(),
+        format_size(total_bytes + auxiliary_bytes)
     );
     Ok(())
 }

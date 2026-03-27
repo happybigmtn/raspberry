@@ -157,7 +157,26 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
 /// Remove any stale worktree at `path` (best-effort), then add a fresh one.
 pub fn replace_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
     let _ = remove_worktree(repo, path);
+    let _ = prune_worktrees(repo);
+    if path.exists() {
+        let _ = std::fs::remove_dir_all(path);
+    }
     add_worktree(repo, path, branch)
+}
+
+/// Best-effort prune of stale git worktree admin state.
+pub fn prune_worktrees(repo: &Path) -> Result<()> {
+    let output = git_cmd(repo)
+        .args(["worktree", "prune", "--expire", "now"])
+        .output()
+        .map_err(|e| git_error(format!("git worktree prune failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(git_error(format!("git worktree prune failed: {stderr}")));
+    }
+
+    Ok(())
 }
 
 /// Run a `git push` command and check for success.

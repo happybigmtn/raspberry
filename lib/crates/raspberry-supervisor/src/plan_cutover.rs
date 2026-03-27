@@ -264,6 +264,8 @@ mod tests {
             current_fabro_run_id: None,
             current_stage: None,
             last_run_id: None,
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,

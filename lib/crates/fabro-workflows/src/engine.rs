@@ -760,6 +760,20 @@ pub async fn git_checkpoint(
     }
 }
 
+fn checkpoint_error_disables_git_mode(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    [
+        "not a git repository",
+        "this operation must be run in a work tree",
+        "unable to access '.git",
+        "could not open '.git",
+        "fatal: bad object head",
+        "fatal: not a valid object name",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
 /// Push a refspec from the host repo to origin (best-effort).
 ///
 /// Authenticates via a GitHub App installation token so we don't depend
@@ -1497,15 +1511,18 @@ impl WorkflowRunEngine {
         let run_start = Instant::now();
         let run_id = config.run_id.clone();
         let artifact_store = ArtifactStore::new(Some(config.run_dir.clone()));
+        let mut git_checkpoint_enabled = config.git_checkpoint_enabled;
+        let mut active_run_branch = config.run_branch.clone();
+        let mut active_meta_branch = config.meta_branch.clone();
 
         // Populate git_state for handlers (parallel, fan_in) when checkpointing is active
-        let git_state = if config.git_checkpoint_enabled {
+        let git_state = if git_checkpoint_enabled {
             config.base_sha.as_ref().map(|base_sha| {
                 Arc::new(GitState {
                     run_id: run_id.clone(),
                     base_sha: base_sha.clone(),
-                    run_branch: config.run_branch.clone(),
-                    meta_branch: config.meta_branch.clone(),
+                    run_branch: active_run_branch.clone(),
+                    meta_branch: active_meta_branch.clone(),
                     checkpoint_exclude_globs: config.checkpoint_exclude_globs.clone(),
                     git_author: config.git_author.clone(),
                 })
@@ -1517,7 +1534,7 @@ impl WorkflowRunEngine {
 
         // Host-side git checkpoint: sandbox has a host-accessible worktree
         let local_git_checkpoint =
-            config.git_checkpoint_enabled && self.services.sandbox.host_git_dir().is_some();
+            git_checkpoint_enabled && self.services.sandbox.host_git_dir().is_some();
 
         self.services
             .emitter
@@ -1525,7 +1542,7 @@ impl WorkflowRunEngine {
                 name: graph.name.clone(),
                 run_id: run_id.clone(),
                 base_sha: config.base_sha.clone(),
-                run_branch: config.run_branch.clone(),
+                run_branch: active_run_branch.clone(),
                 worktree_dir: if local_git_checkpoint {
                     Some(self.services.sandbox.working_directory().to_string())
                 } else {
@@ -1561,7 +1578,7 @@ impl WorkflowRunEngine {
         );
 
         // Initialize metadata branch for git-native checkpoint storage (best-effort)
-        if let (Some(_), Some(ref repo_path)) = (&config.meta_branch, &config.host_repo_path) {
+        if let (Some(_), Some(ref repo_path)) = (&active_meta_branch, &config.host_repo_path) {
             let store = crate::git::MetadataStore::new(repo_path, &config.git_author);
             let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap_or_default();
             let dot_source = std::fs::read(config.run_dir.join("graph.fabro"))
@@ -2189,10 +2206,10 @@ impl WorkflowRunEngine {
 
             // Step 6b: Write shadow branch first, then run branch commit with trailer
             // Skip git checkpoint for the start node — it's a no-op, so the commit is always empty.
-            if start_node_id.as_deref() != Some(&*node.id) && config.git_checkpoint_enabled {
+            if start_node_id.as_deref() != Some(&*node.id) && git_checkpoint_enabled {
                 // Shadow commit (best-effort)
                 let shadow_sha: Option<String> = if let (Some(_), Some(ref repo_path)) =
-                    (&config.meta_branch, &config.host_repo_path)
+                    (&active_meta_branch, &config.host_repo_path)
                 {
                     let store = crate::git::MetadataStore::new(repo_path, &config.git_author);
                     serde_json::to_vec_pretty(&checkpoint)
@@ -2263,7 +2280,7 @@ impl WorkflowRunEngine {
 
                         // Push run branch (skip in dry-run mode)
                         if !config.dry_run {
-                            if let Some(ref branch) = config.run_branch {
+                            if let Some(ref branch) = active_run_branch {
                                 let push_result =
                                     if self.services.sandbox.git_push_branch(branch).await {
                                         Ok(())
@@ -2292,7 +2309,7 @@ impl WorkflowRunEngine {
                             }
                             // Push metadata branch (always from host)
                             if let (Some(ref meta_branch), Some(ref repo_path)) =
-                                (&config.meta_branch, &config.host_repo_path)
+                                (&active_meta_branch, &config.host_repo_path)
                             {
                                 let refspec = format!("refs/heads/{meta_branch}");
                                 let meta_push_result = git_push_host_result(
@@ -2341,6 +2358,22 @@ impl WorkflowRunEngine {
                                 node_id: node.id.clone(),
                                 error: e.clone(),
                             });
+                        if checkpoint_error_disables_git_mode(&e) {
+                            tracing::warn!(
+                                node_id = %node.id,
+                                run_id = %run_id,
+                                error = %e,
+                                "disabling git checkpointing after infrastructure failure"
+                            );
+                            context.append_log(format!(
+                                "git checkpoint infrastructure failed; disabling further git checkpoints: {e}"
+                            ));
+                            git_checkpoint_enabled = false;
+                            active_run_branch = None;
+                            active_meta_branch = None;
+                            self.services.set_git_state(None);
+                            continue;
+                        }
                         return Err(FabroError::Engine {
                             message: format!(
                                 "git checkpoint commit failed for node '{}': {e}",
@@ -2506,7 +2539,7 @@ impl WorkflowRunEngine {
         }
 
         // Write final.patch: comprehensive diff from base_sha to HEAD
-        if config.git_checkpoint_enabled {
+        if git_checkpoint_enabled {
             if let Some(ref base) = config.base_sha {
                 let patch = git_diff(&*self.services.sandbox, base).await;
                 if let Some(patch) = patch {
@@ -5688,6 +5721,19 @@ mod tests {
             !staged_files.iter().any(|f| f.contains(".venv")),
             ".venv should be excluded from checkpoint, got: {staged_files:?}"
         );
+    }
+
+    #[test]
+    fn checkpoint_error_disables_git_mode_for_worktree_corruption() {
+        assert!(checkpoint_error_disables_git_mode(
+            "git add failed (exit 1): fatal: not a git repository: /repo/.git/worktrees/worktree1"
+        ));
+        assert!(checkpoint_error_disables_git_mode(
+            "git commit failed (exit 128): fatal: this operation must be run in a work tree"
+        ));
+        assert!(!checkpoint_error_disables_git_mode(
+            "git commit failed (exit 1): nothing to commit"
+        ));
     }
 
     #[tokio::test]

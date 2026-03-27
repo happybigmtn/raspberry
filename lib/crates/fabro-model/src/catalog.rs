@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::policy::{automation_primary_target, AutomationProfile};
 use crate::provider::Provider;
 use crate::types::Model;
 
@@ -16,6 +17,12 @@ static GLOBAL_CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
 pub struct FallbackTarget {
     pub provider: String,
     pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelProvider {
+    pub model: String,
+    pub provider: Option<String>,
 }
 
 /// Typed model catalog backed by a `Vec<Model>`.
@@ -184,6 +191,45 @@ pub fn default_model_for_provider(provider: &str) -> Option<Model> {
 }
 
 #[must_use]
+pub fn default_write_model_for_provider(provider: Provider) -> String {
+    let write_target = automation_primary_target(AutomationProfile::Write);
+    if provider == write_target.provider {
+        return write_target.model.to_string();
+    }
+    default_model_for_provider(provider.as_str())
+        .map(|model| model.id)
+        .unwrap_or_else(|| provider.as_str().to_string())
+}
+
+#[must_use]
+pub fn resolve_requested_model_provider(
+    requested_model: Option<&str>,
+    requested_provider: Option<&str>,
+    default_provider: Provider,
+) -> ResolvedModelProvider {
+    let provider = requested_provider.map(String::from);
+    let model = requested_model
+        .map(String::from)
+        .unwrap_or_else(|| default_write_model_for_provider(default_provider));
+
+    match Catalog::builtin().get(&model) {
+        Some(info) => ResolvedModelProvider {
+            model: info.id.clone(),
+            provider: provider.or(Some(info.provider.to_string())),
+        },
+        None => {
+            let write_target = automation_primary_target(AutomationProfile::Write);
+            let provider = if provider.is_none() && model == write_target.model {
+                Some(write_target.provider.as_str().to_string())
+            } else {
+                provider
+            };
+            ResolvedModelProvider { model, provider }
+        }
+    }
+}
+
+#[must_use]
 pub fn default_model_from_env() -> Model {
     Catalog::builtin().default_from_env().clone()
 }
@@ -235,6 +281,22 @@ mod tests {
     #[test]
     fn builtin_get_unknown() {
         assert!(Catalog::builtin().get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn resolve_requested_model_provider_expands_alias() {
+        let resolved = resolve_requested_model_provider(Some("opus"), None, Provider::Anthropic);
+
+        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.provider.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn resolve_requested_model_provider_uses_provider_compatible_default() {
+        let resolved = resolve_requested_model_provider(None, Some("openai"), Provider::OpenAi);
+
+        assert_eq!(resolved.model, "gpt-5.4");
+        assert_eq!(resolved.provider.as_deref(), Some("openai"));
     }
 
     #[test]
@@ -681,7 +743,7 @@ mod tests {
     #[test]
     fn minimax_m2_7_resolves_to_highspeed() {
         let m = get_model_info("MiniMax-M2.7").unwrap();
-        assert_eq!(m.provider, "minimax");
+        assert_eq!(m.provider, Provider::Minimax);
         assert_eq!(m.id, "MiniMax-M2.7-highspeed");
     }
 

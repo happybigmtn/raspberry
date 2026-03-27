@@ -1339,14 +1339,28 @@ fn reserve_fresh_ready_capacity(
     if available_slots < 2 || replayable_failures.is_empty() {
         return 0;
     }
-    let has_fresh_ready = program
+    let direct_ready_count = program
         .lanes
         .iter()
-        .any(|lane| lane.status == LaneExecutionStatus::Ready);
-    if has_fresh_ready {
-        1
-    } else {
+        .filter(|lane| {
+            lane.status == LaneExecutionStatus::Ready
+                && lane.lane_kind != crate::manifest::LaneKind::Orchestration
+        })
+        .count();
+    if direct_ready_count == 0 {
         0
+    } else {
+        let replay_includes_codex_unblock = replayable_failures.iter().any(|lane_key| {
+            program
+                .lanes
+                .iter()
+                .find(|lane| lane.lane_key == *lane_key)
+                .is_some_and(|lane| lane.lane_id.ends_with("-codex-unblock"))
+        });
+        let reserve_cap = if replay_includes_codex_unblock { 2 } else { 1 };
+        direct_ready_count
+            .min(reserve_cap)
+            .min(available_slots.saturating_sub(1))
     }
 }
 
@@ -4144,6 +4158,45 @@ units:
         let reserved = reserve_fresh_ready_capacity(&program, &["failed:lane".to_string()], 3);
 
         assert_eq!(reserved, 0);
+    }
+
+    #[test]
+    fn codex_unblock_replays_reserve_two_direct_ready_slots_when_possible() {
+        let mut unblock = failed_lane_with_kind(
+            "wallet-rpc-tests-codex-unblock:wallet-rpc-tests-codex-unblock",
+            "provider returned empty response with zero tokens",
+            FailureKind::ProviderAccessLimited,
+        );
+        unblock.unit_id = "wallet-rpc-tests-codex-unblock".to_string();
+        unblock.lane_id = "wallet-rpc-tests-codex-unblock".to_string();
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "fabro".to_string(),
+            max_parallel: 6,
+            runtime_max_parallel: None,
+            lanes: vec![
+                ready_lane(
+                    "ready:lane-1",
+                    "fresh-unit",
+                    "fresh-lane-1",
+                    LaneKind::Platform,
+                ),
+                ready_lane(
+                    "ready:lane-2",
+                    "fresh-unit",
+                    "fresh-lane-2",
+                    LaneKind::Integration,
+                ),
+                unblock,
+            ],
+        };
+
+        let reserved = reserve_fresh_ready_capacity(
+            &program,
+            &["wallet-rpc-tests-codex-unblock:wallet-rpc-tests-codex-unblock".to_string()],
+            4,
+        );
+
+        assert_eq!(reserved, 2);
     }
 
     #[test]

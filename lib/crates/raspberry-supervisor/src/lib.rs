@@ -14,14 +14,19 @@ pub mod program_state;
 mod resource_lease;
 
 pub use autodev::{
-    autodev_report_path, load_optional_autodev_report, orchestrate_program,
-    sync_autodev_report_with_program, AutodevCurrentSnapshot, AutodevCycleReport, AutodevError,
-    AutodevProvenance, AutodevReport, AutodevSettings, AutodevStopReason, BinaryProvenance,
+    autodev_report_path, current_snapshot_for_program, load_optional_autodev_report,
+    orchestrate_program, sync_autodev_report_with_program, AutodevCurrentSnapshot,
+    AutodevCycleReport, AutodevError, AutodevProvenance, AutodevReport, AutodevSettings,
+    AutodevStopReason, BinaryProvenance,
+};
+pub use controller_lease::{
+    autodev_controller_active, load_autodev_lease_status, AutodevLeaseStatus,
 };
 pub use dispatch::{execute_selected_lanes, DispatchOutcome, DispatchSettings};
 pub use evaluate::{
-    evaluate_program, evaluate_program_local, render_grouped_summary, render_status_table,
-    EvaluatedLane, EvaluatedProgram, LaneExecutionStatus,
+    evaluate_program, evaluate_program_local, lane_trunk_delivery_state, parse_usage_summary,
+    render_grouped_summary, render_status_table, EvaluatedLane, EvaluatedProgram,
+    LaneExecutionStatus, ParsedUsageSummary,
 };
 pub use failure::{classify_failure, default_recovery_action, FailureKind, FailureRecoveryAction};
 pub use maintenance::{

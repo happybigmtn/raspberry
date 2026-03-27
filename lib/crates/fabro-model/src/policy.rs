@@ -7,6 +7,9 @@ pub enum AutomationProfile {
     Write,
     Review,
     Synth,
+    Unblock,
+    DeepReview,
+    Adjudication,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,11 +63,41 @@ const SYNTH_CHAIN: &[ModelTarget] = &[
     },
 ];
 
+const UNBLOCK_CHAIN: &[ModelTarget] = &[ModelTarget {
+    provider: Provider::OpenAi,
+    model: "gpt-5.4",
+}];
+
+const DEEP_REVIEW_CHAIN: &[ModelTarget] = &[
+    ModelTarget {
+        provider: Provider::Anthropic,
+        model: "claude-opus-4-6",
+    },
+    ModelTarget {
+        provider: Provider::OpenAi,
+        model: "gpt-5.4",
+    },
+];
+
+const ADJUDICATION_CHAIN: &[ModelTarget] = &[
+    ModelTarget {
+        provider: Provider::OpenAi,
+        model: "gpt-5.4",
+    },
+    ModelTarget {
+        provider: Provider::Anthropic,
+        model: "claude-opus-4-6",
+    },
+];
+
 pub fn automation_chain(profile: AutomationProfile) -> &'static [ModelTarget] {
     match profile {
         AutomationProfile::Write => WRITE_CHAIN,
         AutomationProfile::Review => REVIEW_CHAIN,
         AutomationProfile::Synth => SYNTH_CHAIN,
+        AutomationProfile::Unblock => UNBLOCK_CHAIN,
+        AutomationProfile::DeepReview => DEEP_REVIEW_CHAIN,
+        AutomationProfile::Adjudication => ADJUDICATION_CHAIN,
     }
 }
 
@@ -77,6 +110,9 @@ pub fn automation_profile_for_target(provider: Provider, model: &str) -> Option<
         AutomationProfile::Write,
         AutomationProfile::Review,
         AutomationProfile::Synth,
+        AutomationProfile::Unblock,
+        AutomationProfile::DeepReview,
+        AutomationProfile::Adjudication,
     ] {
         let target = automation_primary_target(profile);
         if target.provider == provider && target.model == model {
@@ -145,5 +181,33 @@ mod tests {
         assert_eq!(chain[1].model, "gpt-5.3-codex");
         assert_eq!(chain[2].provider, Provider::Minimax);
         assert_eq!(chain[2].model, "MiniMax-M2.7-highspeed");
+    }
+
+    #[test]
+    fn unblock_profile_orders_gpt_54_only() {
+        let chain = automation_chain(AutomationProfile::Unblock);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].provider, Provider::OpenAi);
+        assert_eq!(chain[0].model, "gpt-5.4");
+    }
+
+    #[test]
+    fn deep_review_profile_orders_opus_then_gpt_54() {
+        let chain = automation_chain(AutomationProfile::DeepReview);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].provider, Provider::Anthropic);
+        assert_eq!(chain[0].model, "claude-opus-4-6");
+        assert_eq!(chain[1].provider, Provider::OpenAi);
+        assert_eq!(chain[1].model, "gpt-5.4");
+    }
+
+    #[test]
+    fn adjudication_profile_orders_gpt_54_then_opus() {
+        let chain = automation_chain(AutomationProfile::Adjudication);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].provider, Provider::OpenAi);
+        assert_eq!(chain[0].model, "gpt-5.4");
+        assert_eq!(chain[1].provider, Provider::Anthropic);
+        assert_eq!(chain[1].model, "claude-opus-4-6");
     }
 }

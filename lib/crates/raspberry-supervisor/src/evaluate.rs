@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use fabro_model::Catalog;
 use fabro_workflows::live_state::RunLiveState;
 use fabro_workflows::run_status::{RunStatus, RunStatusRecord};
 use serde::{Deserialize, Serialize};
@@ -56,7 +57,7 @@ impl fmt::Display for LaneExecutionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvaluatedProgram {
     pub program: String,
     pub max_parallel: usize,
@@ -64,7 +65,7 @@ pub struct EvaluatedProgram {
     pub lanes: Vec<EvaluatedLane>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvaluatedLane {
     pub lane_key: String,
     pub unit_id: String,
@@ -86,6 +87,8 @@ pub struct EvaluatedLane {
     pub current_fabro_run_id: Option<String>,
     pub current_stage: Option<String>,
     pub last_run_id: Option<String>,
+    pub current_run_dir: Option<PathBuf>,
+    pub last_run_dir: Option<PathBuf>,
     pub last_started_at: Option<DateTime<Utc>>,
     pub last_finished_at: Option<DateTime<Utc>>,
     pub last_exit_status: Option<i32>,
@@ -106,19 +109,28 @@ pub struct EvaluatedLane {
     pub consecutive_failures: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedUsageSummary {
+    pub model: String,
+    pub provider: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_estimate_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum LaneOperationalState {
     Healthy,
     Degraded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DerivedCheckState {
     Met,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum LaneOrchestrationState {
     Ready,
     Waiting,
@@ -328,6 +340,9 @@ pub fn evaluate_with_state(
     let mut lanes = Vec::new();
 
     for (unit_id, unit) in &manifest.units {
+        let Some(unit_status) = unit_statuses.get(unit_id) else {
+            continue;
+        };
         for lane_id in unit.lanes.keys() {
             lanes.push(evaluate_lane(
                 manifest_path,
@@ -335,9 +350,7 @@ pub fn evaluate_with_state(
                 unit_id,
                 lane_id,
                 &satisfied,
-                unit_statuses
-                    .get(unit_id)
-                    .expect("unit status should exist for every unit"),
+                unit_status,
                 runtime_records.get(&lane_key(unit_id, lane_id)).copied(),
                 &mut command_probe_cache,
             ));
@@ -398,8 +411,16 @@ pub fn render_grouped_summary(program: &EvaluatedProgram) -> String {
             if let Some(recovery_action) = lane.recovery_action {
                 line.push_str(&format!(" | recovery={recovery_action}"));
             }
-            if let Some((landing_state, _)) = trunk_delivery_state_for_lane(lane) {
+            if let Some((landing_state, _)) = lane_trunk_delivery_state(lane) {
                 line.push_str(&format!(" | landing={landing_state}"));
+            }
+            if let Some(summary) = &lane.last_usage_summary {
+                if let Some(parsed) = parse_usage_summary(summary) {
+                    line.push_str(&format!(
+                        " | model={} | provider={}",
+                        parsed.model, parsed.provider
+                    ));
+                }
             }
             lines.push(line);
         }
@@ -412,6 +433,21 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
     for lane in &program.lanes {
         *counts.entry(lane.status).or_insert(0usize) += 1;
     }
+    let provider_access_limited = program
+        .lanes
+        .iter()
+        .filter(|lane| lane.failure_kind == Some(FailureKind::ProviderAccessLimited))
+        .count();
+    let stall_watchdog = program
+        .lanes
+        .iter()
+        .filter(|lane| lane.failure_kind == Some(FailureKind::StallWatchdog))
+        .count();
+    let provider_policy_mismatch = program
+        .lanes
+        .iter()
+        .filter(|lane| lane.failure_kind == Some(FailureKind::ProviderPolicyMismatch))
+        .count();
     let mut lines = vec![
         format!("Program: {}", program.program),
         format!("Max parallel: {}", program.max_parallel),
@@ -439,6 +475,15 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
                 .unwrap_or(0),
         ),
     ];
+    if let Some(runtime_max_parallel) = program.runtime_max_parallel {
+        lines.push(format!("Runtime max parallel: {}", runtime_max_parallel));
+    }
+    if provider_access_limited > 0 || stall_watchdog > 0 || provider_policy_mismatch > 0 {
+        lines.push(format!(
+            "Provider health: access_limited={} stall_watchdog={} policy_mismatch={}",
+            provider_access_limited, stall_watchdog, provider_policy_mismatch
+        ));
+    }
     for lane in &program.lanes {
         let mut line = format!(
             "{} [{}|{}] {}",
@@ -462,7 +507,12 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         if let Some(recovery_action) = lane.recovery_action {
             line.push_str(&format!(" | recovery={recovery_action}"));
         }
-        if let Some((landing_state, _)) = trunk_delivery_state_for_lane(lane) {
+        if let Some(failure_kind) = lane.failure_kind {
+            if !lane.detail.contains("failure_kind=") {
+                line.push_str(&format!(" | failure_kind={failure_kind}"));
+            }
+        }
+        if let Some((landing_state, _)) = lane_trunk_delivery_state(lane) {
             line.push_str(&format!(" | landing={landing_state}"));
         }
         if let Some(stage) = &lane.current_stage {
@@ -482,6 +532,12 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         if let Some(run_id) = &lane.last_run_id {
             line.push_str(&format!(" | last_run_id={run_id}"));
         }
+        if let Some(run_dir) = &lane.current_run_dir {
+            line.push_str(&format!(" | current_run_dir={}", run_dir.display()));
+        }
+        if let Some(run_dir) = &lane.last_run_dir {
+            line.push_str(&format!(" | last_run_dir={}", run_dir.display()));
+        }
         if let Some(exit_status) = lane.last_exit_status {
             line.push_str(&format!(" | last_exit_status={exit_status}"));
         }
@@ -497,11 +553,19 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
         if let Some(duration_ms) = lane.last_stage_duration_ms {
             line.push_str(&format!(" | last_stage_duration_ms={duration_ms}"));
         }
+        if let Some(summary) = &lane.last_usage_summary {
+            if let Some(parsed) = parse_usage_summary(summary) {
+                line.push_str(&format!(
+                    " | model={} | provider={}",
+                    parsed.model, parsed.provider
+                ));
+            }
+        }
         lines.push(line);
         if let Some(summary) = &lane.last_usage_summary {
             lines.push(format!("  usage: {summary}"));
         }
-        if let Some((_, landing_detail)) = trunk_delivery_state_for_lane(lane) {
+        if let Some((_, landing_detail)) = lane_trunk_delivery_state(lane) {
             lines.push(format!("  trunk_landing: {landing_detail}"));
         }
         if !lane.ready_checks_passing.is_empty() {
@@ -550,7 +614,35 @@ pub fn render_status_table(program: &EvaluatedProgram) -> String {
     lines.join("\n")
 }
 
-fn trunk_delivery_state_for_lane(lane: &EvaluatedLane) -> Option<(String, String)> {
+pub fn parse_usage_summary(summary: &str) -> Option<ParsedUsageSummary> {
+    let (model, counts) = summary.split_once(':')?;
+    let mut parts = counts
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty());
+    let input_tokens = parts.next()?.parse().ok()?;
+    let output_tokens = parts.next()?.parse().ok()?;
+    let model = model.trim().to_string();
+    let model_info = Catalog::builtin().get(&model);
+    let provider = model_info
+        .as_ref()
+        .map(|info| info.provider.as_str().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let cost_estimate_usd = model_info.and_then(|info| {
+        Some(
+            input_tokens as f64 * info.costs.input_cost_per_mtok? / 1_000_000.0
+                + output_tokens as f64 * info.costs.output_cost_per_mtok? / 1_000_000.0,
+        )
+    });
+    Some(ParsedUsageSummary {
+        model,
+        provider,
+        input_tokens,
+        output_tokens,
+        cost_estimate_usd,
+    })
+}
+
+pub fn lane_trunk_delivery_state(lane: &EvaluatedLane) -> Option<(String, String)> {
     let run_id = lane
         .last_run_id
         .as_deref()
@@ -711,6 +803,8 @@ fn evaluate_lane(
             .and_then(|record| record.current_stage_label.clone())
             .or(run_snapshot.current_stage),
         last_run_id: runtime_record.and_then(|record| record.last_run_id.clone()),
+        current_run_dir: runtime_record.and_then(|record| record.current_run_dir.clone()),
+        last_run_dir: runtime_record.and_then(|record| record.last_run_dir.clone()),
         last_started_at: runtime_record.and_then(|record| record.last_started_at),
         last_finished_at: runtime_record.and_then(|record| record.last_finished_at),
         last_exit_status: runtime_record.and_then(|record| record.last_exit_status),
@@ -747,9 +841,9 @@ fn satisfied_milestones(
 ) -> BTreeSet<String> {
     let mut satisfied = BTreeSet::new();
     for (unit_id, unit) in &manifest.units {
-        let unit_status = unit_statuses
-            .get(unit_id)
-            .expect("unit status should exist for every unit");
+        let Some(unit_status) = unit_statuses.get(unit_id) else {
+            continue;
+        };
         for milestone in &unit.milestones {
             if lifecycle_reached(unit, unit_status, &milestone.id)
                 || legacy_runtime_integrated(unit_id, unit, &milestone.id, runtime_records)
@@ -2036,6 +2130,8 @@ units:
             current_fabro_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
             current_stage_label: Some("Promote".to_string()),
             last_run_id: Some("01KMTESTRUNNING0000000000000".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: None,
@@ -2184,6 +2280,8 @@ units:
                 current_fabro_run_id: None,
                 current_stage_label: None,
                 last_run_id: Some("01KMOLD".to_string()),
+                current_run_dir: None,
+                last_run_dir: None,
                 last_started_at: None,
                 last_finished_at: Some(Utc::now()),
                 last_exit_status: Some(1),
@@ -2262,6 +2360,8 @@ units:
             current_fabro_run_id: None,
             current_stage_label: None,
             last_run_id: Some("01KMTESTCOMPLETE000000000000".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: None,
             last_exit_status: Some(0),
@@ -2380,6 +2480,8 @@ units:
             current_fabro_run_id: None,
             current_stage_label: None,
             last_run_id: Some("01KMTESTLEGACYINTEGRATED000000".to_string()),
+            current_run_dir: None,
+            last_run_dir: None,
             last_started_at: None,
             last_finished_at: Some(Utc::now()),
             last_exit_status: Some(0),
@@ -2500,5 +2602,110 @@ units:
         assert_eq!(lane.status, LaneExecutionStatus::Ready);
         assert!(lane.detail.contains("child program `child`"));
         assert!(lane.detail.contains("ready=1"));
+    }
+
+    #[test]
+    fn render_status_table_shows_runtime_parallel_and_provider_health() {
+        let program = EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 5,
+            runtime_max_parallel: Some(10),
+            lanes: vec![
+                EvaluatedLane {
+                    lane_key: "demo:provider".to_string(),
+                    unit_id: "demo".to_string(),
+                    unit_title: "Demo".to_string(),
+                    lane_id: "provider".to_string(),
+                    lane_title: "Provider".to_string(),
+                    lane_kind: LaneKind::Artifact,
+                    status: LaneExecutionStatus::Failed,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: "failure_kind=provider_access_limited".to_string(),
+                    managed_milestone: "reviewed".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("demo.toml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_error: Some("provider rejected request".to_string()),
+                    failure_kind: Some(FailureKind::ProviderAccessLimited),
+                    recovery_action: None,
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: Some("gpt-5.4: 1200 in / 800 out".to_string()),
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
+                },
+                EvaluatedLane {
+                    lane_key: "demo:watchdog".to_string(),
+                    unit_id: "demo".to_string(),
+                    unit_title: "Demo".to_string(),
+                    lane_id: "watchdog".to_string(),
+                    lane_title: "Watchdog".to_string(),
+                    lane_kind: LaneKind::Artifact,
+                    status: LaneExecutionStatus::Failed,
+                    operational_state: None,
+                    precondition_state: None,
+                    proof_state: None,
+                    orchestration_state: None,
+                    detail: "failure_kind=stall_watchdog".to_string(),
+                    managed_milestone: "reviewed".to_string(),
+                    proof_profile: None,
+                    run_config: PathBuf::from("demo.toml"),
+                    run_id: None,
+                    current_run_id: None,
+                    current_fabro_run_id: None,
+                    current_stage: None,
+                    last_run_id: None,
+                    current_run_dir: None,
+                    last_run_dir: None,
+                    last_started_at: None,
+                    last_finished_at: None,
+                    last_exit_status: Some(1),
+                    last_error: Some("CLI command timed out after 1800s".to_string()),
+                    failure_kind: Some(FailureKind::StallWatchdog),
+                    recovery_action: None,
+                    last_completed_stage_label: None,
+                    last_stage_duration_ms: None,
+                    last_usage_summary: None,
+                    last_files_read: Vec::new(),
+                    last_files_written: Vec::new(),
+                    last_stdout_snippet: None,
+                    last_stderr_snippet: None,
+                    ready_checks_passing: Vec::new(),
+                    ready_checks_failing: Vec::new(),
+                    running_checks_passing: Vec::new(),
+                    running_checks_failing: Vec::new(),
+                    consecutive_failures: 0,
+                },
+            ],
+        };
+
+        let rendered = render_status_table(&program);
+
+        assert!(rendered.contains("Runtime max parallel: 10"));
+        assert!(rendered
+            .contains("Provider health: access_limited=1 stall_watchdog=1 policy_mismatch=0"));
+        assert!(rendered.contains("failure_kind=provider_access_limited"));
+        assert!(rendered.contains("failure_kind=stall_watchdog"));
+        assert!(rendered.contains("model=gpt-5.4"));
+        assert!(rendered.contains("provider=openai"));
     }
 }

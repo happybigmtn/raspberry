@@ -144,6 +144,9 @@ fn automation_profile_name(profile: AutomationProfile) -> &'static str {
         AutomationProfile::Write => "write",
         AutomationProfile::Review => "review",
         AutomationProfile::Synth => "synth",
+        AutomationProfile::Unblock => "unblock",
+        AutomationProfile::DeepReview => "deep_review",
+        AutomationProfile::Adjudication => "adjudication",
     }
 }
 

@@ -6,8 +6,9 @@ pub mod types;
 
 pub use catalog::{
     build_fallback_chain, closest_model, default_model, default_model_for_provider,
-    default_model_from_env, get_model_info, list_models, probe_model_for_provider, Catalog,
-    FallbackTarget,
+    default_model_from_env, default_write_model_for_provider, get_model_info, list_models,
+    probe_model_for_provider, resolve_requested_model_provider, Catalog, FallbackTarget,
+    ResolvedModelProvider,
 };
 pub use model_ref::ModelRef;
 pub use policy::{

@@ -54,6 +54,15 @@ pub enum ControllerLeaseError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutodevLeaseStatus {
+    pub path: PathBuf,
+    pub present: bool,
+    pub pid: Option<u32>,
+    pub acquired_at: Option<DateTime<Utc>>,
+    pub active: bool,
+}
+
 #[derive(Debug)]
 pub struct AutodevLeaseGuard {
     path: PathBuf,
@@ -130,12 +139,31 @@ pub fn autodev_controller_active(
     manifest_path: &Path,
     manifest: &ProgramManifest,
 ) -> Result<bool, ControllerLeaseError> {
+    Ok(load_autodev_lease_status(manifest_path, manifest)?.active)
+}
+
+pub fn load_autodev_lease_status(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+) -> Result<AutodevLeaseStatus, ControllerLeaseError> {
     let path = autodev_lease_path(manifest_path, manifest);
     if !path.exists() {
-        return Ok(false);
+        return Ok(AutodevLeaseStatus {
+            path,
+            present: false,
+            pid: None,
+            acquired_at: None,
+            active: false,
+        });
     }
     let lease = load_lease(&path)?;
-    Ok(autodev_owner_active(&lease))
+    Ok(AutodevLeaseStatus {
+        path,
+        present: true,
+        pid: Some(lease.pid),
+        acquired_at: Some(lease.acquired_at),
+        active: autodev_owner_active(&lease),
+    })
 }
 
 impl Drop for AutodevLeaseGuard {

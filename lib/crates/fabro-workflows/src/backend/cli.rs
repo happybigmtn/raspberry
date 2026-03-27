@@ -896,6 +896,104 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CliRuntimePruneSummary {
+    pub scratch_dirs_removed: usize,
+    pub stale_locks_removed: usize,
+}
+
+fn codex_rotator_config_paths_with_home(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".config/autonomy/codex-rotator.json"),
+        home.join(".config/rsociety/codex-rotator.json"),
+    ]
+}
+
+fn prune_stale_cli_runtime_with_home(
+    home: &Path,
+    max_age: std::time::Duration,
+) -> CliRuntimePruneSummary {
+    let mut summary = CliRuntimePruneSummary::default();
+    let cli_base = home.join(".fabro/cli");
+    let now = SystemTime::now();
+    if let Ok(entries) = fs::read_dir(&cli_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("run.") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let Ok(age) = now.duration_since(modified) else {
+                continue;
+            };
+            if age < max_age {
+                continue;
+            }
+            if fs::remove_dir_all(&path).is_ok() {
+                summary.scratch_dirs_removed += 1;
+            }
+        }
+    }
+
+    for config_path in codex_rotator_config_paths_with_home(home) {
+        let Some(parent) = config_path.parent() else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(parent) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name == "codex-rotator-state.lock" {
+                let remove = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<CodexRotatorStateLock>(&raw).ok())
+                    .is_none_or(|lock| !codex_rotator_state_lock_owner_active(&lock));
+                if remove && fs::remove_file(&path).is_ok() {
+                    summary.stale_locks_removed += 1;
+                }
+                continue;
+            }
+            if !(name.starts_with("codex-slot-") && name.ends_with(".lock")) {
+                continue;
+            }
+            let remove = fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<CodexSlotReservation>(&raw).ok())
+                .is_none_or(|reservation| !codex_slot_reservation_owner_active(&reservation));
+            if remove && fs::remove_file(&path).is_ok() {
+                summary.stale_locks_removed += 1;
+            }
+        }
+    }
+
+    summary
+}
+
+pub(crate) fn prune_stale_cli_runtime(max_age: std::time::Duration) -> CliRuntimePruneSummary {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return CliRuntimePruneSummary::default();
+    };
+    prune_stale_cli_runtime_with_home(&home, max_age)
+}
+
 async fn create_cli_scratch_dir(sandbox: &Arc<dyn Sandbox>) -> Result<String, FabroError> {
     let command =
         "umask 077 && base=\"$HOME/.fabro/cli\" && mkdir -p \"$base\" && mktemp -d \"$base/run.XXXXXX\"";
@@ -925,10 +1023,7 @@ fn codex_rotator_config_paths() -> Vec<PathBuf> {
         return Vec::new();
     };
     let home = PathBuf::from(home);
-    vec![
-        home.join(".config/autonomy/codex-rotator.json"),
-        home.join(".config/rsociety/codex-rotator.json"),
-    ]
+    codex_rotator_config_paths_with_home(&home)
 }
 
 fn load_codex_rotator() -> Option<CodexRotator> {
@@ -1540,6 +1635,15 @@ impl CodergenBackend for AgentCliBackend {
         sandbox: &Arc<dyn Sandbox>,
         _tool_hooks: Option<Arc<dyn fabro_agent::ToolHookCallback>>,
     ) -> Result<CodergenResult, FabroError> {
+        let prune_summary = prune_stale_cli_runtime(std::time::Duration::from_secs(24 * 60 * 60));
+        if prune_summary.scratch_dirs_removed > 0 || prune_summary.stale_locks_removed > 0 {
+            tracing::info!(
+                scratch_dirs_removed = prune_summary.scratch_dirs_removed,
+                stale_locks_removed = prune_summary.stale_locks_removed,
+                "pruned stale CLI runtime state before launch"
+            );
+        }
+
         // 1. Snapshot git state before the CLI run
         let files_before = self.detect_changed_files(sandbox).await;
 
@@ -2812,6 +2916,50 @@ mod tests {
             .any(|command| command.contains("rm -rf '/home/test/.fabro/cli/run.abcd12'")));
 
         let _ = std::fs::remove_dir_all(&stage_dir);
+    }
+
+    #[test]
+    fn prune_stale_cli_runtime_removes_old_scratch_dirs_and_dead_locks() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let scratch = home.path().join(".fabro/cli/run.abcd12");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+
+        let autonomy_config_dir = home.path().join(".config/autonomy");
+        std::fs::create_dir_all(&autonomy_config_dir).expect("config dir");
+        let state_lock = autonomy_config_dir.join("codex-rotator-state.lock");
+        let slot_lock = autonomy_config_dir.join("codex-slot-slot1.lock");
+        std::fs::write(
+            &state_lock,
+            serde_json::to_string_pretty(&CodexRotatorStateLock {
+                pid: u32::MAX,
+                process_start_ticks: None,
+                acquired_at_ms: 0,
+            })
+            .expect("state lock json"),
+        )
+        .expect("state lock written");
+        std::fs::write(
+            &slot_lock,
+            serde_json::to_string_pretty(&CodexSlotReservation {
+                slot_name: "slot1".to_string(),
+                pid: u32::MAX,
+                process_start_ticks: None,
+                reserved_at_ms: 0,
+            })
+            .expect("slot lock json"),
+        )
+        .expect("slot lock written");
+
+        let summary = prune_stale_cli_runtime_with_home(
+            home.path(),
+            std::time::Duration::from_secs(0),
+        );
+
+        assert_eq!(summary.scratch_dirs_removed, 1);
+        assert_eq!(summary.stale_locks_removed, 2);
+        assert!(!scratch.exists(), "scratch dir should be removed");
+        assert!(!state_lock.exists(), "state lock should be removed");
+        assert!(!slot_lock.exists(), "slot lock should be removed");
     }
 
     // -- Cycle 1: cli_command_for_provider --
