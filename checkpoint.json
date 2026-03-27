@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-03-27T01:15:49.138530032Z",
+  "current_node": "preflight",
+  "completed_nodes": [
+    "start",
+    "preflight"
+  ],
+  "node_retries": {
+    "preflight": 1,
+    "start": 1
+  },
+  "context_values": {
+    "internal.fidelity": "compact",
+    "graph.goal": "Autodev Integration Test\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n",
+    "graph.rankdir": "LR",
+    "graph.model_stylesheet": "\n            *            { backend: cli; }\n            #challenge   { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #review      { backend: cli; model: kimi-k2.5; provider: kimi; }\n            #deep_review { backend: cli; model: MiniMax-M2.7-highspeed; provider: minimax; }\n            #escalation  { backend: cli; model: kimi-k2.5; provider: kimi; }\n        ",
+    "internal.work_dir": "/home/r/.fabro/runs/20260326-01KMPDR721WYD6Y6R0WG77V1JP/worktree",
+    "thread.start.current_node": "preflight",
+    "failure_signature": "preflight|transient_infra|i/o error: no such file or directory (os error <n>)",
+    "current.preamble": "Goal: Autodev Integration Test\n\nChild work item of plan: Test Coverage for Critical Paths\n\nProof commands:\n- `cargo nextest run -p raspberry-supervisor -- integration autodev_cycle`\n\nRequired durable artifacts:\n- `implementation.md`\n- `verification.md`\n- `quality.md`\n- `promotion.md`\n- `integration.md`\n\n",
+    "internal.node_visit_count": 1,
+    "current_node": "preflight",
+    "internal.retry_count.preflight": 1,
+    "internal.run_id": "01KMPDR721WYD6Y6R0WG77V1JP",
+    "outcome": "fail",
+    "internal.thread_id": "start",
+    "failure_class": "transient_infra",
+    "internal.retry_count.start": 1
+  },
+  "logs": [],
+  "node_outcomes": {
+    "preflight": {
+      "status": "fail",
+      "failure": {
+        "message": "I/O error: No such file or directory (os error 2)",
+        "failure_class": "transient_infra"
+      },
+      "duration_ms": 31221
+    },
+    "start": {
+      "status": "success",
+      "duration_ms": 0
+    }
+  },
+  "next_node_id": "contract",
+  "node_visits": {
+    "start": 1,
+    "preflight": 1
+  }
+}
