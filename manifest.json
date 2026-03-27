@@ -1,0 +1,13 @@
+{
+  "run_id": "01KMPDR722Z5PSNKA3YXWRDGZG",
+  "workflow_name": "TestCoverageCriticalPathsCiPreservationAndHardeningCodexUnblock",
+  "goal": "Use Codex to unblock implementation lane `test-coverage-critical-paths-ci-preservation-and-hardening:test-coverage-critical-paths-ci-preservation-and-hardening`.\n\nInspect the source lane's most recent failure/remediation context and apply the minimal code or harness changes needed so the source lane can pass its next replay.\n\nProof commands:\n- `cargo check --workspace`\n",
+  "start_time": "2026-03-27T01:15:16.659830783Z",
+  "node_count": 14,
+  "edge_count": 22,
+  "run_branch": "fabro/run/01KMPDR722Z5PSNKA3YXWRDGZG",
+  "base_sha": "b389fbe4af1353f90050744b19ec55f4eeb72418",
+  "base_branch": "main",
+  "workflow_slug": "test-coverage-critical-paths-ci-preservation-and-hardening-codex-unblock",
+  "host_repo_path": "/home/r/coding/fabro"
+}
