@@ -33,6 +33,14 @@ artifacts visible in the controller checkout. That meant a lane could finish
 successfully, record `last_exit_status: 0`, and still be reclassified to
 `ready` because the controller had not landed the artifact files locally.
 
+The latest overnight landings exposed a fifth, subtler problem: some
+test-coverage lanes can land low-value or misleading work even when the stage
+graph itself is behaving correctly. In practice that showed up as duplicate
+test suites instead of extensions to the canonical suite, dead `src/*_tests.rs`
+files that were no longer wired into the crate, stale `spec.md` or `review.md`
+artifacts drifting into source directories, and tests that asserted fake IDs or
+string formatting instead of real state transitions.
+
 ## Operating Theory
 
 Autodev only makes trustworthy progress when each gate and each milestone
@@ -63,6 +71,11 @@ run plus the required artifact files in that run's worktree is enough to prove
 the milestone. The controller checkout is not the only trustworthy artifact
 surface once branch-backed implementation runs are part of the design.
 
+For test-coverage lanes, passing proof commands is also not enough on its own.
+The framework has to guard against structurally weak landings by checking for
+source-artifact drift, unattached source test modules, and review prompts that
+explicitly reject duplicate or fake-behavior coverage work.
+
 ## Strategy
 
 The strategy is still to fix synthesis centrally instead of patching controller
@@ -91,6 +104,13 @@ controller checkout first, but it should be augmented with lane artifacts found
 under the latest successful run worktree when they map to the same repo-relative
 artifact paths. That preserves the stale-success guard while letting fresh
 successful implementation runs count as complete.
+
+For quality gating on implementation lanes, especially `test-coverage-*` lanes,
+the generator should treat changed markdown artifacts under `src/` or `tests/`
+as artifact drift, and it should fail when a changed `src/*_tests.rs` file is
+not actually referenced by the crate's module tree. The review and challenge
+prompts should also say plainly that duplicate suites, fake-ID assertions, and
+stale source-adjacent artifact markdown are not merge-ready outcomes.
 
 ## Key Discoveries
 
@@ -123,6 +143,13 @@ run worktrees, but the stored lane state stayed `ready` because evaluation only
 looked at the controller checkout. Running `raspberry status` with the patched
 evaluator reclassified the lane to `complete`, which confirmed the state logic
 bug without needing a new synthesis change.
+
+The overnight quality sweep also showed that some landed work was weak without
+being obviously broken. The wallet RPC coverage landing carried dead source
+test artifacts after coverage had moved elsewhere, and the house-session count
+test could pass without proving real decrement behavior. Those are exactly the
+sorts of outcomes the existing verify and review stages are too permissive
+about for test-coverage lanes.
 
 These are all the same class of bug: a deterministic gate or classifier using
 the wrong source of truth. One gate looked for an artifact nobody owned,

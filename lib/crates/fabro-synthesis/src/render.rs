@@ -2103,6 +2103,13 @@ fn workflow_profile_for_lane(lane: &BlueprintLane) -> &str {
     lane.proof_profile.as_deref().unwrap_or("standard")
 }
 
+fn lane_is_test_coverage_lane(lane: &BlueprintLane, context: &str) -> bool {
+    let combined = format!("{} {} {}", lane.id, lane.title, context).to_ascii_lowercase();
+    combined.contains("test-coverage")
+        || combined.contains("test coverage")
+        || combined.contains("coverage push")
+}
+
 fn contract_mode_for_lane(lane: &BlueprintLane) -> &'static str {
     if is_codex_unblock_lane(lane) {
         "unblock"
@@ -2456,9 +2463,39 @@ fn implementation_quality_command(
     } else {
         "lane_sizing_hits=\"\"\n".to_string()
     };
+    let changed_source_artifact_script = "lane_diff_base=\"".to_string()
+        + lane_diff_base_expr()
+        + "\"\n\
+        changed_source_artifact_hits=\"$(git diff --name-only \"$lane_diff_base\"..HEAD 2>/dev/null \
+            | grep -E '(^|/)(src|tests)/.*(_spec|_review|_implementation)\\.md$|(^|/)(src|tests)/(spec|review|implementation)\\.md$' || true)\"\n";
+    let orphan_rust_test_module_script = "orphan_rust_test_hits=\"\"\n\
+        while IFS= read -r rust_test_file; do\n  \
+          [ -n \"$rust_test_file\" ] || continue\n  \
+          stem=$(basename \"$rust_test_file\" .rs)\n  \
+          crate_src=$(dirname \"$rust_test_file\")\n  \
+          if ! rg -n \"(pub[[:space:]]+)?mod[[:space:]]+$stem([[:space:]]*;|[[:space:]]*\\{)\" \"$crate_src\" -g '*.rs' 2>/dev/null | grep -v \"$rust_test_file\" >/dev/null; then\n    \
+            orphan_rust_test_hits=\"$orphan_rust_test_hits\\n$rust_test_file\"\n  \
+          fi\n\
+        done < <(git diff --name-only \"$lane_diff_base\"..HEAD 2>/dev/null | grep -E '(^|/)src/[^/]+_tests\\.rs$' || true)\n";
+    let duplicate_test_name_script = if lane_is_test_coverage_lane(
+        lane,
+        lane.prompt_context.as_deref().unwrap_or_default(),
+    ) {
+        "duplicate_test_name_hits=\"$(git diff --name-only \"$lane_diff_base\"..HEAD 2>/dev/null \
+            | grep -E '(^|/)(src|tests)/.*\\.rs$' \
+            | while IFS= read -r rust_file; do\n  \
+                [ -n \"$rust_file\" ] || continue\n  \
+                rg -o 'fn[[:space:]]+test_[A-Za-z0-9_]+' \"$rust_file\" 2>/dev/null \
+                  | sed 's/^fn[[:space:]]\\+//' || true\n\
+              done \
+            | sort | uniq -d || true)\"\n"
+            .to_string()
+    } else {
+        "duplicate_test_name_hits=\"\"\n".to_string()
+    };
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}{lane_sizing_script}artifact_hits=\"$(rg -n -i 'manual proof still required|stub implementation|not yet fully implemented|compile-only|will implement|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\ntotal_tests=0\nderive_tests=0\nfor surface in {surface_scan_targets}; do\n  while IFS= read -r file; do\n    [ -n \"$file\" ] || continue\n    total_tests=$((total_tests + $(rg -c '#\\[test\\]' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n    derive_tests=$((derive_tests + $(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n  done < <(\n    if [ -f \"$surface\" ]; then\n      printf '%s\\n' \"$surface\"\n    elif [ -d \"$surface\" ]; then\n      find \"$surface\" -type f -name '*.rs' 2>/dev/null\n    fi\n  )\ndone\nif [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n  ratio=$((derive_tests * 100 / total_tests))\n  if [ \"$ratio\" -gt 50 ]; then\n    test_quality_debt=yes\n  fi\nfi\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}{lane_sizing_script}{changed_source_artifact_script}{orphan_rust_test_module_script}{duplicate_test_name_script}artifact_hits=\"$(rg -n -i 'manual proof still required|stub implementation|not yet fully implemented|compile-only|will implement|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\ntotal_tests=0\nderive_tests=0\nfor surface in {surface_scan_targets}; do\n  while IFS= read -r file; do\n    [ -n \"$file\" ] || continue\n    total_tests=$((total_tests + $(rg -c '#\\[test\\]' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n    derive_tests=$((derive_tests + $(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n  done < <(\n    if [ -f \"$surface\" ]; then\n      printf '%s\\n' \"$surface\"\n    elif [ -d \"$surface\" ]; then\n      find \"$surface\" -type f -name '*.rs' 2>/dev/null\n    fi\n  )\ndone\nif [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n  ratio=$((derive_tests * 100 / total_tests))\n  if [ \"$ratio\" -gt 50 ]; then\n    test_quality_debt=yes\n  fi\nfi\nif [ -n \"$duplicate_test_name_hits\" ]; then\n  test_quality_debt=yes\nfi\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ -n \"$changed_source_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ -n \"$orphan_rust_test_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Source Artifact Drift Hits\n$changed_source_artifact_hits\n\n## Orphan Rust Test Module Hits\n$orphan_rust_test_hits\n\n## Duplicate Test Name Hits\n$duplicate_test_name_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -2467,6 +2504,9 @@ fn implementation_quality_command(
         root_artifact_shadow_script = root_artifact_shadow_script,
         semantic_risk_script = semantic_risk_script,
         lane_sizing_script = lane_sizing_script,
+        changed_source_artifact_script = changed_source_artifact_script,
+        orphan_rust_test_module_script = orphan_rust_test_module_script,
+        duplicate_test_name_script = duplicate_test_name_script,
         touched_surface_section = touched_surface_section,
         surface_scan_targets = surface_scan_targets,
     )
@@ -2843,6 +2883,11 @@ fn render_implementation_plan_prompt(
     output.push_str(
         "\n\nImplementation quality:\n- implement functionality completely — every function must do real work, not return defaults or skip the action\n- BEHAVIORAL STUBS ARE WORSE THAN COMPILATION FAILURES: a function that compiles but does not perform its stated purpose will be caught by the adversarial challenge stage and rejected\n- tests must verify behavioral outcomes (given X input, assert Y output), not just compilation or derive macros (Display, Clone, PartialEq)\n- include at least one FULL LIFECYCLE test that drives from initial state through multiple actions to terminal state\n- do not duplicate tests — one test per behavior, not five tests for the same Display output\n",
     );
+    if lane_is_test_coverage_lane(lane, context) {
+        output.push_str(
+            "\nTest-coverage lane discipline:\n- extend the existing canonical test surface before creating a second or third suite for the same behavior\n- if you add a Rust `src/*_tests.rs` helper, wire it into the crate with a real `mod ...;` reference; otherwise keep the coverage in `tests/`\n- reject fake-behavior tests: when checking create/update/remove/count semantics, operate on real created state and assert the post-operation state changed as intended\n- delete stale spec/review markdown that drifts into `src/` or `tests/`; those are artifact mistakes, not durable product files\n",
+        );
+    }
     output.push_str(
         "\nDesign conventions (the challenge stage WILL reject violations):\n\
          - Settlement arithmetic: Chips is i16 (max 32767). ALL payout math MUST widen to i32 or i64 FIRST to prevent overflow. CORRECT: `let payout = (i32::from(bet) * 3 / 2) as Chips;` WRONG: `(bet as f64 * 1.5) as Chips` (float truncation). WRONG: `bet * 95 / 100` (i16 overflow for bet > 345)\n\
@@ -3031,6 +3076,11 @@ fn render_implementation_review_prompt(
     output.push_str(
         "\nDeterministic evidence:\n- treat `.fabro-work/quality.md` as machine-generated truth about placeholder debt, warning debt, manual follow-up, and artifact mismatch risk\n- if `.fabro-work/quality.md` says `quality_ready: no`, do not bless the slice as merge-ready\n",
     );
+    if lane_is_test_coverage_lane(lane, context) {
+        output.push_str(
+            "\nTest-coverage review rules:\n- set `merge_ready: no` if the lane created duplicate suites instead of extending the canonical test surface\n- set `merge_ready: no` if new tests only verify formatting, UUID shape, or fake IDs without exercising real state transitions\n- set `merge_ready: no` if any stale spec/review markdown or unattached `src/*_tests.rs` files remain in the landed diff\n",
+        );
+    }
     output.push_str(
         "\n\nScore each dimension 0-10 and write `.fabro-work/promotion.md` in this exact form:\n\n\
 merge_ready: yes|no\n\
@@ -3161,6 +3211,11 @@ fn render_implementation_challenge_prompt(
     output.push_str(
         "\n\nChallenge checklist:\n- Is the slice smaller than the plan says, or larger?\n- Did the implementation actually satisfy the first proof gate?\n- Are any touched surfaces outside the named slice?\n- Are the artifacts overstating completion?\n- Are the tests actually verifying behavioral outcomes, or are they trivial stubs that pass without real logic?\n- Is there an obvious bug, trust-boundary issue, or missing test the final reviewer should not have to rediscover?\n",
     );
+    if lane_is_test_coverage_lane(lane, _context) {
+        output.push_str(
+            "- Did the lane create duplicate coverage in a new suite instead of extending the canonical test surface?\n- Did it leave behind unattached `src/*_tests.rs` files or artifact markdown under `src/`/`tests/`?\n- Do count/remove/update tests mutate real instances, or do they only assert formatting / fake IDs / inert data?\n",
+        );
+    }
     output.push_str(
         "\nWrite a short challenge note in `.fabro-work/verification.md` or amend it if needed, focusing on concrete gaps and the next fixup target. Do not write `promotion.md` here.\n",
     );
@@ -6683,10 +6738,11 @@ mod tests {
         inject_workspace_verify_lanes, inline_proof_command, lane_diff_base_expr,
         looks_like_shell_command, manual_notes_from_markdown, normalize_blueprint_lane_kinds,
         observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
-        raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
-        review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
-        slice_notes_from_markdown, smoke_commands_from_markdown, trim_list_prefix,
-        ImplementationEvidence, LaneCatalogEntry, ReviewStageRequirement,
+        raw_lane_refs, render_implementation_challenge_prompt, render_implementation_review_prompt,
+        render_prompt, render_run_config, render_workflow_graph, review_blocker_lane_refs,
+        review_stage_requirements, setup_notes_from_markdown, slice_notes_from_markdown,
+        smoke_commands_from_markdown, trim_list_prefix, ImplementationEvidence, LaneCatalogEntry,
+        ReviewStageRequirement,
     };
 
     #[test]
@@ -8241,6 +8297,157 @@ The validator binary should emit structured log lines.
         assert!(!command.contains("for shadow in spec.md review.md"));
         assert!(!command.contains("root_artifact_hits=\"$root_artifact_hits"));
         assert!(!command.contains("artifact_hits\") || [ -n \"$root_artifact_hits\" ]"));
+    }
+
+    #[test]
+    fn implementation_quality_command_checks_changed_source_artifacts_and_duplicate_tests() {
+        let unit = BlueprintUnit {
+            id: "test-coverage-wallet-rpc-tests".to_string(),
+            title: "Wallet RPC Tests".to_string(),
+            output_root: PathBuf::from("outputs/test-coverage-wallet-rpc-tests"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "test-coverage-wallet-rpc-tests".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Wallet RPC Test Coverage".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("test-coverage-wallet-rpc-tests".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `crates/rxmr-wallet/src/lib.rs`\n- `crates/rxmr-wallet/tests/http_mock_tests.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Touch first:\n- `crates/rxmr-wallet/src/lib.rs`\n- `crates/rxmr-wallet/tests/http_mock_tests.rs`\n".to_string(),
+            ),
+            verify_command: Some("cargo test -p rxmr-wallet".to_string()),
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+            protocols: vec![],
+        };
+
+        let command =
+            implementation_quality_command(&blueprint, "test-coverage-wallet-rpc-tests", &lane);
+
+        assert!(command.contains("changed_source_artifact_hits"));
+        assert!(command.contains("(^|/)(src|tests)/.*(_spec|_review|_implementation)\\.md$"));
+        assert!(command.contains("orphan_rust_test_hits"));
+        assert!(command.contains("src/[^/]+_tests\\.rs"));
+        assert!(command.contains("duplicate_test_name_hits"));
+        assert!(command.contains("uniq -d"));
+        assert!(command.contains("## Source Artifact Drift Hits"));
+        assert!(command.contains("## Orphan Rust Test Module Hits"));
+        assert!(command.contains("## Duplicate Test Name Hits"));
+    }
+
+    #[test]
+    fn test_coverage_prompts_call_out_duplicate_and_fake_behavior_tests() {
+        let lane = BlueprintLane {
+            id: "test-coverage-house-session-tests".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "House Session Test Coverage".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("test-coverage-house-session-tests".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Strengthen session lifecycle coverage.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo test --bin house session".to_string()),
+            health_command: None,
+        };
+        let context = "Required tests:\n- remove/update/count semantics prove real state changes";
+        let review_prompt = render_implementation_review_prompt(
+            &lane,
+            context,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        let challenge_prompt = render_implementation_challenge_prompt(
+            &lane,
+            context,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert!(review_prompt.contains("duplicate suites"));
+        assert!(review_prompt.contains("fake IDs"));
+        assert!(challenge_prompt.contains("duplicate coverage"));
+        assert!(challenge_prompt.contains("artifact markdown"));
+        assert!(challenge_prompt.contains("fake IDs"));
     }
 
     #[test]
