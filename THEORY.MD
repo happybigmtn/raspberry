@@ -9,19 +9,21 @@ repo doctrine still described obvious unfinished work. The second bug was truth
 loss: the operator-facing state could collapse real failure causes into generic
 messages like "script failed with exit code: 1" or accidentally trigger deeper
 work just to render a status table. The newest proving ground, `rXMRbro`, adds
-one more class of false failure: child programs can die before domain work even
-starts because the runtime launch path itself assumes an interactive shell and
-a writable home-directory log location.
+two more classes of false failure: child programs can die before domain work
+even starts because the runtime launch path itself assumes an interactive shell
+and a writable home-directory log location, and deterministic lane gates can
+fail for repo-wide debt that is outside the lane's owned surface.
 
 Zend and Myosu made the orchestration/truth distinction concrete. `rXMRbro`
-adds the next requirement: a zero-human system cannot depend on incidental host
-shell behavior or on `~/.fabro/logs` being writable inside nested worker
-contexts.
+adds the next requirements: a zero-human system cannot depend on incidental
+host shell behavior or on `~/.fabro/logs` being writable inside nested worker
+contexts, and generated implementation checks cannot silently widen from an
+owned file into its parent directory and neighboring repo surfaces.
 
 ## Operating Theory
 
-The no-idle loop only works if authorship, orchestration, truth, and launch
-hygiene all reinforce each other.
+The no-idle loop only works if authorship, orchestration, truth, launch
+hygiene, and lane scoping all reinforce each other.
 
 Authorship lives in `fabro-synthesis`. `author_blueprint_for_evolve(...)` must
 be able to materialize missing parent-program work from doctrine instead of only
@@ -50,6 +52,17 @@ that panicked on a read-only filesystem. The newer truth discovery is that
 progress log ends with `WorkflowRunCompleted`; otherwise a genuinely failed run
 can be re-labeled as successful and lose the recovery metadata needed for
 self-healing.
+
+Lane scoping lives in `fabro-synthesis::render`. Generated `Quality` and
+`Audit` scripts need to judge the lane's owned files and declared artifacts,
+not the repo neighborhood around those files. If a lane owns `src/foo.rs`, then
+placeholder scans, lane-sizing checks, and test-debt checks must inspect
+`src/foo.rs` or an explicitly owned directory, not silently widen to `src/`.
+Likewise repo-root `spec.md` and `review.md` are controller bookkeeping, not
+lane debt. When generated gates forget that boundary, `Quality` creates fake
+failures, `Fixup` broadens the diff into unrelated files, and `Audit` then
+rejects that widened diff for exactly the unrelated changes the generator
+invited.
 
 ## Strategy
 
@@ -84,6 +97,14 @@ explicit env vars instead of through `bash -ic`. `fabro-cli::logging` should
 prefer file logs when it can create them, but it must fall back to run-local
 logging when the home directory is unavailable or read-only. That keeps nested
 autonomous runs from failing before their first stage executes.
+
+The newest synthesis hardening step is to make implementation gates
+surface-exact by default. Placeholder scans, lane-sizing scans, and test-debt
+checks should recurse only through owned directories and should inspect owned
+files directly without replacing them with their parent directories. Root-level
+artifact-shadow heuristics should not make every lane responsible for
+controller-root markdown, and audit surface guards should tolerate canonical
+root artifact files without allowing unrelated source expansion.
 
 The newest execution step extends that into actual remediation for one concrete
 resource family. Zend-style service/interface runs already know how to honor
@@ -138,6 +159,15 @@ startup noise, and then a panic from `tracing-appender` trying to create
 substantially. The right lever is not better prompts or different repo plans;
 it is launch-path determinism in the framework itself.
 
+The next `rXMRbro` discovery is that many failed `quality` and `fixup` cycles
+were synthetic scope failures, not domain failures. Generated quality scripts
+were scanning sibling screens for placeholder text, treating repo-root
+`spec.md` and `review.md` as shadow-artifact debt, and computing lane sizing by
+walking parent directories of owned files. That made clean lanes look dirty,
+caused `Fixup` to touch unrelated files, and then caused `Audit` to reject the
+expanded diff for exactly that reason. The right lever here is generator scope
+discipline, not prompt tuning.
+
 Another important discovery is that local-only direct integration has two
 different failure modes. The first was missing `origin`, which made trunk
 detection and push-based settlement impossible. The second was subtler: once
@@ -178,3 +208,9 @@ footguns, but nested autonomous execution may still surface other host-coupled
 assumptions over time. The right long-term answer may be a stricter framework
 contract for child-program execution environments, not just a growing list of
 patched symptoms.
+
+There is also an open question around how explicit artifact ownership should
+become. The current fix is to stop treating controller-root artifacts as lane
+debt, but the longer-term design may need a first-class ownership model so
+generated gates can distinguish lane outputs, controller bookkeeping, and true
+repo drift without leaning on brittle path heuristics.

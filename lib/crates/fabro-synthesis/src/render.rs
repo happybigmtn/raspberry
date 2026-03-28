@@ -2390,13 +2390,7 @@ fn implementation_quality_command(
     } else {
         "external_blocker_only=no\n".to_string()
     };
-    let root_artifact_shadow_script = "root_artifact_hits=\"\"\n\
-        for shadow in spec.md review.md implementation.md verification.md quality.md promotion.md integration.md; do\n  \
-          if [ -f \"$shadow\" ]; then\n    \
-            root_artifact_hits=\"$root_artifact_hits\\n$shadow\"\n  \
-          fi\n\
-        done\n"
-        .to_string();
+    let root_artifact_shadow_script = "root_artifact_hits=\"\"\n".to_string();
     let semantic_risk_script = if !allows_evidence_only
         && lane_is_security_sensitive(lane, lane.prompt_context.as_deref().unwrap_or_default())
     {
@@ -2405,43 +2399,44 @@ fn implementation_quality_command(
     } else {
         "semantic_risk_hits=\"\"\n".to_string()
     };
-    let surface_scan_dirs = {
-        let dirs: Vec<String> = declared_surfaces
+    let surface_scan_targets = {
+        let targets: Vec<String> = declared_surfaces
             .iter()
-            .filter_map(|s| {
-                std::path::Path::new(s)
-                    .parent()
-                    .map(|p| p.display().to_string())
-            })
-            .collect::<std::collections::BTreeSet<_>>()
+            .cloned()
+            .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        if dirs.is_empty() {
+        if targets.is_empty() {
             "__fabro_no_surface__".to_string()
         } else {
-            dirs.join(" ")
+            targets.join(" ")
         }
     };
     let lane_sizing_script = if !allows_evidence_only
         && lane_is_layout_sensitive(lane, lane.prompt_context.as_deref().unwrap_or_default())
     {
         "lane_sizing_hits=\"\"\n\
-         for surface in {surface_scan_dirs}; do\n  \
-           if [ -d \"$surface\" ]; then\n    \
-             while IFS= read -r file; do\n      \
-               lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n      \
-               if [ \"$lines\" -lt 400 ]; then\n        \
-                 continue\n      \
-               fi\n      \
-               if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n        \
-                 lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n      \
-               fi\n    \
-             done < <(find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null)\n  \
-           fi\n\
+         for surface in {surface_scan_targets}; do\n  \
+           while IFS= read -r file; do\n    \
+             [ -n \"$file\" ] || continue\n    \
+             lines=$(wc -l < \"$file\" 2>/dev/null || echo 0)\n    \
+             if [ \"$lines\" -lt 400 ]; then\n      \
+               continue\n    \
+             fi\n    \
+             if rg -q 'handle_input' \"$file\" 2>/dev/null && rg -q 'render_' \"$file\" 2>/dev/null && rg -q 'tick\\(|ui_state|session_pnl' \"$file\" 2>/dev/null; then\n      \
+               lane_sizing_hits=\"$lane_sizing_hits\\n$file:$lines\"\n    \
+             fi\n  \
+           done < <(\n    \
+             if [ -f \"$surface\" ]; then\n      \
+               printf '%s\\n' \"$surface\"\n    \
+             elif [ -d \"$surface\" ]; then\n      \
+               find \"$surface\" -type f \\( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' \\) 2>/dev/null\n    \
+             fi\n  \
+           )\n\
          done\n"
             .replace(
-                "{surface_scan_dirs}",
-                &surface_scan_dirs
+                "{surface_scan_targets}",
+                &surface_scan_targets
                     .split_whitespace()
                     .map(shell_single_quote)
                     .collect::<Vec<_>>()
@@ -2452,7 +2447,7 @@ fn implementation_quality_command(
     };
 
     format!(
-        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  if [ -f \"$surface\" ]; then\n    surface=\"$(dirname \"$surface\")\"\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}{lane_sizing_script}artifact_hits=\"$(rg -n -i 'manual proof still required|placeholder|stub implementation|not yet fully implemented|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\nfor surface in {surface_scan_dirs}; do\n  if [ -d \"$surface\" ]; then\n    total_tests=$(rg -c '#\\[test\\]' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    derive_tests=$(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' -g '*.rs' \"$surface\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')\n    if [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n      ratio=$((derive_tests * 100 / total_tests))\n      if [ \"$ratio\" -gt 50 ]; then\n        test_quality_debt=yes\n      fi\n    fi\n  fi\ndone\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ] || [ -n \"$root_artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
+        "set -e\nQUALITY_PATH={quality_path}\nIMPLEMENTATION_PATH={implementation_path}\nVERIFICATION_PATH={verification_path}\nplaceholder_hits=\"\"\nscan_placeholder() {{\n  surface=\"$1\"\n  if [ ! -e \"$surface\" ]; then\n    return 0\n  fi\n  hits=\"$(rg -n -i -g '*.rs' -g '*.py' -g '*.js' -g '*.ts' -g '*.tsx' -g '*.md' -g 'Cargo.toml' -g '*.toml' 'TODO|stub|placeholder|not yet implemented|compile-only|for now|will implement|todo!|unimplemented!' \"$surface\" || true)\"\n  if [ -n \"$hits\" ]; then\n    if [ -n \"$placeholder_hits\" ]; then\n      placeholder_hits=\"$(printf '%s\\n%s' \"$placeholder_hits\" \"$hits\")\"\n    else\n      placeholder_hits=\"$hits\"\n    fi\n  fi\n}}\n{surface_scan}\n{external_only_blocker_script}{root_artifact_shadow_script}{semantic_risk_script}{lane_sizing_script}artifact_hits=\"$(rg -n -i 'manual proof still required|stub implementation|not yet fully implemented|compile-only|will implement|todo!|unimplemented!' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\ntest_quality_debt=no\ntotal_tests=0\nderive_tests=0\nfor surface in {surface_scan_targets}; do\n  while IFS= read -r file; do\n    [ -n \"$file\" ] || continue\n    total_tests=$((total_tests + $(rg -c '#\\[test\\]' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n    derive_tests=$((derive_tests + $(rg -c 'assert.*\\.to_string\\(\\).*contains\\|assert_eq!.*\\.to_string\\(\\)\\|assert_eq!.*format!.*Display' \"$file\" 2>/dev/null | awk -F: '{{s+=$2}} END {{print s+0}}')))\n  done < <(\n    if [ -f \"$surface\" ]; then\n      printf '%s\\n' \"$surface\"\n    elif [ -d \"$surface\" ]; then\n      find \"$surface\" -type f -name '*.rs' 2>/dev/null\n    fi\n  )\ndone\nif [ \"$total_tests\" -gt 5 ] && [ \"$derive_tests\" -gt 0 ]; then\n  ratio=$((derive_tests * 100 / total_tests))\n  if [ \"$ratio\" -gt 50 ]; then\n    test_quality_debt=yes\n  fi\nfi\nwarning_hits=\"$(rg -n 'warning:' \"$IMPLEMENTATION_PATH\" \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nmanual_hits=\"$(rg -n -i 'manual proof still required|manual;' \"$VERIFICATION_PATH\" 2>/dev/null || true)\"\nplaceholder_debt=no\nwarning_debt=no\nartifact_mismatch_risk=no\nmanual_followup_required=no\nsemantic_risk_debt=no\nlane_sizing_debt=no\n[ -n \"$placeholder_hits\" ] && placeholder_debt=yes\nif [ \"$external_blocker_only\" = no ] && [ -n \"$warning_hits\" ]; then warning_debt=yes; fi\nif [ -n \"$artifact_hits\" ]; then artifact_mismatch_risk=yes; fi\nif [ \"$external_blocker_only\" = no ] && [ -n \"$manual_hits\" ]; then manual_followup_required=yes; fi\n[ -n \"$semantic_risk_hits\" ] && semantic_risk_debt=yes\n[ -n \"$lane_sizing_hits\" ] && lane_sizing_debt=yes\nquality_ready=yes\nif [ \"$placeholder_debt\" = yes ] || [ \"$warning_debt\" = yes ] || [ \"$artifact_mismatch_risk\" = yes ] || [ \"$manual_followup_required\" = yes ] || [ \"$semantic_risk_debt\" = yes ] || [ \"$lane_sizing_debt\" = yes ] || [ \"$test_quality_debt\" = yes ]; then\n  quality_ready=no\nfi\nmkdir -p \"$(dirname \"$QUALITY_PATH\")\"\ncat > \"$QUALITY_PATH\" <<EOF\nquality_ready: $quality_ready\nplaceholder_debt: $placeholder_debt\nwarning_debt: $warning_debt\ntest_quality_debt: $test_quality_debt\nartifact_mismatch_risk: $artifact_mismatch_risk\nmanual_followup_required: $manual_followup_required\nsemantic_risk_debt: $semantic_risk_debt\nlane_sizing_debt: $lane_sizing_debt\nexternal_blocker_only: $external_blocker_only\n\n## Touched Surfaces\n{touched_surface_section}\n## Placeholder Hits\n$placeholder_hits\n\n## Artifact Consistency Hits\n$artifact_hits\n\n## Root Artifact Shadow Hits\n$root_artifact_hits\n\n## Semantic Risk Hits\n$semantic_risk_hits\n\n## Lane Sizing Hits\n$lane_sizing_hits\n\n## Warning Hits\n$warning_hits\n\n## Manual Followup Hits\n$manual_hits\nEOF\ntest \"$quality_ready\" = yes",
         quality_path = shell_single_quote(&quality_path.display().to_string()),
         implementation_path = shell_single_quote(&implementation_path.display().to_string()),
         verification_path = shell_single_quote(&verification_path.display().to_string()),
@@ -2462,7 +2457,7 @@ fn implementation_quality_command(
         semantic_risk_script = semantic_risk_script,
         lane_sizing_script = lane_sizing_script,
         touched_surface_section = touched_surface_section,
-        surface_scan_dirs = surface_scan_dirs,
+        surface_scan_targets = surface_scan_targets,
     )
 }
 
@@ -5091,9 +5086,13 @@ fn implementation_audit_command(
                         .parent()
                         .map(|p| escape_grep(&p.display().to_string()))
                         .unwrap_or_default();
-                    format!("{esc}|{parent}/")
+                    // Anchor the directory prefix with ^ to prevent substring false
+                    // positives (e.g. "crates/rxmr-wallet/src/" incorrectly matching
+                    // "bin/house/src/" because "r/house/src/" is a substring of the
+                    // pattern string itself).
+                    format!("{esc}|^{parent}/")
                 } else {
-                    format!("{esc}/|{esc}")
+                    format!("^{esc}/|^{esc}")
                 }
             })
             .collect();
@@ -5102,6 +5101,17 @@ fn implementation_audit_command(
         allowed.push("\\.fabro-work/".to_string());
         allowed.push("lanes/".to_string());
         allowed.push("malinka/".to_string());
+        for artifact in [
+            "spec\\.md$",
+            "review\\.md$",
+            "implementation\\.md$",
+            "verification\\.md$",
+            "quality\\.md$",
+            "promotion\\.md$",
+            "integration\\.md$",
+        ] {
+            allowed.push(artifact.to_string());
+        }
 
         let pattern = allowed.join("|");
         // Use merge-base to scope to this run's commits — the worktree inherits
@@ -8038,6 +8048,151 @@ The validator binary should emit structured log lines.
     }
 
     #[test]
+    fn implementation_quality_command_scans_owned_file_without_widening_to_parent_dir() {
+        let unit = BlueprintUnit {
+            id: "red-dog-tui".to_string(),
+            title: "Red Dog Tui".to_string(),
+            output_root: PathBuf::from("outputs/red-dog-tui"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "red-dog-tui".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Red Dog Tui".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("red-dog-tui".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `crates/tui/src/screens/red_dog.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: Some("ux".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some(
+                "Touch first:\n- `crates/tui/src/screens/red_dog.rs`\n".to_string(),
+            ),
+            verify_command: Some("cargo test -p casino-core -- red_dog".to_string()),
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+            protocols: vec![],
+        };
+
+        let command = implementation_quality_command(&blueprint, "red-dog-tui", &lane);
+
+        assert!(command.contains("scan_placeholder 'crates/tui/src/screens/red_dog.rs'"));
+        assert!(!command.contains("surface=\"$(dirname \"$surface\")\""));
+        assert!(command.contains("if [ -f \"$surface\" ]; then"));
+        assert!(command.contains("printf '%s\\n' \"$surface\""));
+    }
+
+    #[test]
+    fn implementation_quality_command_does_not_scan_root_shadow_artifacts() {
+        let unit = BlueprintUnit {
+            id: "house-agent".to_string(),
+            title: "House Agent".to_string(),
+            output_root: PathBuf::from("outputs/house-agent"),
+            artifacts: vec![
+                BlueprintArtifact {
+                    id: "implementation".to_string(),
+                    path: PathBuf::from("implementation.md"),
+                },
+                BlueprintArtifact {
+                    id: "verification".to_string(),
+                    path: PathBuf::from("verification.md"),
+                },
+                BlueprintArtifact {
+                    id: "quality".to_string(),
+                    path: PathBuf::from("quality.md"),
+                },
+            ],
+            milestones: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let lane = BlueprintLane {
+            id: "house-agent".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "House Agent".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("house-agent".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `bin/house/src/ws.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "implementation".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+            ],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo test -p house".to_string()),
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: vec![unit],
+            protocols: vec![],
+        };
+
+        let command = implementation_quality_command(&blueprint, "house-agent", &lane);
+
+        assert!(!command.contains("for shadow in spec.md review.md"));
+        assert!(!command.contains("root_artifact_hits=\"$root_artifact_hits"));
+        assert!(!command.contains("artifact_hits\") || [ -n \"$root_artifact_hits\" ]"));
+    }
+
+    #[test]
     fn service_review_prompt_includes_health_sections() {
         let lane = BlueprintLane {
             id: "service-implement".to_string(),
@@ -8786,8 +8941,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             health_command: None,
         };
 
-        let deep_graph =
-            render_workflow_graph(&deep_lane, "true", "true", "true", "true", "true");
+        let deep_graph = render_workflow_graph(&deep_lane, "true", "true", "true", "true", "true");
         let deep_run_config = render_run_config(&deep_lane, None, Path::new("."));
         assert!(deep_graph
             .contains("#review { backend: cli; model: claude-opus-4-6; provider: anthropic; }"));
@@ -9106,9 +9260,13 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(!command.contains("cat quality.md 2>/dev/null"));
         assert!(!command.contains("cat verification.md 2>/dev/null"));
         assert!(!command.contains("cat promotion.md 2>/dev/null"));
-        assert!(!command.contains("spec\\.md"));
-        assert!(!command.contains("review\\.md"));
-        assert!(!command.contains("implementation\\.md"));
+        assert!(command.contains("spec\\.md$"));
+        assert!(command.contains("review\\.md$"));
+        assert!(command.contains("implementation\\.md$"));
+        assert!(command.contains("verification\\.md$"));
+        assert!(command.contains("quality\\.md$"));
+        assert!(command.contains("promotion\\.md$"));
+        assert!(command.contains("integration\\.md$"));
     }
 
     #[test]

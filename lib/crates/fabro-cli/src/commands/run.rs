@@ -512,7 +512,10 @@ fn auto_commit_generated_autodev_refresh(
         .output()
         .context("git add failed")?;
     if !add.status.success() {
-        bail!("git add failed: {}", String::from_utf8_lossy(&add.stderr).trim());
+        bail!(
+            "git add failed: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        );
     }
 
     let commit = Command::new("git")
@@ -548,7 +551,9 @@ fn auto_commit_generated_autodev_refresh(
             String::from_utf8_lossy(&head.stderr).trim()
         );
     }
-    Ok(Some(String::from_utf8_lossy(&head.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&head.stdout).trim().to_string(),
+    ))
 }
 
 fn dirty_worktree_notice_env_name(
@@ -1409,8 +1414,7 @@ pub async fn run_command(
     );
 
     // Warn about uncommitted changes that won't be available in the execution environment.
-    if let Some(env_name) = dirty_worktree_notice_env_name(effective_git_status, workdir_strategy)
-    {
+    if let Some(env_name) = dirty_worktree_notice_env_name(effective_git_status, workdir_strategy) {
         emit_run_notice(
             &emitter,
             RunNoticeLevel::Warn,
@@ -4160,10 +4164,7 @@ include = ["*.md"]
     #[test]
     fn dirty_worktree_notice_is_suppressed_after_controller_autocommit() {
         assert_eq!(
-            dirty_worktree_notice_env_name(
-                GitSyncStatus::Unsynced,
-                WorkdirStrategy::LocalWorktree,
-            ),
+            dirty_worktree_notice_env_name(GitSyncStatus::Unsynced, WorkdirStrategy::LocalWorktree,),
             None
         );
         assert_eq!(
@@ -4175,10 +4176,7 @@ include = ["*.md"]
     #[test]
     fn dirty_worktree_notice_only_emits_for_dirty_execution_envs() {
         assert_eq!(
-            dirty_worktree_notice_env_name(
-                GitSyncStatus::Dirty,
-                WorkdirStrategy::LocalWorktree,
-            ),
+            dirty_worktree_notice_env_name(GitSyncStatus::Dirty, WorkdirStrategy::LocalWorktree,),
             Some("worktree")
         );
         assert_eq!(
@@ -4186,10 +4184,7 @@ include = ["*.md"]
             Some("remote sandbox")
         );
         assert_eq!(
-            dirty_worktree_notice_env_name(
-                GitSyncStatus::Dirty,
-                WorkdirStrategy::LocalDirectory,
-            ),
+            dirty_worktree_notice_env_name(GitSyncStatus::Dirty, WorkdirStrategy::LocalDirectory,),
             None
         );
     }
