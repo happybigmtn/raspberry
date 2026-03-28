@@ -9,9 +9,11 @@ repo doctrine still described obvious unfinished work. The second bug was truth
 loss: the operator-facing state could collapse real failure causes into generic
 messages like "script failed with exit code: 1" or accidentally trigger deeper
 work just to render a status table. The newest proving ground, `rXMRbro`, adds
-one more class of false failure: child programs can die before domain work even
-starts because the runtime launch path itself assumes an interactive shell and
-a writable home-directory log location.
+two more classes of false failure: child programs can die before domain work
+even starts because the runtime launch path itself assumes an interactive shell
+and a writable home-directory log location, and otherwise healthy lanes can
+pollute themselves during the contract stage by creating durable artifacts too
+early.
 
 Zend and Myosu made the orchestration/truth distinction concrete. `rXMRbro`
 adds the next requirement: a zero-human system cannot depend on incidental host
@@ -49,7 +51,11 @@ that panicked on a read-only filesystem. The newer truth discovery is that
 `conclusion.json` and `status.json` must stay authoritative even if the
 progress log ends with `WorkflowRunCompleted`; otherwise a genuinely failed run
 can be re-labeled as successful and lose the recovery metadata needed for
-self-healing.
+self-healing. The related synthesis truth is that stage-local prompts cannot
+blindly inherit every lane-level artifact instruction. If the contract stage
+sees `Required durable artifacts: spec.md, review.md` in the same context that
+tells it to write only `.fabro-work/contract.md`, the framework has created an
+ambiguous contract and the model will sometimes obey the wrong part.
 
 ## Strategy
 
@@ -91,6 +97,14 @@ resource family. Zend-style service/interface runs already know how to honor
 pass those env vars through `fabro run`, and restart the active project loops
 on the updated binaries instead of leaving resource-collision handling as a
 future note.
+
+The newest workflow hardening step follows the same pattern: make the contract
+stage explicit and self-policing. The prompt should state that durable lane
+artifacts belong to later stages, and the deterministic `contract_check` gate
+should fail if the contract-stage commit touched anything except
+`.fabro-work/contract.md`. That turns ambiguous stage behavior into a tight
+retry loop instead of letting stray `spec.md` or `review.md` files poison the
+rest of the lane.
 
 ## Key Discoveries
 
@@ -138,6 +152,15 @@ startup noise, and then a panic from `tracing-appender` trying to create
 substantially. The right lever is not better prompts or different repo plans;
 it is launch-path determinism in the framework itself.
 
+The newest contract-stage discovery is that fresh clean runs still wrote stray
+artifact files during `contract`, including one case that wrote `spec.md` and
+`review.md` into the wrong lane entirely. The prompt text was not actually
+contradiction-free: the shared Goal block still advertised required durable
+artifacts before the contract instructions said "write the contract only." The
+right fix is not to hope the model prioritizes correctly; it is to remove the
+ambiguity in the contract prompt and add a gate that rejects any non-contract
+write from the contract-stage commit.
+
 Another important discovery is that local-only direct integration has two
 different failure modes. The first was missing `origin`, which made trunk
 detection and push-based settlement impossible. The second was subtler: once
@@ -178,3 +201,10 @@ footguns, but nested autonomous execution may still surface other host-coupled
 assumptions over time. The right long-term answer may be a stricter framework
 contract for child-program execution environments, not just a growing list of
 patched symptoms.
+
+The remaining workflow question is whether stage-specific goal context should
+eventually become first-class instead of being simulated with stronger prompt
+text and tighter gates. The current fix should stop contract-stage drift, but
+`rXMRbro` is also a reminder that one lane-level goal string can mean different
+things at different stages, and the framework may eventually need to model that
+directly.

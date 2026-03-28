@@ -2138,13 +2138,14 @@ List what this lane will NOT implement.\n\n",
         prompt.push('\n');
     }
     prompt.push_str(
-        "Do NOT write any source code in this stage. Do NOT create new docs, broad cleanup tasks, or unrelated package edits unless the lane explicitly requires them. Finish by writing the contract only.\n",
+        "If the Goal block above mentions `Required durable artifacts` such as `spec.md`, `review.md`, `implementation.md`, or `verification.md`, treat those as later-stage outputs. They are NOT contract-stage deliverables.\n\n\
+Do NOT write any source code in this stage. Do NOT create durable artifacts, new docs, broad cleanup tasks, or unrelated package edits unless the lane explicitly owns those exact paths. If a prior contract attempt created stray docs, delete them before finishing. Finish by writing `.fabro-work/contract.md` only.\n",
     );
     prompt
 }
 
 fn contract_gate_command() -> &'static str {
-    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md"
+    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md && changed=\"$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)\" && printf '%s\\n' \"$changed\" | grep -qx '.fabro-work/contract.md' && violations=\"$(printf '%s\\n' \"$changed\" | grep -Ev '^\\.fabro-work/contract\\.md$|^$' || true)\" && test -z \"$violations\""
 }
 
 fn profile_max_visits(profile: &str) -> u32 {
@@ -6651,7 +6652,8 @@ mod tests {
     use super::{
         apply_blocker_contract_tightening, augment_with_implementation_follow_on_units,
         backticked_segments, blocked_review_refs, blocker_milestone_refinement_recommendations,
-        default_verify_command, execution_guidance_from_slice_notes, extract_requirement_detail,
+        contract_gate_command, contract_prompt_for_lane, default_verify_command,
+        execution_guidance_from_slice_notes, extract_requirement_detail,
         first_code_surface_from_markdown, first_health_gate_from_markdown,
         first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
         first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
@@ -8476,6 +8478,51 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(graph.contains("contract -> contract_check -> implement"));
         assert!(!graph.contains("contract_check -> contract"));
         assert!(graph.contains("Use these owned surfaces as your default scope"));
+    }
+
+    #[test]
+    fn contract_prompt_treats_durable_artifacts_as_later_stage_outputs() {
+        let lane = BlueprintLane {
+            id: "demo-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Demo Implement Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("demo-implement".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `src/demo.rs`\n\nRequired durable artifacts:\n- `spec.md`\n- `review.md`\n"
+                .to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let prompt = contract_prompt_for_lane(&lane);
+
+        assert!(prompt.contains("treat those as later-stage outputs"));
+        assert!(prompt.contains("They are NOT contract-stage deliverables"));
+        assert!(prompt.contains("Finish by writing `.fabro-work/contract.md` only"));
+    }
+
+    #[test]
+    fn contract_gate_rejects_non_contract_stage_writes() {
+        let gate = contract_gate_command();
+
+        assert!(gate.contains("git diff-tree --no-commit-id --name-only -r HEAD"));
+        assert!(gate.contains("grep -qx '.fabro-work/contract.md'"));
+        assert!(gate.contains("violations="));
+        assert!(gate.contains(".fabro-work/contract"));
+        assert!(gate.contains("test -z \"$violations\""));
     }
 
     #[test]
