@@ -399,6 +399,25 @@ fn branch_is_autodev_controller(branch: &str) -> bool {
     branch.starts_with("autodev/") || branch.starts_with("autodev-")
 }
 
+fn repo_is_autodev_controller(repo: &Path) -> bool {
+    if current_branch(repo)
+        .as_deref()
+        .is_some_and(branch_is_autodev_controller)
+    {
+        return true;
+    }
+    let raspberry_dir = repo.join(".raspberry");
+    let Ok(entries) = std::fs::read_dir(&raspberry_dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return false;
+        };
+        name.ends_with("-autodev.lock") || name.ends_with("-autodev.json")
+    })
+}
+
 fn current_branch(repo: &Path) -> Option<String> {
     Command::new("git")
         .current_dir(repo)
@@ -452,10 +471,7 @@ fn is_generated_package_dirty_path(path: &str) -> bool {
 }
 
 fn restore_clean_autodev_controller_checkout(repo: &Path) -> anyhow::Result<bool> {
-    let Some(branch) = current_branch(repo) else {
-        return Ok(false);
-    };
-    if !branch_is_autodev_controller(&branch) || dirty_worktree_paths(repo).is_empty() {
+    if !repo_is_autodev_controller(repo) || dirty_worktree_paths(repo).is_empty() {
         return Ok(false);
     }
 
@@ -490,10 +506,7 @@ fn auto_commit_generated_autodev_refresh(
     repo: &Path,
     git_author: &fabro_workflows::git::GitAuthor,
 ) -> anyhow::Result<Option<String>> {
-    let Some(branch) = current_branch(repo) else {
-        return Ok(None);
-    };
-    if !branch_is_autodev_controller(&branch) {
+    if !repo_is_autodev_controller(repo) {
         return Ok(None);
     }
 
@@ -1431,7 +1444,7 @@ pub async fn run_command(
         )
     {
         if let Some(ref branch) = detected_base_branch {
-            if branch_is_autodev_controller(branch) {
+            if repo_is_autodev_controller(&original_cwd) {
                 tracing::info!(%branch, "Skipping autodev controller branch push");
             } else {
                 // For Synced we know no push is needed; for Unsynced we know it is;
@@ -1488,27 +1501,23 @@ pub async fn run_command(
         }
     }
 
-    let (_worktree_work_dir, mut worktree_path, mut worktree_branch, mut worktree_base_sha) =
+    let (_worktree_work_dir, worktree_path, worktree_branch, worktree_base_sha) =
         if should_create_worktree {
             match setup_worktree(&original_cwd, &run_dir, &run_id) {
                 Ok((wd, wt, branch, base)) => (Some(wd), Some(wt), Some(branch), Some(base)),
                 Err(e) => {
+                    emit_run_notice(
+                        &emitter,
+                        RunNoticeLevel::Warn,
+                        "worktree_setup_failed",
+                        format!("Git worktree setup failed ({e}), aborting run."),
+                    );
                     if require_branch_backed_run {
                         bail!(
                             "direct integration requires a branch-backed run, but worktree setup failed: {e}"
                         );
                     }
-                    eprintln!(
-                        "{} Git worktree setup failed ({e}), running without worktree.",
-                        styles.yellow.apply_to("Warning:"),
-                    );
-                    emit_run_notice(
-                        &emitter,
-                        RunNoticeLevel::Warn,
-                        "worktree_setup_failed",
-                        format!("Git worktree setup failed ({e}), running without worktree."),
-                    );
-                    (None, None, None, None)
+                    bail!("git worktree setup failed: {e}");
                 }
             }
         } else {
@@ -1771,7 +1780,7 @@ pub async fn run_command(
                     branch_name: branch_name.clone(),
                     base_sha: base_sha.clone(),
                     worktree_path: wt_path_str,
-                    skip_branch_creation: false,
+                    skip_branch_creation: true,
                 };
                 let mut wt_sandbox = WorktreeSandbox::new(inner, wt_config);
                 wt_sandbox.set_event_callback(Arc::clone(&emitter).worktree_callback());
@@ -1786,13 +1795,11 @@ pub async fn run_command(
                             &emitter,
                             RunNoticeLevel::Warn,
                             "worktree_setup_failed",
-                            format!("Git worktree setup failed ({e}), running without worktree."),
+                            format!(
+                                "Git worktree sandbox initialization failed ({e}), aborting run."
+                            ),
                         );
-                        // Reset so RunConfig does not enable git checkpointing
-                        worktree_path = None;
-                        worktree_branch = None;
-                        worktree_base_sha = None;
-                        local_sandbox_with_callback(cwd.clone(), Arc::clone(&emitter))
+                        bail!("git worktree sandbox initialization failed: {e}");
                     }
                 }
             } else {
@@ -4187,5 +4194,28 @@ include = ["*.md"]
             dirty_worktree_notice_env_name(GitSyncStatus::Dirty, WorkdirStrategy::LocalDirectory,),
             None
         );
+    }
+
+    #[test]
+    fn repo_is_autodev_controller_detects_live_raspberry_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let raspberry = temp.path().join(".raspberry");
+        std::fs::create_dir_all(&raspberry).expect("raspberry dir");
+        std::fs::write(raspberry.join("rxmragent-autodev.lock"), "lock").expect("lock file");
+
+        assert!(repo_is_autodev_controller(temp.path()));
+    }
+
+    #[test]
+    fn repo_is_autodev_controller_accepts_autodev_branch_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = Command::new("git")
+            .current_dir(temp.path())
+            .args(["init", "-b", "autodev/main"])
+            .output()
+            .expect("git init");
+        assert!(output.status.success(), "git init failed");
+
+        assert!(repo_is_autodev_controller(temp.path()));
     }
 }

@@ -107,6 +107,7 @@ pub fn integrate_run(
     )?;
 
     let result = run_integration_worktree(
+        &repo,
         request,
         &worktree_path,
         &base_ref,
@@ -123,6 +124,7 @@ pub fn integrate_run(
 }
 
 fn run_integration_worktree(
+    repo: &Path,
     request: &DirectIntegrationRequest,
     worktree_path: &Path,
     base_ref: &str,
@@ -258,6 +260,16 @@ fn run_integration_worktree(
         pushed,
         integrated_at: Utc::now().to_rfc3339(),
     };
+    if pushed {
+        if let Err(error) = sync_checked_out_target_branch(repo, target_branch) {
+            tracing::warn!(
+                repo = %repo.display(),
+                target_branch,
+                error = %error,
+                "failed to fast-forward checked-out target branch after direct integration"
+            );
+        }
+    }
     if let Some(path) = &request.artifact_path {
         write_integration_artifact(path, &record)?;
     }
@@ -796,6 +808,61 @@ fn head_sha(repo: &Path) -> Result<String, DirectIntegrationError> {
     Ok(output.stdout.trim().to_string())
 }
 
+fn current_branch(repo: &Path) -> Result<Option<String>, DirectIntegrationError> {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .map_err(|error| DirectIntegrationError::Git {
+            step: "symbolic-ref --short HEAD".to_string(),
+            repo: repo.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn repo_has_uncommitted_changes(repo: &Path) -> Result<bool, DirectIntegrationError> {
+    Ok(
+        git_exit_status(repo, ["diff", "--quiet"], "diff --quiet")? != 0
+            || git_exit_status(
+                repo,
+                ["diff", "--cached", "--quiet"],
+                "diff --cached --quiet",
+            )? != 0,
+    )
+}
+
+fn sync_checked_out_target_branch(
+    repo: &Path,
+    target_branch: &str,
+) -> Result<(), DirectIntegrationError> {
+    if repo_has_uncommitted_changes(repo)? {
+        return Ok(());
+    }
+    let Some(current_branch) = current_branch(repo)? else {
+        return Ok(());
+    };
+    if current_branch != target_branch {
+        return Ok(());
+    }
+    run_git(
+        repo,
+        "fetch target branch",
+        ["fetch", REMOTE_NAME, target_branch],
+    )?;
+    run_git(
+        repo,
+        "merge --ff-only FETCH_HEAD",
+        ["merge", "--ff-only", "FETCH_HEAD"],
+    )?;
+    Ok(())
+}
+
 fn write_integration_artifact(
     path: &Path,
     record: &DirectIntegrationRecord,
@@ -983,6 +1050,10 @@ mod tests {
             git_output(&repo, &["show", "origin/main:feature.txt"]),
             "integrated"
         );
+        assert_eq!(
+            git_output(&repo, &["show", "main:feature.txt"]),
+            "integrated"
+        );
     }
 
     #[test]
@@ -1052,6 +1123,57 @@ mod tests {
             git_output(&repo, &["show", "main:feature.txt"]),
             "integrated"
         );
+    }
+
+    #[test]
+    fn sync_checked_out_target_branch_fast_forwards_clean_repo() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().expect("remote path")],
+        );
+
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("README.md"), "base\n").expect("readme");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        git(&repo, &["push", "-u", "origin", "main"]);
+        git(&repo, &["remote", "set-head", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+        let other = temp.path().join("other");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("other path"),
+            ],
+        );
+        git(&other, &["config", "user.name", "Test"]);
+        git(&other, &["config", "user.email", "test@example.com"]);
+        fs::write(other.join("feature.txt"), "remote\n").expect("feature");
+        git(&other, &["add", "feature.txt"]);
+        git(&other, &["commit", "-m", "remote change"]);
+        git(&other, &["push", "origin", "main"]);
+
+        sync_checked_out_target_branch(&repo, "main").expect("sync succeeds");
+
+        assert_eq!(git_output(&repo, &["show", "HEAD:feature.txt"]), "remote");
     }
 
     #[test]

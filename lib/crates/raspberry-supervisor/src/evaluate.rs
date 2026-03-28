@@ -334,7 +334,7 @@ pub fn evaluate_with_state(
     program_state: Option<&ProgramRuntimeState>,
 ) -> EvaluatedProgram {
     let runtime_records = runtime_record_map(program_state);
-    let unit_statuses = build_unit_statuses(manifest_path, manifest);
+    let unit_statuses = build_unit_statuses(manifest_path, manifest, &runtime_records);
     let satisfied = satisfied_milestones(manifest_path, manifest, &runtime_records, &unit_statuses);
     let mut command_probe_cache = HashMap::new();
     let mut lanes = Vec::new();
@@ -907,15 +907,18 @@ fn legacy_runtime_integrated(
 fn build_unit_statuses(
     manifest_path: &Path,
     manifest: &ProgramManifest,
+    runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
 ) -> BTreeMap<String, UnitStatus> {
     let target_repo = manifest.resolved_target_repo(manifest_path);
     manifest
         .units
         .iter()
         .map(|(unit_id, unit)| {
+            let successful_run_worktrees =
+                successful_unit_run_worktrees(unit_id, unit, runtime_records);
             (
                 unit_id.clone(),
-                evaluate_unit_status(manifest_path, &target_repo, unit),
+                evaluate_unit_status(manifest_path, &target_repo, unit, &successful_run_worktrees),
             )
         })
         .collect()
@@ -925,13 +928,22 @@ fn evaluate_unit_status(
     manifest_path: &Path,
     target_repo: &Path,
     unit: &crate::manifest::UnitManifest,
+    successful_run_worktrees: &[PathBuf],
 ) -> UnitStatus {
     let present_artifacts = unit
         .artifacts
         .iter()
         .filter_map(|(artifact_id, path)| {
             let absolute = artifact_path(manifest_path, unit, path);
-            if is_ignored_controller_artifact(target_repo, &absolute) || !absolute.is_file() {
+            if is_ignored_controller_artifact(target_repo, &absolute) {
+                return None;
+            }
+            let present_in_controller = absolute.is_file();
+            let present_in_successful_run = successful_run_worktrees.iter().any(|worktree| {
+                worktree_artifact_path(target_repo, worktree, &absolute)
+                    .is_some_and(|path| path.is_file())
+            });
+            if !present_in_controller && !present_in_successful_run {
                 return None;
             }
             Some(artifact_id.clone())
@@ -976,6 +988,39 @@ fn evaluate_unit_status(
 fn is_ignored_controller_artifact(target_repo: &Path, artifact: &Path) -> bool {
     let ignored_root = crate::autodev::autodev_cargo_target_dir(target_repo);
     artifact.starts_with(&ignored_root)
+}
+
+fn successful_unit_run_worktrees(
+    unit_id: &str,
+    unit: &crate::manifest::UnitManifest,
+    runtime_records: &BTreeMap<String, &LaneRuntimeRecord>,
+) -> Vec<PathBuf> {
+    let mut worktrees = BTreeSet::new();
+    for lane_id in unit.lanes.keys() {
+        let key = lane_key(unit_id, lane_id);
+        let Some(record) = runtime_records.get(&key).copied() else {
+            continue;
+        };
+        let Some(worktree) = successful_run_worktree(record) else {
+            continue;
+        };
+        worktrees.insert(worktree);
+    }
+    worktrees.into_iter().collect()
+}
+
+fn successful_run_worktree(record: &LaneRuntimeRecord) -> Option<PathBuf> {
+    if record.last_exit_status != Some(0) {
+        return None;
+    }
+    let run_dir = record.last_run_dir.as_ref()?;
+    let worktree = run_dir.join("worktree");
+    worktree.is_dir().then_some(worktree)
+}
+
+fn worktree_artifact_path(target_repo: &Path, worktree: &Path, artifact: &Path) -> Option<PathBuf> {
+    let relative = artifact.strip_prefix(target_repo).ok()?;
+    Some(worktree.join(relative))
 }
 
 fn lifecycle_reached(
@@ -2151,6 +2196,7 @@ units:
             &manifest_path,
             &manifest.resolved_target_repo(&manifest_path),
             unit,
+            &[],
         );
         let mut command_probe_cache = HashMap::new();
         let check_result =
@@ -2382,6 +2428,7 @@ units:
             &manifest_path,
             &manifest.resolved_target_repo(&manifest_path),
             unit,
+            &[],
         );
         let mut command_probe_cache = HashMap::new();
         let check_result =
@@ -2406,6 +2453,100 @@ units:
 
         assert!(!satisfied.contains("docs:lane@reviewed"));
         assert_eq!(status, LaneExecutionStatus::Ready);
+    }
+
+    #[test]
+    fn successful_run_worktree_artifacts_satisfy_managed_milestone() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("program.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+version: 1
+program: demo
+target_repo: .
+state_path: .raspberry/demo-state.json
+units:
+  - id: docs
+    title: Docs
+    output_root: outputs/docs
+    artifacts:
+      - id: plan
+        path: plan.md
+      - id: review
+        path: review.md
+    milestones:
+      - id: reviewed
+        requires: [plan, review]
+    lanes:
+      - id: lane
+        title: Docs Lane
+        kind: artifact
+        run_config: malinka/run-configs/bootstrap/docs.toml
+        managed_milestone: reviewed
+        produces: [plan, review]
+"#,
+        )
+        .expect("manifest");
+        let run_dir = temp.path().join("runs/01KMTESTCOMPLETE000000000000");
+        let worktree = run_dir.join("worktree");
+        std::fs::create_dir_all(worktree.join("outputs/docs")).expect("worktree outputs dir");
+        std::fs::write(worktree.join("outputs/docs/plan.md"), "plan").expect("plan");
+        std::fs::write(worktree.join("outputs/docs/review.md"), "review").expect("review");
+
+        let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
+        let unit = &manifest.units["docs"];
+        let lane = &unit.lanes["lane"];
+        let runtime_record = LaneRuntimeRecord {
+            lane_key: "docs:lane".to_string(),
+            status: LaneExecutionStatus::Complete,
+            run_config: Some(PathBuf::from("malinka/run-configs/bootstrap/docs.toml")),
+            current_run_id: None,
+            current_fabro_run_id: None,
+            current_stage_label: None,
+            last_run_id: Some("01KMTESTCOMPLETE000000000000".to_string()),
+            current_run_dir: None,
+            last_run_dir: Some(run_dir),
+            last_started_at: None,
+            last_finished_at: Some(Utc::now()),
+            last_exit_status: Some(0),
+            last_error: None,
+            failure_kind: None,
+            recovery_action: None,
+            last_completed_stage_label: Some("Exit".to_string()),
+            last_stage_duration_ms: None,
+            last_usage_summary: None,
+            last_files_read: Vec::new(),
+            last_files_written: Vec::new(),
+            last_stdout_snippet: None,
+            last_stderr_snippet: None,
+            consecutive_failures: 0,
+        };
+        let runtime_records = BTreeMap::from([("docs:lane".to_string(), &runtime_record)]);
+
+        let unit_statuses = build_unit_statuses(&manifest_path, &manifest, &runtime_records);
+        let unit_status = unit_statuses.get("docs").expect("docs status");
+        let satisfied =
+            satisfied_milestones(&manifest_path, &manifest, &runtime_records, &unit_statuses);
+        let mut command_probe_cache = HashMap::new();
+        let check_result =
+            evaluate_lane_checks(&manifest_path, &manifest, lane, &mut command_probe_cache);
+        let status = classify_lane(
+            "docs:lane",
+            lane,
+            &satisfied,
+            unit_status,
+            Some(&runtime_record),
+            &RunSnapshot::default(),
+            &check_result,
+            lane_orchestration_state(&manifest_path, lane),
+            None,
+        );
+
+        assert_eq!(unit_status.lifecycle, "reviewed");
+        assert!(satisfied.contains("docs@reviewed"));
+        assert!(satisfied.contains("docs:lane@reviewed"));
+        assert_eq!(status, LaneExecutionStatus::Complete);
     }
 
     #[test]
@@ -2471,7 +2612,6 @@ units:
         std::fs::write(temp.path().join("outputs/game/review.md"), "review").expect("review");
 
         let manifest = ProgramManifest::load(&manifest_path).expect("manifest loads");
-        let unit_statuses = build_unit_statuses(&manifest_path, &manifest);
         let runtime_record = LaneRuntimeRecord {
             lane_key: "game:lane".to_string(),
             status: LaneExecutionStatus::Complete,
@@ -2498,6 +2638,7 @@ units:
             consecutive_failures: 0,
         };
         let runtime_records = BTreeMap::from([("game:lane".to_string(), &runtime_record)]);
+        let unit_statuses = build_unit_statuses(&manifest_path, &manifest, &runtime_records);
         let satisfied =
             satisfied_milestones(&manifest_path, &manifest, &runtime_records, &unit_statuses);
 
@@ -2509,6 +2650,7 @@ units:
             &manifest_path,
             &manifest.resolved_target_repo(&manifest_path),
             parent_unit,
+            &[],
         );
         let mut command_probe_cache = HashMap::new();
         let check_result = evaluate_lane_checks(
