@@ -201,6 +201,15 @@ better, but that work was still happening during `contract`. The old
 `contract_check` passed because it only looked for a clean post-commit
 workspace, not for tracked changes carried by the contract checkpoint commit.
 
+The next live run exposed two more structural truths. First, even a correct
+`contract_check` script is not a real gate if the workflow graph still routes
+unconditionally from `contract_check` into `implement`; in that shape a failed
+gate just becomes advisory. Second, local-run safety cannot rely on a
+"best-effort" worktree path. If worktree setup or initialization fails and the
+runner quietly falls back to a repo-less local sandbox, the lane will continue
+into agent stages and only fail later with nonsense verify errors such as
+"could not find Cargo.toml", which hides the real infrastructure fault.
+
 These are all the same class of bug: a deterministic gate or classifier using
 the wrong source of truth. One gate looked for an artifact nobody owned,
 another looked at a diff base that belonged to controller operations rather
@@ -208,7 +217,8 @@ than the lane, another trusted git for an ignored file, and the evaluator
 trusted only controller-local artifacts even though the fresh proof lived in
 the successful run worktree. The latest replay extends that pattern: a
 contract-stage gate trusted the live filesystem but ignored the tracked diff
-that had just been committed.
+that had just been committed, and the local runner trusted a degraded sandbox
+state instead of treating failed worktree setup as the actual blocker.
 
 ## Open Questions
 
@@ -218,7 +228,10 @@ classification truth bugs are rolled back into the active controller and
 replayed. The evidence so far says the system is moving in the right direction,
 but the proving pass still needs to confirm that fresh rerendered runs advance
 cleanly beyond contract, review, audit, and lane completion instead of simply
-failing at the next deterministic gate.
+failing at the next deterministic gate. The immediate proving task is narrower:
+confirm that fresh runs on the new binary now abort early on worktree setup
+failure and that a failing `contract_check` really loops back to `contract`
+instead of slipping into `implement`.
 
 The other open question is operational rather than synthetic: controller
 freshness still matters. Even with better workflow generation, a dirty or

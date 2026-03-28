@@ -1265,27 +1265,23 @@ pub async fn run_command(
         }
     }
 
-    let (_worktree_work_dir, mut worktree_path, mut worktree_branch, mut worktree_base_sha) =
+    let (_worktree_work_dir, worktree_path, worktree_branch, worktree_base_sha) =
         if should_create_worktree {
             match setup_worktree(&original_cwd, &run_dir, &run_id) {
                 Ok((wd, wt, branch, base)) => (Some(wd), Some(wt), Some(branch), Some(base)),
                 Err(e) => {
+                    emit_run_notice(
+                        &emitter,
+                        RunNoticeLevel::Error,
+                        "worktree_setup_failed",
+                        format!("Git worktree setup failed ({e}); aborting run."),
+                    );
                     if require_branch_backed_run {
                         bail!(
                             "direct integration requires a branch-backed run, but worktree setup failed: {e}"
                         );
                     }
-                    eprintln!(
-                        "{} Git worktree setup failed ({e}), running without worktree.",
-                        styles.yellow.apply_to("Warning:"),
-                    );
-                    emit_run_notice(
-                        &emitter,
-                        RunNoticeLevel::Warn,
-                        "worktree_setup_failed",
-                        format!("Git worktree setup failed ({e}), running without worktree."),
-                    );
-                    (None, None, None, None)
+                    bail!("git worktree setup failed: {e}");
                 }
             }
         } else {
@@ -1561,15 +1557,11 @@ pub async fn run_command(
                     Err(e) => {
                         emit_run_notice(
                             &emitter,
-                            RunNoticeLevel::Warn,
+                            RunNoticeLevel::Error,
                             "worktree_setup_failed",
-                            format!("Git worktree setup failed ({e}), running without worktree."),
+                            format!("Git worktree setup failed ({e}); aborting run."),
                         );
-                        // Reset so RunConfig does not enable git checkpointing
-                        worktree_path = None;
-                        worktree_branch = None;
-                        worktree_base_sha = None;
-                        local_sandbox_with_callback(cwd.clone(), Arc::clone(&emitter))
+                        bail!("git worktree sandbox initialization failed: {e}");
                     }
                 }
             } else {
