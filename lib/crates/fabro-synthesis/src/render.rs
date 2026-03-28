@@ -1781,16 +1781,7 @@ fn render_lane(
         &audit_command,
         &quality_command,
     );
-    let integration_artifact_path = if lane.template == WorkflowTemplate::Implementation {
-        lane_named_artifact_path_relative(blueprint, unit_id, lane, "integration")
-    } else {
-        None
-    };
-    let run_config = render_run_config(
-        lane,
-        integration_artifact_path.as_deref(),
-        layout.target_repo,
-    );
+    let run_config = render_run_config(lane, None, layout.target_repo);
     let mut written_files = Vec::new();
     write_file(&workflow_path, &graph, &mut written_files)?;
     write_file(&run_config_path, &run_config, &mut written_files)?;
@@ -5102,6 +5093,21 @@ fn implementation_audit_command(
         allowed.push("\\.fabro-work/".to_string());
         allowed.push("lanes/".to_string());
         allowed.push("malinka/".to_string());
+        // Allow narrow Rust registration files that often accompany exact-file work.
+        allowed.push("^crates/casino-core/src/lib\\.rs$".to_string());
+        allowed.push("^crates/casino-core/src/mod\\.rs$".to_string());
+        for artifact in [
+            "spec\\.md$",
+            "review\\.md$",
+            "acceptance\\.md$",
+            "implementation\\.md$",
+            "verification\\.md$",
+            "quality\\.md$",
+            "promotion\\.md$",
+            "integration\\.md$",
+        ] {
+            allowed.push(artifact.to_string());
+        }
 
         let pattern = allowed.join("|");
         // Use merge-base to scope to this run's commits — the worktree inherits
@@ -9583,7 +9589,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
-    fn implementation_run_config_enables_direct_integration() {
+    fn implementation_run_config_enables_direct_integration_without_controller_artifact_path() {
         let lane = BlueprintLane {
             id: "tui-implement".to_string(),
             kind: raspberry_supervisor::manifest::LaneKind::Interface,
@@ -9617,11 +9623,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         let repo = Repository::init(temp.path()).expect("git repo");
         repo.remote("origin", "https://example.com/repo.git")
             .expect("origin remote");
-        let run_config = render_run_config(
-            &lane,
-            Some(Path::new("outputs/play/tui/integration.md")),
-            temp.path(),
-        );
+        let run_config = render_run_config(&lane, None, temp.path());
         assert!(run_config.contains("worktree_mode = \"always\""));
         assert!(run_config.contains("[llm]"));
         assert!(run_config.contains("provider = \"minimax\""));
@@ -9633,7 +9635,7 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(run_config.contains("[integration]"));
         assert!(run_config.contains("enabled = true"));
         assert!(run_config.contains("target_branch = \"origin/HEAD\""));
-        assert!(run_config.contains("artifact_path = \"../../../outputs/play/tui/integration.md\""));
+        assert!(!run_config.contains("artifact_path = "));
     }
 
     #[test]

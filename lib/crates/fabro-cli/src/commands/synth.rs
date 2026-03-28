@@ -442,20 +442,38 @@ pub struct SynthGenesisArgs {
     pub plans_only: bool,
 }
 
-pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
-    let genesis_dir = args.target_repo.join("genesis");
-    if genesis_dir.exists() {
-        let has_contents = std::fs::read_dir(&genesis_dir)?
-            .filter_map(Result::ok)
-            .next()
-            .is_some();
-        if has_contents {
-            anyhow::bail!(
-                "genesis directory {} is not empty; clear it or use --plans-only after reviewing the existing corpus",
-                genesis_dir.display()
-            );
-        }
+fn archive_existing_genesis_dir(target_repo: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let genesis_dir = target_repo.join("genesis");
+    if !genesis_dir.exists() {
+        return Ok(None);
     }
+
+    let archive_root = target_repo.join("archive");
+    std::fs::create_dir_all(&archive_root)?;
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut archived_path = archive_root.join(format!("genesis_{timestamp}"));
+    let mut suffix = 1usize;
+    while archived_path.exists() {
+        archived_path = archive_root.join(format!("genesis_{timestamp}_{suffix}"));
+        suffix += 1;
+    }
+
+    std::fs::rename(&genesis_dir, &archived_path)?;
+    Ok(Some(archived_path))
+}
+
+pub fn genesis_command(args: &SynthGenesisArgs) -> anyhow::Result<()> {
+    if let Some(archived_path) = archive_existing_genesis_dir(&args.target_repo)? {
+        println!(
+            "Archived existing genesis corpus to {}",
+            archived_path.display()
+        );
+    }
+    let genesis_dir = args.target_repo.join("genesis");
     std::fs::create_dir_all(genesis_dir.join("plans"))?;
 
     let prompt = build_genesis_prompt(&args.target_repo);
@@ -2553,5 +2571,23 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("missing required plan_id"));
         assert!(rendered.contains("unknown [\"phase-1-devnet-endurance\"]"));
+    }
+
+    #[test]
+    fn archive_existing_genesis_dir_moves_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let genesis = temp.path().join("genesis");
+        std::fs::create_dir_all(genesis.join("plans")).expect("plans dir");
+        std::fs::write(genesis.join("SPEC.md"), "# Spec\n").expect("spec");
+        std::fs::write(genesis.join("plans/001-master-plan.md"), "# Plan\n").expect("plan");
+
+        let archived = archive_existing_genesis_dir(temp.path())
+            .expect("archive succeeds")
+            .expect("archive path");
+
+        assert!(!genesis.exists());
+        assert!(archived.is_dir());
+        assert!(archived.join("SPEC.md").is_file());
+        assert!(archived.join("plans/001-master-plan.md").is_file());
     }
 }
