@@ -3,10 +3,10 @@
 ## Problem
 
 The current proving ground is failing in fewer places, but the remaining
-failures still come from deterministic gates reading the wrong source of truth.
-The original contract-stage drift in `rXMRbro` has mostly been contained, and
-the overnight run exposed two later-stage synthesis problems that turned good
-work into false failures.
+failures still come from deterministic gates and state evaluators reading the
+wrong source of truth. The original contract-stage drift in `rXMRbro` has
+mostly been contained, and the overnight run exposed two later-stage synthesis
+problems that turned good work into false failures.
 
 The first was a workflow ownership mismatch: UX implementation lanes emitted an
 `acceptance_gate` that required `acceptance-evidence.md`, but no stage owned
@@ -26,11 +26,18 @@ The newest live replay exposed a third gate-truth bug. The new
 failed even when the contract file existed and the rest of the worktree was
 clean.
 
+The next investigation exposed a fourth truth bug on the Raspberry side.
+Successful implementation runs were finishing with the correct durable
+artifacts in their branch-backed worktrees, but the lane evaluator only counted
+artifacts visible in the controller checkout. That meant a lane could finish
+successfully, record `last_exit_status: 0`, and still be reclassified to
+`ready` because the controller had not landed the artifact files locally.
+
 ## Operating Theory
 
-Autodev only makes trustworthy progress when each gate consumes artifacts that
-are explicitly owned by an earlier stage, and when diff-scoped checks measure
-only the current lane's branch-local work.
+Autodev only makes trustworthy progress when each gate and each milestone
+classifier consumes artifacts that are explicitly owned by an earlier stage,
+and when diff-scoped checks measure only the current lane's branch-local work.
 
 That means the review stage must remain the single owner of
 `.fabro-work/promotion.md`, and any later deterministic acceptance gate has to
@@ -50,6 +57,11 @@ only then fall back to the repo root commit if no branch ref exists.
 For ignored stage-local artifacts like `.fabro-work/contract.md`, the gate
 cannot rely on git history at all. It has to inspect the filesystem directly
 and separately confirm that the rest of the repo remains clean.
+
+For milestone classification, a green run is not enough by itself, but a green
+run plus the required artifact files in that run's worktree is enough to prove
+the milestone. The controller checkout is not the only trustworthy artifact
+surface once branch-backed implementation runs are part of the design.
 
 ## Strategy
 
@@ -73,6 +85,12 @@ For `contract_check`, the generator should require the expected section headers,
 assert that `.fabro-work` contains only `contract.md`, and assert that
 `git status --porcelain` is otherwise empty. That matches the actual contract
 stage contract: one ignored file, no product edits yet.
+
+For Raspberry evaluation, unit artifact presence should remain rooted in the
+controller checkout first, but it should be augmented with lane artifacts found
+under the latest successful run worktree when they map to the same repo-relative
+artifact paths. That preserves the stale-success guard while letting fresh
+successful implementation runs count as complete.
 
 ## Key Discoveries
 
@@ -98,19 +116,30 @@ The next live replay proved that the new `contract_check` bug was real. A fresh
 exactly the ignored-artifact mismatch: the gate was asking git for a file git
 was designed to ignore.
 
-These are both the same class of bug: a deterministic gate using the wrong
-source of truth. One gate looked for an artifact nobody owned, and the other
-looked at a diff base that belonged to controller operations rather than the
-lane.
+The next live status probe showed the same bug class in Raspberry state
+tracking. `test-coverage-casino-core-tests` and its unblock helper both had
+successful `WorkflowRunCompleted` events and correct artifact files in their
+run worktrees, but the stored lane state stayed `ready` because evaluation only
+looked at the controller checkout. Running `raspberry status` with the patched
+evaluator reclassified the lane to `complete`, which confirmed the state logic
+bug without needing a new synthesis change.
+
+These are all the same class of bug: a deterministic gate or classifier using
+the wrong source of truth. One gate looked for an artifact nobody owned,
+another looked at a diff base that belonged to controller operations rather
+than the lane, another trusted git for an ignored file, and the evaluator
+trusted only controller-local artifacts even though the fresh proof lived in
+the successful run worktree.
 
 ## Open Questions
 
 The remaining live question is how much later-stage fixup pollution is still
-left once the acceptance, diff-baseline, and contract-gate truth bugs are
-rolled back into the active controller and replayed. The evidence so far says
-the system is moving in the right direction, but the proving pass still needs
-to confirm that fresh rerendered runs advance cleanly beyond contract, review,
-and audit instead of simply failing at the next deterministic gate.
+left once the acceptance, diff-baseline, contract-gate, and milestone
+classification truth bugs are rolled back into the active controller and
+replayed. The evidence so far says the system is moving in the right direction,
+but the proving pass still needs to confirm that fresh rerendered runs advance
+cleanly beyond contract, review, audit, and lane completion instead of simply
+failing at the next deterministic gate.
 
 The other open question is operational rather than synthetic: controller
 freshness still matters. Even with better workflow generation, a dirty or
