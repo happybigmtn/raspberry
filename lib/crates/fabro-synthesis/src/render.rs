@@ -5722,8 +5722,43 @@ fn normalize_lane_health_command(
     if verify_body.starts_with("cargo test") && health_body == "cargo test -- --nocapture health" {
         return "true".to_string();
     }
+    if health_body == "cargo test -- --nocapture health" {
+        let surfaces = extract_owned_surfaces(&lane.goal);
+        let scoped = scope_service_health_command(verify_body, &surfaces);
+        if !scoped.is_empty() {
+            return scoped;
+        }
+    }
 
     health_command
+}
+
+fn scope_service_health_command(verify_body: &str, surfaces: &[String]) -> String {
+    if let Some(bin_name) = command_flag_value(verify_body, "--bin") {
+        return format!("cargo test --bin {bin_name} -- --nocapture health");
+    }
+    if let Some(package_name) = command_flag_value(verify_body, "-p") {
+        return format!("cargo test -p {package_name} -- --nocapture health");
+    }
+
+    let mut crate_names: Vec<String> = surfaces
+        .iter()
+        .filter_map(|surface| {
+            let parts: Vec<&str> = surface.split('/').collect();
+            parts
+                .iter()
+                .position(|&part| part == "crates" || part == "bin")
+                .and_then(|index| parts.get(index + 1))
+                .map(|name| name.to_string())
+        })
+        .collect();
+    crate_names.sort();
+    crate_names.dedup();
+    crate_names
+        .iter()
+        .map(|name| format!("cargo test -p {name} -- --nocapture health"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_verify_commands(lane: &BlueprintLane, commands: Vec<String>) -> Vec<String> {
@@ -8830,21 +8865,29 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             &lane,
             lane.verify_command.clone().expect("verify command"),
         );
+        let health = super::normalize_lane_health_command(
+            &lane,
+            &verify,
+            lane.health_command.clone().expect("health command"),
+        );
         let graph = render_workflow_graph(
             &lane,
             lane.verify_command.as_deref().expect("verify command"),
             &verify,
-            "set -e\ncargo test -- --nocapture health",
+            &health,
             "true",
             "true",
         );
 
+        assert_eq!(health, "cargo test --bin house -- --nocapture health");
         assert!(verify.contains("pid=$!"));
         assert!(verify.contains("sleep 2"));
         assert!(verify.contains("kill -TERM"));
         assert!(graph.contains("label=\"Verify\""));
         assert!(graph.contains("kill -TERM \\\"$pid\\\""));
         assert_eq!(graph.matches("pid=$!").count(), 2);
+        assert!(graph.contains("cargo test --bin house -- --nocapture health"));
+        assert!(!graph.contains("cargo test -- --nocapture health"));
     }
 
     #[test]
