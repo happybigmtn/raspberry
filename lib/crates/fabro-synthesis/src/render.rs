@@ -1962,12 +1962,17 @@ fn render_workflow_graph(
                 verify_command,
                 health_command,
             );
+            let review_success_edges = if profile == "ux" {
+                String::new()
+            } else {
+                "    review -> audit [condition=\"outcome=success\"]\n".to_string()
+            };
             let fallback_attr = profile_fallback_retry_target(profile);
             let contract_prompt = escape_graph_attr(&contract_prompt_for_lane(lane));
             let contract_check = escape_graph_attr(contract_gate_command());
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}{}    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 fallback_attr,
@@ -1999,6 +2004,7 @@ fn render_workflow_graph(
                 extra_nodes,
                 success_edges,
                 extra_edges,
+                review_success_edges,
             )
         }
         WorkflowTemplate::Integration => format!(
@@ -2145,7 +2151,11 @@ Do NOT write any source code in this stage. Do NOT create durable artifacts, new
 }
 
 fn contract_gate_command() -> &'static str {
-    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md && changed=\"$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)\" && printf '%s\\n' \"$changed\" | grep -qx '.fabro-work/contract.md' && violations=\"$(printf '%s\\n' \"$changed\" | grep -Ev '^\\.fabro-work/contract\\.md$|^$' || true)\" && test -z \"$violations\""
+    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md && extras=\"$(find .fabro-work -mindepth 1 ! -path '.fabro-work/contract.md' -print)\" && test -z \"$extras\" && workspace_changes=\"$(git status --porcelain --untracked-files=all 2>/dev/null || true)\" && test -z \"$workspace_changes\""
+}
+
+fn lane_diff_base_expr() -> &'static str {
+    "$(base_ref=''; for candidate in main autodev-main autodev/main master trunk origin/main origin/master; do if git rev-parse --verify --quiet \"$candidate\" >/dev/null; then base_ref=\"$candidate\"; break; fi; done; if [ -n \"$base_ref\" ]; then git merge-base HEAD \"$base_ref\" 2>/dev/null || printf '%s' \"$base_ref\"; else git rev-list --max-parents=0 HEAD | tail -n 1; fi)"
 }
 
 fn profile_max_visits(profile: &str) -> u32 {
@@ -2192,7 +2202,7 @@ fn profile_extra_graph_elements(
             (nodes, edges)
         }
         "ux" => {
-            let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f acceptance-evidence.md && grep -q 'accepted: yes' acceptance-evidence.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
+            let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f .fabro-work/promotion.md && grep -Eq '^merge_ready: yes$' .fabro-work/promotion.md && grep -Eq '^manual_proof_pending: no$' .fabro-work/promotion.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
             let edges = "    review -> acceptance_gate [condition=\"outcome=success\"]\n    acceptance_gate -> audit [condition=\"outcome=success\"]\n    acceptance_gate -> fixup\n".to_string();
             (nodes, edges)
         }
@@ -3051,6 +3061,11 @@ If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.\n",
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `.fabro-work/promotion.md` in this stage\n- read `.fabro-work/quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
     );
+    if lane.proof_profile.as_deref() == Some("ux") {
+        output.push_str(
+            "- the acceptance gate reads `.fabro-work/promotion.md`; only use `merge_ready: yes` and `manual_proof_pending: no` when the slice should advance\n",
+        );
+    }
     output
 }
 
@@ -5016,10 +5031,11 @@ fn implementation_audit_command(
             })
             .unwrap_or_else(|| PathBuf::from("verification.md"));
         format!(
-            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            "( _mb={}; \
              changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
              test \"$changed_count\" -gt 0 || \
              rg -q -i 'no code changes were needed|outside lane-owned surface: yes|outside the lane-owned surface: yes|owned proof gate is already green|proof gate was already green' {} {} .fabro-work/deep-review-findings.md 2>/dev/null )",
+            lane_diff_base_expr(),
             shell_single_quote(&review_path.display().to_string()),
             shell_single_quote(&verification_path.display().to_string()),
         )
@@ -5043,18 +5059,21 @@ fn implementation_audit_command(
             })
             .unwrap_or_else(|| PathBuf::from("verification.md"));
         format!(
-            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            "( _mb={}; \
              changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
              test \"$changed_count\" -gt 0 || \
              rg -q -i 'validation lane|no product code changes expected|no code changes were needed|evidence-only|smoke run is partial evidence' {} {} {} 2>/dev/null )",
+            lane_diff_base_expr(),
             shell_single_quote(&implementation_path.display().to_string()),
             shell_single_quote(&review_path.display().to_string()),
             shell_single_quote(&verification_path.display().to_string()),
         )
     } else {
-        "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
-        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )"
-            .to_string()
+        format!(
+            "( _mb={}; \
+        test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )",
+            lane_diff_base_expr()
+        )
     };
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
@@ -5112,14 +5131,15 @@ fn implementation_audit_command(
         // Use merge-base to scope to this run's commits — the worktree inherits
         // prior integrate commits whose files must not trigger violations.
         format!(
-            " && {{ _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            " && {{ _mb={}; \
             changed=$(git diff --name-only \"$_mb\"..HEAD 2>/dev/null); \
             if [ -n \"$changed\" ]; then \
             violations=$(echo \"$changed\" | grep -Ev '{pattern}' || true); \
             if [ -n \"$violations\" ]; then \
             echo \"SURFACE VIOLATION: changes outside owned surfaces:\"; \
             echo \"$violations\"; \
-            exit 1; fi; fi; }}"
+            exit 1; fi; fi; }}",
+            lane_diff_base_expr()
         )
     };
 
@@ -6660,8 +6680,8 @@ mod tests {
         implementation_audit_command, implementation_blueprint_for_candidate,
         implementation_candidates, implementation_goal, implementation_promotion_contract_command,
         implementation_quality_command, implementation_verify_command, infer_plan_group,
-        inject_workspace_verify_lanes, inline_proof_command, looks_like_shell_command,
-        manual_notes_from_markdown, normalize_blueprint_lane_kinds,
+        inject_workspace_verify_lanes, inline_proof_command, lane_diff_base_expr,
+        looks_like_shell_command, manual_notes_from_markdown, normalize_blueprint_lane_kinds,
         observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
         raw_lane_refs, render_prompt, render_run_config, render_workflow_graph,
         review_blocker_lane_refs, review_stage_requirements, setup_notes_from_markdown,
@@ -8481,6 +8501,53 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn ux_implementation_workflow_routes_review_through_promotion_gate() {
+        let lane = BlueprintLane {
+            id: "demo-ux".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Demo UX Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("demo-ux".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `src/demo.rs`\n".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: Some("ux".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "cargo test -p demo",
+            "cargo test -p demo",
+            "true",
+            "true",
+            "true",
+        );
+        let review = render_prompt("review", &lane);
+
+        assert!(graph.contains("label=\"Acceptance Gate\""));
+        assert!(graph.contains(".fabro-work/promotion.md"));
+        assert!(graph.contains("merge_ready: yes"));
+        assert!(graph.contains("manual_proof_pending: no"));
+        assert!(graph.contains("review -> acceptance_gate [condition=\"outcome=success\"]"));
+        assert!(graph.contains("acceptance_gate -> audit [condition=\"outcome=success\"]"));
+        assert!(!graph.contains("test -f acceptance-evidence.md"));
+        assert!(!graph.contains("review -> audit [condition=\"outcome=success\"]"));
+        assert!(review.contains("the acceptance gate reads `.fabro-work/promotion.md`"));
+    }
+
+    #[test]
     fn contract_prompt_treats_durable_artifacts_as_later_stage_outputs() {
         let lane = BlueprintLane {
             id: "demo-implement".to_string(),
@@ -8515,14 +8582,25 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
     }
 
     #[test]
+    fn implementation_workflow_prefers_local_branch_base_for_diff_scoping() {
+        let expr = lane_diff_base_expr();
+
+        assert!(
+            expr.contains("main autodev-main autodev/main master trunk origin/main origin/master")
+        );
+        assert!(!expr.contains("git merge-base HEAD origin/main 2>/dev/null || echo origin/main"));
+    }
+
+    #[test]
     fn contract_gate_rejects_non_contract_stage_writes() {
         let gate = contract_gate_command();
 
-        assert!(gate.contains("git diff-tree --no-commit-id --name-only -r HEAD"));
-        assert!(gate.contains("grep -qx '.fabro-work/contract.md'"));
-        assert!(gate.contains("violations="));
-        assert!(gate.contains(".fabro-work/contract"));
-        assert!(gate.contains("test -z \"$violations\""));
+        assert!(gate.contains("find .fabro-work -mindepth 1"));
+        assert!(gate.contains("! -path '.fabro-work/contract.md'"));
+        assert!(gate.contains("extras="));
+        assert!(gate.contains("git status --porcelain --untracked-files=all"));
+        assert!(gate.contains("workspace_changes="));
+        assert!(gate.contains("test -z \"$workspace_changes\""));
     }
 
     #[test]
