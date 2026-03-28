@@ -106,10 +106,16 @@ impl Handler for CommandHandler {
         };
 
         let timeout_ms = node.timeout().map_or(600_000, |d| d.as_millis() as u64);
-        let env_vars = if services.env.is_empty() {
+        let mut launch_env = services.env.clone();
+        if let Some(git_state) = services.git_state() {
+            launch_env
+                .entry("FABRO_BASE_SHA".to_string())
+                .or_insert(git_state.base_sha.clone());
+        }
+        let env_vars = if launch_env.is_empty() {
             None
         } else {
-            Some(&services.env)
+            Some(&launch_env)
         };
 
         let result = services
@@ -868,6 +874,46 @@ mod tests {
         assert_eq!(
             captured_env.get("MY_VAR").map(String::as_str),
             Some("my_value")
+        );
+    }
+
+    #[tokio::test]
+    async fn injects_fabro_base_sha_from_git_state() {
+        let spy = std::sync::Arc::new(SpySandbox::new(fabro_agent::sandbox::ExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            duration_ms: 5,
+        }));
+
+        let handler = CommandHandler;
+        let mut node = Node::new("script_node");
+        node.attrs
+            .insert("script".to_string(), AttrValue::String("true".to_string()));
+        let context = Context::new();
+        let graph = Graph::new("test");
+        let run_dir = tempfile::tempdir().unwrap();
+
+        let services = make_spy_services(spy.clone());
+        services.set_git_state(Some(std::sync::Arc::new(crate::engine::GitState {
+            run_id: "run-1".to_string(),
+            base_sha: "abc123".to_string(),
+            run_branch: None,
+            meta_branch: None,
+            checkpoint_exclude_globs: Vec::new(),
+            git_author: crate::git::GitAuthor::default(),
+        })));
+
+        handler
+            .execute(&node, &context, &graph, run_dir.path(), &services)
+            .await
+            .unwrap();
+
+        let captured_env = spy.captured_env_vars.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            captured_env.get("FABRO_BASE_SHA").map(String::as_str),
+            Some("abc123")
         );
     }
 

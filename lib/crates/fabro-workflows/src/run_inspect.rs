@@ -259,9 +259,9 @@ mod tests {
             .save(&run_dir.join("status.json"))
             .unwrap();
 
-        RunLiveState::new("run-1")
-            .save(&run_dir.join("state.json"))
-            .unwrap();
+        let mut state = RunLiveState::new("run-1");
+        state.base_sha = Some("abc123".to_string());
+        state.save(&run_dir.join("state.json")).unwrap();
 
         std::fs::write(
             run_dir.join("progress.jsonl"),
@@ -282,6 +282,13 @@ mod tests {
         assert_eq!(
             summarize_usage(inspection.progress.last_usage.as_ref()).as_deref(),
             Some("gpt-5.4: 100 in / 80 out")
+        );
+        assert_eq!(
+            inspection
+                .state
+                .as_ref()
+                .and_then(|state| state.base_sha.as_deref()),
+            Some("abc123")
         );
     }
 

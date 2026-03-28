@@ -13,6 +13,8 @@ pub struct RunLiveState {
     pub updated_at: DateTime<Utc>,
     pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<StatusReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_stage_id: Option<String>,
@@ -55,6 +57,7 @@ impl RunLiveState {
             run_id: run_id.into(),
             updated_at: Utc::now(),
             status: RunStatus::Starting,
+            base_sha: None,
             reason: Some(StatusReason::SandboxInitializing),
             current_stage_id: None,
             current_stage_label: None,
@@ -87,8 +90,13 @@ impl RunLiveState {
         self.last_event_seq = event_seq;
 
         match event {
-            WorkflowRunEvent::WorkflowRunStarted { run_id, .. } => {
+            WorkflowRunEvent::WorkflowRunStarted {
+                run_id, base_sha, ..
+            } => {
                 self.run_id = run_id.clone();
+                if let Some(base_sha) = base_sha {
+                    self.base_sha = Some(base_sha.clone());
+                }
                 self.status = RunStatus::Running;
                 self.reason = None;
                 self.last_failure = None;
@@ -288,6 +296,28 @@ mod tests {
             state.last_failure.as_deref(),
             Some("Validation error: bad graph")
         );
+    }
+
+    #[test]
+    fn workflow_start_persists_base_sha() {
+        let mut state = RunLiveState::new("run-1");
+
+        state.observe(
+            &WorkflowRunEvent::WorkflowRunStarted {
+                name: "demo".to_string(),
+                run_id: "run-1".to_string(),
+                base_sha: Some("abc123".to_string()),
+                run_branch: Some("feature/demo".to_string()),
+                worktree_dir: None,
+                goal: Some("do work".to_string()),
+            },
+            Some("WorkflowRunStarted"),
+            Some(1),
+            Utc::now(),
+        );
+
+        assert_eq!(state.base_sha.as_deref(), Some("abc123"));
+        assert_eq!(state.status, RunStatus::Running);
     }
 
     #[test]

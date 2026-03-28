@@ -1953,12 +1953,17 @@ fn render_workflow_graph(
                 verify_command,
                 health_command,
             );
+            let review_success_edge = if profile == "ux" {
+                String::new()
+            } else {
+                "    review -> audit [condition=\"outcome=success\"]\n".to_string()
+            };
             let fallback_attr = profile_fallback_retry_target(profile);
             let contract_prompt = escape_graph_attr(&contract_prompt_for_lane(lane));
             let contract_check = escape_graph_attr(contract_gate_command());
 
             format!(
-            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}    review -> audit [condition=\"outcome=success\"]\n    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
+            "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}{}    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
                 graph_name(lane),
                 goal,
                 fallback_attr,
@@ -1989,6 +1994,7 @@ fn render_workflow_graph(
                 escape_graph_attr(audit_command),
                 extra_nodes,
                 success_edges,
+                review_success_edge,
                 extra_edges,
             )
         }
@@ -2111,10 +2117,10 @@ List what this lane will NOT implement.\n\n",
     );
     match contract_mode_for_lane(lane) {
         "validation" => prompt.push_str(
-            "This is a validation lane. Prefer evidence and lane-local artifacts over product code changes. Do not invent implementation work that belongs to sibling lanes.\n\n",
+            "This is a validation lane. Prefer evidence and lane-local artifacts over product code changes. Do not invent implementation work that belongs to sibling lanes. If the proof gate is already green before you touch code, your deliverables may be artifact-only.\n\n",
         ),
         "unblock" => prompt.push_str(
-            "This is an unblock lane. Prefer the smallest lane-local workflow, prompt, or harness repair that lets the source lane pass its next replay. Do not broaden into unrelated repo cleanup.\n\n",
+            "This is an unblock lane. Prefer the smallest lane-local workflow, prompt, or harness repair that lets the source lane pass its next replay. Do not broaden into unrelated repo cleanup. If the owned proof gate is already green or only an external blocker remains, your deliverables may be artifact-only and you should not invent product code edits.\n\n",
         ),
         _ => prompt.push_str(
             "This is an implementation lane. Stay inside the named slice and declare only the minimal product files needed for that slice.\n\n",
@@ -2182,7 +2188,7 @@ fn profile_extra_graph_elements(
             (nodes, edges)
         }
         "ux" => {
-            let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f acceptance-evidence.md && grep -q 'accepted: yes' acceptance-evidence.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
+            let nodes = "    acceptance_gate [label=\"Acceptance Gate\", shape=parallelogram, script=\"test -f .fabro-work/acceptance.md && grep -Eq '^accepted: yes$' .fabro-work/acceptance.md\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n".to_string();
             let edges = "    review -> acceptance_gate [condition=\"outcome=success\"]\n    acceptance_gate -> audit [condition=\"outcome=success\"]\n    acceptance_gate -> fixup\n".to_string();
             (nodes, edges)
         }
@@ -2211,6 +2217,10 @@ fn shell_body(command: &str) -> &str {
         return rest;
     }
     trimmed
+}
+
+fn current_run_diff_base_expr() -> &'static str {
+    "${FABRO_BASE_SHA:-$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)}"
 }
 
 fn preflight_command(
@@ -2245,11 +2255,23 @@ fn implementation_promotion_contract_command(
         .map(|field| format!("grep -Eq '^{}: yes$' {p}", field))
         .collect::<Vec<_>>()
         .join(" && \\\n        ");
-    // Validate promotion format: merge_ready, manual_proof_pending, and all 4
-    // scored dimensions must be present. Each score must be >= 6 (threshold).
+    // Validate promotion format. Standard implementation lanes must be
+    // merge-ready and fully automated; codex-unblock lanes may legitimately
+    // conclude "not merge-ready" when the remaining blocker sits outside the
+    // owned surface or the source lane proof is already green.
+    let merge_ready_contract = if is_codex_unblock_lane(lane) {
+        format!(
+            "grep -Eq '^merge_ready: (yes|no)$' {p} && \
+        grep -Eq '^manual_proof_pending: (yes|no)$' {p}"
+        )
+    } else {
+        format!(
+            "grep -Eq '^merge_ready: yes$' {p} && \
+        grep -Eq '^manual_proof_pending: no$' {p}"
+        )
+    };
     let base = format!(
-        "grep -Eq '^merge_ready: yes$' {p} && \
-        grep -Eq '^manual_proof_pending: no$' {p} && \
+        "{merge_ready_contract} && \
         grep -Eq '^reason: .+$' {p} && \
         grep -Eq '^next_action: .+$' {p} && \
         grep -Eq '^completeness: ([6-9]|10)$' {p} && \
@@ -3043,6 +3065,11 @@ If `.fabro-work/quality.md` says quality_ready: no = merge_ready: no.\n",
         }
         output.push_str("If any mandatory security field is `no`, set `merge_ready: no`.\n");
     }
+    if lane.proof_profile.as_deref() == Some("ux") {
+        output.push_str(
+            "\nUX acceptance artifact:\n- after review, write `.fabro-work/acceptance.md`\n- format it exactly as:\n  accepted: yes|no\n  reason: <one sentence>\n- if acceptance is blocked by a UX issue, keep `accepted: no` and explain the blocker truthfully\n",
+        );
+    }
     output.push_str(
         "\nReview stage ownership:\n- you may write or replace `.fabro-work/promotion.md` in this stage\n- read `.fabro-work/quality.md` before deciding `merge_ready`\n- when the slice is security-sensitive, perform a Nemesis-style pass: first-principles assumption challenge plus coupled-state consistency review\n- include security findings in the review verdict when the slice touches trust boundaries, keys, funds, auth, control-plane behavior, or external process control\n- prefer not to modify source code here unless a tiny correction is required to make the review judgment truthful\n",
     );
@@ -3189,9 +3216,14 @@ fn render_implementation_fixup_prompt(
         verification_artifact_expectations,
         false,
     );
-    output.push_str(
-        "\n\nPriorities:\n- unblock the active slice's first proof gate — this is the #1 priority\n- prefer staying within the named slice and touched surfaces\n- if the proof gate fails on pre-existing issues OUTSIDE your surfaces (e.g., linter warnings in unrelated files, missing imports in dependencies), you MUST fix those issues minimally to unblock the gate — do not leave the lane stuck on problems you can solve\n- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `.fabro-work/promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `.fabro-work/quality.md`; the Quality Gate rewrites it after verification\n- ALL ephemeral files (quality.md, promotion.md, verification.md) go in `.fabro-work/`, never the repo root\n",
-    );
+    let external_blocker_policy = if lane_allows_evidence_only_completion(lane) {
+        "- if the proof gate fails on pre-existing issues OUTSIDE your surfaces (e.g., linter warnings in unrelated files, missing imports in dependencies), you may fix those issues minimally when that is necessary to unblock the active slice\n"
+    } else {
+        "- if the proof gate fails on pre-existing issues OUTSIDE your surfaces, document that blocker truthfully in the lane artifacts and `.fabro-work/deep-review-findings.md`; do not broaden into unrelated repo cleanup\n"
+    };
+    output.push_str(&format!(
+        "\n\nPriorities:\n- unblock the active slice's first proof gate — this is the #1 priority\n- prefer staying within the named slice and touched surfaces\n{external_blocker_policy}- preserve setup constraints before expanding implementation scope\n- keep implementation and verification artifacts durable and specific\n- do not create or rewrite `.fabro-work/promotion.md` during Fixup; that file is owned by the Review stage\n- do not hand-author `.fabro-work/quality.md`; the Quality Gate rewrites it after verification\n- ALL ephemeral files (quality.md, promotion.md, verification.md) go in `.fabro-work/`, never the repo root\n",
+    ));
     output
 }
 
@@ -4976,10 +5008,29 @@ fn implementation_audit_command(
     lane: &BlueprintLane,
     promotion_command: &str,
 ) -> String {
+    let diff_base = current_run_diff_base_expr();
     let unit = blueprint
         .units
         .iter()
         .find(|candidate| candidate.id == unit_id);
+    let spec_path = unit
+        .and_then(|unit| {
+            lane_named_artifact_path_relative(blueprint, unit_id, lane, "spec")
+                .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+        })
+        .unwrap_or_else(|| PathBuf::from("spec.md"));
+    let review_path = unit
+        .and_then(|unit| {
+            lane_named_artifact_path_relative(blueprint, unit_id, lane, "review")
+                .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+        })
+        .unwrap_or_else(|| PathBuf::from("review.md"));
+    let verification_path = unit
+        .and_then(|unit| {
+            lane_named_artifact_path_relative(blueprint, unit_id, lane, "verification")
+                .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
+        })
+        .unwrap_or_else(|| PathBuf::from("verification.md"));
     let paths = lane_artifact_paths_relative(blueprint, unit_id, lane);
     if paths.is_empty() {
         return "true".to_string();
@@ -4998,20 +5049,8 @@ fn implementation_audit_command(
     // Accepts any common source/config extension rather than hardcoding Rust,
     // preventing agents from creating fake files to satisfy the check.
     let noop_guard = if is_codex_unblock_lane(lane) {
-        let review_path = unit
-            .and_then(|unit| {
-                lane_named_artifact_path_relative(blueprint, unit_id, lane, "review")
-                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
-            })
-            .unwrap_or_else(|| PathBuf::from("review.md"));
-        let verification_path = unit
-            .and_then(|unit| {
-                lane_named_artifact_path_relative(blueprint, unit_id, lane, "verification")
-                    .map(|path| join_relative(&unit.output_root, &path.display().to_string()))
-            })
-            .unwrap_or_else(|| PathBuf::from("verification.md"));
         format!(
-            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            "( _mb={diff_base}; \
              changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
              test \"$changed_count\" -gt 0 || \
              rg -q -i 'no code changes were needed|outside lane-owned surface: yes|outside the lane-owned surface: yes|owned proof gate is already green|proof gate was already green' {} {} .fabro-work/deep-review-findings.md 2>/dev/null )",
@@ -5038,7 +5077,7 @@ fn implementation_audit_command(
             })
             .unwrap_or_else(|| PathBuf::from("verification.md"));
         format!(
-            "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            "( _mb={diff_base}; \
              changed_count=$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l); \
              test \"$changed_count\" -gt 0 || \
              rg -q -i 'validation lane|no product code changes expected|no code changes were needed|evidence-only|smoke run is partial evidence' {} {} {} 2>/dev/null )",
@@ -5047,9 +5086,23 @@ fn implementation_audit_command(
             shell_single_quote(&verification_path.display().to_string()),
         )
     } else {
-        "( _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+        format!(
+            "( _mb={diff_base}; \
         test \"$(git diff --name-only \"$_mb\"..HEAD -- '*.rs' '*.toml' '*.py' '*.js' '*.ts' '*.tsx' '*.go' '*.java' '*.rb' '*.yaml' '*.yml' '*.json' '*.sol' '*.sh' | wc -l)\" -gt 0 )"
-            .to_string()
+        )
+    };
+    let codex_external_only_contract = if is_codex_unblock_lane(lane) {
+        format!(
+            "( test -f {} && test -f {} && test -f {} && \
+             rg -q -i 'no code changes were needed|outside lane-owned surface: yes|outside the lane-owned surface: yes|owned proof gate is already green|proof gate was already green' {} {} .fabro-work/deep-review-findings.md 2>/dev/null )",
+            shell_single_quote(&spec_path.display().to_string()),
+            shell_single_quote(&review_path.display().to_string()),
+            shell_single_quote(&verification_path.display().to_string()),
+            shell_single_quote(&review_path.display().to_string()),
+            shell_single_quote(&verification_path.display().to_string()),
+        )
+    } else {
+        String::new()
     };
 
     // Surface ownership enforcement: reject changes outside owned surfaces.
@@ -5088,6 +5141,38 @@ fn implementation_audit_command(
                 }
             })
             .collect();
+        // When all owned surfaces share the same crate root (e.g. all are under
+        // crates/rxmr-wallet/), also add the crate root so that sibling directories
+        // like tests/ are not incorrectly flagged as surface violations.
+        if !owned_surfaces.is_empty() {
+            let owned_paths: Vec<_> = owned_surfaces
+                .iter()
+                .map(|s| std::path::Path::new(s))
+                .collect();
+            // Compute component-wise common prefix.
+            let first_components: Vec<_> = owned_paths[0].components().collect();
+            let mut common_components = first_components.len();
+            for path in &owned_paths[1..] {
+                let components: Vec<_> = path.components().collect();
+                common_components = common_components.min(components.len()).min(
+                    first_components[..common_components]
+                        .iter()
+                        .zip(&components[..common_components])
+                        .take_while(|(a, b)| a == b)
+                        .count(),
+                );
+            }
+            // Add the crate root if the common prefix is at least 2 components
+            // and all owned surfaces have the same first 2 components.
+            if common_components >= 2 {
+                let crate_root: std::path::PathBuf = first_components[..2]
+                    .iter()
+                    .map(|c| c.as_os_str())
+                    .collect();
+                let crate_root_str = escape_grep(&crate_root.display().to_string());
+                allowed.push(format!("^{crate_root_str}"));
+            }
+        }
         // Always allow output artifacts, lane local files, and malinka (these are safe literal patterns)
         allowed.push("outputs/".to_string());
         allowed.push("\\.fabro-work/".to_string());
@@ -5113,7 +5198,7 @@ fn implementation_audit_command(
         // Use merge-base to scope to this run's commits — the worktree inherits
         // prior integrate commits whose files must not trigger violations.
         format!(
-            " && {{ _mb=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main); \
+            " && {{ _mb={diff_base}; \
             changed=$(git diff --name-only \"$_mb\"..HEAD 2>/dev/null); \
             if [ -n \"$changed\" ]; then \
             violations=$(echo \"$changed\" | grep -Ev '{pattern}' || true); \
@@ -5159,10 +5244,18 @@ fn implementation_audit_command(
         }}"
     );
 
+    let full_audit_contract =
+        format!("{artifact_checks} && {promotion_command} && {noop_guard}{quality_hard_gate}{surface_guard}");
+    let audit_contract = if is_codex_unblock_lane(lane) {
+        format!("( ({full_audit_contract}) || ({codex_external_only_contract}{surface_guard}) )")
+    } else {
+        full_audit_contract
+    };
+
     // Wrap audit as: try checks, if they fail capture remediation then exit 1
     format!(
         "{remediation_script}\n\
-        if ! ( {artifact_checks} && {promotion_command} && {noop_guard}{quality_hard_gate}{surface_guard} ); then\n  \
+        if ! ( {audit_contract} ); then\n  \
             capture_remediation\n  \
             exit 1\n\
         fi"
@@ -8428,6 +8521,8 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(challenge.contains("Layout/domain invariant checklist"));
         assert!(review.contains("layout_invariants_complete: yes|no"));
         assert!(review.contains("slice_decomposition_respected: yes|no"));
+        assert!(review.contains(".fabro-work/acceptance.md"));
+        assert!(review.contains("accepted: yes|no"));
     }
 
     #[test]
@@ -8654,6 +8749,46 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert_eq!(health, "true");
         assert!(!graph.contains("label=\"Health\""));
         assert!(graph.contains("set +e\\ncargo test --bin house -- protocol\\ntrue"));
+    }
+
+    #[test]
+    fn ux_workflow_uses_lane_local_acceptance_gate_without_direct_review_audit_edge() {
+        let lane = BlueprintLane {
+            id: "roulette-tui-screen".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Interface,
+            title: "Roulette TUI Screen Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("roulette-tui-screen".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Implement the next approved roulette board layout screen slice.".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["implementation".to_string(), "verification".to_string()],
+            proof_profile: Some("ux".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let graph = render_workflow_graph(
+            &lane,
+            "cargo test -p demo",
+            "cargo test -p demo",
+            "true",
+            "true",
+            "true",
+        );
+
+        assert!(graph.contains(".fabro-work/acceptance.md"));
+        assert!(graph.contains("review -> acceptance_gate"));
+        assert!(!graph.contains("review -> audit [condition=\"outcome=success\"]"));
     }
 
     #[test]
@@ -9199,6 +9334,133 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(command.contains("no code changes were needed"));
         assert!(command.contains("outside lane-owned surface: yes"));
         assert!(command.contains(".fabro-work/deep-review-findings.md"));
+        assert!(command
+            .contains("test -f '.raspberry/portfolio/poker-tui-screen-codex-unblock/spec.md'"));
+        assert!(command.contains("||"));
+    }
+
+    #[test]
+    fn implementation_audit_command_prefers_fabro_base_sha_when_present() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "demo".to_string(),
+                title: "Demo".to_string(),
+                output_root: PathBuf::from("outputs/demo"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from("implementation.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "demo".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Demo".to_string(),
+                    family: "implement".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("demo".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Owned surfaces:\n- `src/demo.rs`".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: Some("integration".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p demo".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+        let lane = &blueprint.units[0].lanes[0];
+        let command = implementation_audit_command(&blueprint, "demo", lane, "true");
+
+        assert!(command.contains("FABRO_BASE_SHA"));
+        assert!(command.contains("git merge-base HEAD origin/main"));
+    }
+
+    #[test]
+    fn codex_unblock_promotion_contract_does_not_require_merge_ready_yes() {
+        let lane = BlueprintLane {
+            id: "poker-tui-screen-codex-unblock".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Poker TUI Screen Codex Unblock".to_string(),
+            family: "codex-unblock".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("poker-tui-screen-codex-unblock".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Use Codex to unblock poker-tui-screen.".to_string(),
+            managed_milestone: "poker-tui-screen-codex-unblock-done".to_string(),
+            dependencies: Vec::new(),
+            produces: vec![
+                "spec".to_string(),
+                "review".to_string(),
+                "verification".to_string(),
+                "quality".to_string(),
+                "promotion".to_string(),
+            ],
+            proof_profile: Some("unblock".to_string()),
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: Some("cargo test -p tui -- poker".to_string()),
+            health_command: None,
+        };
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            units: Vec::new(),
+            protocols: Vec::new(),
+        };
+        let command =
+            implementation_promotion_contract_command(&blueprint, "poker-tui-screen", &lane);
+
+        assert!(command.contains("^merge_ready: (yes|no)$"));
+        assert!(!command.contains("^merge_ready: yes$"));
     }
 
     #[test]
