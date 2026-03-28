@@ -1773,8 +1773,18 @@ fn render_lane(
         fi";
     quality_command = format!("{quality_command}\n{contract_check}");
 
+    let lane_with_artifact_guidance;
+    let lane_for_render = if lane.template == WorkflowTemplate::Implementation {
+        let artifact_paths = lane_artifact_paths_relative(blueprint, unit_id, lane);
+        lane_with_artifact_guidance =
+            implementation_lane_with_scoped_artifact_guidance(lane, &artifact_paths);
+        &lane_with_artifact_guidance
+    } else {
+        lane
+    };
+
     let graph = render_workflow_graph(
-        lane,
+        lane_for_render,
         &raw_verify_command,
         &verify_command,
         &health_command,
@@ -1787,7 +1797,7 @@ fn render_lane(
         None
     };
     let run_config = render_run_config(
-        lane,
+        lane_for_render,
         integration_artifact_path.as_deref(),
         layout.target_repo,
     );
@@ -1806,26 +1816,26 @@ fn render_lane(
             if remediation_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&remediation_path) {
                     let trimmed = content.trim();
-                    if !trimmed.is_empty() && !lane.goal.contains("PRIOR RUN FINDINGS") {
+                    if !trimmed.is_empty() && !lane_for_render.goal.contains("PRIOR RUN FINDINGS") {
                         lane_with_remediation = BlueprintLane {
                             goal: format!(
                                 "PRIOR RUN FINDINGS (from automated review — address these):\n{trimmed}\n\n{}",
-                                lane.goal
+                                lane_for_render.goal
                             ),
-                            ..lane.clone()
+                            ..lane_for_render.clone()
                         };
                         &lane_with_remediation
                     } else {
-                        lane
+                        lane_for_render
                     }
                 } else {
-                    lane
+                    lane_for_render
                 }
             } else {
-                lane
+                lane_for_render
             }
         } else {
-            lane
+            lane_for_render
         };
         let plan_prompt = render_prompt("plan", effective_lane);
         let review_prompt = render_prompt("review", effective_lane);
@@ -2155,6 +2165,65 @@ List what this lane will NOT implement.\n\n",
 Do NOT write any source code in this stage. Do NOT create durable artifacts, new docs, broad cleanup tasks, or unrelated package edits unless the lane explicitly owns those exact paths. If a prior contract attempt created stray docs, delete them before finishing. Finish by writing `.fabro-work/contract.md` only.\n",
     );
     prompt
+}
+
+fn implementation_lane_with_scoped_artifact_guidance(
+    lane: &BlueprintLane,
+    artifact_paths: &[PathBuf],
+) -> BlueprintLane {
+    if artifact_paths.is_empty() {
+        return lane.clone();
+    }
+    let scoped_goal = rewrite_required_durable_artifacts_block(&lane.goal, artifact_paths);
+    let durable_paths_section = artifact_paths
+        .iter()
+        .map(|path| format!("- `{}`", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let guidance = format!(
+        "Write durable artifacts only to these exact lane-scoped paths:\n{durable_paths_section}\n\
+Do NOT write durable artifacts to repo-root paths like `spec.md`, `review.md`, `implementation.md`, or `verification.md` unless the lane explicitly owns those exact repo-root files."
+    );
+    let prompt_context = match lane.prompt_context.as_deref() {
+        Some(existing) if !existing.trim().is_empty() => {
+            format!("{existing}\n\n{guidance}")
+        }
+        _ => guidance,
+    };
+    BlueprintLane {
+        goal: scoped_goal,
+        prompt_context: Some(prompt_context),
+        ..lane.clone()
+    }
+}
+
+fn rewrite_required_durable_artifacts_block(goal: &str, artifact_paths: &[PathBuf]) -> String {
+    let header = "Required durable artifacts:";
+    let Some(start_idx) = goal.find(header) else {
+        return goal.to_string();
+    };
+    let after_header = &goal[start_idx + header.len()..];
+    let mut replacement = String::from("Required durable artifacts:\n");
+    for path in artifact_paths {
+        replacement.push_str(&format!("- `{}`\n", path.display()));
+    }
+    let tail_trimmed = after_header.trim_start_matches('\n');
+    let artifact_block_len = after_header.len() - tail_trimmed.len();
+    let mut consumed = artifact_block_len;
+    for line in tail_trimmed.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("- ") {
+            consumed += line.len();
+            if after_header[consumed..].starts_with('\n') {
+                consumed += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    let prefix = &goal[..start_idx];
+    let suffix = &after_header[consumed..];
+    format!("{prefix}{replacement}{suffix}")
 }
 
 fn contract_gate_command() -> &'static str {
@@ -6733,10 +6802,12 @@ mod tests {
         first_proof_gate_from_markdown, first_slice_from_markdown, first_slice_work_from_markdown,
         first_smoke_gate_from_markdown, health_commands_from_markdown, health_notes_from_markdown,
         implementation_audit_command, implementation_blueprint_for_candidate,
-        implementation_candidates, implementation_goal, implementation_promotion_contract_command,
-        implementation_quality_command, implementation_verify_command, infer_plan_group,
-        inject_workspace_verify_lanes, inline_proof_command, lane_diff_base_expr,
-        looks_like_shell_command, manual_notes_from_markdown, normalize_blueprint_lane_kinds,
+        implementation_candidates, implementation_goal,
+        implementation_lane_with_scoped_artifact_guidance,
+        implementation_promotion_contract_command, implementation_quality_command,
+        implementation_verify_command, infer_plan_group, inject_workspace_verify_lanes,
+        inline_proof_command, lane_diff_base_expr, looks_like_shell_command,
+        manual_notes_from_markdown, normalize_blueprint_lane_kinds,
         observability_notes_from_markdown, prompt_context_block, proof_commands_from_markdown,
         raw_lane_refs, render_implementation_challenge_prompt, render_implementation_review_prompt,
         render_prompt, render_run_config, render_workflow_graph, review_blocker_lane_refs,
@@ -8786,6 +8857,50 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(prompt.contains("treat those as later-stage outputs"));
         assert!(prompt.contains("They are NOT contract-stage deliverables"));
         assert!(prompt.contains("Finish by writing `.fabro-work/contract.md` only"));
+    }
+
+    #[test]
+    fn implementation_lane_scopes_required_durable_artifacts_to_output_root() {
+        let lane = BlueprintLane {
+            id: "demo-implement".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Demo Implement Lane".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implement".to_string()),
+            slug: Some("demo-implement".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `src/demo.rs`\n\nRequired durable artifacts:\n- `spec.md`\n- `review.md`\n"
+                .to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: vec!["spec".to_string(), "review".to_string()],
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: Some("Touch first:\n- `src/demo.rs`\n".to_string()),
+            verify_command: None,
+            health_command: None,
+        };
+
+        let adjusted = implementation_lane_with_scoped_artifact_guidance(
+            &lane,
+            &[
+                PathBuf::from("outputs/demo/spec.md"),
+                PathBuf::from("outputs/demo/review.md"),
+            ],
+        );
+
+        assert!(adjusted.goal.contains("- `outputs/demo/spec.md`"));
+        assert!(adjusted.goal.contains("- `outputs/demo/review.md`"));
+        assert!(!adjusted.goal.contains("\n- `spec.md`\n- `review.md`\n"));
+        let prompt_context = adjusted.prompt_context.expect("prompt context");
+        assert!(prompt_context
+            .contains("Write durable artifacts only to these exact lane-scoped paths"));
+        assert!(prompt_context.contains("Do NOT write durable artifacts to repo-root paths"));
     }
 
     #[test]

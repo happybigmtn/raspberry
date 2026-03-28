@@ -41,6 +41,13 @@ files that were no longer wired into the crate, stale `spec.md` or `review.md`
 artifacts drifting into source directories, and tests that asserted fake IDs or
 string formatting instead of real state transitions.
 
+The fresh `fresh5` replay exposed a sixth synthesis mismatch. Implementation
+workflow goals still advertised root `spec.md` and `review.md` as the required
+durable artifacts, while the actual audit and artifact model validated
+lane-scoped files under `outputs/<lane>/...`. That contradiction was enough to
+steer healthy runs back toward editing repo-root docs even after the quality
+gate stopped treating every root artifact as an automatic failure.
+
 ## Operating Theory
 
 Autodev only makes trustworthy progress when each gate and each milestone
@@ -75,6 +82,12 @@ For test-coverage lanes, passing proof commands is also not enough on its own.
 The framework has to guard against structurally weak landings by checking for
 source-artifact drift, unattached source test modules, and review prompts that
 explicitly reject duplicate or fake-behavior coverage work.
+
+For implementation lanes more generally, the workflow goal, prompt context,
+quality gate, and audit gate must all agree on the same durable artifact
+surface. If the goal says `spec.md` but audit expects
+`outputs/test-coverage-house-protocol-tests/spec.md`, the agent will follow the
+wrong contract and any later gate becomes partly luck.
 
 ## Strategy
 
@@ -111,6 +124,11 @@ as artifact drift, and it should fail when a changed `src/*_tests.rs` file is
 not actually referenced by the crate's module tree. The review and challenge
 prompts should also say plainly that duplicate suites, fake-ID assertions, and
 stale source-adjacent artifact markdown are not merge-ready outcomes.
+
+For implementation-lane artifact guidance, the generator should rewrite the
+goal and prompt context to name the exact lane-scoped artifact paths under the
+unit output root and explicitly forbid writing durable artifacts to repo-root
+fallback paths unless the lane really owns those files.
 
 ## Key Discoveries
 
@@ -150,6 +168,14 @@ test artifacts after coverage had moved elsewhere, and the house-session count
 test could pass without proving real decrement behavior. Those are exactly the
 sorts of outcomes the existing verify and review stages are too permissive
 about for test-coverage lanes.
+
+The fresh `fresh5` run proved the new quality gate is live: the
+`test-coverage-house-protocol-tests` lane reached `quality` and executed the
+generated duplicate-test/source-artifact checks successfully. That same replay
+also showed the remaining prompt mismatch clearly: fresh implementation lanes
+were still touching root `spec.md` and `review.md` because the workflow goal
+was instructing them to do so, even though the real durable artifacts lived
+under `outputs/<lane>/...`.
 
 These are all the same class of bug: a deterministic gate or classifier using
 the wrong source of truth. One gate looked for an artifact nobody owned,
