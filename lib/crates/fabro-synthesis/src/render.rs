@@ -1960,7 +1960,7 @@ fn render_workflow_graph(
             };
             let fallback_attr = profile_fallback_retry_target(profile);
             let contract_prompt = escape_graph_attr(&contract_prompt_for_lane(lane));
-            let contract_check = escape_graph_attr(contract_gate_command());
+            let contract_check = escape_graph_attr(&contract_gate_command(lane));
 
             format!(
             "digraph {} {{\n    graph [\n        goal=\"{}\",{}\n        model_stylesheet=\"\n            *            {{ backend: cli; }}\n            #challenge   {{ backend: cli; model: {}; provider: {}; }}\n            #review      {{ backend: cli; model: {}; provider: {}; }}\n            #deep_review {{ backend: cli; model: {}; provider: {}; }}\n            #escalation  {{ backend: cli; model: {}; provider: {}; }}\n        \"\n    ]\n    rankdir=LR\n\n    start [shape=Mdiamond, label=\"Start\"]\n    exit  [shape=Msquare, label=\"Exit\"]\n\n    preflight [label=\"Preflight\", shape=parallelogram, script=\"{}\", max_retries=0]\n    contract [label=\"Contract\", prompt=\"{}\", reasoning_effort=\"medium\", max_retries=2]\n    contract_check [label=\"Contract Check\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"contract\", max_retries=0]\n    implement [label=\"Implement\", prompt=\"{}\", reasoning_effort=\"high\"]\n    verify [label=\"Verify\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n{}    quality [label=\"Quality Gate\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\"]\n    fixup [label=\"Fixup\", prompt=\"{}\", reasoning_effort=\"high\", max_visits={}]\n    challenge [label=\"Challenge\", prompt=\"{}\", reasoning_effort=\"medium\"]\n    review [label=\"Review\", prompt=\"{}\", reasoning_effort=\"high\"]\n    audit [label=\"Audit Artifacts\", shape=parallelogram, script=\"{}\", goal_gate=true, retry_target=\"fixup\", max_retries=0]\n{}\n    start -> preflight -> contract -> contract_check -> implement -> verify\n{}    verify -> fixup\n    quality -> challenge [condition=\"outcome=success\"]\n    quality -> fixup\n    challenge -> review [condition=\"outcome=success\"]\n    challenge -> fixup\n{}{}    review -> fixup\n    audit -> exit [condition=\"outcome=success\"]\n    audit -> fixup\n    fixup -> verify\n}}\n",
@@ -2134,14 +2134,33 @@ List what this lane will NOT implement.\n\n",
         }
         prompt.push('\n');
     }
+    if extract_owned_surfaces(&lane.goal)
+        .iter()
+        .any(|surface| surface_is_exact_file(surface))
+    {
+        prompt.push_str(
+            "If an owned surface names an exact source file, edit that file directly. Do not create a sibling replacement file in the same directory unless the lane explicitly names it.\n\n",
+        );
+    }
     prompt.push_str(
         "Do NOT write any source code in this stage. Do NOT create new docs, broad cleanup tasks, or unrelated package edits unless the lane explicitly requires them. Finish by writing the contract only.\n",
     );
     prompt
 }
 
-fn contract_gate_command() -> &'static str {
-    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md"
+fn contract_gate_command(lane: &BlueprintLane) -> String {
+    let mut command = "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md".to_string();
+    let owned_surfaces = extract_owned_surfaces(&lane.goal);
+    let allowed_patterns = owned_surface_source_patterns(&owned_surfaces);
+    if allowed_patterns.is_empty() {
+        return command;
+    }
+    let allowed_pattern = allowed_patterns.join("|");
+    command.push_str(" && ");
+    command.push_str(&format!(
+        "violations=\"$(sed -n '/^## Deliverables/,/^## /p' .fabro-work/contract.md | grep '^- ' | sed 's/^- //' | tr -d '` ' | grep -E '\\.(rs|ts|tsx|js|py|go|sol|rb)$' | grep -Ev '{allowed_pattern}' || true)\"; if [ -n \"$violations\" ]; then echo 'CONTRACT SCOPE VIOLATION:'; echo \"$violations\"; exit 1; fi"
+    ));
+    command
 }
 
 fn profile_max_visits(profile: &str) -> u32 {
@@ -5113,66 +5132,7 @@ fn implementation_audit_command(
     let surface_guard = if owned_surfaces.is_empty() {
         String::new()
     } else {
-        // Build allowed path prefixes from owned surfaces (use parent dirs for .rs files).
-        // Escape regex metacharacters so surface paths are matched literally.
-        let escape_grep = |s: &str| -> String {
-            s.chars()
-                .map(|c| match c {
-                    '.' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '*' | '?' | '^' | '$'
-                    | '\\' => {
-                        format!("\\{c}")
-                    }
-                    _ => c.to_string(),
-                })
-                .collect()
-        };
-        let mut allowed: Vec<String> = owned_surfaces
-            .iter()
-            .map(|s| {
-                let esc = escape_grep(s);
-                if s.contains('.') {
-                    let parent = std::path::Path::new(s)
-                        .parent()
-                        .map(|p| escape_grep(&p.display().to_string()))
-                        .unwrap_or_default();
-                    format!("{esc}|{parent}/")
-                } else {
-                    format!("{esc}/|{esc}")
-                }
-            })
-            .collect();
-        // When all owned surfaces share the same crate root (e.g. all are under
-        // crates/rxmr-wallet/), also add the crate root so that sibling directories
-        // like tests/ are not incorrectly flagged as surface violations.
-        if !owned_surfaces.is_empty() {
-            let owned_paths: Vec<_> = owned_surfaces
-                .iter()
-                .map(|s| std::path::Path::new(s))
-                .collect();
-            // Compute component-wise common prefix.
-            let first_components: Vec<_> = owned_paths[0].components().collect();
-            let mut common_components = first_components.len();
-            for path in &owned_paths[1..] {
-                let components: Vec<_> = path.components().collect();
-                common_components = common_components.min(components.len()).min(
-                    first_components[..common_components]
-                        .iter()
-                        .zip(&components[..common_components])
-                        .take_while(|(a, b)| a == b)
-                        .count(),
-                );
-            }
-            // Add the crate root if the common prefix is at least 2 components
-            // and all owned surfaces have the same first 2 components.
-            if common_components >= 2 {
-                let crate_root: std::path::PathBuf = first_components[..2]
-                    .iter()
-                    .map(|c| c.as_os_str())
-                    .collect();
-                let crate_root_str = escape_grep(&crate_root.display().to_string());
-                allowed.push(format!("^{crate_root_str}"));
-            }
-        }
+        let mut allowed = owned_surface_source_patterns(&owned_surfaces);
         // Always allow output artifacts, lane local files, and malinka (these are safe literal patterns)
         allowed.push("outputs/".to_string());
         allowed.push("\\.fabro-work/".to_string());
@@ -5285,6 +5245,88 @@ fn extract_owned_surfaces(goal: &str) -> Vec<String> {
         }
     }
     surfaces
+}
+
+fn regex_escape_literal(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '.' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '*' | '?' | '^' | '$' | '\\' | '|' => {
+                format!("\\{c}")
+            }
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
+fn surface_is_exact_file(surface: &str) -> bool {
+    std::path::Path::new(surface).extension().is_some()
+}
+
+fn owned_surface_source_patterns(owned_surfaces: &[String]) -> Vec<String> {
+    let mut patterns = Vec::new();
+    for surface in owned_surfaces {
+        let normalized = surface.trim_end_matches('/');
+        let escaped = regex_escape_literal(normalized);
+        if surface_is_exact_file(normalized) {
+            patterns.push(format!("^{escaped}$"));
+            let path = std::path::Path::new(normalized);
+            if let Some(parent) = path.parent().and_then(|parent| {
+                let rendered = parent.display().to_string();
+                (!rendered.is_empty()).then_some(rendered)
+            }) {
+                let parent = regex_escape_literal(&parent);
+                patterns.push(format!("^{parent}/mod\\.rs$"));
+            }
+            let extension = path.extension().and_then(|extension| extension.to_str());
+            if extension == Some("rs") {
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("");
+                if !stem.is_empty() && !stem.ends_with("_tests") {
+                    let sibling = match path.parent() {
+                        Some(parent) if !parent.as_os_str().is_empty() => {
+                            format!("{}/{}_tests.rs", parent.display(), stem)
+                        }
+                        _ => format!("{stem}_tests.rs"),
+                    };
+                    patterns.push(format!("^{}$", regex_escape_literal(&sibling)));
+                }
+            }
+            // Allow all files in a `tests/` or `benches/` sibling directory of `src/`.
+            // These directories are siblings of `src/` in Rust crate layouts and are
+            // commonly used for integration tests and benchmarks.
+            let components: Vec<_> = path.components().collect();
+            for (i, comp) in components.iter().enumerate() {
+                let comp_str = comp.as_os_str().to_string_lossy();
+                if comp_str == "tests" || comp_str == "benches" {
+                    // Generate a pattern for the parent directory so all files under
+                    // `tests/` or `benches/` are allowed without listing each one.
+                    // Pattern: ^<parent>/(tests|benches)/($|/.*)  matches the directory
+                    // itself or any path within it.
+                    let parent_dir: String = components[..i].iter()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    if !parent_dir.is_empty() {
+                        let pat = format!(
+                            "^{}/{}/($|/.*)$",
+                            regex_escape_literal(&parent_dir),
+                            regex_escape_literal(&comp_str)
+                        );
+                        patterns.push(pat);
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        patterns.push(format!("^{}(/|$)", escaped));
+    }
+    patterns.sort();
+    patterns.dedup();
+    patterns
 }
 
 fn lane_review_artifact_path(
@@ -9410,6 +9452,117 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
 
         assert!(command.contains("FABRO_BASE_SHA"));
         assert!(command.contains("git merge-base HEAD origin/main"));
+    }
+
+    #[test]
+    fn contract_gate_command_enforces_exact_file_owned_surfaces() {
+        let lane = BlueprintLane {
+            id: "demo".to_string(),
+            kind: raspberry_supervisor::manifest::LaneKind::Platform,
+            title: "Demo".to_string(),
+            family: "implement".to_string(),
+            workflow_family: Some("implementation".to_string()),
+            slug: Some("demo".to_string()),
+            template: WorkflowTemplate::Implementation,
+            goal: "Owned surfaces:\n- `src/demo.rs`".to_string(),
+            managed_milestone: "merge_ready".to_string(),
+            dependencies: Vec::new(),
+            produces: Vec::new(),
+            proof_profile: None,
+            proof_state_path: None,
+            program_manifest: None,
+            service_state_path: None,
+            orchestration_state_path: None,
+            checks: Vec::new(),
+            run_dir: None,
+            prompt_context: None,
+            verify_command: None,
+            health_command: None,
+        };
+
+        let command = super::contract_gate_command(&lane);
+
+        assert!(command.contains("CONTRACT SCOPE VIOLATION"));
+        assert!(command.contains("^src/demo\\.rs$"));
+        assert!(command.contains("^src/mod\\.rs$"));
+        assert!(command.contains("^src/demo_tests\\.rs$"));
+        assert!(!command.contains("^src/(/|$)"));
+    }
+
+    #[test]
+    fn implementation_audit_command_does_not_widen_exact_file_to_parent_directory() {
+        let blueprint = ProgramBlueprint {
+            version: 1,
+            program: BlueprintProgram {
+                id: "demo".to_string(),
+                max_parallel: 1,
+                state_path: None,
+                run_dir: None,
+            },
+            inputs: BlueprintInputs::default(),
+            package: BlueprintPackage::default(),
+            protocols: vec![],
+            units: vec![BlueprintUnit {
+                id: "demo".to_string(),
+                title: "Demo".to_string(),
+                output_root: PathBuf::from("outputs/demo"),
+                artifacts: vec![
+                    BlueprintArtifact {
+                        id: "implementation".to_string(),
+                        path: PathBuf::from("implementation.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "verification".to_string(),
+                        path: PathBuf::from("verification.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "quality".to_string(),
+                        path: PathBuf::from("quality.md"),
+                    },
+                    BlueprintArtifact {
+                        id: "promotion".to_string(),
+                        path: PathBuf::from("promotion.md"),
+                    },
+                ],
+                milestones: Vec::new(),
+                lanes: vec![BlueprintLane {
+                    id: "demo".to_string(),
+                    kind: raspberry_supervisor::manifest::LaneKind::Platform,
+                    title: "Demo".to_string(),
+                    family: "implement".to_string(),
+                    workflow_family: Some("implementation".to_string()),
+                    slug: Some("demo".to_string()),
+                    template: WorkflowTemplate::Implementation,
+                    goal: "Owned surfaces:\n- `src/demo.rs`".to_string(),
+                    managed_milestone: "merge_ready".to_string(),
+                    dependencies: Vec::new(),
+                    produces: vec![
+                        "implementation".to_string(),
+                        "verification".to_string(),
+                        "quality".to_string(),
+                        "promotion".to_string(),
+                    ],
+                    proof_profile: Some("integration".to_string()),
+                    proof_state_path: None,
+                    program_manifest: None,
+                    service_state_path: None,
+                    orchestration_state_path: None,
+                    checks: Vec::new(),
+                    run_dir: None,
+                    prompt_context: None,
+                    verify_command: Some("cargo test -p demo".to_string()),
+                    health_command: None,
+                }],
+            }],
+        };
+        let lane = &blueprint.units[0].lanes[0];
+
+        let command = implementation_audit_command(&blueprint, "demo", lane, "true");
+
+        assert!(command.contains("^src/demo\\.rs$"));
+        assert!(command.contains("^src/mod\\.rs$"));
+        assert!(command.contains("^src/demo_tests\\.rs$"));
+        assert!(!command.contains("^src/(/|$)"));
     }
 
     #[test]

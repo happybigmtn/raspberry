@@ -774,6 +774,30 @@ fn checkpoint_error_disables_git_mode(error: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+const HOST_PUSH_TIMEOUT_SECS: u64 = 180;
+const HOST_PUSH_MAX_ATTEMPTS: u32 = 3;
+
+fn host_push_error_is_retryable(error: &crate::git::BlockingPushError) -> bool {
+    match error {
+        crate::git::BlockingPushError::TimedOut => true,
+        crate::git::BlockingPushError::Push(push_error) => {
+            let detail = push_error.to_string().to_ascii_lowercase();
+            [
+                "timed out",
+                "connection reset",
+                "broken pipe",
+                "remote end hung up unexpectedly",
+                "connection closed by remote host",
+                "connection closed",
+                "operation timed out",
+            ]
+            .iter()
+            .any(|needle| detail.contains(needle))
+        }
+        crate::git::BlockingPushError::Panicked(_) => false,
+    }
+}
+
 /// Push a refspec from the host repo to origin (best-effort).
 ///
 /// Authenticates via a GitHub App installation token so we don't depend
@@ -794,20 +818,46 @@ async fn git_push_host_result(
 
     let rp = repo_path.to_path_buf();
     let refspec_owned = refspec.to_string();
-    let result = crate::git::blocking_push_with_timeout(60, move || {
-        crate::git::push_ref(&rp, &push_url, &refspec_owned)
-    })
-    .await;
-    match result {
-        Ok(()) => {
-            tracing::info!(label, "Pushed to origin");
-            Ok(())
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, label, "Failed to push");
-            Err(e.to_string())
+    let mut last_error = None;
+    for attempt in 1..=HOST_PUSH_MAX_ATTEMPTS {
+        let repo_path = rp.clone();
+        let push_url = push_url.clone();
+        let refspec = refspec_owned.clone();
+        let result = crate::git::blocking_push_with_timeout(HOST_PUSH_TIMEOUT_SECS, move || {
+            crate::git::push_ref(&repo_path, &push_url, &refspec)
+        })
+        .await;
+        match result {
+            Ok(()) => {
+                tracing::info!(
+                    attempt,
+                    max_attempts = HOST_PUSH_MAX_ATTEMPTS,
+                    label,
+                    "Pushed to origin"
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let retryable =
+                    attempt < HOST_PUSH_MAX_ATTEMPTS && host_push_error_is_retryable(&error);
+                tracing::warn!(
+                    attempt,
+                    max_attempts = HOST_PUSH_MAX_ATTEMPTS,
+                    retryable,
+                    error = %error,
+                    label,
+                    "Failed to push"
+                );
+                last_error = Some(error.to_string());
+                if !retryable {
+                    break;
+                }
+                let delay_secs = 1_u64 << (attempt - 1);
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            }
         }
     }
+    Err(last_error.unwrap_or_else(|| "git push failed".to_string()))
 }
 
 pub async fn git_push_host(
@@ -2683,6 +2733,30 @@ mod tests {
         assert_eq!(config.delay_for_attempt(1).as_millis(), 500);
         assert_eq!(config.delay_for_attempt(2).as_millis(), 500);
         assert_eq!(config.delay_for_attempt(3).as_millis(), 500);
+    }
+
+    #[test]
+    fn host_push_error_timeout_is_retryable() {
+        assert!(host_push_error_is_retryable(
+            &crate::git::BlockingPushError::TimedOut
+        ));
+    }
+
+    #[test]
+    fn host_push_error_broken_pipe_is_retryable() {
+        let error = FabroError::engine("git push failed: Broken pipe".to_string());
+        assert!(host_push_error_is_retryable(
+            &crate::git::BlockingPushError::Push(error)
+        ));
+    }
+
+    #[test]
+    fn host_push_error_permission_denied_is_not_retryable() {
+        let error =
+            FabroError::engine("git push failed: Permission denied (publickey).".to_string());
+        assert!(!host_push_error_is_retryable(
+            &crate::git::BlockingPushError::Push(error)
+        ));
     }
 
     // --- RetryPolicy preset tests ---

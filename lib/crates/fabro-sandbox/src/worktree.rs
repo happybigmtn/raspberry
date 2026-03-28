@@ -88,6 +88,13 @@ impl WorktreeSandbox {
             format!("{}/{path}", self.config.worktree_path)
         }
     }
+
+    async fn exec_best_effort(&self, command: &str) {
+        let _ = self
+            .inner
+            .exec_command(command, 30_000, None, None, None)
+            .await;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +125,11 @@ impl Sandbox for WorktreeSandbox {
         // Best-effort remove any stale worktree registration + directory first,
         // so that the branch is not "in use" when we try to force-update it.
         let rm_cmd = format!("{GIT} worktree remove --force {path}");
-        let _ = self
-            .inner
-            .exec_command(&rm_cmd, 30_000, None, None, None)
-            .await;
+        self.exec_best_effort(&rm_cmd).await;
+        let prune_cmd = format!("{GIT} worktree prune");
+        self.exec_best_effort(&prune_cmd).await;
+        let wipe_cmd = format!("rm -rf {path}");
+        self.exec_best_effort(&wipe_cmd).await;
 
         if !self.config.skip_branch_creation {
             let cmd = format!("{GIT} branch --force {branch} {sha}");
@@ -142,7 +150,7 @@ impl Sandbox for WorktreeSandbox {
             });
         }
 
-        let add_cmd = format!("{GIT} worktree add {path} {branch}");
+        let add_cmd = format!("{GIT} worktree add --force {path} {branch}");
         let result = self
             .inner
             .exec_command(&add_cmd, 30_000, None, None, None)
@@ -377,15 +385,21 @@ mod tests {
         wt.initialize().await.unwrap();
 
         let cmds = mock.captured_commands.lock().unwrap().clone();
-        // worktree remove (best-effort), branch --force, worktree add
-        assert_eq!(cmds.len(), 3, "expected 3 git commands, got: {cmds:?}");
+        // worktree remove, prune, wipe stale dir, branch --force, worktree add --force
+        assert_eq!(cmds.len(), 5, "expected 5 git commands, got: {cmds:?}");
         assert!(
             cmds[0].contains("worktree remove --force"),
             "cmd[0]: {}",
             cmds[0]
         );
-        assert!(cmds[1].contains("branch --force"), "cmd[1]: {}", cmds[1]);
-        assert!(cmds[2].contains("worktree add"), "cmd[2]: {}", cmds[2]);
+        assert!(cmds[1].contains("worktree prune"), "cmd[1]: {}", cmds[1]);
+        assert!(cmds[2].contains("rm -rf"), "cmd[2]: {}", cmds[2]);
+        assert!(cmds[3].contains("branch --force"), "cmd[3]: {}", cmds[3]);
+        assert!(
+            cmds[4].contains("worktree add --force"),
+            "cmd[4]: {}",
+            cmds[4]
+        );
     }
 
     #[tokio::test]
@@ -444,14 +458,20 @@ mod tests {
         wt.initialize().await.unwrap();
 
         let cmds = mock.captured_commands.lock().unwrap().clone();
-        // Only worktree remove (best-effort) and worktree add
-        assert_eq!(cmds.len(), 2, "expected 2 git commands, got: {cmds:?}");
+        // Only worktree remove, prune, wipe stale dir, and worktree add
+        assert_eq!(cmds.len(), 4, "expected 4 git commands, got: {cmds:?}");
         assert!(
             cmds[0].contains("worktree remove --force"),
             "cmd[0]: {}",
             cmds[0]
         );
-        assert!(cmds[1].contains("worktree add"), "cmd[1]: {}", cmds[1]);
+        assert!(cmds[1].contains("worktree prune"), "cmd[1]: {}", cmds[1]);
+        assert!(cmds[2].contains("rm -rf"), "cmd[2]: {}", cmds[2]);
+        assert!(
+            cmds[3].contains("worktree add --force"),
+            "cmd[3]: {}",
+            cmds[3]
+        );
     }
 
     #[tokio::test]
