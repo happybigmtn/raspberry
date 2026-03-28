@@ -1531,7 +1531,7 @@ fn extract_master_plan_numbers(text: &str) -> Vec<usize> {
 }
 
 fn derive_child_intents(
-    target_repo: &Path,
+    _target_repo: &Path,
     parent_dependency: Option<&LaneDependency>,
     plan: &PlanRecord,
     corpus: &PlanningCorpus,
@@ -1561,7 +1561,7 @@ fn derive_child_intents(
             };
             let health_command = if matches!(child.archetype, Some(WorkflowArchetype::Implement)) {
                 if kind == LaneKind::Service {
-                    explicit_health_command(target_repo).or_else(|| Some("true".to_string()))
+                    None
                 } else {
                     Some("true".to_string())
                 }
@@ -3105,7 +3105,7 @@ fn implementation_contract_for_kind(kind: LaneKind, target_repo: &Path) -> Contr
             "promotion".to_string(),
             "integration".to_string(),
         ],
-        explicit_health_command(target_repo),
+        None,
         proof_command,
     )
 }
@@ -4332,12 +4332,17 @@ units:
             .expect("client child");
 
         assert_eq!(house.lanes[0].kind, LaneKind::Service);
-        assert_eq!(
-            house.lanes[0].health_command.as_deref(),
-            Some("cargo test -- --nocapture health")
-        );
+        assert!(house.lanes[0].health_command.is_none());
         assert_eq!(client.lanes[0].kind, LaneKind::Interface);
         assert_eq!(client.lanes[0].proof_profile.as_deref(), Some("ux"));
+    }
+
+    #[test]
+    fn create_authoring_leaves_service_lanes_without_implicit_health_command() {
+        let (_kind, _artifacts, _milestones, _produces, health_command, _verify_command) =
+            implementation_contract_for_kind(LaneKind::Service, Path::new("."));
+
+        assert!(health_command.is_none());
     }
 
     #[test]

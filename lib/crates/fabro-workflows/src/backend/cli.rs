@@ -204,7 +204,7 @@ fn stage_system_prompt(node_id: &str) -> Option<&'static str> {
             "You are executing a REPORT/PLAN stage of an automated pipeline. Read the prompt carefully, inspect the relevant repo surfaces, and produce the lane-scoped durable artifacts exactly at the paths named in the prompt context. Keep ephemeral workflow notes under `.fabro-work/` only when the prompt asks for them. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. If evidence is missing, say so plainly instead of inventing work or rewriting unrelated files."
         ),
         "fixup" => Some(
-            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. Your #2 priority: keep the lane-scoped durable artifacts truthful and complete while keeping ephemeral workflow files under `.fabro-work/`. Never create or rely on repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, IGNORE them and focus on your owned files only. Do not delete, modify, or rewrite files outside your scope."
+            "You are executing the FIXUP stage after the verify gate failed. Read the failure output from prior stages to understand what went wrong. Your #1 priority: make the proof commands pass. Your #2 priority: keep the lane-scoped durable artifacts truthful and complete while keeping ephemeral workflow files under `.fabro-work/`. Never create or rely on repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path. SURFACE OWNERSHIP: you may ONLY modify files listed under Owned surfaces. If failures are from code outside your surfaces, do not broaden scope unless the prompt explicitly says this lane may unblock an external blocker. Otherwise record the blocker truthfully and stay within your owned files. Do not delete, modify, or rewrite files outside your scope."
         ),
         "polish" => Some(
             "You are executing a DURABLE-ARTIFACT POLISH stage. Improve the clarity and completeness of the lane-scoped durable artifacts named in the prompt context, but do not invent unrelated code changes. Write only to the exact artifact paths named in the prompt context. Never create repo-root `spec.md`, `review.md`, `verification.md`, `quality.md`, or `promotion.md` unless the prompt explicitly names that exact path."
@@ -2950,10 +2950,8 @@ mod tests {
         )
         .expect("slot lock written");
 
-        let summary = prune_stale_cli_runtime_with_home(
-            home.path(),
-            std::time::Duration::from_secs(0),
-        );
+        let summary =
+            prune_stale_cli_runtime_with_home(home.path(), std::time::Duration::from_secs(0));
 
         assert_eq!(summary.scratch_dirs_removed, 1);
         assert_eq!(summary.stale_locks_removed, 2);
