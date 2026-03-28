@@ -48,6 +48,15 @@ lane-scoped files under `outputs/<lane>/...`. That contradiction was enough to
 steer healthy runs back toward editing repo-root docs even after the quality
 gate stopped treating every root artifact as an automatic failure.
 
+The first `fresh6` replay exposed a seventh, more subtle contract-stage leak.
+The contract prompt correctly said "write `.fabro-work/contract.md` only", but
+the deterministic `contract_check` gate only verified that the ignored
+`.fabro-work` directory was clean apart from `contract.md` and that the
+post-checkpoint worktree had no unstaged changes. That let the contract-stage
+checkpoint commit carry tracked `outputs/<lane>/*.md` changes without being
+rejected, so contract agents could still author durable lane artifacts too
+early.
+
 ## Operating Theory
 
 Autodev only makes trustworthy progress when each gate and each milestone
@@ -72,6 +81,12 @@ only then fall back to the repo root commit if no branch ref exists.
 For ignored stage-local artifacts like `.fabro-work/contract.md`, the gate
 cannot rely on git history at all. It has to inspect the filesystem directly
 and separately confirm that the rest of the repo remains clean.
+
+But the filesystem-only check is still not enough by itself. Because the
+contract checkpoint creates a git commit immediately before `contract_check`,
+the gate also has to verify that the latest tracked commit delta is empty.
+Otherwise early `outputs/<lane>/...` artifact generation can be hidden inside
+the contract checkpoint commit while the workspace still appears clean.
 
 For milestone classification, a green run is not enough by itself, but a green
 run plus the required artifact files in that run's worktree is enough to prove
@@ -109,8 +124,10 @@ deliberately ahead of origin.
 
 For `contract_check`, the generator should require the expected section headers,
 assert that `.fabro-work` contains only `contract.md`, and assert that
-`git status --porcelain` is otherwise empty. That matches the actual contract
-stage contract: one ignored file, no product edits yet.
+`git status --porcelain` is otherwise empty. It also needs to assert that the
+latest tracked commit delta is empty, which matches the actual contract stage
+contract: one ignored file, no product edits yet, and no early durable
+artifacts.
 
 For Raspberry evaluation, unit artifact presence should remain rooted in the
 controller checkout first, but it should be augmented with lane artifacts found
@@ -177,12 +194,21 @@ were still touching root `spec.md` and `review.md` because the workflow goal
 was instructing them to do so, even though the real durable artifacts lived
 under `outputs/<lane>/...`.
 
+The first `fresh6` run proved the scoped artifact rewrite was partially right
+but not complete. Fresh contract stages stopped logging repo-root artifact
+writes and instead wrote lane-scoped `outputs/<lane>/...` files, which is
+better, but that work was still happening during `contract`. The old
+`contract_check` passed because it only looked for a clean post-commit
+workspace, not for tracked changes carried by the contract checkpoint commit.
+
 These are all the same class of bug: a deterministic gate or classifier using
 the wrong source of truth. One gate looked for an artifact nobody owned,
 another looked at a diff base that belonged to controller operations rather
 than the lane, another trusted git for an ignored file, and the evaluator
 trusted only controller-local artifacts even though the fresh proof lived in
-the successful run worktree.
+the successful run worktree. The latest replay extends that pattern: a
+contract-stage gate trusted the live filesystem but ignored the tracked diff
+that had just been committed.
 
 ## Open Questions
 

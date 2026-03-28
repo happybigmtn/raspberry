@@ -2227,7 +2227,7 @@ fn rewrite_required_durable_artifacts_block(goal: &str, artifact_paths: &[PathBu
 }
 
 fn contract_gate_command() -> &'static str {
-    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md && extras=\"$(find .fabro-work -mindepth 1 ! -path '.fabro-work/contract.md' -print)\" && test -z \"$extras\" && workspace_changes=\"$(git status --porcelain --untracked-files=all 2>/dev/null || true)\" && test -z \"$workspace_changes\""
+    "test -f .fabro-work/contract.md && grep -q '^## Deliverables' .fabro-work/contract.md && grep -q '^## Acceptance Criteria' .fabro-work/contract.md && grep -q '^## Out of Scope' .fabro-work/contract.md && extras=\"$(find .fabro-work -mindepth 1 ! -path '.fabro-work/contract.md' -print)\" && test -z \"$extras\" && contract_tracked_changes=\"$(git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)\" && test -z \"$contract_tracked_changes\" && workspace_changes=\"$(git status --porcelain --untracked-files=all 2>/dev/null || true)\" && test -z \"$workspace_changes\""
 }
 
 fn lane_diff_base_expr() -> &'static str {
@@ -8920,6 +8920,9 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
         assert!(gate.contains("find .fabro-work -mindepth 1"));
         assert!(gate.contains("! -path '.fabro-work/contract.md'"));
         assert!(gate.contains("extras="));
+        assert!(gate.contains("git diff-tree --no-commit-id --name-only -r HEAD"));
+        assert!(gate.contains("contract_tracked_changes="));
+        assert!(gate.contains("test -z \"$contract_tracked_changes\""));
         assert!(gate.contains("git status --porcelain --untracked-files=all"));
         assert!(gate.contains("workspace_changes="));
         assert!(gate.contains("test -z \"$workspace_changes\""));
