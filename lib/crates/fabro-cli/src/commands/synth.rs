@@ -541,18 +541,139 @@ fn build_genesis_prompt(target_repo: &std::path::Path) -> String {
 
 Run this as a full sprint: Think → Plan → Build → Review → Verify. Each phase feeds the next. Write all output files using the Write tool, never to stdout.
 
-# Phase 1: THINK (Office Hours)
+# Phase 1: THINK (Deep Codebase Review)
 
-Explore the codebase thoroughly. Spawn an agent team to read in parallel:
-- Build files: Cargo.toml / package.json / pyproject.toml / go.mod
-- Source structure: src/, lib/, app/ — module boundaries, public API surface
-- Existing docs: README, SPEC.md, SPECS.md
-- **Existing plans**: Read EVERY file in `plans/` and `specs/` directories. These are the team's current plans — your job is to assess, challenge, and enhance them, not start from scratch. Note which plans are strong, which are weak, which are missing, and which contradict each other.
-- Git history: recent 50 commits — who's active, what's changing, what's abandoned
-- Test coverage: test directories, CI config, what's tested vs. untested
-- Dependency graph: what does this project depend on, what depends on it
+You MUST perform a deep review of the actual source code, not just documentation and plans. Reading plans without reading the code they describe leads to an assessment anchored on claims rather than reality. Your job is to verify what actually exists.
 
-Then answer these six forcing questions (write answers to `genesis/ASSESSMENT.md`):
+## 1a. Source Code Review (MANDATORY — do this FIRST)
+
+Spawn a parallel agent team to conduct a deep codebase review. Each agent applies a specific review methodology non-interactively (no user questions — just findings). Each agent should read actual source files, produce structured findings, and report back.
+
+**Agent 1: Engineering Review (Eng Manager lens)**
+Apply the plan-eng-review methodology to the entire codebase:
+- Read the main entry points: processor, instruction dispatch, state definitions, binary entry points
+- Map the architecture: draw the component dependency graph, data flows (all four paths: happy, nil, empty, error)
+- For each major codepath, produce a failure mode entry: `CODEPATH | FAILURE MODE | HANDLED? | TEST? | USER SEES | LOGGED?` — any row with HANDLED=N + TEST=N + USER SEES=Silent = CRITICAL GAP
+- Produce an error & rescue map: for every module that can fail, what exceptions exist, are they rescued, what does the user see?
+- Look for: unwrap() calls, unsafe blocks, TODO/FIXME, dead code, DRY violations, cyclomatic complexity >5
+- Assess coupling: which components are tightly coupled? Which boundaries are clean?
+- Performance: N+1 queries, unbounded collections, missing indexes, connection pool pressure
+- Observability: are codepaths logged? Can you reconstruct a bug from logs alone?
+- Deployment: migration safety, rollback posture, feature flags, what breaks when old+new code run simultaneously?
+
+**Agent 2: Security & Trust Boundary Review (Staff Engineer lens)**
+Apply the /review security methodology to the entire codebase:
+- For every API route and endpoint: who can call it, what auth is required, what data can they access?
+- Trace trust boundaries end-to-end: where does user input enter, how is it validated, where could it escape?
+- Check for: hardcoded secrets, missing auth checks, privilege escalation, replay attacks
+- Check for: injection (SQL, command, template, prompt), XSS, CSRF, timing attacks in financial logic
+- Read deployment scripts: plain-text credentials, root-privilege services, SSH key management, upgrade authority
+- For each finding: threat, likelihood (H/M/L), impact (H/M/L), mitigated?
+
+**Agent 3: Frontend & Design Review (Designer lens)**
+Apply the plan-design-review methodology to existing UI surfaces:
+- Read the app router / page structure and identify all user-facing routes
+- Read 5-10 key hooks and components that drive core functionality
+- Rate each dimension 0-10: information architecture, interaction state coverage (loading/empty/error/success/partial for every feature), user journey coherence, AI slop risk, responsive intent, accessibility
+- Produce an interaction state coverage table: `FEATURE | LOADING | EMPTY | ERROR | SUCCESS | PARTIAL` — flag missing states
+- Check AI slop: generic card grids? Hero sections? "Clean modern UI"? Dashboard widgets that look like every SaaS template?
+- If DESIGN.md exists, check whether implementation follows it — flag drift
+- Check accessibility: keyboard nav, screen reader support, contrast, 44px+ touch targets
+
+**Agent 4: Test & CI Coverage Review (QA Engineer lens)**
+Apply QA-level rigor to the test infrastructure:
+- Read CI configuration and every test command in package.json / Cargo.toml
+- Read 3-5 test files per major component to assess test QUALITY (not just count)
+- For each major feature claimed in docs, check: does a test actually verify this behavior?
+- Produce a test coverage map: `FEATURE | UNIT? | INTEGRATION? | E2E? | EDGE CASES?`
+- Look for: mocked-everything tests, tests that can't fail, green-on-failure patterns
+- Check for chaos/failure tests: what happens when external services fail? Network errors? Timeouts?
+- Verify CI pipeline: does it run all tests? Any disabled/skipped suites? Flaky test patterns?
+
+**Agent 5: CEO Review — Ops, Evidence & Strategic Context**
+Apply the plan-ceo-review methodology to the operational surface:
+- Read git log for last 100 commits — identify patterns, who's active, what's changing
+- Read all doctrine files: GOAL.md, AGENTS.md, README.md, DEPLOYMENT.md, INVARIANTS.md, DESIGN.md, CLAUDE.md
+- Read EVERY file in `plans/` and `specs/` — for each plan with completed milestones [x], those represent WORK ALREADY DONE
+- Read EVERY file in `genesis/` if it exists — understand what was planned AND executed in prior genesis runs
+- If proof/evidence artifacts exist (bundles, reports, drill results), read them
+- Read deployment and ops scripts, systemd units, Docker config — understand operational topology
+- Apply premise challenge: is this the right product? What would happen if it did nothing for 6 months?
+- Apply dream state mapping: what does the ideal state look like in 12 months?
+- Apply inversion reflex: what would make this project fail?
+- Produce an implementation status table: for each previously claimed capability, verify against code reality using "verified" / "partially verified" / "stub only" / "not found"
+
+## 1b. Documentation and Plans Review
+
+- Read ALL doctrine files: README, GOAL.md, AGENTS.md, SPEC.md, INVARIANTS.md, DESIGN.md, CLAUDE.md
+- Read EVERY file in `plans/` and `specs/` directories
+- Read EVERY file in `genesis/` if it exists (this may be a previous genesis run — understand what was planned AND what was executed)
+- For each plan: check its Progress section for completed `[x]` milestones. Plans with completed milestones represent WORK ALREADY DONE, not just intentions.
+
+## 1c. Git Metrics & Runtime Evidence (Retro lens)
+
+Extract structured metrics from git history the way an engineering retro would:
+
+- Run `git log --oneline -100` and `git shortlog -sn --since="3 months ago"` — produce a contributor breakdown: who committed, how many, what areas
+- Identify commit patterns: fix-to-feature ratio (`git log --oneline | grep -ci "fix"` vs total), test ratio (commits touching test files vs total), agent vs human commits
+- Detect hotspot files: `git log --format=format: --name-only -100 | sort | uniq -c | sort -rn | head -20` — which files change most often? Hotspots are where bugs live.
+- Detect shipping velocity: commits per week over the last month, any stalls or bursts
+- Check for operational evidence: proof artifacts, deployment logs, health check results, drill outputs
+- Check for environment files (.env.example, .env.local patterns) to understand deployment topology
+- Produce a metrics summary for the assessment:
+```
+METRIC                    | VALUE
+Commits (90 days)         | N
+Contributors              | N (list)
+Fix ratio                 | N% (fixes / total)
+Test ratio                | N% (test-touching / total)
+Agent commits             | N%
+Hotspot files             | top 5
+Shipping velocity         | commits/week trend
+```
+
+## 1d. Cross-Reference Claims Against Code
+
+This is the critical step most assessments skip. For each major claim in the docs:
+- If GOAL.md says "zero-edge" → read the actual rebate/dividend code and verify
+- If a plan says "settlement proven" → read the settlement tests and check they pass meaningful assertions
+- If docs say "gasless betting works" → read the gasless API route and verify the flow end-to-end in code
+- If a plan is marked complete → verify the surfaces it claims to own actually exist and work
+
+Do NOT trust documentation over code. If docs say X is implemented but the code shows stubs, the assessment must say "claimed but not verified" or "stub only."
+
+## 1e. Documentation Staleness Audit (document-release lens)
+
+For every `.md` file in the repo root (README.md, GOAL.md, AGENTS.md, DEPLOYMENT.md, SPEC.md, INVARIANTS.md, CLAUDE.md, DESIGN.md, etc.):
+
+1. Read the doc file and identify the features, components, workflows, and file paths it describes.
+2. For each reference, check whether the referenced file/feature/path still exists in the current working tree.
+3. Produce a staleness table:
+```
+DOC FILE     | REFERENCE              | STATUS
+README.md    | genesis/plans/001...   | STALE — file deleted
+GOAL.md      | plans/a2-devnet-...    | CURRENT — file exists
+AGENTS.md    | services/risk/...      | STALE — empty shell, not running service
+```
+4. Flag any doc that references deleted files, renamed paths, superseded plans, or capabilities that code review found to be stubs.
+5. Flag any doc that hasn't been updated in >30 days but describes code that changed recently (compare doc mtime vs code mtime in the areas it describes).
+
+This audit feeds directly into the assessment's tech debt inventory and into Plan 002 (or equivalent) for reference integrity fixes.
+
+## 1f. Write Assessment
+
+**The Reframe (do this BEFORE the forcing questions):**
+
+Before answering any questions, challenge the product's self-description. Read how the project describes itself in README, GOAL.md, and SPEC.md. Then ask: is that actually what this codebase IS, based on what you found in the source code? The most valuable insight from an office-hours session is the reframe — "you said X, but what you actually built is Y."
+
+Write the reframe as the opening of ASSESSMENT.md:
+- "The project describes itself as: [quote from docs]"
+- "Based on code review, what it actually is: [your honest assessment]"
+- If they match, say so. If they don't, explain the gap — this gap is the single most important strategic finding.
+
+**Six Forcing Questions:**
+
+Answer these six forcing questions (write answers to `genesis/ASSESSMENT.md`):
 
 1. **Demand reality**: Who uses this? What specific behavior proves real demand — payments, daily usage, panic if it vanished? Or is it a side project, prototype, abandoned experiment?
 2. **Status quo**: What's the current workflow without this project? What pain does it solve? What duct-tape alternatives exist?
@@ -563,51 +684,109 @@ Then answer these six forcing questions (write answers to `genesis/ASSESSMENT.md
 
 ## ASSESSMENT.md structure
 
-Write `genesis/ASSESSMENT.md` with:
-- Answers to the six questions above
-- What works, what's broken, what's half-built
-- Tech debt inventory (with file paths)
-- Security risks found
-- Test coverage gaps (with specific untested modules)
-- The ONE sentence that captures what this project actually is
-- **Existing plan assessment**: For each plan in `plans/`, rate it (strong/weak/missing context/contradicts X) and state what genesis will do with it (carry forward as-is, enhance, split, merge, or replace with rationale)
+Write `genesis/ASSESSMENT.md` with these sections in order:
 
-# Phase 2: PLAN (Strategic + Engineering + Design)
+1. **The Reframe** — project's self-description vs. code reality
+2. **The ONE sentence** that captures what this project actually is
+3. **Six Forcing Questions** — demand, status quo, specificity, wedge, surprise, future-fit
+4. **Source code findings** — for each major component, what you found by reading the actual code (not just what docs say). Include specific file paths, line counts, patterns observed.
+5. **What works** (verified by reading code), **what's broken** (verified by reading code), **what's half-built** (stubs found, partial implementations)
+6. **Tech debt inventory** with file paths and line numbers where possible
+7. **Security risks found** from actual code review, not just docs
+8. **Test coverage gaps** with specific untested modules — verified by reading test files
+9. **Git metrics summary** — contributor breakdown, fix ratio, test ratio, agent vs human, hotspot files, velocity trend (from section 1c)
+10. **Documentation staleness table** — every stale reference, deleted file, or drift found (from section 1e)
+11. **Implementation status** — for each previously completed plan or claimed capability, state whether the code backs up the claim. Use "verified", "partially verified", "stub only", or "not found" for each.
+12. **Existing plan assessment** — for each plan in `plans/`, rate it and state what genesis will do with it
+13. **Code review coverage** — list the key source files you actually read, grouped by component (proves the assessment is grounded in code)
 
-## 2a. Strategic Plan (CEO lens)
+# Phase 2: PLAN (Full Review Stack)
 
-For the master plan and each numbered plan, apply:
+Apply the full review stack to the codebase — not just to plans, but to the entire codebase as assessed in Phase 1. Each review lens produces findings that shape the plan corpus in Phase 3.
 
-- **Scope discipline**: What is the minimum change set? What can be deferred?
-- **Inversion reflex**: For each goal, also state what makes it fail. Put this in the Decision Log.
-- **Focus as subtraction**: 3-8 milestones per plan. A plan with 15 milestones is trying to do too much — split it.
-- **Reversibility**: Prefer plans that can be rolled back. Flag one-way doors explicitly.
-- **Existing code reuse**: Before proposing new abstractions, verify what already exists. Don't rebuild what you can extend.
-- **Narrowest wedge first**: Phase 0 plans should deliver value in 30 days, not prepare for value in 90.
+## 2a. CEO Review (Strategic Lens)
 
-## 2b. Engineering Plan (Eng Manager lens)
+Think like a CEO doing a turnaround review. Apply these cognitive patterns:
 
-For every plan with technical content:
+**Premise challenge**: Is this the right product to build? Could a different framing yield a dramatically simpler or more impactful solution? What would happen if the project did nothing for 6 months?
 
-- **ASCII architecture diagram**: Every plan gets a component/data flow diagram of affected modules. No exceptions.
-- **Complexity smell**: >8 files or >2 new abstractions = challenge whether simpler approach exists.
-- **Failure mode analysis**: For each new codepath, name one realistic production failure (timeout, nil, race condition, stale data) and how it's handled.
-- **Proof command quality**: Every milestone needs a specific proof command. `cargo test -p {{crate}} {{test_name}}` beats `cargo test`. Content assertions beat `test -f`.
-- **Boring by default**: Novel infrastructure needs explicit justification. Default to proven technology.
-- **Separate structural from behavioral**: Plans that refactor AND add features simultaneously are red flags. Split them.
-- **DRY across plans**: If two plans touch the same module, they need a shared dependency plan or explicit ordering.
-- **Test plan**: For each milestone, state which tests prove it's done — module, assertions, edge cases.
+**Dream state mapping**: Describe the ideal end state 12 months from now. For every plan you will write, check whether it moves toward or away from that state:
+```
+CURRENT STATE  →  THIS PLAN  →  12-MONTH IDEAL
+```
 
-## 2c. Design Plan (Designer lens)
+**Inversion reflex**: For every goal, also ask "what would make this fail?" Put failure scenarios in every plan's Decision Log.
 
-For any plan touching user-facing surfaces:
+**Focus as subtraction**: 3-8 milestones per plan. A plan with 15 milestones is trying to do too much — split it. The primary value-add is deciding what NOT to do.
 
-- **Information architecture**: What does the user see first, second, third? Include ASCII mockups.
-- **Interaction states**: Loading, empty, error, success, partial — all specified. Empty states are features.
-- **Edge cases**: 47-char names, zero results, network failure mid-action, first-time vs. power user.
-- **Accessibility as scope**: Keyboard nav, screen reader, contrast, 44px+ touch targets — deliverables, not polish.
-- **Responsive intent**: Specific layout changes per viewport, not just "stacks on mobile."
-- **No AI slop**: "Clean modern dashboard" is a vibe, not a plan. Name specific layout choices and information hierarchy.
+**Implementation alternatives**: For each major plan, identify 2-3 distinct approaches. One must be minimal viable, one must be ideal architecture. Name which you chose and why in the Decision Log.
+
+**Don't restart completed work**: If source code review confirms a capability is already implemented and tested, the plan should build on it, not re-implement it. Mark already-proven milestones as complete with evidence.
+
+**Reversibility**: Prefer plans that can be rolled back. Flag one-way doors explicitly. Rate each plan 1-5 on reversibility.
+
+**Narrowest wedge first**: Phase 0 plans should deliver value in 30 days, not prepare for value in 90.
+
+## 2b. Engineering Review (Eng Manager Lens)
+
+Review the codebase the way a rigorous engineering manager would before approving a plan. For every plan with technical content:
+
+**Scope challenge**:
+- What existing code already partially or fully solves each sub-problem? Map every planned feature to existing code.
+- If the plan touches >8 files or introduces >2 new abstractions, challenge whether a simpler approach exists.
+- Verify before planning: grep for the function/file/test each milestone targets. If it already exists, mark the milestone as pre-satisfied.
+
+**Architecture review**:
+- ASCII architecture diagram for every plan touching 3+ modules. No exceptions.
+- Map data flows with all four paths: happy path, nil input, empty input, upstream error.
+- Identify coupling: which components become coupled that weren't before?
+- Scaling: what breaks first under 10x load?
+
+**Error & failure mode analysis**:
+For each major codepath in the codebase, identify realistic production failures. Include a failure mode table in each plan:
+```
+CODEPATH | FAILURE MODE | HANDLED? | TEST? | USER SEES | LOGGED?
+```
+Any codepath with HANDLED=N, TEST=N, USER SEES=Silent → mark as **CRITICAL GAP**.
+
+**Security & trust boundary review**:
+- New attack vectors: endpoints, params, file paths, background jobs
+- Auth: is every data access scoped to the right user/role?
+- Secrets: in env vars, not hardcoded? Rotatable?
+- Injection: SQL, command, template, LLM prompt injection
+
+**Test quality** (not just count):
+- For each planned feature, does a meaningful test actually exist?
+- Diagram all new UX flows, data flows, codepaths, branching outcomes. For each, verify test coverage.
+- Flag: mocked-everything tests, green-on-failure patterns, tests that can't fail.
+
+**Proof command quality**: Every milestone needs a specific proof command. `cargo test -p {{crate}} -- {{test_name}}` beats `cargo test`. Content assertions beat `test -f`.
+
+**Observability**: New codepaths need structured logging, metrics, or traces. If a bug is reported 3 weeks post-ship, can you reconstruct what happened from logs alone?
+
+**Deployment safety**: For each plan, what's the rollback procedure? Feature flags? Migration safety? What happens when old code and new code run simultaneously?
+
+## 2c. Design Review (Designer Lens)
+
+For any plan touching user-facing surfaces, review with a designer's eye. Rate each dimension 0-10.
+
+**Information architecture**: What does the user see first, second, third? Include ASCII mockup of screen hierarchy. Apply constraint worship — if you can only show 3 things, which 3 matter most?
+
+**Interaction state coverage**: For every UI feature, fill in this table:
+```
+FEATURE      | LOADING | EMPTY | ERROR | SUCCESS | PARTIAL
+```
+Empty states are features. "No items found." is not a design. Every empty state needs warmth, a primary action, and context.
+
+**User journey**: Storyboard the emotional arc — 5-sec visceral, 5-min behavioral, long-term reflective. What does the user feel at each step?
+
+**AI slop detection**: Flag generic patterns that could be any SaaS template. "Cards with icons" → what differentiates these? "Clean modern UI" → meaningless, replace with actual design decisions. "Dashboard with widgets" → what makes this NOT every other dashboard?
+
+**DESIGN.md alignment**: If a design system exists, calibrate every UI decision against it. If not, flag the gap.
+
+**Responsive intent**: Specific layout changes per viewport, not just "stacks on mobile." Each breakpoint gets intentional design.
+
+**Accessibility as scope**: Keyboard nav, screen readers, contrast, 44px+ touch targets — these are deliverables, not polish. Specify them in the plan or they won't exist.
 
 If the project has user-facing surfaces and no existing design system, write `genesis/DESIGN.md` with:
 - Aesthetic direction and rationale
@@ -631,20 +810,83 @@ c. `genesis/plans/001-master-plan.md` — 180-day turnaround roadmap:
    - Phase 3 (days 151-180): Polish — performance, UX, release prep
    - Each phase lists numbered plan dependencies
 
-d. `genesis/plans/002-*.md` through `genesis/plans/N-*.md` — one ExecPlan per work stream:
-   - Purpose, Progress (milestones with `- [ ]`), Decision Log, proof commands
-   - Cover: tech debt, missing tests, broken features, new features, infrastructure, docs
-   - Name specific files, crates, modules, functions — concrete, not generic
-   - ASCII diagrams for architecture and data flow
-   - 3-8 milestones per plan, each with a real proof command
+d. `genesis/plans/002-*.md` through `genesis/plans/N-*.md` — one ExecPlan per work stream.
+
+Each plan MUST follow this full skeleton (not a subset — every section is required):
+
+```
+# NNN — <Short, action-oriented title>
+
+## Purpose / Big Picture
+2-4 sentences: what someone gains after this change and how they can see it working.
+State the user-visible behavior this plan enables.
+
+## Context and Orientation
+Describe the CURRENT state relevant to this plan. Assume the reader is a complete
+beginner who has only the repo and this file. Name key files and modules by FULL
+repo-relative path. Define any terms of art. This section should be 10-30 lines
+minimum — enough that a new contributor can understand where they are starting from.
+
+## Architecture
+ASCII diagram showing the components this plan touches and their relationships.
+Required for any plan touching 3+ modules. Include data flow direction arrows.
+
+## Progress
+- [x] (pre-satisfied) M1. Title — cite evidence from Phase 1 code review
+- [ ] M2. Title
+  - Surfaces: `path/a`, `path/b` — specific files this milestone owns
+  - What exists after: concrete description of the deliverable
+  - Why now: one sentence on why this milestone matters for the plan
+  - Proof: `specific command that proves this milestone is done`
+  - Tests: `specific test command that catches regressions`
+- [ ] M3. Title
+  ...
+
+## Surprises & Discoveries
+- Observation: [something non-obvious found during Phase 1 code review]
+  Evidence: [file path, line number, or command output]
+
+## Decision Log
+- Decision: [concrete choice made]
+  - Why: [rationale]
+  - Failure mode: [what goes wrong if this decision is wrong]
+  - Mitigation: [how the plan limits damage]
+  - Reversible: [yes/no and how]
+At least 2 entries per plan. At least one must be a failure scenario.
+
+## Validation and Acceptance
+Describe how to exercise the system after all milestones complete.
+Include specific commands to run and what output to expect.
+This is the "done" definition for the entire plan.
+
+## Outcomes & Retrospective
+_Updated after milestones complete._
+```
+
+**Plan depth requirements:**
+- Each plan should be 80-200 lines. Plans under 50 lines are too thin — they lack the context a new contributor needs. Plans over 300 lines should be split.
+- The **Context and Orientation** section is the most commonly skipped — and the most important. A plan that says "fix the settlement worker" without explaining what the settlement worker is, where it lives, how it works, and what state it's currently in is useless to anyone but the original author.
+- Each milestone's **Surfaces** field must name specific repo-relative file paths, not vague descriptions like "the frontend" or "the test suite."
+- Each milestone's **Proof** command must be copy-pasteable and specific. `cargo test` is not acceptable. `cargo test -p rsociety-executor -- settlement::drain_correctness` is.
+- Cover: tech debt, missing tests, broken features, new features, infrastructure, docs
+- 3-8 milestones per plan
 
 **Carry-forward rule**: Every existing plan in `plans/` must appear in `genesis/plans/`. For plans you assessed as strong, copy them into genesis with the same filename and number. For plans you enhanced, write the enhanced version. For plans you split or merged, write the new plans and note the provenance in the Decision Log. No existing plan should silently disappear — if you're dropping one, write a short `genesis/plans/NNN-dropped-*.md` explaining why.
 
 **Implementation-ready rule**: If an existing or genesis plan already names owned surfaces, concrete proof commands, and explicit validation or acceptance criteria, preserve it as implementation-ready. Do NOT rewrite it into a bootstrap-only plan whose only deliverables are `spec.md` and `review.md`. Bootstrap is only for plans that are still strategy-heavy and need a narrower executable slice first.
 
+**Pre-satisfied milestone rule**: If source code review confirmed that a milestone's target already exists and works, mark it `[x]` in the Progress section with a note like "pre-satisfied: verified in Phase 1 code review" and cite the file path. Do not create milestones for work that is already done.
+
 # Phase 4: REVIEW (Self-Review Pass)
 
 After writing all plans, review the corpus against these checklists:
+
+## Depth review (check FIRST — thin plans are the most common failure)
+- [ ] Every plan has a Context and Orientation section of at least 10 lines
+- [ ] Every plan is at least 80 lines total (if under 50, it is too thin — add context, file paths, architecture)
+- [ ] Every milestone names specific file paths in its Surfaces field
+- [ ] Every Decision Log has at least 2 entries including one failure scenario
+- [ ] No milestone uses vague proof commands like `cargo test` or `npm test` — must be specific
 
 ## Structural review
 - [ ] Every plan references specific file paths, not vague module descriptions
@@ -652,6 +894,7 @@ After writing all plans, review the corpus against these checklists:
 - [ ] No two plans claim the same files without explicit dependency ordering
 - [ ] Master plan references all numbered plans
 - [ ] Each numbered plan has 3-8 milestones (not more, not fewer)
+- [ ] Each numbered plan has a Surprises & Discoveries section
 
 ## Completeness review
 - [ ] Tech debt identified during exploration is covered by at least one plan
@@ -666,6 +909,12 @@ After writing all plans, review the corpus against these checklists:
 - [ ] Check for plans that depend on unstated assumptions — make them explicit
 - [ ] Check for vague milestones: "set up infrastructure" → what specifically?
 
+## Reality-check review
+- [ ] No plan proposes re-implementing something the code review found already working
+- [ ] No plan treats a completed capability as unstarted
+- [ ] Claims in the assessment are backed by specific file paths from code review
+- [ ] Pre-satisfied milestones are correctly marked `[x]`
+
 If any check fails, fix the plan before moving on. Do not write a plan you wouldn't approve as a reviewer.
 
 # Phase 5: VERIFY
@@ -676,6 +925,7 @@ Write `genesis/GENESIS-REPORT.md` summarizing:
 - Plans needing human attention (flagged during review)
 - Known gaps (things you couldn't assess without running the code)
 - Recommended next steps for the operator
+- **Code review coverage**: List the key source files you actually read during Phase 1, grouped by component. This proves the assessment is grounded in code, not just docs.
 
 ## Rules
 
@@ -685,8 +935,11 @@ Write `genesis/GENESIS-REPORT.md` summarizing:
 - Write all files using the Write tool. Do NOT output content to stdout.
 - 10-20 numbered plans in the master plan. 3-8 milestones per plan.
 - Use the ExecPlan format from PLANS.md for every plan.
+- NEVER assess a component without reading its source code first.
+- NEVER claim something is "broken" or "a stub" without verifying by reading the file.
+- NEVER plan to implement something that already works — mark it pre-satisfied instead.
 
-Begin with Phase 1: explore the codebase and write ASSESSMENT.md."#,
+Begin with Phase 1: explore the codebase by reading actual source files, then write ASSESSMENT.md."#,
         target_repo = target_repo.display(),
     )
 }
