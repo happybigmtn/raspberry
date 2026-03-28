@@ -5735,7 +5735,7 @@ fn normalize_lane_health_command(
 
 fn scope_service_health_command(verify_body: &str, surfaces: &[String]) -> String {
     if let Some(bin_name) = command_flag_value(verify_body, "--bin") {
-        return format!("cargo test --bin {bin_name} -- --nocapture health");
+        return format!("cargo test -p {bin_name} --bin {bin_name} -- --nocapture health");
     }
     if let Some(package_name) = command_flag_value(verify_body, "-p") {
         return format!("cargo test -p {package_name} -- --nocapture health");
@@ -8879,14 +8879,17 @@ Add `crates/myosu-sdk/` to workspace members. `Cargo.toml`:
             "true",
         );
 
-        assert_eq!(health, "cargo test --bin house -- --nocapture health");
+        assert_eq!(
+            health,
+            "cargo test -p house --bin house -- --nocapture health"
+        );
         assert!(verify.contains("pid=$!"));
         assert!(verify.contains("sleep 2"));
         assert!(verify.contains("kill -TERM"));
         assert!(graph.contains("label=\"Verify\""));
         assert!(graph.contains("kill -TERM \\\"$pid\\\""));
         assert_eq!(graph.matches("pid=$!").count(), 2);
-        assert!(graph.contains("cargo test --bin house -- --nocapture health"));
+        assert!(graph.contains("cargo test -p house --bin house -- --nocapture health"));
         assert!(!graph.contains("cargo test -- --nocapture health"));
     }
 
