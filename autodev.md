@@ -1,181 +1,237 @@
-# Autodev Restart Guide
+# Autodev Runbook
 
-This file is the shortest path to a correct 5-agent autodev restart.
+This is the single file to point coding agents at when they need to launch or
+repair a Fabro/Raspberry autodev controller in another repo.
 
-## Contract
+It reflects the current operator workflow that actually works in practice:
 
-For child work:
+- build local `fabro`/`raspberry` binaries from this repo
+- run autodev from a disposable controller checkout, not from a human checkout
+- use an allowed controller branch name
+- reset the controller to `origin/main`, regenerate, and commit the generated
+  package refresh before launch
+- prefer an attached/PTy launch when you need the process to stay alive under an
+  agent shell
 
-- write/implement stages use the normal child workflow
-- in-band adversarial review stays on `kimi-k2.5`
-- integration/landing happens before any Codex pass
+## 1. Build Fabro First
 
-For post-child review:
-
-- `*-plan-review` is the Kimi-driven in-band fixer
-- `*-codex-review` is the separate after-completion Codex pass
-- do not expect a running lane that started before regeneration to adopt new routing
-
-If the live run violates that contract, rebuild, regenerate, and restart.
-
-## Build
-
-From `fabro/`:
+From `/home/r/coding/fabro`:
 
 ```bash
-cargo build --release -p fabro-cli -p raspberry-cli --target-dir target-local
+cargo build -p fabro-cli -p raspberry-cli --target-dir target-local
 ```
 
-Use these binaries for rollout:
+Use these binaries:
 
-- `target-local/release/fabro`
-- `target-local/release/raspberry`
+- `/home/r/coding/fabro/target-local/debug/fabro`
+- `/home/r/coding/fabro/target-local/debug/raspberry`
 
-## Regenerate
+## 2. Never Launch From A Dirty Human Checkout
 
-Regenerate from the checked-in source blueprints, not from stale live state.
+Autodev should run from a disposable controller checkout, not from the repo a
+human is editing.
 
-`rXMRbro`
+Use a sibling worktree on an allowed controller branch:
+
+- `autodev/main`
+- `autodev-main`
+
+Do not use names like `autodev/main-validate`; current freshness checks reject
+them.
+
+Example controller creation from a repo with default branch `main`:
 
 ```bash
-target-local/release/fabro --no-upgrade-check synth create \
-  --target-repo /home/r/coding/rXMRbro \
-  --program rxmragent \
-  --blueprint /home/r/coding/rXMRbro/malinka/blueprints/rxmragent.yaml \
+git -C /path/to/repo worktree add -b autodev/main /path/to/repo-autodev origin/main
+```
+
+If `autodev/main` is already taken by another worktree, use:
+
+```bash
+git -C /path/to/repo worktree add -b autodev-main /path/to/repo-autodev origin/main
+```
+
+## 3. Refresh The Controller Before Every Launch
+
+From the controller checkout:
+
+```bash
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+```
+
+Then regenerate from the checked-in blueprint:
+
+```bash
+/home/r/coding/fabro/target-local/debug/fabro --no-upgrade-check synth create \
+  --target-repo /path/to/repo-autodev \
+  --program <program> \
+  --blueprint /path/to/repo-autodev/malinka/blueprints/<program>.yaml \
   --no-decompose \
   --no-review
 ```
 
-`tonofcrap`
+Then commit the generated package refresh on the disposable controller branch:
 
 ```bash
-target-local/release/fabro --no-upgrade-check synth create \
-  --target-repo /home/r/coding/tonofcrap \
-  --program repo \
-  --blueprint /home/r/coding/tonofcrap/malinka/blueprints/repo.yaml \
-  --no-decompose \
-  --no-review
+git add -A
+git -c user.name=Fabro -c user.email=noreply@fabro.sh \
+  commit -m "fabro: refresh generated package"
 ```
 
-## Verify Routing
+If there is nothing to commit, that is fine.
 
-Before launch, verify both halves of the contract.
+## 4. Launch Autodev
 
-Child plan review should be Kimi:
+Canonical launch:
 
 ```bash
-sed -n '1,40p' /home/r/coding/rXMRbro/malinka/workflows/implementation/dice-plan-review.fabro
-sed -n '1,40p' /home/r/coding/tonofcrap/malinka/workflows/implementation/premium-tables-withdrawal-plan-review.fabro
+/home/r/coding/fabro/target-local/debug/raspberry autodev \
+  --manifest /path/to/repo-autodev/malinka/programs/<program>.yaml \
+  --fabro-bin /home/r/coding/fabro/target-local/debug/fabro \
+  --max-parallel 10 \
+  --max-cycles 0 \
+  --poll-interval-ms 1000 \
+  --evolve-every-seconds 0
 ```
 
-You should see:
+### Important launch note
 
-- `#challenge   { ... model: kimi-k2.5; provider: kimi; }`
-- `#review      { ... model: kimi-k2.5; provider: kimi; }`
+If an agent shell cannot keep background children alive reliably, do not use
+`nohup ... &` and assume the controller will survive. Launch it in an attached
+PTY/session and monitor it there.
 
-Post-completion Codex review should be separate:
+## 5. Monitor The Live Controller
+
+Primary report:
 
 ```bash
-sed -n '1,40p' /home/r/coding/rXMRbro/malinka/workflows/recurring_report/dice-codex-review.fabro
-sed -n '1,40p' /home/r/coding/tonofcrap/malinka/workflows/recurring_report/premium-tables-withdrawal-codex-review.fabro 2>/dev/null || true
+sed -n '1,120p' /path/to/repo-autodev/.raspberry/<program>-autodev.json
 ```
 
-You should see:
-
-- `#review { ... model: gpt-5.4; provider: openai; }`
-
-Manifest dependencies should show Codex only after plan review:
+Primary state file:
 
 ```bash
-rg -n "codex-review|plan-reviewed|codex-reviewed" \
-  /home/r/coding/rXMRbro/malinka/programs/rxmragent.yaml \
-  /home/r/coding/tonofcrap/malinka/programs/repo.yaml
+sed -n '1,120p' /path/to/repo-autodev/.raspberry/<program>-state.json
 ```
 
-## Launch With 5 Agents
+The fields that matter first are:
 
-`rXMRbro`
+- `ready`
+- `running`
+- `failed`
+- `complete`
+- `stop_reason`
 
-```bash
-target-local/release/raspberry autodev \
-  --manifest /home/r/coding/rXMRbro/malinka/programs/rxmragent.yaml \
-  --fabro-bin /home/r/coding/fabro/target-local/release/fabro \
-  --max-parallel 5 \
-  --max-cycles 1000000 \
-  --poll-interval-ms 500 \
-  --evolve-every-seconds 1800
-```
+For current Fabro builds, also inspect cycle telemetry:
 
-`tonofcrap`
-
-```bash
-target-local/release/raspberry autodev \
-  --manifest /home/r/coding/tonofcrap/malinka/programs/repo.yaml \
-  --fabro-bin /home/r/coding/fabro/target-local/release/fabro \
-  --max-parallel 5 \
-  --max-cycles 1000000 \
-  --poll-interval-ms 500 \
-  --evolve-every-seconds 1800
-```
-
-## Monitor
-
-Quick state:
-
-```bash
-sed -n '1,60p' /home/r/coding/rXMRbro/.raspberry/rxmragent-autodev.json
-sed -n '1,60p' /home/r/coding/tonofcrap/.raspberry/repo-autodev.json
-```
-
-Expected healthy signals:
-
-- `stop_reason: "InProgress"`
-- `max_parallel: 5`
-- `running: 5`
-- no repeated invalid-lane errors in the live controller output
-
-Inspect a live lane:
-
-```bash
-jq -r '.lanes["dice-plan-review:dice-plan-review"]' /home/r/coding/rXMRbro/.raspberry/rxmragent-state.json
-```
-
-Check which provider actually served a node:
-
-```bash
-sed -n '1,120p' /home/r/.fabro/runs/<run-id>/nodes/review/provider_used.json
-sed -n '1,120p' /home/r/.fabro/runs/<run-id>/nodes/challenge/provider_used.json
-```
+- `oldest_running_seconds`
+- `running_without_completion_cycles`
+- `ready_while_saturated`
 
 Interpretation:
 
-- child `plan-review` should show `provider: "kimi"`
-- post-completion `codex-review` should show `provider: "openai"`
+- `running=10` and `ready>0` means the controller is saturated
+- `running_without_completion_cycles` climbing means the wave is not landing
+  completions
+- `ready_while_saturated=true` means there is backlog waiting behind pinned slots
 
-## Common Fixes
+## 6. Common Failure Modes
 
-If a live run still shows Codex inside `*-plan-review`:
+### Background controller dies after a few cycles
 
-1. Stop the controller.
-2. Rebuild `fabro`.
-3. Regenerate from the source blueprint.
-4. Relaunch.
+Symptom:
 
-If a repo has no `origin` remote:
+- lock file exists
+- PID in the lock is dead
+- log only shows a few cycles
 
-- current Fabro should no-op trunk sync quietly
-- if you still see repeated `git fetch origin failed`, rebuild and restart the controller
+Meaning:
 
-If a lane is emitted as `kind: integration` but uses an implementation workflow:
+- the controller was launched in a way that did not survive the agent shell
 
-- fix the source blueprint or plan mapping
-- regenerate the package
-- restart the controller
+Fix:
 
-Known example:
+- relaunch in an attached PTY/session
 
-- `/home/r/coding/tonofcrap/malinka/plan-mappings/013-craps-school.yaml`
+### Controller branch diverged from origin
 
-## One-Line Principle
+Symptom:
 
-After restart, child lanes do the real work with Minimax/Kimi first; Codex enters only in a separate `*-codex-review` lane after the child workflow is fully complete.
+- autodev logs: `local default branch diverged from origin (ahead X, behind Y)`
+
+Meaning:
+
+- you committed generated controller state locally, then `origin/main` moved
+
+Fix:
+
+```bash
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+/home/r/coding/fabro/target-local/debug/fabro --no-upgrade-check synth create \
+  --target-repo /path/to/repo-autodev \
+  --program <program> \
+  --blueprint /path/to/repo-autodev/malinka/blueprints/<program>.yaml \
+  --no-decompose \
+  --no-review
+git add -A
+git -c user.name=Fabro -c user.email=noreply@fabro.sh \
+  commit -m "fabro: refresh generated package"
+```
+
+Then relaunch autodev.
+
+### Run-branch push conflict
+
+Symptom:
+
+- lane fails on push to `fabro/run/<run-id>`
+- error is non-fast-forward
+
+Meaning:
+
+- a stale remote checkpoint branch exists for that run ID
+
+Fix:
+
+1. Delete the stale remote run branch:
+
+```bash
+git -C /path/to/repo-autodev push origin :refs/heads/fabro/run/<run-id>
+```
+
+2. Clear the stale local failed lane record if it remains pinned in
+   `surface_blocked`
+3. Restart the controller so it re-evaluates from repaired remote state
+
+### Controller alive but not landing completions
+
+Symptom:
+
+- `running=10`
+- `complete` flat
+- `running_without_completion_cycles` increasing
+
+Meaning:
+
+- launch path is healthy, but long-lived runs are pinning all capacity
+
+What to inspect:
+
+- running lane list in `.raspberry/<program>-state.json`
+- each run directory in `/home/r/.fabro/runs/<date>-<run-id>/`
+- stage labels like `Fixup`, `Review`, `Challenge`, `Deep Review`
+
+## 7. One-Line Rule
+
+If autodev looks strange:
+
+1. stop assuming the controller checkout is healthy
+2. rebuild `fabro`
+3. reset controller to `origin/main`
+4. regenerate from blueprint
+5. recommit generated refresh
+6. relaunch from an allowed controller branch
