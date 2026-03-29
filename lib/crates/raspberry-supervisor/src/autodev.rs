@@ -251,6 +251,17 @@ pub enum AutodevError {
     Evaluate(#[from] EvaluateError),
     #[error(transparent)]
     Dispatch(#[from] DispatchError),
+    #[error("failed to start workspace admission check in {target_repo}: {source}")]
+    AdmissionCheckSpawn {
+        target_repo: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("autodev admission gate rejected {target_repo}: {message}")]
+    AdmissionCheckFailed {
+        target_repo: PathBuf,
+        message: String,
+    },
     #[error("failed to read blueprint {path}: {source}")]
     ReadBlueprint {
         path: PathBuf,
@@ -419,6 +430,10 @@ pub fn orchestrate_program(
     }
     let guard = enter_orchestration_scope(&manifest_path)?;
     let initial_manifest = ProgramManifest::load(&manifest_path)?;
+    let requested_max_parallel = settings
+        .max_parallel_override
+        .unwrap_or(initial_manifest.max_parallel)
+        .max(1);
     let provenance = Some(capture_autodev_provenance(settings));
     if let Some(_maintenance) = load_active_maintenance(&manifest_path, &initial_manifest)? {
         let current = evaluate_program(&manifest_path)
@@ -436,6 +451,7 @@ pub fn orchestrate_program(
         drop(guard);
         return Ok(report);
     }
+    enforce_workspace_admission_gate(&manifest_path, &initial_manifest, requested_max_parallel)?;
     let _lease = acquire_autodev_lease(&manifest_path, &initial_manifest)?;
     let max_cycles = cycle_limit(settings.max_cycles);
     let poll_interval = Duration::from_millis(settings.poll_interval_ms.max(1));
@@ -730,7 +746,8 @@ pub fn orchestrate_program(
             .filter(|lane| lane.status == LaneExecutionStatus::Complete)
             .count();
         let running_without_completion_cycles = next_running_without_completion_cycles(
-            report.cycles
+            report
+                .cycles
                 .last()
                 .and_then(|cycle| cycle.telemetry.as_ref())
                 .map(|telemetry| telemetry.running_without_completion_cycles)
@@ -1487,7 +1504,10 @@ fn lane_dispatch_priority_score(lane: &crate::evaluate::EvaluatedLane) -> i32 {
     if key.contains("autodev-integration-test") || key.contains("ci-preservation") {
         score -= 10;
     }
-    if matches!(failure_kind, Some(FailureKind::IntegrationTargetUnavailable)) {
+    if matches!(
+        failure_kind,
+        Some(FailureKind::IntegrationTargetUnavailable)
+    ) {
         score += 60;
         if !lane.lane_id.ends_with("-codex-unblock") {
             score += 40;
@@ -2103,6 +2123,78 @@ pub(crate) fn autodev_cargo_target_dir(target_repo: &Path) -> PathBuf {
         .collect()
 }
 
+const WIDE_AUTODEV_ADMISSION_THRESHOLD: usize = 10;
+
+fn enforce_workspace_admission_gate(
+    manifest_path: &Path,
+    manifest: &ProgramManifest,
+    requested_max_parallel: usize,
+) -> Result<(), AutodevError> {
+    if requested_max_parallel < WIDE_AUTODEV_ADMISSION_THRESHOLD {
+        return Ok(());
+    }
+
+    let target_repo = manifest.resolved_target_repo(manifest_path);
+    let output = Command::new("cargo")
+        .current_dir(&target_repo)
+        .env("CARGO_TARGET_DIR", autodev_cargo_target_dir(&target_repo))
+        .args(["check", "--workspace", "--message-format", "short"])
+        .output()
+        .map_err(|source| AutodevError::AdmissionCheckSpawn {
+            target_repo: target_repo.clone(),
+            source,
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(AutodevError::AdmissionCheckFailed {
+            target_repo,
+            message: summarize_admission_output(
+                "cargo check --workspace failed; repair the workspace baseline before launching a wide autodev run",
+                &stdout,
+                &stderr,
+            ),
+        });
+    }
+
+    if cargo_output_has_warning(&stdout) || cargo_output_has_warning(&stderr) {
+        return Err(AutodevError::AdmissionCheckFailed {
+            target_repo,
+            message: summarize_admission_output(
+                "workspace emits warnings; zero-warning policy is required before launching a wide autodev run",
+                &stdout,
+                &stderr,
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn cargo_output_has_warning(output: &str) -> bool {
+    output.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("warning:") || trimmed.contains(": warning:")
+    })
+}
+
+fn summarize_admission_output(summary: &str, stdout: &str, stderr: &str) -> String {
+    let mut details = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|line| !line.trim().is_empty())
+        .take(8)
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if details.is_empty() {
+        summary.to_string()
+    } else {
+        details.insert(0, summary);
+        details.join(" | ")
+    }
+}
+
 pub fn load_optional_autodev_report(
     manifest_path: &Path,
     manifest: &ProgramManifest,
@@ -2206,6 +2298,12 @@ pub fn current_snapshot_for_program(
     current_snapshot(program, max_parallel)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LaneProviderHint {
+    provider: Option<String>,
+    model: Option<String>,
+}
+
 fn current_snapshot(
     program: &crate::evaluate::EvaluatedProgram,
     max_parallel: Option<usize>,
@@ -2251,23 +2349,42 @@ fn current_snapshot(
             running_lanes.extend(nested_running_lanes);
         }
 
-        let Some(summary) = lane.last_usage_summary.as_deref() else {
+        let usage = lane
+            .last_usage_summary
+            .as_deref()
+            .and_then(parse_usage_summary);
+        let hint = lane_provider_hint(lane);
+        let resolved_model = usage
+            .as_ref()
+            .map(|parsed| parsed.model.clone())
+            .or_else(|| hint.as_ref().and_then(|value| value.model.clone()));
+        let resolved_provider = usage
+            .as_ref()
+            .map(|parsed| parsed.provider.clone())
+            .filter(|provider| provider != "unknown")
+            .or_else(|| hint.as_ref().and_then(|value| value.provider.clone()))
+            .or_else(|| usage.as_ref().map(|parsed| parsed.provider.clone()));
+
+        if let Some(provider) = resolved_provider.clone() {
+            provider_routes.push(LaneProviderRoute {
+                lane_key: lane.lane_key.clone(),
+                status: lane.status,
+                model: resolved_model
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                provider,
+            });
+        }
+
+        let Some(parsed) = usage else {
             continue;
         };
-        let Some(parsed) = parse_usage_summary(summary) else {
-            continue;
-        };
-        provider_routes.push(LaneProviderRoute {
-            lane_key: lane.lane_key.clone(),
-            status: lane.status,
-            model: parsed.model,
-            provider: parsed.provider.clone(),
-        });
+        let provider_key = resolved_provider.unwrap_or_else(|| parsed.provider.clone());
         let entry =
             usage_by_provider
-                .entry(parsed.provider.clone())
+                .entry(provider_key.clone())
                 .or_insert(ProviderUsageSnapshot {
-                    provider: parsed.provider,
+                    provider: provider_key,
                     input_tokens: 0,
                     output_tokens: 0,
                     cost_microusd: Some(0),
@@ -2333,6 +2450,55 @@ fn current_snapshot(
         provider_routes,
         usage_by_provider: usage_by_provider.into_values().collect(),
     }
+}
+
+fn lane_provider_hint(lane: &crate::evaluate::EvaluatedLane) -> Option<LaneProviderHint> {
+    lane.current_run_dir
+        .as_deref()
+        .and_then(provider_hint_from_run_dir)
+        .or_else(|| {
+            lane.last_run_dir
+                .as_deref()
+                .and_then(provider_hint_from_run_dir)
+        })
+}
+
+fn provider_hint_from_run_dir(run_dir: &Path) -> Option<LaneProviderHint> {
+    let progress_path = run_dir.join("progress.jsonl");
+    let raw = fs::read_to_string(progress_path).ok()?;
+    let mut hint = LaneProviderHint::default();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let event = value
+            .get("event")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        match event {
+            "CliEnsureStarted" | "CliEnsureCompleted" => {
+                if let Some(provider) = value.get("provider").and_then(|value| value.as_str()) {
+                    hint.provider = Some(provider.to_string());
+                }
+                if let Some(model) = value.get("model").and_then(|value| value.as_str()) {
+                    hint.model = Some(model.to_string());
+                }
+            }
+            "StageCompleted" | "WorkflowRunCompleted" => {
+                let Some(usage) = value.get("usage") else {
+                    continue;
+                };
+                if let Some(provider) = usage.get("provider").and_then(|value| value.as_str()) {
+                    hint.provider = Some(provider.to_string());
+                }
+                if let Some(model) = usage.get("model").and_then(|value| value.as_str()) {
+                    hint.model = Some(model.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    (hint.provider.is_some() || hint.model.is_some()).then_some(hint)
 }
 
 fn recovering_failed_lane_keys(program: &crate::evaluate::EvaluatedProgram) -> BTreeSet<String> {
@@ -3115,6 +3281,50 @@ mod tests {
             .any(|usage| usage.provider == "anthropic"
                 && usage.input_tokens == 300
                 && usage.output_tokens == 40));
+    }
+
+    #[test]
+    fn current_snapshot_recovers_provider_routes_from_progress_log_hints() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("progress.jsonl"),
+            concat!(
+                "{\"event\":\"CliEnsureCompleted\",\"provider\":\"openai\",\"model\":\"k2p5\"}\n",
+                "{\"event\":\"StageCompleted\",\"usage\":{\"model\":\"k2p5\",\"input_tokens\":10,\"output_tokens\":3}}\n",
+            ),
+        )
+        .expect("write progress");
+
+        let mut running = ready_lane("runtime:page", "runtime", "page", LaneKind::Artifact);
+        running.status = LaneExecutionStatus::Running;
+        running.current_run_dir = Some(run_dir.clone());
+        running.last_usage_summary = Some("k2p5: 10 in / 3 out".to_string());
+
+        let mut ready = ready_lane("runtime:queued", "runtime", "queued", LaneKind::Artifact);
+        ready.current_run_dir = Some(run_dir);
+
+        let program = crate::evaluate::EvaluatedProgram {
+            program: "demo".to_string(),
+            max_parallel: 2,
+            runtime_max_parallel: Some(2),
+            lanes: vec![running, ready],
+        };
+
+        let snapshot = current_snapshot_for_program(&program, Some(2));
+
+        assert!(snapshot.provider_routes.iter().any(|route| {
+            route.lane_key == "runtime:page" && route.model == "k2p5" && route.provider == "openai"
+        }));
+        assert!(snapshot.provider_routes.iter().any(|route| {
+            route.lane_key == "runtime:queued"
+                && route.model == "k2p5"
+                && route.provider == "openai"
+        }));
+        assert!(snapshot.usage_by_provider.iter().any(|usage| {
+            usage.provider == "openai" && usage.input_tokens == 10 && usage.output_tokens == 3
+        }));
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -4089,7 +4299,9 @@ units:
             detail: String::new(),
             managed_milestone: "wallet-rpc-tests-codex-unblock-done".to_string(),
             proof_profile: Some("unblock".to_string()),
-            run_config: PathBuf::from("run-configs/codex-unblock/wallet-rpc-tests-codex-unblock.toml"),
+            run_config: PathBuf::from(
+                "run-configs/codex-unblock/wallet-rpc-tests-codex-unblock.toml",
+            ),
             run_id: None,
             current_run_id: None,
             current_fabro_run_id: None,
@@ -4814,7 +5026,10 @@ units:
                 "remote",
                 "set-url",
                 "origin",
-                temp.path().join("controller").to_str().expect("controller path"),
+                temp.path()
+                    .join("controller")
+                    .to_str()
+                    .expect("controller path"),
             ],
         );
 
@@ -5529,8 +5744,7 @@ units:
         std::fs::create_dir_all(repo.join("malinka/programs")).expect("programs dir");
         std::fs::create_dir_all(repo.join("malinka/run-configs/bootstrap"))
             .expect("run-configs dir");
-        std::fs::create_dir_all(repo.join("malinka/workflows/bootstrap"))
-            .expect("workflows dir");
+        std::fs::create_dir_all(repo.join("malinka/workflows/bootstrap")).expect("workflows dir");
         std::fs::create_dir_all(repo.join(".raspberry")).expect("state dir");
         std::fs::write(repo.join("README.md"), "demo\n").expect("readme");
         std::fs::write(repo.join("malinka/blueprints/demo.yaml"), "program: demo\n")
@@ -5636,7 +5850,10 @@ exit 1\n"
         )
         .expect("autodev should dispatch");
 
-        assert!(!matches!(report.stop_reason, AutodevStopReason::Maintenance));
+        assert!(!matches!(
+            report.stop_reason,
+            AutodevStopReason::Maintenance
+        ));
         assert!(
             report
                 .cycles
@@ -5926,5 +6143,27 @@ exit 1\n"
 
         let root = paperclip_bundle_root(&manifest_path, &manifest).expect("bundle root");
         assert_eq!(root, temp.path().join("malinka/paperclip/raspberry-demo"));
+    }
+
+    #[test]
+    fn cargo_output_has_warning_detects_short_message_warnings() {
+        assert!(cargo_output_has_warning(
+            "src/lib.rs:10:5: warning: unused import"
+        ));
+        assert!(cargo_output_has_warning("warning: dead code"));
+        assert!(!cargo_output_has_warning(
+            "Finished `dev` profile target(s) in 0.25s"
+        ));
+    }
+
+    #[test]
+    fn summarize_admission_output_prefers_actionable_context_lines() {
+        let summary = summarize_admission_output(
+            "workspace emits warnings",
+            "src/lib.rs:10:5: warning: unused import\n\nFinished target(s) in 1s",
+            "",
+        );
+        assert!(summary.contains("workspace emits warnings"));
+        assert!(summary.contains("warning: unused import"));
     }
 }

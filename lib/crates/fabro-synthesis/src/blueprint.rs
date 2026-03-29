@@ -456,10 +456,121 @@ fn validate_unit(
                 ));
             }
         }
+        validate_lane_verify_command(path, unit, lane)?;
         validate_dependencies(path, unit, lane, all_units, &lane_ids, &milestone_ids)?;
     }
 
     Ok(())
+}
+
+fn validate_lane_verify_command(
+    path: &Path,
+    unit: &BlueprintUnit,
+    lane: &BlueprintLane,
+) -> Result<(), BlueprintError> {
+    let Some(verify_command) = lane.verify_command.as_deref() else {
+        return Ok(());
+    };
+    let owned_surfaces = extract_owned_surfaces_from_goal(&lane.goal);
+    if owned_surfaces.is_empty() {
+        return Ok(());
+    }
+
+    if verify_command.contains("--workspace") {
+        return Err(invalid(
+            path,
+            format!(
+                "lane `{}` in unit `{}` uses a workspace-wide verify command despite lane-owned surfaces; narrow `{}` to the owned crate or file target",
+                lane.id, unit.id, verify_command
+            ),
+        ));
+    }
+
+    for surface in &owned_surfaces {
+        if let Some(expected_package) = expected_package_for_surface(surface) {
+            let targets_package = verify_command.contains(&format!("-p {expected_package}"))
+                || verify_command.contains(&format!("--package {expected_package}"))
+                || verify_command.contains(&format!("--bin {expected_package}"));
+            let names_another_package = verify_command.contains("-p ")
+                || verify_command.contains("--package ")
+                || verify_command.contains("--bin ");
+            if names_another_package && !targets_package {
+                return Err(invalid(
+                    path,
+                    format!(
+                        "lane `{}` in unit `{}` verifies `{surface}` but command `{verify_command}` targets a different crate or binary than `{expected_package}`",
+                        lane.id, unit.id
+                    ),
+                ));
+            }
+        }
+
+        if let Some((bin_name, expected_selector)) = expected_bin_selector_for_surface(surface) {
+            let targets_bin = verify_command.contains(&format!("--bin {bin_name}"));
+            let has_selector = verify_command.contains(" -- ");
+            let matches_selector = verify_command.contains(&format!(" -- {expected_selector}"))
+                || verify_command.contains(&format!(" -- --nocapture {expected_selector}"))
+                || verify_command.contains(&format!(" -- {expected_selector} "));
+            if targets_bin && has_selector && !matches_selector {
+                return Err(invalid(
+                    path,
+                    format!(
+                        "lane `{}` in unit `{}` owns `{surface}` but verify command `{verify_command}` uses a mismatched selector; expected `{expected_selector}` for binary `{bin_name}`",
+                        lane.id, unit.id
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_owned_surfaces_from_goal(goal: &str) -> Vec<String> {
+    let Some((_, remainder)) = goal.split_once("Owned surfaces:") else {
+        return Vec::new();
+    };
+    let mut surfaces = Vec::new();
+    let mut collecting = false;
+    for raw_line in remainder.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            if collecting {
+                break;
+            }
+            continue;
+        }
+        if let Some(surface) = line.strip_prefix("- ") {
+            collecting = true;
+            surfaces.push(surface.trim().trim_matches('`').to_string());
+            continue;
+        }
+        if collecting {
+            break;
+        }
+    }
+    surfaces
+}
+
+fn expected_package_for_surface(surface: &str) -> Option<&str> {
+    let parts = surface.split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["crates", crate_name, "src", ..] => Some(*crate_name),
+        ["bin", bin_name, "src", ..] => Some(*bin_name),
+        _ => None,
+    }
+}
+
+fn expected_bin_selector_for_surface(surface: &str) -> Option<(&str, &str)> {
+    let parts = surface.split('/').collect::<Vec<_>>();
+    let ["bin", bin_name, "src", file_name] = parts.as_slice() else {
+        return None;
+    };
+    let selector = file_name.strip_suffix(".rs")?;
+    if matches!(selector, "lib" | "main" | "mod") {
+        return None;
+    }
+    Some((bin_name, selector))
 }
 
 fn validate_dependencies(
@@ -1344,5 +1455,88 @@ units:
             infer_template(&unit, &lane),
             WorkflowTemplate::Orchestration
         );
+    }
+
+    #[test]
+    fn validate_blueprint_rejects_workspace_wide_verify_for_owned_surface_lane() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let blueprint_path = temp.path().join("rxmragent.yaml");
+        std::fs::write(
+            &blueprint_path,
+            r#"
+version: 1
+program:
+  id: demo
+units:
+  - id: house-session-tests
+    title: House Session Tests
+    output_root: outputs/house-session-tests
+    artifacts:
+      - id: verification
+        path: verification.md
+    milestones:
+      - id: verified
+        requires: [verification]
+    lanes:
+      - id: house-session-tests
+        title: House Session Tests
+        family: implementation
+        workflow_family: implementation
+        template: implementation
+        goal: |
+          Owned surfaces:
+          - `bin/house/src/session.rs`
+        managed_milestone: verified
+        produces: [verification]
+        verify_command: cargo test --workspace
+"#,
+        )
+        .expect("blueprint");
+
+        let error = load_blueprint(&blueprint_path).expect_err("workspace verify should fail");
+        assert!(matches!(error, BlueprintError::Invalid { .. }));
+        assert!(error.to_string().contains("workspace-wide verify command"));
+    }
+
+    #[test]
+    fn validate_blueprint_rejects_mismatched_bin_selector_for_owned_surface_lane() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let blueprint_path = temp.path().join("rxmragent.yaml");
+        std::fs::write(
+            &blueprint_path,
+            r#"
+version: 1
+program:
+  id: demo
+units:
+  - id: house-session-tests
+    title: House Session Tests
+    output_root: outputs/house-session-tests
+    artifacts:
+      - id: verification
+        path: verification.md
+    milestones:
+      - id: verified
+        requires: [verification]
+    lanes:
+      - id: house-session-tests
+        title: House Session Tests
+        family: implementation
+        workflow_family: implementation
+        template: implementation
+        goal: |
+          Owned surfaces:
+          - `bin/house/src/session.rs`
+        managed_milestone: verified
+        produces: [verification]
+        verify_command: cargo test --bin house -- protocol
+"#,
+        )
+        .expect("blueprint");
+
+        let error = load_blueprint(&blueprint_path).expect_err("mismatched selector should fail");
+        assert!(matches!(error, BlueprintError::Invalid { .. }));
+        assert!(error.to_string().contains("mismatched selector"));
+        assert!(error.to_string().contains("session"));
     }
 }
